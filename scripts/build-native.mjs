@@ -1,0 +1,57 @@
+import { spawnSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+if (process.platform !== "darwin")
+  throw new Error("The native controller currently requires macOS.");
+mkdirSync("native/bin", { recursive: true });
+mkdirSync("tmp/swift-cache", { recursive: true });
+const result = spawnSync(
+  "swiftc",
+  [
+    "-O",
+    "-parse-as-library",
+    "-module-cache-path",
+    "tmp/swift-cache",
+    "-o",
+    "native/bin/coarena-controller",
+    "native/macos/Controller.swift",
+    "native/macos/FrameSafety.swift",
+    "native/macos/InputSafety.swift",
+    "-framework",
+    "AppKit",
+    "-framework",
+    "ScreenCaptureKit",
+    "-framework",
+    "Vision",
+  ],
+  { stdio: "inherit" },
+);
+if (result.status !== 0) process.exit(result.status ?? 1);
+const voice = spawnSync(
+  "swiftc",
+  [
+    "-O",
+    "-module-cache-path",
+    "tmp/swift-cache",
+    "-o",
+    "native/bin/coarena-voice",
+    "-parse-as-library",
+    "native/macos/Voice.swift",
+    "native/macos/WakePolicy.swift",
+    "-framework",
+    "AppKit",
+    "-framework",
+    "Speech",
+    "-framework",
+    "AVFoundation",
+    "-Xlinker",
+    "-sectcreate",
+    "-Xlinker",
+    "__TEXT",
+    "-Xlinker",
+    "__info_plist",
+    "-Xlinker",
+    "native/macos/Voice-Info.plist",
+  ],
+  { stdio: "inherit" },
+);
+process.exit(voice.status ?? 1);

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>ai.coarena.openassist.voice</string>
+<key>CFBundleName</key><string>Open Assist Voice</string>
+<key>NSMicrophoneUsageDescription</key><string>Open Assist uses the microphone for voice commands and, when enabled, to listen for Hey Assist. Audio stays on this Mac.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Open Assist transcribes voice commands on this Mac. Cloud transcription is disabled.</string>
+</dict></plist>

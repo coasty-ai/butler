@@ -1,0 +1,91 @@
+{
+  "name": "coarena-open-assist",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hold a key. Tell your computer what to do. A private macOS voice assistant.",
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:ui": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build && node scripts/build-electron.mjs",
+    "build:native": "node scripts/build-native.mjs",
+    "start": "electron .",
+    "start:local": "node scripts/start-local.mjs",
+    "debug:local": "node scripts/debug-local.mjs",
+    "logs:live": "tail -n 40 -F .data/diagnostics/current.jsonl",
+    "test": "vitest run",
+    "check": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "ingest": "tsx services/ingest/server.ts",
+    "gym": "tsx src/gym/cli.ts",
+    "build:icon": "node scripts/build-icon.mjs",
+    "package:mac": "npm run build:icon && npm run build:native && npm run build && electron-builder --mac dir",
+    "format": "prettier --write src electron services tests scripts *.ts *.json",
+    "test:desktop": "node scripts/desktop-smoke.mjs",
+    "test:provider": "node --import tsx scripts/provider-smoke.mjs",
+    "test:native-safety": "node scripts/test-native-safety.mjs",
+    "test:native-input": "node --import tsx scripts/native-input-smoke.mjs"
+  },
+  "build": {
+    "appId": "ai.coarena.openassist",
+    "productName": "Open Assist",
+    "files": [
+      "dist/**/*",
+      "dist-electron/main.cjs",
+      "dist-electron/preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/bin/coarena-controller",
+        "to": "coarena-controller"
+      },
+      {
+        "from": "native/bin/coarena-voice",
+        "to": "coarena-voice"
+      }
+    ],
+    "mac": {
+      "icon": "build/open-assist.icns",
+      "category": "public.app-category.productivity",
+      "minimumSystemVersion": "14.0",
+      "hardenedRuntime": true,
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "Open Assist captures your selected display only during a run.",
+        "NSAccessibilityUsageDescription": "Open Assist clicks and types on your instruction. Interrupt at any time.",
+        "NSMicrophoneUsageDescription": "Open Assist uses the microphone for voice commands and, when enabled, to listen for Hey Assist. Audio stays on this Mac.",
+        "NSSpeechRecognitionUsageDescription": "Open Assist transcribes voice commands on this Mac. Cloud transcription is disabled."
+      }
+    },
+    "directories": {
+      "output": "release"
+    }
+  },
+  "dependencies": {
+    "@fontsource-variable/space-grotesk": "^5.3.0",
+    "lucide-react": "^1.46.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.13.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^41.10.7",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "license": "MIT"
+}

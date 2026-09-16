@@ -1,0 +1,15 @@
+# Security — development alpha
+
+Do not use this alpha for unattended financial, healthcare, government, privileged administrative or employer-monitoring workflows. These exclusions come from the supplied product specification.
+
+The renderer uses sandboxing, context isolation, no Node integration, a restrictive production CSP and narrow IPC. Navigation/popups and renderer permission requests are denied. The pill can invoke task controls, text commands, approval and settings opening, but cannot read history or credentials, configure providers, or upload/export content. API keys remain in the main process. The model can propose a validated GUI action; it cannot execute arbitrary code, call application APIs, inspect a DOM or arbitrary accessibility tree, or read the clipboard. It receives bounded static/selected accessibility text as untrusted observation data.
+
+The main policy checks every action. Known editing/navigation controls use a local AX allow-list; consequential controls and potentially submitting/deleting keys require approval. Unidentified targets are not executed: the agent gets up to three recovery attempts before manual takeover. Credentials detected in typed text are denied; protected applications and sensitive inputs cause takeover. The native controller independently checks frame identity, screen content, foreground application, geometry, permission state, allowed keys, input bounds and stop state before actuation. A native event tap handles Control+Option+Escape; input refuses to start if the tap cannot be installed. Drag/key cleanup releases held input on cancellation.
+
+Option-Space key-down directly signals the native controller before voice recognition starts. Mid-task corrections invalidate old in-flight responses. Voice approval is final-only, confidence-gated and bound to the action pending when listening began. In optional hands-free mode, ambient speech is processed locally to detect an anchored wake phrase and is otherwise discarded. Empty-final recovery is allowed only after the command endpoint, emits a distinct event, and has zero approval confidence. This is not speaker authentication: someone speaking near the microphone during an intentional hold can be recognized, so the visible action still matters.
+
+This does not establish that arbitrary desktop actions are safe. Visual ambiguity, unrecognized sensitive pages, OS permission behavior, capture races and account context still require live validation. The app is not yet signed/notarized, the update channel is not implemented, and the controller has not passed the PDF's 100-run device matrix.
+
+The contribution server is a loopback reference implementation. Keep it private until authentication, rate limiting, audited key management, storage isolation and operator procedures are added. Never publish raw or sanitized bundles without privacy/provenance review.
+
+To report a security issue during local development, privately contact the repository owner using an existing trusted channel. A public security contact has not been configured. Do not put real screenshots, tokens or personal data in public issues.

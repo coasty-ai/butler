@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-electron/
+release/
+build/
+native/bin/
+.data/
+tmp/
+test-results/
+playwright-report/
+output/
+*.env
+*.env.local
+.env.*
+!.env.example
+.DS_Store
