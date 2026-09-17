@@ -543,16 +543,25 @@ describe("conversation: push-to-talk and hands-free", () => {
     [{ kind: "resume" }, "Continuing."],
   ];
   it.each(acks)(
-    "push-to-talk speaks the %j acknowledgement; hands-free relies on the earcon",
+    "speaks the %j acknowledgement in both modes, reopening the hands-free window",
     (plan, text) => {
       const t = setup();
       t.render(snapshot("thinking"));
       t.conversation.acknowledge(plan, { source: "ptt" });
       expect(t.spoken[0]).toMatchObject({ text, priority: "ack" });
+      expect(t.spoken[0].listen).toBeUndefined();
       const u = setup({ handsFree: true });
       u.render(snapshot("thinking"));
       u.conversation.acknowledge(plan, { source: "wake" });
-      expect(u.spoken).toHaveLength(0);
+      expect(u.spoken[0]).toMatchObject({ text, priority: "ack" });
+      // A hands-free turn keeps listening right after the reply.
+      if (["start", "revise"].includes(plan.kind))
+        expect(u.spoken[0].listen).toEqual({
+          kind: "continuation",
+          seconds: 3,
+        });
+      if (plan.kind === "pause")
+        expect(u.spoken[0].listen).toEqual({ kind: "answer", seconds: 8 });
     },
   );
 
@@ -567,14 +576,16 @@ describe("conversation: push-to-talk and hands-free", () => {
     const on = setup({ handsFree: true });
     on.voiceStart();
     on.render(approval("Open Notes?"));
-    expect(on.spoken[0]).toMatchObject({
+    expect(on.texts()[0]).toBe("On it.");
+    expect(on.spoken.at(-1)).toMatchObject({
       text: "Open Notes? Say yes or no.",
       listen: { kind: "approval", seconds: 8 },
     });
     on.play();
     on.conversation.acknowledge({ kind: "pause" }, { source: "wake" });
     on.conversation.acknowledge({ kind: "decline" }, { source: "followup" });
-    expect(on.listens()).toEqual([{ kind: "answer", seconds: 8 }]);
+    // Spoken acknowledgements carry their window instead of asking separately.
+    expect(on.listens()).toEqual([]);
     expect(on.spoken.at(-1)).toMatchObject({
       listen: { kind: "answer", seconds: 8 },
     });
@@ -583,8 +594,8 @@ describe("conversation: push-to-talk and hands-free", () => {
     off.voiceStart();
     off.render(approval("Open Notes?"));
     off.conversation.acknowledge({ kind: "pause" }, { source: "wake" });
-    expect(off.spoken[0].listen).toBeUndefined();
-    expect(off.spoken[0].text).toBe("Open Notes?");
+    expect(off.spoken.every((u) => u.listen === undefined)).toBe(true);
+    expect(off.texts()).toContain("Open Notes?");
     expect(off.listens()).toEqual([]);
 
     const ptt = setup({ handsFree: false });
@@ -603,6 +614,7 @@ describe("conversation: push-to-talk and hands-free", () => {
     t.render(snapshot("executing"));
     t.render(approval("Approve this transaction?"));
     expect(t.texts()).toEqual([
+      "On it.",
       "Open Notes? Say yes or no.",
       "Approve this transaction?",
     ]);
@@ -882,8 +894,8 @@ describe("conversation: interruptions, windows and fragments", () => {
       newId: () => `u${++id}`,
     });
     conversation.onVoiceEvent({ event: "wake_detected" });
+    conversation.noteInput("voice");
     conversation.onSnapshot(snapshot("capturing"), { listening: false });
-    conversation.acknowledge({ kind: "start", text: "Open Google" });
     conversation.onSnapshot(approval("Open Notes?"), { listening: false });
     await vi.waitFor(() => expect(signal).toBeDefined());
     conversation.onVoiceEvent({ event: "shortcut_down" });
@@ -1182,9 +1194,14 @@ describe("conversation: interruptions, windows and fragments", () => {
     t.voiceStart();
     const s = approval("Open Notes?");
     t.render(s);
-    t.event({ event: "speech_started", utteranceId: t.spoken[0].utteranceId });
+    expect(t.texts()[0]).toBe("On it.");
+    const approvalUtterance = t.spoken.at(-1)!;
+    t.event({
+      event: "speech_started",
+      utteranceId: approvalUtterance.utteranceId,
+    });
     t.conversation.acknowledge({ kind: "stillWorking" }, { source: "wake" });
-    expect(t.spoken).toHaveLength(1);
+    expect(t.spoken).toHaveLength(2);
     expect(t.conversation.speaking).toBe(true);
     const changes = t.changes;
     const cancels = t.cancels;
@@ -1195,14 +1212,18 @@ describe("conversation: interruptions, windows and fragments", () => {
     // Nothing queued is sent later, and the approval is not asked again.
     t.event({
       event: "speech_finished",
-      utteranceId: t.spoken[0].utteranceId,
+      utteranceId: approvalUtterance.utteranceId,
       interrupted: true,
     });
     t.render(s);
-    expect(t.spoken).toHaveLength(1);
+    expect(t.spoken).toHaveLength(2);
     // Nothing is stuck either: the next reply goes straight out.
     t.conversation.acknowledge({ kind: "stillWorking" }, { source: "wake" });
-    expect(t.texts()).toEqual(["Open Notes? Say yes or no.", "Still on it."]);
+    expect(t.texts()).toEqual([
+      "On it.",
+      "Open Notes? Say yes or no.",
+      "Still on it.",
+    ]);
 
     const u = setup({ handsFree: true });
     u.event({ event: "followup_open", kind: "approval", seconds: 8 });

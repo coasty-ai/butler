@@ -69,6 +69,41 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   }
 });
 
+test("manual input idle reports reach main with only known kinds", async () => {
+  const root = mkdtempSync(join(tmpdir(), "coarena-native-idle-"));
+  const binary = join(root, "controller.cjs");
+  writeFileSync(
+    binary,
+    `#!${process.execPath}
+process.on('SIGUSR1', () => {});
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.method === 'idle') {
+    process.stdout.write(JSON.stringify({event: 'user_input_idle', idleMs: 1000, kinds: ['mouse_move', 'secret', 7, 'click']}) + '\\n');
+    process.stdout.write(JSON.stringify({event: 'user_input_idle', idleMs: 'soon', kinds: []}) + '\\n');
+  }
+  process.stdout.write(JSON.stringify({id: request.id, result: {}}) + '\\n');
+});
+`,
+    { mode: 0o700 },
+  );
+  const reports: { idleMs: number; kinds: string[] }[] = [];
+  const controller = new NativeController(
+    binary,
+    () => {},
+    () => {},
+    undefined,
+    { inputIdle: (report) => reports.push(report) },
+  );
+  try {
+    await controller.request("idle");
+    expect(reports).toEqual([{ idleMs: 1000, kinds: ["mouse_move", "click"] }]);
+  } finally {
+    controller.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function fakeHelper(source: string) {
   const root = mkdtempSync(join(tmpdir(), "coarena-native-restart-"));
   const binary = join(root, "helper.cjs");

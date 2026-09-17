@@ -26,15 +26,103 @@ func forwardedSpotlightEvent(type: CGEventType, keyCode: Int64, flags: CGEventFl
 
 // Window/pill changes and our own posted events are echoed by WindowServer as
 // mouseMoved events at fixed-point locations that differ from the seeded or
-// posted position by less than a pixel, usually with a zero hardware delta.
-// Those are not user takeover. Movement of 3 px or a hardware delta of 3 is
-// always takeover; outside the short grace window after resume or our own
-// pointer input, any hardware delta with at least 1 px of travel is too.
+// posted position by less than a pixel, usually with a zero hardware delta, and
+// a hand resting on the mouse nudges it by a pixel or two. Neither is takeover:
+// under 3 px of travel from the anchor with a hardware delta under 3 never is,
+// in or out of the grace window after resume or our own pointer input. Travel
+// of 3 px or a hardware delta of 3 always is. The caller keeps the anchor for
+// ignored events, so slow real drift still accumulates to 3 px. graceActive no
+// longer changes the result; call sites still pass it so the rule stays explicit.
 func pointerTakeover(previous: CGPoint?, current: CGPoint, deltaX: Int64, deltaY: Int64, graceActive: Bool) -> Bool {
     guard let previous = previous else { return false }
     let distance = hypot(current.x - previous.x, current.y - previous.y)
-    if distance >= 3 || max(abs(deltaX), abs(deltaY)) >= 3 { return true }
-    return !graceActive && (deltaX != 0 || deltaY != 0) && distance >= 1
+    return distance >= 3 || max(abs(deltaX), abs(deltaY)) >= 3
+}
+
+// MARK: manual input idle reporting
+
+// Kinds of the user's own input reported to main. Reports never carry
+// coordinates, key codes or characters.
+enum ManualInputKind: String, CaseIterable { case click, key, mouseMove = "mouse_move", scroll }
+
+// The kind of an event the tap saw, or nil when it is not the user's input:
+// our own marked input never opens or extends an episode.
+func manualInputKind(type: CGEventType, marked: Bool) -> ManualInputKind? {
+    guard !marked else { return nil }
+    switch type {
+    case .mouseMoved: return .mouseMove
+    case .scrollWheel: return .scroll
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: return .click
+    case .keyDown: return .key
+    default: return nil
+    }
+}
+
+struct IdleReport: Equatable {
+    let idleMs: Int
+    let kinds: [String]
+    var event: [String: Any] { ["event": "user_input_idle", "idleMs": idleMs, "kinds": kinds] }
+}
+
+// One episode of manual input. The first input opens it; once input has been
+// quiet for 1 s it reports idleMs 1000, at 3 s it reports idleMs 3000 and
+// closes. Input before the 3 s report restarts the timing (both reports are due
+// again) and adds its kind; kinds reset only when the episode closes. Times are
+// monotonic seconds. A late tick past both thresholds reports both, in order.
+struct ManualInputEpisode {
+    static let thresholds: [(seconds: TimeInterval, idleMs: Int)] = [(1.0, 1000), (3.0, 3000)]
+    private(set) var lastInputAt: TimeInterval? = nil
+    private(set) var kinds = Set<ManualInputKind>()
+    private var reported = 0
+    var isOpen: Bool { lastInputAt != nil }
+    mutating func observe(kind: ManualInputKind, at time: TimeInterval) {
+        lastInputAt = max(lastInputAt ?? time, time)
+        kinds.insert(kind)
+        reported = 0
+    }
+    mutating func tick(now: TimeInterval) -> [IdleReport] {
+        guard let last = lastInputAt else { return [] }
+        let thresholds = ManualInputEpisode.thresholds
+        var reports = [IdleReport]()
+        while reported < thresholds.count && now - last >= thresholds[reported].seconds {
+            reports.append(IdleReport(idleMs: thresholds[reported].idleMs, kinds: kinds.map { $0.rawValue }.sorted()))
+            reported += 1
+        }
+        if reported == thresholds.count { self = ManualInputEpisode() }
+        return reports
+    }
+}
+
+// MARK: Electron accessibility
+
+// Editors that take an enabled accessibility tree for a screen reader: VS Code
+// and its forks (editor.accessibilitySupport "auto") switch to screen reader
+// optimized mode and show a sticky prompt, so they are never switched.
+let screenReaderDetectingAppPrefixes = ["com.microsoft.vscode", "com.vscodium", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf"]
+
+// Whether AXManualAccessibility may be set on an application: never on Open
+// Assist itself (or this helper), protected applications (matched like
+// guardSurface) or screen-reader-detecting editors.
+func manualAccessibilityEligible(pid: pid_t, bundleId: String, ownPid: pid_t, parentPid: pid_t, protectedApps: [String]) -> Bool {
+    let id = bundleId.lowercased()
+    guard pid > 0, pid != ownPid, pid != parentPid, id != "ai.coarena.openassist" else { return false }
+    if protectedApps.contains(where: { id.contains($0.lowercased()) }) { return false }
+    return !screenReaderDetectingAppPrefixes.contains { id.hasPrefix($0) }
+}
+
+// Processes already attempted, keyed by pid and launch time so a reused pid is
+// a new process. Bounded; forgetting only allows a harmless repeat.
+struct ManualAccessibilityAttempts {
+    static let limit = 256
+    private(set) var seen = Set<String>()
+    // True the first time a process is claimed.
+    mutating func claim(pid: pid_t, launchedAt: TimeInterval?) -> Bool {
+        let key = "\(pid):" + (launchedAt.map { String($0) } ?? "-")
+        guard !seen.contains(key) else { return false }
+        if seen.count >= ManualAccessibilityAttempts.limit { seen.removeAll() }
+        seen.insert(key)
+        return true
+    }
 }
 
 // Roles the pointer hit-test walk climbs through toward the real control, and

@@ -37,7 +37,7 @@ function seeded(seed: number) {
 
 function checkSafe(text: string | undefined) {
   if (text === undefined) return;
-  expect(text).not.toMatch(/assist/i);
+  expect(text).not.toMatch(/\b(?:hey|hay|hi)[\s,]+(?:open\s+)?assist\b/i);
   expect(text).not.toMatch(wake);
   for (const sentence of text.split(/(?<=[.!?])\s+/))
     expect([sentence, actionable.has(voiceIntent(sentence).kind)]).toEqual([
@@ -245,15 +245,15 @@ describe("speakable text", () => {
   });
 
   it("never says the wake word or an actionable sentence", () => {
+    // Live: "I'm Open Assist, your Mac voice assistant." became "I'm this
+    // app, your Mac voice me." The product name is spoken as written.
+    expect(speakableSummary("I'm Open Assist, your Mac voice assistant.")).toBe(
+      "I'm Open Assist, your Mac voice assistant.",
+    );
     expect(speakableText("Open Assist opened Notes.")).toBe(
-      "This app opened Notes.",
+      "Open Assist opened Notes.",
     );
-    expect(speakableText("Ask the assistant. Assisted with the form.")).toBe(
-      "Ask me. Helped with the form.",
-    );
-    expect(speakableText("I used Open Assist for assistance.")).toBe(
-      "I used this app for help.",
-    );
+    expect(speakableText("Hey Assist, open Notes.")).toBe("open Notes.");
     expect(speakableText("Stop. Checked the mail.")).toBe("Checked the mail.");
     expect(speakableText("Yes.")).toBeUndefined();
     for (const text of [

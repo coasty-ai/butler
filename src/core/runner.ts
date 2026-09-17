@@ -256,6 +256,11 @@ export function executedTarget(action: Action, surface: Surface): string {
 // Label and role rules live in src/memory/labels.ts so learning and replay agree.
 export { normalizeLabel, normalizeRole };
 const pointerTypes = new Set(["click", "double_click", "right_click", "move"]);
+/** Pause shown while the user's own mouse or keyboard input holds the run. */
+export const MANUAL_PAUSE_MESSAGE = "Paused — you’re controlling the computer.";
+/** Hand-off after repeated unidentified targets; a click by the user resolves it. */
+export const TARGET_HANDOFF_MESSAGE =
+  "I can’t find the right control. Click it for me and I’ll continue.";
 /** Plans never contain terminal or free-form steps; those stay model-only. */
 const unplannable = new Set(["done", "fail", "request_user", "drag"]);
 const recallBudgetMs = 2000;
@@ -576,7 +581,7 @@ export class Runner {
     }
     if (!this.active()) return;
     this.handsOn = true;
-    this.pause("Paused — you’re controlling the computer.");
+    this.pause(MANUAL_PAUSE_MESSAGE);
     this.event("UserTakeoverStarted", { source: "manual_input" });
   }
   stop(reason = "Stopped by you.") {
@@ -1321,7 +1326,7 @@ export class Runner {
                   actionSurface.launcherStatus ?? "",
                 )
                 ? "I couldn’t find that app. Open it yourself, then say continue."
-                : "I can’t identify the control. Open the target app or field, then say continue.",
+                : TARGET_HANDOFF_MESSAGE,
             );
           }
           continue;

@@ -21,6 +21,7 @@
     "gym": "tsx src/gym/cli.ts",
     "build:icon": "node scripts/build-icon.mjs",
     "package:mac": "npm run build:icon && npm run build:native && npm run build && electron-builder --mac dir",
+    "package:mac:release": "npm run build:icon && npm run build:native && npm run build && electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false -c.directories.output=release-dist",
     "format": "prettier --write src electron services tests scripts *.ts *.json",
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "test:provider": "node --import tsx scripts/provider-smoke.mjs",

@@ -8,16 +8,40 @@ Open Assist is the consumer product. CoArena is the intelligence/evaluation laye
 
 **Status: development alpha.** Native push-to-talk, optional on-device wake-phrase listening, on-device speech, screen capture/input, correction handling, approval, encrypted local trajectories and opt-in contribution are implemented. Offline checks use synthetic tasks and mocked providers; GPT-5.4 mini has also completed a generated-screen task through the live API and a few real Calculator/Safari tasks through the terminal live harness. Live speech accuracy, arbitrary desktop reliability and shortcut latency still need device testing. See [validation](docs/VALIDATION.md), [implementation status](docs/IMPLEMENTATION.md) and [resources required](docs/RESOURCES.md).
 
-## Run
+## Download and start (Apple Silicon Mac)
 
-The local Apple Silicon development package is `release/mac-arm64/Open Assist.app` (about 316 MB). Open it in Finder; first launch shows the small settings window. Start with **Try the safe tutorial**, then enable permissions and configure a model for real tasks. This package is unsigned/not notarized and has been tested locally, not distributed as a public release.
+Requirements: a Mac with Apple Silicon (M1 or newer) running macOS 14 Sonoma or later.
+
+1. **Download** the latest `Open Assist-<version>-arm64.dmg` from [Releases](https://github.com/coasty-ai/open-assist/releases).
+2. **Install:** open the DMG and drag **Open Assist** into **Applications**.
+3. **First launch:** this alpha is signed ad hoc but not notarized by Apple, so macOS blocks the first open. Open it once, then go to **System Settings → Privacy & Security**, scroll down to the message about Open Assist and click **Open Anyway**. Alternatively, run this once in Terminal:
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/Open Assist.app"
+   ```
+4. **Try it safely:** the settings window opens. Click **Try the safe tutorial**; it runs on a simulated board and needs no permissions or keys.
+5. **Grant permissions** from Settings when prompted: Screen Recording, Accessibility, Microphone and Speech Recognition. Quit and reopen the app after granting Screen Recording.
+6. **Choose a model** in Settings:
+   - **Private local (free):** install [Ollama](https://ollama.com), run `ollama pull qwen3-vl:8b`, and keep the default endpoint.
+   - **Bring your own key:** choose OpenAI, Anthropic or Google and paste your API key. Requests go directly to that provider.
+7. **Talk to it:** hold **Option + Space**, say what you want (“open Notes and write a shopping list”), and release. Tap the shortcut to type instead. For hands-free use, choose **Say “Hey Assist”** in Settings.
+8. **Optional natural voice:** in **Settings → Voice replies**, choose **Natural voice (free, on-device)** and click **Download** (332 MB, runs entirely on your Mac). Make sure your Mac's volume is up to hear replies.
+
+Stop anytime with **Escape** or by saying “stop”. Moving your mouse pauses the agent; it continues on its own when you let go.
+
+Updating: download the new DMG and replace the app. Because each alpha build is signed ad hoc, macOS may ask you to grant the permissions again after an update. Your settings, history and learned memory are kept.
+
+## Build from source
 
 Requirements: **Node 22.12+ (Node 24 recommended)**, npm, macOS 14+, Xcode Command Line Tools (`xcode-select --install`).
 
 ```sh
+git clone https://github.com/coasty-ai/open-assist.git
+cd open-assist
 npm ci
 npm run dev
 ```
+
+To produce the downloadable DMG and ZIP (ad-hoc signed, in `release-dist/`), run `npm run package:mac:release`. `npm run package:mac` builds an unpacked app in `release/mac-arm64/` for local testing.
 
 The app builds its two Swift helpers on first launch. Choose **Try the safe tutorial** for a deterministic, no-key run. It operates a simulated task board using the actual run loop and local journal. It does not record audio, capture your desktop or call a model.
 

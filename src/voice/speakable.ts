@@ -140,15 +140,10 @@ function clean(text: string): string {
     .replace(/…/g, ".")
     .replace(/\s*[—–]\s*/g, ", ")
     .replace(QUOTES, "");
-  // Never the wake word.
-  s = swap(s, /\bopen\s*assist\b/gi, () => "this app");
-  s = swap(s, /\bassistance\b/gi, () => "help");
-  s = swap(s, /\bassist(ed|ing|s)\b/gi, (end) => `help${end}`);
-  s = swap(
-    s,
-    /\b(?:(?:the|your|this|an?|my)\s+)?assist(?:ants?)?\b/gi,
-    () => "me",
-  );
+  // Never the wake phrase itself. The product name and words like
+  // "assistant" are fine: listening pauses while replies play, and the wake
+  // phrase must start an utterance with "hey".
+  s = s.replace(/\b(?:hey|hay|hi)[\s,]+(?:open\s+)?assist\b[\s,.:;!?]*/gi, "");
   return s
     .replace(/\s+([.,!?;:])/g, "$1")
     .replace(/([,;:])(?=[.!?])/g, "")
@@ -207,7 +202,7 @@ function speakable(
   // Anything credential-like makes the whole text unspeakable.
   if (redactSecrets(text) !== text) return undefined;
   const cleaned = clean(text);
-  if (!cleaned || /assist/i.test(cleaned)) return undefined;
+  if (!cleaned) return undefined;
   const parts = splitSentences(cleaned)
     .map((p) => p.trim())
     .filter((p) => p && !ACTIONABLE.has(voiceIntent(p).kind));

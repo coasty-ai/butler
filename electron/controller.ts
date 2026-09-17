@@ -372,7 +372,11 @@ export class NativeController implements Controller {
     emergency: () => void,
     manualInput: () => void = () => {},
     private diagnostics?: DiagnosticSink,
-    hooks: HelperHooks & { timeout?: typeof nativeTimeout } = {},
+    hooks: HelperHooks & {
+      timeout?: typeof nativeTimeout;
+      /** Manual input went idle (after 1 s, then 3 s) with the kinds seen. */
+      inputIdle?: (report: { idleMs: number; kinds: string[] }) => void;
+    } = {},
   ) {
     this.timeout = hooks.timeout ?? nativeTimeout;
     this.helper = new HelperProcess(binary, {
@@ -394,6 +398,23 @@ export class NativeController implements Controller {
         if (obj.event === "emergency_stop") {
           trace(this.diagnostics, "NativeEmergencyStop");
           emergency();
+          return true;
+        }
+        if (obj.event === "user_input_idle") {
+          const kinds = Array.isArray(obj.kinds)
+            ? obj.kinds.filter(
+                (k: unknown): k is string =>
+                  typeof k === "string" &&
+                  ["mouse_move", "scroll", "click", "key"].includes(k),
+              )
+            : [];
+          const idleMs = Number(obj.idleMs);
+          if (!Number.isFinite(idleMs)) return true;
+          trace(this.diagnostics, "NativeInputIdle", {
+            durationMs: idleMs,
+            kind: kinds.join("_") || "none",
+          });
+          hooks.inputIdle?.({ idleMs, kinds });
           return true;
         }
         if (obj.event === "user_takeover") {

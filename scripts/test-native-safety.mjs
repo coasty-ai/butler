@@ -18,6 +18,7 @@ const build = spawnSync(
     "tests/native/TurnPolicyTests.swift",
     "tests/native/LaunchSafetyTests.swift",
     "tests/native/FileSafetyTests.swift",
+    "tests/native/InputIdleTests.swift",
     "tests/native/FrameSafetyTests.swift",
     "-o",
     "tmp/frame-safety-tests",

@@ -195,6 +195,11 @@ export function momentKey(s: Snapshot | undefined): string | undefined {
       return isSilentPause(s.message)
         ? undefined
         : `paused:${run.id}:${pauseSequence(s)}`;
+    case "executing":
+      // Brief narration of visible milestones ("Opening Spotify.").
+      return /^Opening .{1,80}\.$/.test(s.message)
+        ? `narrate:${run.id}:${s.message}`
+        : undefined;
     case "completed":
       return `done:${run.id}`;
     case "failed":
@@ -404,20 +409,22 @@ export class Conversation {
           void this.listen(listen);
       };
       switch (plan.kind) {
+        // Acknowledge out loud in every mode, like a person would. In
+        // hands-free the follow-up window reopens right after the reply.
         case "start":
-          reply("ackStart", "ack", ptt);
+          reply("ackStart", "ack", true, ptt ? undefined : CONTINUATION_WINDOW);
           break;
         case "revise":
-          reply("ackCorrection", "ack", ptt, CONTINUATION_WINDOW);
+          reply("ackCorrection", "ack", true, CONTINUATION_WINDOW);
           break;
         case "stop":
-          reply("ackStop", "ack", ptt);
+          reply("ackStop", "ack", true);
           break;
         case "pause":
-          reply("ackPause", "ack", ptt, ANSWER_WINDOW);
+          reply("ackPause", "ack", true, ANSWER_WINDOW);
           break;
         case "resume":
-          reply("ackResume", "ack", ptt);
+          reply("ackResume", "ack", true);
           break;
         case "approve":
           reply("ackApprove", "ack", true);
@@ -808,6 +815,17 @@ export class Conversation {
             x?.run?.id === id &&
             x.run.status === "paused" &&
             pauseSequence(x) === sequence,
+        };
+      }
+      case "executing": {
+        const text = speakableText(s.message);
+        if (!text) return undefined;
+        return {
+          key,
+          kind: "narrate",
+          text,
+          priority: "ack",
+          valid: (x) => x?.run?.id === id && !TERMINAL.has(x.run.status),
         };
       }
       case "completed":

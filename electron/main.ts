@@ -28,7 +28,13 @@ import {
   type Settings,
   type Snapshot,
 } from "../src/core/schema";
-import { Runner, terminal } from "../src/core/runner";
+import {
+  MANUAL_PAUSE_MESSAGE,
+  Runner,
+  TARGET_HANDOFF_MESSAGE,
+  terminal,
+} from "../src/core/runner";
+import { shouldAutoResume, type InputIdleReport } from "../src/core/resume";
 import { TutorialController, TutorialProvider } from "../src/core/tutorial";
 import { createDesktopProvider } from "./provider";
 import { LocalDiagnostics } from "./diagnostics";
@@ -202,6 +208,36 @@ function warmKokoro() {
     .catch((error) => debug("KokoroWarmFailed", errorDetails(error)));
 }
 let kokoroDownload: AbortController | undefined;
+/**
+ * `--natural-voice`: install the free on-device voice if needed and use it for
+ * replies, turning replies on when they were off.
+ */
+async function useNaturalVoice() {
+  if (process.platform !== "darwin" || !kokoroSupported()) return;
+  const voice = getKokoro();
+  if (!voice.status().installed)
+    try {
+      await voice.download((status) => sendKokoroStatus(status));
+    } catch (error) {
+      debug("KokoroDownloadFailed", errorDetails(error));
+      return;
+    }
+  if (settings.voiceEngine !== "kokoro" || settings.voiceReplies === "off") {
+    settings = {
+      ...settings,
+      voiceEngine: "kokoro",
+      voiceReplies:
+        settings.voiceReplies === "off" ? "voice" : settings.voiceReplies,
+    };
+    saveConfig();
+    refreshSettingsView();
+    void getVoice()
+      .call("configure", voiceOutputConfig())
+      .catch((error) => debug("VoiceSetupFailed", errorDetails(error)));
+  }
+  debug("NaturalVoiceSelected");
+  warmKokoro();
+}
 const kokoroErrors: Record<string, string> = {
   network: "The download was interrupted. Check your connection and try again.",
   checksum_mismatch: "The downloaded voice did not verify. Try again.",
@@ -289,9 +325,15 @@ function getNative() {
           canApprove: false,
         });
       },
-      () => runner?.manualTakeover(),
+      () => {
+        runner?.manualTakeover();
+        // Remember this hold so it can end on its own once the user lets go.
+        if (snapshot.run?.status === "paused")
+          manualHold = { sequence: lastSequence() };
+      },
       debug,
       {
+        inputIdle: (report) => void resumeAfterManualInput(report),
         onUnavailable: () => {
           if (shuttingDown) return;
           const run = snapshot.run;
@@ -318,6 +360,36 @@ function getNative() {
     );
   }
   return native;
+}
+/**
+ * A run held only because the user touched the mouse or keyboard continues on
+ * its own once they let go: after about a second of stillness for pointer
+ * movement or scrolling, after three seconds when they clicked or typed. A
+ * "can't find the control" hand-off continues a second after the user clicks.
+ * Anything else that happened in between (voice, approvals, stop, a new
+ * pause) keeps the run held.
+ */
+let manualHold: { sequence: number } | undefined;
+async function resumeAfterManualInput(report: InputIdleReport) {
+  if (shuttingDown || !runner || !snapshot.run) return;
+  if (terminal(snapshot.run.status)) return;
+  const source = shouldAutoResume({
+    status: snapshot.run.status,
+    message: snapshot.message,
+    listening,
+    holdSequence: manualHold?.sequence,
+    lastSequence: lastSequence(),
+    report,
+  });
+  if (!source) return;
+  manualHold = undefined;
+  voiceHeld = false;
+  debug("AutoResume", { source });
+  try {
+    await resumeHeldRun(runHeld);
+  } catch (error) {
+    debug("AutoResumeFailed", errorDetails(error));
+  }
 }
 function nativePid() {
   try {
@@ -1178,6 +1250,11 @@ function emit(s: Snapshot) {
   if (listening) return;
   renderPill(s);
 }
+function pillSummary(summary: string | undefined) {
+  const text = (summary ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "Done.";
+  return text.length > 160 ? `${text.slice(0, 159).trimEnd()}…` : text;
+}
 function renderPill(s: Snapshot) {
   const status = s.run?.status;
   if (!status) return;
@@ -1193,14 +1270,21 @@ function renderPill(s: Snapshot) {
         status === "takeover" || (s.message && s.message !== defaultPause)
           ? s.message
           : "Paused.",
-      transcript: continueHint(settings.handsFree),
+      transcript:
+        s.message === MANUAL_PAUSE_MESSAGE
+          ? "I’ll continue when you let go."
+          : s.message === TARGET_HANDOFF_MESSAGE
+            ? "I’ll continue a moment after you click it."
+            : continueHint(settings.handsFree),
       canApprove: false,
     });
   else if (status === "completed")
     setPill({
       ...common,
       phase: "done",
-      label: speakableSummary(s.run?.summary) ?? "Done.",
+      // The model's own summary (credentials already redacted by the runner);
+      // speech uses its own speakable form.
+      label: pillSummary(s.run?.summary),
       transcript: "",
       canApprove: false,
     });
@@ -1825,6 +1909,7 @@ app.on("second-instance", async (_event, _args, _cwd, additionalData) => {
       ensureIdle();
       if (importLaunch(args)) window.webContents.reload();
     }
+    if (args.includes("--natural-voice")) await useNaturalVoice();
     const handsFree = launchHandsFree(args);
     if (handsFree !== undefined) {
       await toggleHandsFree(handsFree);
@@ -2067,6 +2152,7 @@ app
     app.dock?.hide();
     if (imported || !existsSync(join(root, "config.enc"))) showSettings();
     if (process.platform === "darwin") void configureVoice();
+    if (process.argv.includes("--natural-voice")) void useNaturalVoice();
     try {
       await launchCommand(process.argv);
     } catch (error) {

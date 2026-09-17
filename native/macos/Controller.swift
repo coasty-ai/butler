@@ -25,6 +25,13 @@ var protectedDomains = ["paypal.com", "chase.com", "bankofamerica.com", "mychart
 var displayID = CGMainDisplayID()
 // Synthetic buttons and keys pressed and not yet released (guarded by stateLock).
 var heldInput = HeldInput()
+// The user's own input episode for idle reporting (guarded by idleLock, which
+// is never held together with stateLock).
+let idleLock = NSLock()
+var manualInputEpisode = ManualInputEpisode()
+var idleTimer: DispatchSourceTimer?
+// Processes AXManualAccessibility was already set on (guarded by stateLock).
+var manualAccessibilityAttempts = ManualAccessibilityAttempts()
 func emit(_ obj: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
     outputLock.lock(); FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data([10])); outputLock.unlock()
@@ -314,8 +321,30 @@ func modalContext(window: AXUIElement?, element: AXUIElement?) -> Bool {
     }
     return false
 }
+// Electron apps (Slack, Discord, Notion) publish their web content
+// accessibility tree only once an assistive client asks for it, which grounded
+// controls and focused-field checks need. AXManualAccessibility is Electron's
+// documented switch. AXEnhancedUserInterface (VoiceOver's, also the only hook
+// CEF documents) breaks window managers and animations and is never set.
+// Once per process, from the surface path (capture reaches it through
+// guardSurface), never from the event tap; bounded by a short messaging
+// timeout, errors ignored (native and CEF apps reject the attribute).
+func exposeAccessibilityTree(_ app: NSRunningApplication) {
+    let pid = app.processIdentifier
+    guard AXIsProcessTrusted(),
+          manualAccessibilityEligible(pid: pid, bundleId: app.bundleIdentifier ?? "", ownPid: getpid(), parentPid: getppid(), protectedApps: protectedApps),
+          withState({ manualAccessibilityAttempts.claim(pid: pid, launchedAt: app.launchDate?.timeIntervalSince1970) }) else { return }
+    let element = AXUIElementCreateApplication(pid)
+    _ = AXUIElementSetMessagingTimeout(element, 0.25)
+    // Electron 23+ reports success and builds the tree asynchronously: give it a
+    // moment, once, before this first observation walks it.
+    if AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success {
+        Thread.sleep(forTimeInterval: 0.25)
+    }
+}
 func surface(_ action: [String:Any]? = nil) -> [String: Any] {
     guard let app = inputApplication() else { return ["appId":"unknown", "pid":0, "secureInput":true, "unknown":true] }
+    exposeAccessibilityTree(app)
     let element = AXUIElementCreateApplication(app.processIdentifier)
     var secure = IsSecureEventInputEnabled()
     var focusedRole: String? = nil
@@ -667,6 +696,38 @@ func releaseHeldInputAndExit(signal terminating: Int32? = nil) -> Never {
     if let terminating = terminating { signal(terminating,SIG_DFL);kill(getpid(),terminating) }
     _exit(0)
 }
+// Notes one input event of the user's own; cheap and lock-protected, safe on
+// the event tap path.
+func recordManualInput(_ kind: ManualInputKind?) {
+    guard let kind = kind else { return }
+    idleLock.lock(); manualInputEpisode.observe(kind: kind, at: ProcessInfo.processInfo.systemUptime); idleLock.unlock()
+}
+// Tells main when the user's manual input has gone quiet (idleMs 1000, then
+// 3000), so it can decide whether a paused run continues. Informational only:
+// nothing here changes the stop latch.
+func startIdleReporting() {
+    guard idleTimer == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+    timer.schedule(deadline: .now() + .milliseconds(150), repeating: .milliseconds(150), leeway: .milliseconds(30))
+    timer.setEventHandler {
+        idleLock.lock(); let reports = manualInputEpisode.tick(now: ProcessInfo.processInfo.systemUptime); idleLock.unlock()
+        for report in reports { emit(report.event) }
+    }
+    idleTimer = timer
+    timer.resume()
+}
+// Anchor bookkeeping for one unmarked pointer event: its travel from the anchor
+// and whether it is an echo or jitter that pointerTakeover rejects. Ignored
+// events keep the anchor, so slow real drift still accumulates.
+func classifyUserPointer(type: CGEventType, event: CGEvent) -> (ignored: Bool, distance: Double) {
+    stateLock.lock(); defer { stateLock.unlock() }
+    let previous = lastPointerPosition
+    var distance: Double = 0
+    if let previous = previous { distance = hypot(event.location.x-previous.x, event.location.y-previous.y) }
+    let ignored = type == .mouseMoved && !pointerTakeover(previous:previous,current:event.location,deltaX:event.getIntegerValueField(.mouseEventDeltaX),deltaY:event.getIntegerValueField(.mouseEventDeltaY),graceActive:ProcessInfo.processInfo.systemUptime < pointerGraceUntil)
+    if !ignored || previous == nil { lastPointerPosition = event.location }
+    return (ignored, distance)
+}
 func installTap() -> Bool {
     if tap != nil { return true }
     let types:[CGEventType] = [.keyDown,.leftMouseDown,.rightMouseDown,.otherMouseDown,.mouseMoved,.leftMouseDragged,.rightMouseDragged,.scrollWheel]
@@ -682,30 +743,29 @@ func installTap() -> Bool {
             return Unmanaged.passUnretained(event)
         }
         let pointer = [.mouseMoved,.leftMouseDragged,.rightMouseDragged,.leftMouseDown,.rightMouseDown,.otherMouseDown].contains(type)
-        if event.getIntegerValueField(.eventSourceUserData) == inputMarker {
+        let marked = event.getIntegerValueField(.eventSourceUserData) == inputMarker
+        if marked {
             if pointer {stateLock.lock();lastPointerPosition = event.location;stateLock.unlock()}
             return Unmanaged.passUnretained(event)
         }
         let escape = type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) == 53
-        // Already stopped: no takeover to report, so skip per-event app lookups.
-        if isStopped() {
-            if escape {emit(["event":"emergency_stop"])}
-            return Unmanaged.passUnretained(event)
-        }
-        var ignoredMove = false
+        // Echoes and resting-hand jitter are neither takeover nor manual input.
         var pointerDistance:Double = 0
         if pointer {
-            stateLock.lock()
-            let previous = lastPointerPosition
-            if let previous = previous {pointerDistance = hypot(event.location.x-previous.x,event.location.y-previous.y)}
-            if type == .mouseMoved {
-                ignoredMove = !pointerTakeover(previous:previous,current:event.location,deltaX:event.getIntegerValueField(.mouseEventDeltaX),deltaY:event.getIntegerValueField(.mouseEventDeltaY),graceActive:ProcessInfo.processInfo.systemUptime < pointerGraceUntil)
-            }
-            // Ignored echoes keep the anchor, so slow real drift still accumulates.
-            if !ignoredMove || previous == nil {lastPointerPosition = event.location}
-            stateLock.unlock()
+            let classified = classifyUserPointer(type:type, event:event)
+            if classified.ignored {return Unmanaged.passUnretained(event)}
+            pointerDistance = classified.distance
         }
-        if ignoredMove {return Unmanaged.passUnretained(event)}
+        // Already stopped: no takeover to report, so skip per-event app lookups,
+        // but note the input so main learns when the user lets go.
+        if isStopped() {
+            if escape {emit(["event":"emergency_stop"])}
+            // Our own Command-Space re-posted by Siri is not the user's input;
+            // checked by its deadline alone, without the app lookup.
+            let echoed = type == .keyDown && withState { forwardedSpotlightEvent(type:type,keyCode:event.getIntegerValueField(.keyboardEventKeycode),flags:event.flags,systemSiri:true,now:ProcessInfo.processInfo.systemUptime,deadline:forwardedSpotlightDeadline) }
+            if !echoed {recordManualInput(manualInputKind(type:type, marked:marked))}
+            return Unmanaged.passUnretained(event)
+        }
         let source = NSRunningApplication(processIdentifier:pid_t(event.getIntegerValueField(.eventSourceUnixProcessID)))
         let systemSiri = source?.bundleIdentifier == "com.apple.Siri" && source?.executableURL?.path == "/System/Library/CoreServices/Siri.app/Contents/MacOS/Siri"
         stateLock.lock()
@@ -713,6 +773,7 @@ func installTap() -> Bool {
         if forwarded {forwardedSpotlightDeadline = 0}
         stateLock.unlock()
         if forwarded {emit(["event":"input_forwarded","source":"spotlight"]);return Unmanaged.passUnretained(event)}
+        recordManualInput(manualInputKind(type:type, marked:marked))
         if escape {latch(true);emit(["event":"emergency_stop"])}
         else if !isStopped() {latch(true);emit(["event":"user_takeover","source":type == .mouseMoved ? "mouse_move" : type == .keyDown ? "key" : type == .scrollWheel ? "scroll" : "mouse_button_or_drag","delta_x":event.getIntegerValueField(.mouseEventDeltaX),"delta_y":event.getIntegerValueField(.mouseEventDeltaY),"sourcePid":event.getIntegerValueField(.eventSourceUnixProcessID),"eventType":type.rawValue,"flags":event.flags.rawValue,"pointerDistance":pointerDistance])}
         return Unmanaged.passUnretained(event)
@@ -720,6 +781,7 @@ func installTap() -> Bool {
     guard let tap = tap else { return false }
     let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
     CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes); CGEvent.tapEnable(tap:tap, enable:true)
+    startIdleReporting()
     return true
 }
 func geometry(_ display: SCDisplay, width: Int, height: Int) -> [String:Any] {
