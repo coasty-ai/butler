@@ -1,6 +1,7 @@
 import type { MemoryContext } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
-import type { AppUsage, Episode, MemoryData, SystemIndex } from "./types";
+import type { SystemIndex } from "../core/memory";
+import type { AppUsage, Episode, MemoryData } from "./types";
 
 /** Context bounds from docs/MEMORY.md. */
 export const CONTEXT_LIMITS = {

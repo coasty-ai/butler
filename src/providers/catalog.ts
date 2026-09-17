@@ -7,7 +7,9 @@ import type { ProviderKind, Settings } from "../core/schema";
 export const providerDefaults = {
   ollama: {
     endpoint: "http://127.0.0.1:11434",
-    model: "qwen3-vl:2b",
+    // Matches defaultSettings.model and the README's pull command. The 2b
+    // variant works on small Macs but grounds GUI controls much less reliably.
+    model: "qwen3-vl:8b",
     inputPrice: 0,
     outputPrice: 0,
   },

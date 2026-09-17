@@ -135,6 +135,9 @@ export function frictionCodes(line: DiagnosticLine): string[] {
         : ["ACTION_LOOP"];
     case "ActionInterrupted":
       return ["ACTION_INTERRUPTED"];
+    // A recovery, not a failure: the runner re-aimed the same control itself.
+    case "ActionReaimed":
+      return ["ACTION_REAIMED"];
     case "PolicyConfirmationRequested":
       return ["APPROVAL_REQUESTED"];
     case "UserDenied":
@@ -323,6 +326,7 @@ const OWNER: Record<string, string> = {
   MANUAL_INPUT_DETECTED: "user",
   EMERGENCY_STOP: "user",
   APPROVAL_DECLINED: "user",
+  ACTION_REAIMED: "none",
   HELPER_UNAVAILABLE: "environment",
   NATIVE_ERROR: "environment",
   PROVIDER_FAILED: "environment",
@@ -397,6 +401,8 @@ const NOTE: Record<string, string> = {
     "An unrecoverable connection failure to the provider.",
   PROVIDER_UNAVAILABLE: "The provider was unavailable and the run paused.",
   ACTION_INTERRUPTED: "A step was interrupted while it was executing.",
+  ACTION_REAIMED:
+    "The screen moved after the screenshot and the app re-aimed the same control by itself, saving a model call.",
   USER_CORRECTION: "The user corrected the run while it was running.",
   ACTION_FAILED: "A step failed with a code this analyzer does not name yet.",
   UNCLASSIFIED: "The run ended without a recognizable reason in the log.",
@@ -689,6 +695,11 @@ export function renderAnalysis(report: AnalysisReport): string {
       ]),
     ),
   );
+  const reaimed = report.frictions.find((row) => row.code === "ACTION_REAIMED");
+  if (reaimed)
+    out.push(
+      `\nrecovered without a model call: ACTION_REAIMED ${reaimed.events} in ${reaimed.runs} run(s)`,
+    );
   out.push("");
   out.push("What to fix next (ranked by how often the pattern ended a run)");
   for (const item of report.fixNext) {

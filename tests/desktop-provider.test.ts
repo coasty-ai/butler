@@ -25,7 +25,7 @@ import { defaultSettings, type Observation } from "../src/core/schema";
 import { selectProvider } from "../src/providers/catalog";
 import { emptyMemory, forgetRunIn } from "../src/memory/store";
 import { learnFromRun } from "../src/memory/learn";
-import type { LearnInput } from "../src/memory/types";
+import type { LearnInput } from "../src/core/memory";
 const o: Observation = {
   task: "fixture",
   history: [],

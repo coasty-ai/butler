@@ -18,6 +18,7 @@ import { sanitizeText, scanText } from "../src/core/sanitize";
 import { Runner } from "../src/core/runner";
 import { ScreenChangedError } from "../src/core/errors";
 import { TutorialController, TutorialProvider } from "../src/core/tutorial";
+import { nullRecorder } from "../src/core/recorder";
 const g = {
   display_id: 2,
   x: -1920,
@@ -531,6 +532,7 @@ function memory() {
   const events: JournalEvent[] = [];
   const frames: Frame[] = [];
   let run: Run;
+  const base = nullRecorder();
   const recorder: Recorder = {
     begin: (r) => {
       run = r;
@@ -541,14 +543,8 @@ function memory() {
     frame: (_id, f) => frames.push(f),
     append: (id, type, data = {}) => {
       const e: JournalEvent = {
-        event_id: crypto.randomUUID(),
-        run_id: id,
-        type,
-        data,
+        ...base.append(id, type, data),
         sequence_number: events.length + 1,
-        schema_version: 1,
-        monotonic_timestamp: performance.now(),
-        wall_clock_timestamp: new Date().toISOString(),
       };
       events.push(e);
       return e;

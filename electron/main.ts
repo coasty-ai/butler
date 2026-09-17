@@ -60,7 +60,7 @@ import {
 import { workflowCandidate } from "../src/gym/workflow";
 import { MemoryStore, forgetRunIn } from "../src/memory/store";
 import { createMemoryAccess } from "../src/memory/access";
-import type { MemoryAccess, SystemIndex } from "../src/memory/types";
+import type { MemoryAccess, SystemIndex } from "../src/core/memory";
 import { summarizeMemory } from "../src/ui/api";
 import { NativeController, budgetDelay } from "./controller";
 import {

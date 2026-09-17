@@ -156,6 +156,7 @@ const { selectProvider } = await import("../src/providers/catalog.ts");
 const { defaultSettings, settingsSchema } =
   await import("../src/core/schema.ts");
 const { Runner, terminal } = await import("../src/core/runner.ts");
+const { nullRecorder } = await import("../src/core/recorder.ts");
 const { MemoryStore } = await import("../src/memory/store.ts");
 const { createMemoryAccess } = await import("../src/memory/access.ts");
 
@@ -315,23 +316,13 @@ async function runAttempt(task, attempt) {
   let lastPending;
   let held;
   const recorder = {
+    ...nullRecorder(),
     begin: (r) => {
       run = r;
     },
     save: (r) => {
       run = r;
     },
-    frame: () => {},
-    append: (runId, type, data = {}) => ({
-      event_id: crypto.randomUUID(),
-      run_id: runId,
-      sequence_number: 0,
-      monotonic_timestamp: performance.now(),
-      wall_clock_timestamp: new Date().toISOString(),
-      schema_version: 1,
-      type,
-      data,
-    }),
   };
   const emit = (snapshot) => {
     for (const event of snapshot.events.slice(printed)) {

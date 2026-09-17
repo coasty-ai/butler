@@ -1,17 +1,17 @@
 import type { MemoryContext } from "../core/schema";
+import type {
+  LearnInput,
+  MemoryAccess,
+  Recall,
+  ReplayPlan,
+  SystemIndex,
+} from "../core/memory";
 import { matchIntent, mayBeQuickIntent } from "./intents";
 import { learnFromRun } from "./learn";
 import { recallContext } from "./retrieve";
 import { matchSkill, toPlan } from "./skills";
 import type { MemoryStore } from "./store";
-import type {
-  LearnInput,
-  MemoryAccess,
-  MemoryData,
-  Recall,
-  ReplayPlan,
-  SystemIndex,
-} from "./types";
+import type { MemoryData } from "./types";
 
 export interface MemoryAccessOptions {
   /** Budget shared by the index lookups of one recall (default 1500 ms). */

@@ -19,7 +19,7 @@ import {
   playbookFor,
   PLAYBOOK_MAX_CHARS,
   PLAYBOOK_MAX_LINES,
-} from "../src/memory/playbooks";
+} from "../src/providers/playbooks";
 const o: Observation = {
   task: "local task",
   history: [],

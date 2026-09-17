@@ -1,10 +1,11 @@
+import type { LearnInput, TrajectoryStep } from "../core/memory";
 import { redactSecrets, scanText } from "../core/sanitize";
 import {
   CONTROL_LABEL_LIMIT,
   normalizeRole,
   REPLAYABLE_ROLES,
   utf16Prefix,
-} from "./labels";
+} from "../core/labels";
 import { bound, tokenize } from "./retrieve";
 import { normalizeTask, opensApp, replayable, templateOf } from "./skills";
 import {
@@ -16,13 +17,7 @@ import {
   upsertPreferenceIn,
   upsertSkillIn,
 } from "./store";
-import type {
-  LearnInput,
-  MemoryData,
-  Skill,
-  SkillStep,
-  TrajectoryStep,
-} from "./types";
+import type { MemoryData, Skill, SkillStep } from "./types";
 
 /** Plan abandon reasons caused by the user or system pausing, not the skill. */
 const INTERRUPTIONS = new Set(["paused", "takeover", "interrupted"]);

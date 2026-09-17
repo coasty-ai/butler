@@ -1,7 +1,8 @@
 import { redactSecrets } from "../core/sanitize";
-import { normalizeRole } from "./labels";
+import { normalizeRole } from "../core/labels";
 import { bound, CONTEXT_LIMITS } from "./retrieve";
-import type { PlanStep, ReplayPlan, Skill } from "./types";
+import type { PlanStep, ReplayPlan } from "../core/memory";
+import type { Skill } from "./types";
 
 /** Collapse whitespace, trim trailing sentence punctuation; keeps case. */
 export const cleanTask = (task: string) =>

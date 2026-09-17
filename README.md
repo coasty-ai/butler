@@ -21,7 +21,7 @@ Requirements: a Mac with Apple Silicon (M1 or newer) running macOS 14 Sonoma or 
 4. **Try it safely:** the settings window opens. Click **Try the safe tutorial**; it runs on a simulated board and needs no permissions or keys.
 5. **Grant permissions** from Settings when prompted: Screen Recording, Accessibility, Microphone and Speech Recognition. Quit and reopen the app after granting Screen Recording.
 6. **Choose a model** in Settings:
-   - **Private local (free):** install [Ollama](https://ollama.com), run `ollama pull qwen3-vl:8b`, and keep the default endpoint.
+   - **Private local (free):** install [Ollama](https://ollama.com), run `ollama pull qwen3-vl:8b` (about 6 GB; `qwen3-vl:2b` is smaller but much weaker at finding controls), and keep the default endpoint.
    - **Bring your own key:** choose OpenAI, Anthropic or Google and paste your API key. Requests go directly to that provider.
 7. **Talk to it:** hold **Option + Space**, say what you want (“open Notes and write a shopping list”), and release. Tap the shortcut to type instead. For hands-free use, choose **Say “Hey Assist”** in Settings.
 8. **Optional natural voice:** in **Settings → Voice replies**, choose **Natural voice (free, on-device)** and click **Download** (332 MB, runs entirely on your Mac). Make sure your Mac's volume is up to hear replies.
@@ -131,7 +131,7 @@ Seeding writes a deterministic initial board, task instructions and an empty tra
 
 ## Repository
 
-- `src/core`: action schema, privacy boundary, policy, run state machine, tutorial and text sanitizer.
+- `src/core`: action schema, privacy boundary, policy, run state machine, control-label rules, the memory contract, tutorial and text sanitizer. `src/core/index.ts` is the entry point for embedding the loop in another app, and it imports nothing from the rest of `src/` (see [modularity](docs/MODULARITY.md)).
 - `scripts/live-task.mjs`: opt-in paid live desktop harness.
 - `src/providers`: OpenAI Responses, Anthropic Messages, Gemini, compatible and Ollama adapters.
 - `electron`, `native/macos`: menu-bar shell, floating pill, IPC boundary, native speech/capture/input and emergency stop.

@@ -9,16 +9,19 @@ import {
   type ProviderResult,
   type Recorder,
   type Run,
+  type ScreenContext,
   type Settings,
   type Snapshot,
   type Surface,
 } from "../src/core/schema";
 import { Runner } from "../src/core/runner";
+import type { MemoryAccess } from "../src/core/memory";
 import {
   HelperUnavailableError,
   NativeActionError,
   NativeStoppedError,
   ProviderTransientError,
+  ScreenChangedError,
   SurfaceBlockedError,
 } from "../src/core/errors";
 
@@ -1064,5 +1067,287 @@ describe("application switching", () => {
     const results = p.observations.at(-1)!.history.map((h) => h.result);
     expect(results.filter((r) => r.includes(appSwitchWarning))).toHaveLength(1);
     expect(results[5]).toContain(appSwitchWarning);
+  });
+});
+
+type Controls = NonNullable<ScreenContext["controls"]>;
+/**
+ * A screen whose one named button moves between captures, like an animating
+ * page, and whose native input is refused the first time.
+ */
+function movingTarget(
+  options: {
+    controls?: (capture: number) => Controls;
+    appId?: (capture: number) => string;
+    /** Leading execute attempts that are refused with STATE_CHANGED. */
+    rejects?: number;
+    /** Overrides on the surface fetched for the action. */
+    target?: Partial<Surface>;
+    onCapture?: (capture: number) => void;
+    revalidate?: boolean;
+  } = {},
+) {
+  let captures = 0;
+  let executes = 0;
+  const target: Surface = {
+    ...surface,
+    targetRole: "AXButton",
+    targetLabel: "Send",
+    ...options.target,
+  };
+  const capture = vi.fn(async (): Promise<Frame> => {
+    const n = ++captures;
+    options.onCapture?.(n);
+    return {
+      id: `frame-${n}`,
+      sha256: `sha-${n}`,
+      image: "",
+      geometry,
+      capturedAt: 0,
+      synthetic: false,
+      appId: options.appId?.(n) ?? surface.appId,
+      context: {
+        appName: "App",
+        windowTitle: "Window",
+        controls: options.controls?.(n) ?? [
+          { role: "AXButton", label: "Send", x: 0.5, y: n / 10, enabled: true },
+        ],
+      },
+    };
+  });
+  return controller({
+    surface: vi.fn(async (a?: Action) => (a ? target : surface)),
+    capture,
+    execute: vi.fn(async () => {
+      if (++executes <= (options.rejects ?? 1)) throw new ScreenChangedError();
+    }),
+    ...(options.revalidate
+      ? { revalidate: vi.fn(async (_a: Action, f: Frame) => f) }
+      : {}),
+  });
+}
+const executedActions = (c: Controller) =>
+  vi.mocked(c.execute).mock.calls.map((call) => call[0]);
+
+describe("automatic re-aim after a screen change", () => {
+  it("re-aims a rejected click at the same control with no new model call", async () => {
+    allowAll();
+    const m = memory();
+    const c = movingTarget();
+    const p = scripted([act({ type: "click", x: 0.5, y: 0.1 })]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    // One model call for the click and one for done: the re-aim cost none.
+    expect(p.next).toHaveBeenCalledTimes(2);
+    expect(m.of("ActionReaimed")).toHaveLength(1);
+    expect(m.of("ActionReaimed")[0].data).toEqual({ actionType: "click" });
+    expect(m.of("ActionFailed")).toHaveLength(0);
+    const executed = executedActions(c);
+    expect(executed).toHaveLength(2);
+    expect(executed[0]).toMatchObject({ x: 0.5, y: 0.1, frame_id: "frame-1" });
+    // The same action at the control's new position, on the fresh frame.
+    expect(executed[1]).toMatchObject({
+      type: "click",
+      x: 0.5,
+      y: 0.2,
+      frame_id: "frame-2",
+    });
+    expect(runner.snapshot.run?.actions).toBe(1);
+    expect(runner.snapshot.run?.usage.cost).toBe(0);
+    const history = p.observations[1].history;
+    expect(history).toHaveLength(1);
+    expect(history[0].type).toBe("click");
+    expect(history[0].result).toContain(
+      "re-aimed at the same control (same role and name)",
+    );
+    // Every other field of the model's own action is preserved as it was.
+    expect(history[0].action).toEqual({
+      type: "click",
+      x: 0.5,
+      y: 0.2,
+      button: "left",
+    });
+  });
+  it.each([
+    ["the control is gone", { controls: () => [] as Controls }],
+    [
+      "two controls match",
+      {
+        controls: (n: number) =>
+          n === 1
+            ? [{ role: "AXButton", label: "Send", x: 0.5, y: 0.1 }]
+            : [
+                { role: "AXButton", label: "Send", x: 0.5, y: 0.2 },
+                { role: "AXButton", label: "Send", x: 0.5, y: 0.6 },
+              ],
+      },
+    ],
+    [
+      "the only match is disabled",
+      {
+        controls: (n: number) => [
+          {
+            role: "AXButton",
+            label: "Send",
+            x: 0.5,
+            y: n / 10,
+            enabled: n === 1,
+          },
+        ],
+      },
+    ],
+    [
+      "the fresh frame is another application",
+      { appId: (n: number) => (n === 1 ? surface.appId : "com.other.app") },
+    ],
+    [
+      "the target was never identified",
+      { target: { targetRole: undefined, targetLabel: undefined } },
+    ],
+    [
+      "the re-aim capture fails",
+      {
+        onCapture: (n: number) => {
+          if (n === 2) throw new HelperUnavailableError();
+        },
+      },
+    ],
+  ])("asks the model again when %s", async (_why, options) => {
+    allowAll();
+    const m = memory();
+    const c = movingTarget(options as Parameters<typeof movingTarget>[0]);
+    const p = scripted([act({ type: "click", x: 0.5, y: 0.1 })]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("ActionReaimed")).toHaveLength(0);
+    expect(m.of("ActionFailed")[0].data).toEqual({ code: "STATE_CHANGED" });
+    const rejected = p.observations[1].history[0];
+    expect(rejected.type).toBe("rejected");
+    expect(rejected.result).toContain("No input was sent");
+    expect(executedActions(c)).toHaveLength(1);
+  });
+  it.each(["drag", "type_text"])("never re-aims a %s action", async (type) => {
+    allowAll();
+    const m = memory();
+    const c = movingTarget();
+    const p = scripted([
+      act(
+        type === "drag"
+          ? {
+              type,
+              start_x: 0.2,
+              start_y: 0.2,
+              end_x: 0.6,
+              end_y: 0.6,
+              duration_ms: 300,
+            }
+          : { type, text: "hello" },
+      ),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("ActionReaimed")).toHaveLength(0);
+    expect(m.of("ActionFailed")[0].data).toEqual({ code: "STATE_CHANGED" });
+  });
+  it("re-aims at most once per proposed action", async () => {
+    allowAll();
+    const m = memory();
+    const c = movingTarget({ rejects: 2 });
+    const p = scripted([
+      act({ type: "click", x: 0.5, y: 0.1 }),
+      act({ type: "click", x: 0.5, y: 0.3 }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("ActionReaimed")).toHaveLength(1);
+    expect(m.of("ActionFailed")).toHaveLength(1);
+    expect(p.next).toHaveBeenCalledTimes(3);
+    // The second attempt is the model's again, and its history is honest.
+    expect(p.observations[1].history[0].type).toBe("rejected");
+    expect(p.observations[2].history.at(-1)!.result).not.toContain("re-aimed");
+  });
+  it("asks for approval again instead of reusing it when the screen moves", async () => {
+    policy.evaluate = (a) =>
+      a.type === "click"
+        ? { kind: "CONFIRM", reason: "Send this message?" }
+        : { kind: "ALLOW", reason: "" };
+    const m = memory();
+    const c = movingTarget({ revalidate: true });
+    const p = scripted([
+      act({ type: "click", x: 0.5, y: 0.1 }),
+      act({ type: "click", x: 0.5, y: 0.3 }),
+    ]);
+    let runner!: Runner;
+    runner = new Runner(c, p, m.recorder, settings, (s: Snapshot) => {
+      if (s.run?.status === "confirming" && s.pending)
+        setTimeout(() => runner.confirm(true), 0);
+    });
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("ActionReaimed")).toHaveLength(0);
+    // Consent is asked for the second attempt, never carried over.
+    expect(m.of("PolicyConfirmationRequested")).toHaveLength(2);
+    expect(p.observations[1].history[0].result).toContain(
+      "Any earlier approval has expired",
+    );
+  });
+  it("never re-aims a replayed plan step", async () => {
+    allowAll();
+    const m = memory();
+    const c = movingTarget();
+    const p = scripted([]);
+    // Replay resolves its own label on every frame, so it keeps today's
+    // behavior: the plan is abandoned and the model takes over.
+    const access: MemoryAccess = {
+      recall: async () => ({
+        context: { preferences: [], episodes: [] },
+        plan: {
+          id: "plan-1",
+          source: "skill",
+          mode: "replay",
+          steps: [
+            {
+              action: { type: "click" },
+              target: { role: "AXButton", label: "Send" },
+            },
+          ],
+          outline: ["Click Send"],
+        },
+      }),
+      learn: () => {},
+    };
+    const runner = new Runner(c, p, m.recorder, settings, () => {}, [], access);
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("PlanStepProposed")).toHaveLength(1);
+    expect(m.of("ActionReaimed")).toHaveLength(0);
+    expect(m.of("PlanAbandoned")[0].data).toEqual({
+      index: 0,
+      reason: "state_changed",
+    });
+    expect(m.of("ActionFailed")[0].data).toEqual({ code: "STATE_CHANGED" });
+  });
+  it("drops the re-aim when the user pauses while it captures", async () => {
+    allowAll();
+    const m = memory();
+    let runner!: Runner;
+    const c = movingTarget({
+      onCapture: (n) => {
+        if (n === 2) runner.pause();
+      },
+    });
+    const p = scripted([act({ type: "click", x: 0.5, y: 0.1 })]);
+    runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(m.of("ActionReaimed")).toHaveLength(0);
+    expect(executedActions(c)).toHaveLength(1);
+    await runner.resume();
+    await running;
+    expect(runner.snapshot.run?.status).toBe("completed");
   });
 });

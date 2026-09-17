@@ -36,13 +36,11 @@ import {
   prune,
 } from "../src/memory/store";
 import type {
-  Episode,
   LearnInput,
-  MemoryData,
-  Skill,
   SystemIndex,
   TrajectoryStep,
-} from "../src/memory/types";
+} from "../src/core/memory";
+import type { Episode, MemoryData, Skill } from "../src/memory/types";
 
 const dirs: string[] = [];
 const tempDir = () => {

@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { scanText } from "../core/sanitize";
 import { isSafeIndexPath, tokenize } from "./retrieve";
 import { outlineOf, stripPoliteness } from "./skills";
-import type { MemoryData, PlanStep, ReplayPlan, SystemIndex } from "./types";
+import type { PlanStep, ReplayPlan, SystemIndex } from "../core/memory";
+import type { MemoryData } from "./types";
 
 /** Browsers eligible for URL and search intents, in fallback order. */
 export const BROWSERS = [

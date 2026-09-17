@@ -4,6 +4,32 @@ Validated September 16, 2026 on an Apple Silicon Mac. This is a development alph
 
 The table and follow-ups below the next section are the earlier September 16 baseline; their test counts are superseded by the current change set.
 
+## Current change set: automatic re-aim after a screen change (September 17, 2026)
+
+Scope: one automatic re-aim for a model-proposed pointer action whose input was refused with `STATE_CHANGED`, in `src/core/runner.ts` only (no native, policy or provider change); the `ActionReaimed` journal event and its `ACTION_REAIMED` classification in `src/gym/bench/analyze.ts`. The rule and its limits are in [DEVELOPMENT.md](DEVELOPMENT.md) ("Automatic re-aim").
+
+Measured before the change with `node scripts/analyze-runs.mjs` over this Mac's own diagnostics (38 runs, 18,497 events; window 2026-09-16T08:39:49Z .. 2026-09-17T19:10:49Z):
+
+| Measurement | Value |
+|---|---|
+| Runs with a screen-change rejection | 16 of 38 |
+| Screen-change rejections | 115 (57 `SCREEN_CHANGED` seen by the runner, 58 `SCREEN_CHANGED_NATIVE`) |
+| Applications | Chrome 29/30, Spotlight 9, VS Code 6, Spotify 6 |
+| Proposed action behind the 57 runner-side rejections | click 29, hotkey 16, key 10, type_text 2 |
+| Median model call / capture / execute | 2052 ms / 504 ms / 492 ms (about 3.0 s from screenshot to input) |
+
+The 29 rejected clicks are the ones this change can recover without a model call; keyboard rejections are deliberately out of scope, and a click with no identified control or with several matching ones still costs a model call. The saving per recovered step is one model call plus the capture that follows it (about 2.5 s of the roughly 3 s round trip). How often a fresh frame really yields exactly one matching control on a live animating page is not established by this record: `ACTION_REAIMED` exists so the next analyzer run over live diagnostics can measure it.
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | Pass |
+| `npx vitest run` | 26 files, 1,134 passed, 1 skipped (13 new re-aim cases in `tests/runner-resilience.test.ts`) |
+| `npm run build:native` | Pass |
+| `npm run test:native-safety` | 1,093 PASS, 0 FAIL (no native code was touched) |
+| `npx prettier` on the changed TypeScript | Pass |
+
+New regression cases: a rejected click re-aimed at the moved control with no new model call and one counted action; fallback to the model when the control is gone, when two controls match, when the only match is disabled, when the fresh frame is another application, when the target was never identified and when the re-aim capture fails; `drag` and `type_text` never re-aimed; a replayed plan step never re-aimed (it still abandons the plan); at most one re-aim per proposed action; an approved (`CONFIRM`) step asked for approval again instead of reusing consent; and a re-aim dropped when the user pauses while it captures.
+
 ## Current change set: memory, spoken replies and forgiving turn-taking (September 17, 2026)
 
 Scope: local memory, system index, learned skills and `open_file` ([MEMORY.md](MEMORY.md)); spoken replies with the Mac voice, the free on-device Kokoro voice and the opt-in OpenAI voice; patience-based endpoints, segment accumulation, follow-up windows, fragment clarification and continuation amendment ([VOICE_PRODUCT.md](VOICE_PRODUCT.md)). Two independent reviews (memory: 25 confirmed findings; voice: 14 confirmed findings) were fixed and re-verified with tests that fail when each fix is reverted.

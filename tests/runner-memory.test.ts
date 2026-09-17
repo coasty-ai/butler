@@ -34,7 +34,7 @@ import type {
   MemoryAccess,
   Recall,
   ReplayPlan,
-} from "../src/memory/types";
+} from "../src/core/memory";
 
 type Decision = { kind: string; reason: string };
 const policy = vi.hoisted(() => ({

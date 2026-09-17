@@ -7,7 +7,7 @@ import type {
   Usage,
 } from "../core/schema";
 import { validateProviderEndpoint } from "../core/privacy";
-import { playbookLines } from "../memory/playbooks";
+import { playbookLines } from "./playbooks";
 import { cleanScreenContext } from "../core/context";
 import { redactSecrets } from "../core/sanitize";
 import { ProviderTransientError } from "../core/errors";
@@ -223,7 +223,7 @@ export function buildRequest(
   const alias = frameAlias(o.frame.id);
   const memory = memoryForModel(o.memory);
   // Per-request, never in the cached instruction: fixed keyboard routes for
-  // the frontmost application (src/memory/playbooks.ts). Static text only, so
+  // the frontmost application (src/providers/playbooks.ts). Static text only, so
   // it carries no user content and cannot grow past 6 short lines.
   const screen = cleanScreenContext(o.frame.context);
   const playbook = playbookLines({

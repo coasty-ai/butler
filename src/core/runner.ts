@@ -20,7 +20,7 @@ import type {
   Recall,
   ReplayPlan,
   TrajectoryStep,
-} from "../memory/types";
+} from "./memory";
 import {
   validateAction,
   sameGeometry,
@@ -31,7 +31,7 @@ import {
   normalizeLabel,
   normalizeRole,
   utf16Prefix,
-} from "../memory/labels";
+} from "./labels";
 import { evaluate, surfacePolicy } from "./policy";
 import { redactSecrets, scanText } from "./sanitize";
 import {
@@ -298,9 +298,34 @@ export function executedTarget(action: Action, surface: Surface): string {
     return ` typing into “${bounded(surface.focusedLabel)}”`;
   return "";
 }
-// Label and role rules live in src/memory/labels.ts so learning and replay agree.
+// Label and role rules live in src/core/labels.ts so learning and replay agree.
 export { normalizeLabel, normalizeRole };
 const pointerTypes = new Set(["click", "double_click", "right_click", "move"]);
+/**
+ * Pointer actions one automatic re-aim may repeat at a new position. `drag` is
+ * deliberately absent (it is not a pointer type either): it has two endpoints
+ * and a path, so a moved target does not translate into the same gesture.
+ */
+const reaimTypes = new Set(["click", "double_click", "right_click", "move"]);
+/**
+ * A pointer action re-aimed at the same control in a fresh frame after the
+ * screen moved under it. It re-runs the whole pipeline (validation, surface,
+ * policy, approval, native revalidation and execute) as the same step, with no
+ * new model call. `epoch` and `handsOn` record the runner state it was made
+ * in: if either changed (pause, correction, takeover or stop) it is dropped.
+ */
+interface Reaim {
+  action: Record<string, unknown>;
+  frame: Frame;
+  epoch: number;
+  handsOn: boolean;
+}
+/**
+ * Added to the executed step's history entry after an automatic re-aim, so the
+ * model's next observation is honest about what actually ran.
+ */
+export const reaimNote =
+  " Note: the screen moved after that screenshot, so this input was automatically re-aimed at the same control (same role and name) in a fresh screenshot before it ran. Only its position changed, not the control.";
 /** Pause shown while the user's own mouse or keyboard input holds the run. */
 export const MANUAL_PAUSE_MESSAGE = "Paused — you’re controlling the computer.";
 /** Hand-off after repeated unidentified targets; a click by the user resolves it. */
@@ -887,6 +912,71 @@ export class Runner {
     return true;
   }
   /**
+   * One automatic re-aim for a model-proposed pointer action whose input was
+   * refused because the screen moved between the screenshot and the click.
+   * The same control is looked up in a fresh frame by accessibility role and
+   * normalized label — the rules skill replay uses — and exactly one enabled
+   * match re-proposes the same action there. Anything unclear (no match, more
+   * than one, an unidentified target, another application, a capture failure,
+   * or any user intervention) returns undefined and the model is asked again
+   * exactly as today. The caller re-runs the whole pipeline on the result:
+   * validation, `controller.surface`, policy, approval, revalidate, execute.
+   */
+  private async reaim(
+    action: Action,
+    surface: Surface,
+    epoch: number,
+  ): Promise<Reaim | undefined> {
+    if (!reaimTypes.has(action.type)) return undefined;
+    // Only a target the policy actually identified can be recognized again.
+    const target = surfaceTarget(action, surface);
+    const role = normalizeRole(target?.role ?? "");
+    const learned = target?.label ?? "";
+    if (!role || !normalizeLabel(learned) || !surface.appId) return undefined;
+    const handsOn = this.handsOn;
+    if (!this.active() || this.held || epoch !== this.epoch) return undefined;
+    let frame: Frame | null;
+    try {
+      frame = await this.capture();
+    } catch {
+      // A blocked or failed capture falls back to asking the model.
+      return undefined;
+    }
+    if (
+      !frame ||
+      !this.active() ||
+      this.held ||
+      epoch !== this.epoch ||
+      handsOn !== this.handsOn
+    )
+      return undefined;
+    // Never re-aim into an application the action was not aimed at.
+    if (!frame.appId || frame.appId !== surface.appId) return undefined;
+    // Native control names are cut at CONTROL_LABEL_LIMIT; labelMatches
+    // accepts a cut live label that the observed label starts with.
+    const matches = (frame.context?.controls ?? []).filter(
+      (c) =>
+        c.enabled !== false &&
+        typeof c.label === "string" &&
+        typeof c.role === "string" &&
+        normalizeRole(c.role) === role &&
+        labelMatches(learned, c.label),
+    );
+    if (matches.length !== 1) return undefined;
+    const {
+      frame_id: _frameId,
+      x: _x,
+      y: _y,
+      ...rest
+    } = action as unknown as Record<string, unknown>;
+    return {
+      action: { ...rest, x: matches[0].x, y: matches[0].y, frame_id: frame.id },
+      frame,
+      epoch,
+      handsOn,
+    };
+  }
+  /**
    * Recover from a controller failure at any call site. Returns false when the
    * error is not a recoverable native condition and must fail the run.
    */
@@ -1218,6 +1308,9 @@ export class Runner {
     };
     const nativeReason = (error: unknown) =>
       error instanceof ScreenChangedError ? "state_changed" : "native_error";
+    // At most one automatic re-aim per model-proposed action; see reaim().
+    let reaim: Reaim | undefined;
+    let reaimed = false;
     try {
       if (this.memoryRun) await this.recall(task);
       if (!this.active()) return;
@@ -1225,18 +1318,27 @@ export class Runner {
       while (this.active()) {
         await this.ready();
         const epoch = this.epoch;
-        this.status("capturing", "Seeing the selected surface.");
+        // A pause, correction, takeover or stop during the re-aim drops it.
+        if (reaim && (reaim.epoch !== epoch || reaim.handsOn !== this.handsOn))
+          reaim = undefined;
+        this.status(
+          "capturing",
+          reaim
+            ? "The screen moved; re-aiming at the same control."
+            : "Seeing the selected surface.",
+        );
         let frame: Frame | null;
         try {
-          frame = await this.capture();
+          frame = reaim ? reaim.frame : await this.capture();
         } catch (error) {
           if (this.held || epoch !== this.epoch) continue;
           if (await this.recoverNative(error, epoch)) continue;
           throw error;
         }
         if (!frame || epoch !== this.epoch) continue;
-        // Advice only, before the model sees this step's history.
-        this.trackProgress(frame);
+        // Advice only, before the model sees this step's history. A re-aim is
+        // the same step: it neither ends nor starts a no-progress streak.
+        if (!reaim) this.trackProgress(frame);
         this.abort = new AbortController();
         if (this.planPending !== undefined) this.abandonPlan("interrupted");
         if (this.plan && this.planIndex >= this.plan.steps.length) {
@@ -1262,6 +1364,14 @@ export class Runner {
           this.planHint(plan, planVerifyNote);
         }
         let result: ProviderResult | undefined;
+        if (reaim) {
+          // The same step at a new position: no model call and no usage.
+          result = {
+            action: reaim.action,
+            usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          };
+          reaim = undefined;
+        } else reaimed = false;
         if (this.plan) {
           const proposal = this.planProposal(frame);
           if ("reason" in proposal) this.abandonPlan(proposal.reason);
@@ -1586,7 +1696,28 @@ export class Runner {
           // Native stop checks run between characters, keys and drag steps,
           // so part of the action may already have been posted.
           if (e instanceof NativeStoppedError) interrupted();
+          // Read before planFail: abandoning the plan clears planPending.
+          const planStep = this.planPending !== undefined;
           planFail(nativeReason(e));
+          // The screen moved between the screenshot and the input and native
+          // refused it before sending anything: re-aim once at the same
+          // control instead of spending another model call. Approved steps
+          // are excluded, so consent is asked again rather than reused, and
+          // plan steps keep today's behavior (they resolve labels per frame).
+          if (
+            e instanceof ScreenChangedError &&
+            !reaimed &&
+            decision.kind === "ALLOW" &&
+            !planStep
+          ) {
+            const next = await this.reaim(action, actionSurface, epoch);
+            if (next) {
+              reaim = next;
+              reaimed = true;
+              this.event("ActionReaimed", { actionType: action.type });
+              continue;
+            }
+          }
           if (await this.recoverNative(e, epoch, action)) continue;
           throw e;
         }
@@ -1678,6 +1809,7 @@ export class Runner {
                 : ["type_text", "key", "hotkey"].includes(action.type)
                   ? `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot shows the intended result before done.`
                   : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
+            (reaimed ? reaimNote : "") +
             (loop === "warn" ? loopWarning : "") +
             (thrashing ? appSwitchWarning : ""),
         });

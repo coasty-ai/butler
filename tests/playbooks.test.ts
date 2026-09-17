@@ -7,7 +7,7 @@ import {
   playbooks,
   PLAYBOOK_MAX_CHARS,
   PLAYBOOK_MAX_LINES,
-} from "../src/memory/playbooks";
+} from "../src/providers/playbooks";
 import { supportedKeys } from "../src/core/schema";
 
 const entries = [

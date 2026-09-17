@@ -19,6 +19,7 @@ import { HttpProvider } from "../src/providers/http.ts";
 import { selectProvider } from "../src/providers/catalog.ts";
 import { defaultSettings, settingsSchema } from "../src/core/schema.ts";
 import { Runner, terminal } from "../src/core/runner.ts";
+import { nullRecorder } from "../src/core/recorder.ts";
 import { describeAction } from "../src/voice/router.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { createMemoryAccess } from "../src/memory/access.ts";
@@ -79,6 +80,7 @@ try {
 let run = null;
 let frames = 0;
 const recorder = {
+  ...nullRecorder(),
   begin: (r) => {
     run = r;
   },
@@ -88,16 +90,6 @@ const recorder = {
   frame: () => {
     frames++;
   },
-  append: (runId, type, data = {}) => ({
-    event_id: crypto.randomUUID(),
-    run_id: runId,
-    sequence_number: 0,
-    monotonic_timestamp: performance.now(),
-    wall_clock_timestamp: new Date().toISOString(),
-    schema_version: 1,
-    type,
-    data,
-  }),
 };
 
 // Consequential words that --approve-routine never approves unattended.
