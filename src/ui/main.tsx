@@ -8,7 +8,9 @@ import {
   CircleAlert,
   CircleCheck,
   Command,
+  Copy,
   Download,
+  ExternalLink,
   Heart,
   Keyboard,
   LockKeyhole,
@@ -30,13 +32,31 @@ import type {
   KokoroUiStatus,
   MemorySummary,
   MessagesInfo,
+  OllamaStatus,
+  PrivacyPane,
+  ProviderKeyResult,
   ReviewData,
+  SetupStatus,
+  SetupStep,
   VoiceList,
   VoiceOption,
 } from "./api";
+import {
+  firstTask,
+  localModelSizes,
+  permissionsReady,
+  privacyPanePaths,
+  resumeSetupAt,
+  setupPermissions,
+  setupSteps,
+} from "./api";
 import type { Settings, Run } from "../core/schema";
 import { cloudVoices } from "../core/schema";
-import { credentialScope, selectProvider } from "../providers/catalog";
+import {
+  credentialScope,
+  providerDefaults,
+  selectProvider,
+} from "../providers/catalog";
 import { idlePill, type PillState } from "../voice/router";
 import { previewBridge } from "./preview";
 import "@fontsource-variable/space-grotesk";
@@ -112,7 +132,10 @@ function App() {
     [excluded, setExcluded] = useState<string[]>([]),
     [excludedEvents, setExcludedEvents] = useState<string[]>([]),
     [level, setLevel] = useState<"trajectory" | "statistics">("trajectory"),
-    [consent, setConsent] = useState(false);
+    [consent, setConsent] = useState(false),
+    // First run keeps its place here, so closing the window and coming back
+    // returns to the step that was open rather than to the beginning.
+    [setupStep, setSetupStep] = useState<SetupStep>("welcome");
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
@@ -366,13 +389,23 @@ function App() {
           <section
             className="utility-window"
             aria-label={
-              view === "review" ? "Review local runs" : "Open Assist settings"
+              view === "review"
+                ? "Review local runs"
+                : view === "setup"
+                  ? "Set up Open Assist"
+                  : "Open Assist settings"
             }
           >
             <div className="utility-heading">
               <div>
                 <Mark />
-                <b>{view === "review" ? "Your local runs" : "Open Assist"}</b>
+                <b>
+                  {view === "review"
+                    ? "Your local runs"
+                    : view === "setup"
+                      ? "Set up Open Assist"
+                      : "Open Assist"}
+                </b>
               </div>
               <button
                 aria-label="Close settings"
@@ -610,6 +643,28 @@ function App() {
                   </>
                 )}
               </div>
+            ) : view === "setup" && info ? (
+              <SetupView
+                info={info}
+                pill={pill}
+                busy={busy}
+                step={setupStep}
+                onStep={setSetupStep}
+                onSave={(settings, key) =>
+                  act(() => api.saveSettings(settings, key))
+                }
+                onTutorial={() => void act(() => api.start(task, true))}
+                onReview={() => {
+                  setView("review");
+                  void act(async () => {});
+                }}
+                onFinish={() =>
+                  void act(async () => {
+                    await api.completeSetup();
+                    setView("");
+                  })
+                }
+              />
             ) : info ? (
               <SettingsPanel
                 info={info}
@@ -634,6 +689,7 @@ function App() {
                   void act(() => api.openVoiceSettings())
                 }
                 onRemoveNaturalVoice={() => act(() => api.removeKokoro())}
+                onSetup={() => setView("setup")}
                 onReview={() => {
                   setView("review");
                   void act(async () => {});
@@ -1014,6 +1070,7 @@ function SettingsPanel({
   onPreviewVoice,
   onOpenVoiceSettings,
   onRemoveNaturalVoice,
+  onSetup,
 }: {
   info: AppInfo;
   busy: boolean;
@@ -1029,6 +1086,8 @@ function SettingsPanel({
   onOpenVoiceSettings: () => void;
   /** Deletes the natural voice; main switches a saved "kokoro" to "system". */
   onRemoveNaturalVoice: () => Promise<boolean>;
+  /** Reopens first-run setup; it is reachable here and from the menu bar. */
+  onSetup: () => void;
 }) {
   const [s, setS] = useState<Settings>(info.settings),
     [key, setKey] = useState(""),
@@ -1331,6 +1390,10 @@ function SettingsPanel({
               ? "On-device speech is available."
               : "Speech stays on this Mac. No cloud fallback."}
           </span>
+          <button className="setup-link" onClick={onSetup}>
+            Set up Open Assist
+            <ArrowRight size={11} />
+          </button>
           <button aria-label="Recheck permissions" onClick={onRefresh}>
             <RotateCcw size={12} />
           </button>
@@ -2247,6 +2310,852 @@ function SettingsPanel({
           : "No always-on microphone. No background recording."}
         <br />A command, a little help, then out of your way.
       </div>
+    </div>
+  );
+}
+/** Step titles for the rail; the order is `setupSteps`. */
+const setupTitles: Record<SetupStep, string> = {
+  welcome: "Welcome",
+  permissions: "Permissions",
+  model: "Model",
+  voice: "Voice",
+  task: "First task",
+  done: "Done",
+};
+/** Until the first poll answers: nothing is granted and nothing is claimed. */
+const setupUnknown: SetupStatus = {
+  supported: false,
+  screen: false,
+  screenNeedsRelaunch: false,
+  accessibility: false,
+  microphone: false,
+  speech: false,
+  onDevice: false,
+  locale: "",
+  shortcut: false,
+  model: { kind: "none", ready: false, detail: "" },
+  kokoro: { ...kokoroFallback },
+  complete: false,
+};
+/** The three states a permission row can honestly be in. */
+function permissionState(
+  status: SetupStatus,
+  pane: PrivacyPane,
+): "granted" | "relaunch" | "missing" {
+  if (pane === "screen")
+    return status.screenNeedsRelaunch
+      ? "relaunch"
+      : status.screen
+        ? "granted"
+        : "missing";
+  const granted =
+    pane === "accessibility"
+      ? status.accessibility
+      : pane === "microphone"
+        ? status.microphone
+        : status.speech;
+  return granted ? "granted" : "missing";
+}
+function PermissionRow({
+  pane,
+  title,
+  reason,
+  state,
+  busy,
+  onOpen,
+  onRelaunch,
+}: {
+  pane: PrivacyPane;
+  title: string;
+  reason: string;
+  state: "granted" | "relaunch" | "missing";
+  busy: boolean;
+  onOpen: () => void;
+  onRelaunch: () => void;
+}) {
+  return (
+    <div className={`setup-permission ${state}`}>
+      <div className="setup-permission-head">
+        <b>{title}</b>
+        <span className="setup-chip" role="status">
+          {state === "granted" ? (
+            <>
+              <Check size={11} aria-hidden="true" />
+              Granted
+            </>
+          ) : state === "relaunch" ? (
+            "Granted, restart needed"
+          ) : (
+            "Not granted"
+          )}
+        </span>
+      </div>
+      <p>{reason}</p>
+      {state === "relaunch" ? (
+        <>
+          <p className="setup-warning">
+            macOS applies this only after a restart.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={onRelaunch}
+          >
+            <RotateCcw size={12} />
+            Quit and reopen
+          </button>
+        </>
+      ) : state === "missing" ? (
+        <>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={onOpen}
+          >
+            <ExternalLink size={12} />
+            Open {title}
+          </button>
+          <p className="setup-path">
+            System Settings › {privacyPanePaths[pane]}
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+/**
+ * First run, end to end (docs/MODULARITY.md §6). Six steps on the existing
+ * `view` channel, every one of them skippable and the whole thing resumable:
+ * closing the window leaves setup pending, and the next launch comes back to
+ * the first step that is not done yet. It is not a modal trap.
+ */
+function SetupView({
+  info,
+  pill,
+  busy,
+  step,
+  onStep,
+  onSave,
+  onTutorial,
+  onReview,
+  onFinish,
+}: {
+  info: AppInfo;
+  pill: PillState;
+  busy: boolean;
+  step: SetupStep;
+  onStep: (step: SetupStep) => void;
+  onSave: (s: Settings, k?: string) => Promise<boolean>;
+  onTutorial: () => void;
+  onReview: () => void;
+  /** Marks setup complete and leaves the view. */
+  onFinish: () => void;
+}) {
+  const [status, setStatus] = useState<SetupStatus | null>(null),
+    [problem, setProblem] = useState(""),
+    [asking, setAsking] = useState(false),
+    [ollama, setOllama] = useState<OllamaStatus | null>(null),
+    [probing, setProbing] = useState(false),
+    [copied, setCopied] = useState(false),
+    [form, setForm] = useState<Settings>(() =>
+      info.settings.provider === "ollama"
+        ? selectProvider(info.settings, "openai")
+        : info.settings,
+    ),
+    [key, setKey] = useState(""),
+    [checking, setChecking] = useState(false),
+    [keyResult, setKeyResult] = useState<ProviderKeyResult | null>(null),
+    [kokoro, setKokoro] = useState<KokoroUiStatus>(
+      info.voice.kokoro ?? kokoroFallback,
+    ),
+    [downloading, setDownloading] = useState(false),
+    [downloadError, setDownloadError] = useState(""),
+    [started, setStarted] = useState(false);
+  const ids = useId();
+  const resumed = useRef(false),
+    cancelled = useRef(false);
+  const live = status ?? setupUnknown;
+  // Polled every 2 s while this view is visible, and again whenever the window
+  // comes forward: OS permission state changes outside the app, so a snapshot
+  // taken once is wrong within seconds. A hidden window polls nothing, and
+  // leaving the view unmounts this effect.
+  useEffect(() => {
+    let current = true;
+    const read = () => {
+      if (document.visibilityState !== "visible") return;
+      api
+        .setupStatus()
+        .then((s) => current && setStatus(s))
+        .catch(() => {});
+    };
+    read();
+    const timer = setInterval(read, 2000);
+    window.addEventListener("focus", read);
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      current = false;
+      clearInterval(timer);
+      window.removeEventListener("focus", read);
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, []);
+  // Resume where setup was left: a relaunch to apply Screen Recording comes
+  // back to the checklist, not to a welcome screen that was already read.
+  useEffect(() => {
+    if (!status || resumed.current) return;
+    resumed.current = true;
+    if (step === "welcome") onStep(resumeSetupAt(status));
+  }, [status]);
+  useEffect(() => api.subscribeKokoro(setKokoro), []);
+  useEffect(() => {
+    if (info.voice.kokoro) setKokoro(info.voice.kokoro);
+  }, [info]);
+  // The local model list, read through the same PRIVATE_LOCAL rule the run
+  // loop uses. Only on the model step, and only for a local setup.
+  useEffect(() => {
+    if (step !== "model") return;
+    let current = true;
+    setProbing(true);
+    api
+      .detectOllama()
+      .then((s) => current && setOllama(s))
+      .catch(() => current && setOllama({ running: false, models: [] }))
+      .finally(() => current && setProbing(false));
+    return () => {
+      current = false;
+    };
+  }, [step]);
+  const attempt = async (fn: () => Promise<unknown>) => {
+    setProblem("");
+    try {
+      await fn();
+      return true;
+    } catch (e) {
+      setProblem(readableError(e) || "Try again.");
+      return false;
+    }
+  };
+  const openPane = (pane: PrivacyPane) =>
+    void attempt(() => api.openPrivacyPane(pane));
+  // The macOS prompts are what put Open Assist in those lists in the first
+  // place; the deep links only take the user to the switch.
+  const askMacOS = async () => {
+    setAsking(true);
+    setProblem("");
+    const failures: unknown[] = [];
+    try {
+      await api.permissions().catch((e) => failures.push(e));
+      await api.voicePermissions().catch((e) => failures.push(e));
+      setStatus(await api.setupStatus());
+    } catch (e) {
+      failures.push(e);
+    } finally {
+      setAsking(false);
+    }
+    // Both prompts are optional: one failing helper must not hide the other.
+    if (failures.length)
+      setProblem(
+        readableError(failures[0]) ||
+          "macOS did not answer. Open the pane below instead.",
+      );
+  };
+  const localModel = providerDefaults.ollama.model;
+  const localSize = localModelSizes[localModel] ?? "a few GB";
+  const smallModel = "qwen3-vl:2b";
+  const installed = !!ollama?.models.includes(localModel);
+  const copyPull = async () => {
+    try {
+      await navigator.clipboard.writeText(`ollama pull ${localModel}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setProblem(`Copying failed. Type it yourself: ollama pull ${localModel}`);
+    }
+  };
+  const useLocalModel = () =>
+    void attempt(async () => {
+      const next = { ...selectProvider(form, "ollama"), model: localModel };
+      if (await onSave(next)) {
+        setForm(next);
+        setKeyResult(null);
+        onStep("voice");
+      }
+    });
+  // Checks the key with one cheap request, then saves it the same encrypted
+  // way Settings does. Nothing here captures or drives the desktop.
+  const checkKey = async () => {
+    setChecking(true);
+    setProblem("");
+    setKeyResult(null);
+    try {
+      const result = await api.checkProviderKey(form, key || undefined);
+      setKeyResult(result);
+      if (result.ok && (await onSave(form, key || undefined))) setKey("");
+    } catch (e) {
+      setKeyResult({
+        ok: false,
+        message: readableError(e) || "The key could not be checked. Try again.",
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
+  const naturalTotal = megabytes(kokoro.totalBytes || kokoroDownloadBytes);
+  const naturalProgress = Math.round(
+    Math.min(1, Math.max(0, kokoro.progress || 0)) * 100,
+  );
+  const naturalError =
+    kokoro.error && kokoro.error !== "not_installed"
+      ? kokoroErrorText(kokoro.error, naturalTotal)
+      : /^[a-z]+(?:_[a-z0-9]+)*$/.test(downloadError)
+        ? kokoroErrorText(downloadError, naturalTotal)
+        : downloadError;
+  const downloadVoice = async () => {
+    cancelled.current = false;
+    setDownloadError("");
+    setDownloading(true);
+    try {
+      await api.downloadKokoro();
+      await onSave({ ...info.settings, voiceEngine: "kokoro" });
+    } catch (e) {
+      if (!cancelled.current)
+        setDownloadError(
+          readableError(e) ||
+            "The download stopped before it finished. Try again.",
+        );
+    } finally {
+      setDownloading(false);
+      api
+        .kokoroStatus()
+        .then(setKokoro)
+        .catch(() => {});
+    }
+  };
+  const cancelVoice = () =>
+    void attempt(async () => {
+      cancelled.current = true;
+      await api.cancelKokoroDownload();
+    });
+  const ready = permissionsReady(live);
+  const runFirstTask = () =>
+    void attempt(async () => {
+      setStarted(true);
+      await api.command(firstTask);
+    });
+  const settled = started && ["done", "error", "idle"].includes(pill.phase);
+  const index = setupSteps.indexOf(step);
+  const go = (delta: number) =>
+    onStep(
+      setupSteps[Math.min(setupSteps.length - 1, Math.max(0, index + delta))],
+    );
+  return (
+    <div className="setup-view">
+      <ol className="setup-rail" aria-label="Setup progress">
+        {setupSteps.map((s, i) => (
+          <li
+            key={s}
+            className={i === index ? "current" : i < index ? "past" : ""}
+          >
+            <button
+              type="button"
+              aria-current={i === index ? "step" : undefined}
+              onClick={() => onStep(s)}
+            >
+              {setupTitles[s]}
+            </button>
+          </li>
+        ))}
+      </ol>
+      {problem && (
+        <p className="setup-problem" role="alert">
+          <CircleAlert size={12} aria-hidden="true" />
+          {problem}
+        </p>
+      )}
+      {step === "welcome" && (
+        <section className="setup-step" aria-labelledby={`${ids}-welcome`}>
+          <div className="setup-keys">
+            <kbd>⌥</kbd>
+            <kbd>space</kbd>
+          </div>
+          <h1 id={`${ids}-welcome`}>
+            Press a key. Tell your computer what to do.
+          </h1>
+          <p>
+            It clicks, types, searches and works across the apps you already
+            use. Hold ⌥ Space to talk, release to get it done.
+          </p>
+          <div className="sample-command">
+            <span>“</span>Find the latest report and email it to Lawrence.
+            <br />
+            <span className="sample-second">
+              Let me approve before sending.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => onStep("permissions")}
+          >
+            Set up Open Assist
+            <ArrowRight size={13} />
+          </button>
+          <p className="setup-hint">
+            About two minutes. You can stop after any step.
+          </p>
+          <button type="button" className="secondary" onClick={onTutorial}>
+            <Play size={12} />
+            Try the safe tutorial first
+          </button>
+          <p className="setup-hint">
+            Simulated workspace. No permissions, no model, no microphone.
+          </p>
+        </section>
+      )}
+      {step === "permissions" && (
+        <section className="setup-step" aria-labelledby={`${ids}-permissions`}>
+          <h1 id={`${ids}-permissions`}>Four permissions</h1>
+          <p>
+            Open Assist needs these to see your screen and use the keyboard and
+            mouse. macOS asks for each one; you grant it in System Settings.
+            Nothing is captured until you start a task, and moving the mouse
+            pauses it.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            disabled={asking || busy}
+            onClick={() => void askMacOS()}
+          >
+            <ShieldCheck size={13} />
+            {asking ? "Asking macOS…" : "Ask macOS for these"}
+          </button>
+          <div className="setup-permissions">
+            {setupPermissions.map((p) => (
+              <PermissionRow
+                key={p.pane}
+                pane={p.pane}
+                title={p.title}
+                reason={p.reason}
+                state={permissionState(live, p.pane)}
+                busy={busy}
+                onOpen={() => openPane(p.pane)}
+                onRelaunch={() => void attempt(() => api.relaunch())}
+              />
+            ))}
+          </div>
+          {!live.onDevice && (
+            <p className="setup-warning" role="status">
+              This Mac has no on-device speech model for{" "}
+              {live.locale || "your language"}. Open Assist will not transcribe.
+              Typed commands still work: tap ⌥ Space instead of holding it.
+            </p>
+          )}
+          {!live.supported && (
+            <p className="setup-warning" role="status">
+              Desktop control needs macOS 14 or later. The safe tutorial still
+              runs.
+            </p>
+          )}
+          <p className="setup-hint">
+            Rechecked every couple of seconds and whenever this window comes
+            forward.
+          </p>
+        </section>
+      )}
+      {step === "model" && (
+        <section className="setup-step" aria-labelledby={`${ids}-model`}>
+          <h1 id={`${ids}-model`}>Choose a model</h1>
+          <p>
+            Open Assist sends a screenshot of your screen and your task to one
+            model you choose. It has no server of its own in between.
+          </p>
+          <div className="setup-card">
+            <h3>On this Mac — free, nothing leaves the Mac</h3>
+            {probing && !ollama ? (
+              <p>Looking for Ollama on this Mac…</p>
+            ) : !ollama?.running ? (
+              <p>
+                Ollama is not running. Download it from <b>ollama.com</b>, open
+                it once, then come back to this screen.
+              </p>
+            ) : installed ? (
+              <>
+                <p className="setup-ok">
+                  <CircleCheck size={13} aria-hidden="true" />
+                  <code>{localModel}</code> is installed.
+                </p>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy}
+                  onClick={useLocalModel}
+                >
+                  Use it
+                </button>
+              </>
+            ) : (
+              <>
+                <p>
+                  Ollama is running at <code>127.0.0.1:11434</code>.{" "}
+                  <code>{localModel}</code> is not installed yet. Run this in
+                  Terminal:
+                </p>
+                <pre>ollama pull {localModel}</pre>
+                <div className="setup-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void copyPull()}
+                  >
+                    <Copy size={12} />
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                  <span>{localSize} to download; it stays on this Mac.</span>
+                </div>
+                <p className="setup-hint">
+                  On a Mac with 16 GB of memory,{" "}
+                  <code>ollama pull {smallModel}</code> (
+                  {localModelSizes[smallModel]}) is faster and less accurate.
+                </p>
+              </>
+            )}
+            <button
+              type="button"
+              className="setup-link"
+              disabled={probing}
+              onClick={() => {
+                setProbing(true);
+                api
+                  .detectOllama()
+                  .then(setOllama)
+                  .catch(() => setOllama({ running: false, models: [] }))
+                  .finally(() => setProbing(false));
+              }}
+            >
+              <RotateCcw size={11} />
+              {probing ? "Checking…" : "Check again"}
+            </button>
+          </div>
+          <div className="setup-card">
+            <h3>Your own API key</h3>
+            <p>
+              Requests go straight to the provider you choose. Choose OpenAI,
+              Anthropic, Google, or an OpenAI-compatible endpoint. The model
+              must accept images and function calls.
+            </p>
+            <label>
+              Provider
+              <select
+                value={form.provider === "ollama" ? "openai" : form.provider}
+                onChange={(e) => {
+                  setForm(
+                    selectProvider(
+                      form,
+                      e.target.value as Settings["provider"],
+                    ),
+                  );
+                  setKey("");
+                  setKeyResult(null);
+                }}
+              >
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="google">Google Gemini</option>
+                <option value="compatible">Custom compatible</option>
+              </select>
+            </label>
+            <label>
+              Model ID
+              <input
+                required
+                value={form.model}
+                onChange={(e) => setForm({ ...form, model: e.target.value })}
+                placeholder="Vision-capable model"
+              />
+            </label>
+            <label>
+              API key
+              <input
+                type="password"
+                autoComplete="off"
+                value={key}
+                onChange={(e) => {
+                  setKey(e.target.value);
+                  setKeyResult(null);
+                }}
+                placeholder="Your provider key"
+              />
+            </label>
+            <div className="field-pair">
+              <label>
+                Input $ / 1M tokens
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={form.inputPrice}
+                  onChange={(e) =>
+                    setForm({ ...form, inputPrice: Number(e.target.value) })
+                  }
+                />
+              </label>
+              <label>
+                Output $ / 1M tokens
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={form.outputPrice}
+                  onChange={(e) =>
+                    setForm({ ...form, outputPrice: Number(e.target.value) })
+                  }
+                />
+              </label>
+            </div>
+            <div className="setup-actions">
+              <button
+                type="button"
+                className="primary"
+                disabled={checking || busy || !form.model.trim()}
+                onClick={() => void checkKey()}
+              >
+                {checking ? "Checking…" : "Check key"}
+              </button>
+              <span>
+                Checks the key with one small request, then saves it encrypted
+                on this Mac.
+              </span>
+            </div>
+            {keyResult && (
+              <p
+                className={keyResult.ok ? "setup-ok" : "setup-warning"}
+                role="status"
+              >
+                {keyResult.ok ? (
+                  <CircleCheck size={13} aria-hidden="true" />
+                ) : (
+                  <CircleAlert size={13} aria-hidden="true" />
+                )}
+                {keyResult.message}
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+      {step === "voice" && (
+        <section className="setup-step" aria-labelledby={`${ids}-voice`}>
+          <h1 id={`${ids}-voice`}>Spoken replies</h1>
+          <p>
+            Open Assist answers out loud when you talk to it. The built-in Mac
+            voice works now. A free natural voice runs entirely on this Mac
+            after a one-time download.
+          </p>
+          <div className="setup-card">
+            {!kokoro.supported ? (
+              <p className="setup-warning">
+                This Mac keeps the built-in voice; the natural voice needs Apple
+                Silicon.
+              </p>
+            ) : kokoro.installed ? (
+              <>
+                <p className="setup-ok">
+                  <CircleCheck size={13} aria-hidden="true" />
+                  Installed.
+                </p>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => void attempt(() => api.previewVoice())}
+                >
+                  <Volume2 size={12} />
+                  Hear it
+                </button>
+              </>
+            ) : kokoro.downloading || downloading ? (
+              <div className="download-progress">
+                <div
+                  className="progress-track"
+                  role="progressbar"
+                  aria-label="Natural voice download"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={naturalProgress}
+                  aria-valuetext={`${megabytes(kokoro.bytes)} of ${naturalTotal}`}
+                >
+                  <span style={{ width: `${naturalProgress}%` }} />
+                </div>
+                <div className="download-row">
+                  <span>
+                    {megabytes(kokoro.bytes)} of {naturalTotal}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary"
+                    aria-label="Cancel download"
+                    onClick={cancelVoice}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p>
+                  <b>Natural voice — {naturalTotal}.</b> Apple Silicon only. No
+                  account, no network use after the download.
+                </p>
+                {naturalError && (
+                  <p className="setup-warning" role="alert">
+                    <CircleAlert size={13} aria-hidden="true" />
+                    {naturalError}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => void downloadVoice()}
+                >
+                  {naturalError ? (
+                    <RotateCcw size={12} />
+                  ) : (
+                    <Download size={12} />
+                  )}
+                  {naturalError ? "Retry" : "Download"}
+                </button>
+              </>
+            )}
+          </div>
+          <p className="setup-hint">
+            Optional. You can turn this on later in Settings → Voice replies.
+          </p>
+        </section>
+      )}
+      {step === "task" && (
+        <section className="setup-step" aria-labelledby={`${ids}-task`}>
+          <h1 id={`${ids}-task`}>Try it</h1>
+          {ready ? (
+            <>
+              <p>
+                Hold <b>⌥ Space</b> and say:
+              </p>
+              <div className="sample-command">
+                <span>“</span>
+                {firstTask}
+              </div>
+              <p>
+                Release when you finish talking. Watch the pill:{" "}
+                <b>Listening → Working → Done</b>. Press <b>Escape</b> to stop
+                at any time, or move the mouse to pause.
+              </p>
+              <div className="setup-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy}
+                  onClick={runFirstTask}
+                >
+                  <Play size={12} />
+                  Run it for me
+                </button>
+                <span>
+                  Starts the same task typed, for anyone who would rather not
+                  talk yet.
+                </span>
+              </div>
+              {started && (
+                <p className="setup-hint" role="status">
+                  {settled
+                    ? "Done. That run is in your history — open it to see every step it took."
+                    : `${pill.label || "Working…"}`}
+                </p>
+              )}
+              {settled && (
+                <button type="button" className="secondary" onClick={onReview}>
+                  Open your runs
+                  <ArrowRight size={12} />
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="setup-warning">
+                Permissions are still missing, so this would not work yet.
+              </p>
+              <div className="setup-actions">
+                <button type="button" className="primary" onClick={onTutorial}>
+                  <Play size={12} />
+                  Try the safe tutorial
+                </button>
+                <span>A simulated board, no permissions and no model.</span>
+              </div>
+              <button
+                type="button"
+                className="setup-link"
+                onClick={() => onStep("permissions")}
+              >
+                Back to the permission checklist
+              </button>
+            </>
+          )}
+        </section>
+      )}
+      {step === "done" && (
+        <section className="setup-step" aria-labelledby={`${ids}-done`}>
+          <h1 id={`${ids}-done`}>You are set up.</h1>
+          <p>
+            Hold <b>⌥ Space</b> anywhere to talk, tap it to type.{" "}
+            <b>⌃ ⌥ Escape</b> stops everything.
+          </p>
+          <p>
+            Everything else — hands-free listening, text updates, what it learns
+            — is in the menu bar.
+          </p>
+          {live.model.detail && (
+            <p className="setup-hint" role="status">
+              {live.model.detail}
+            </p>
+          )}
+          <button type="button" className="primary" onClick={onFinish}>
+            <Check size={13} />
+            Finish
+          </button>
+        </section>
+      )}
+      <div className="setup-footer">
+        <button
+          type="button"
+          className="setup-link"
+          disabled={index === 0}
+          onClick={() => go(-1)}
+        >
+          Back
+        </button>
+        <span>
+          Step {index + 1} of {setupSteps.length}
+        </span>
+        {step === "done" ? (
+          <button type="button" className="setup-link" onClick={onFinish}>
+            Finish
+          </button>
+        ) : (
+          <button type="button" className="setup-link" onClick={() => go(1)}>
+            {step === "permissions" ? "Skip for now" : "Skip"}
+            <ArrowRight size={11} />
+          </button>
+        )}
+      </div>
+      <p className="setup-note">
+        You can stop after any step. Setup reopens from the menu bar and from
+        Settings.
+        <br />
+        <button type="button" className="setup-link" onClick={onFinish}>
+          Skip the rest — don’t show this again
+        </button>
+      </p>
     </div>
   );
 }

@@ -102,6 +102,77 @@ try {
   console.log("UI ready");
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  // First run (docs/MODULARITY.md section 6): no config existed, so the setup
+  // view opens by itself on the existing `view` channel.
+  await page.waitForSelector(".setup-view", { timeout: 15000 });
+  assert.equal(
+    await page.locator(".setup-rail li").count(),
+    6,
+    "Setup shows its six steps",
+  );
+  const setup = await page.evaluate(() => window.coarena.setupStatus());
+  assert.deepEqual(
+    Object.keys(setup).sort(),
+    [
+      "accessibility",
+      "complete",
+      "kokoro",
+      "locale",
+      "microphone",
+      "model",
+      "onDevice",
+      "screen",
+      "screenNeedsRelaunch",
+      "shortcut",
+      "speech",
+      "supported",
+    ],
+    "setupStatus has exactly the first-run fields",
+  );
+  for (const key of [
+    "supported",
+    "screen",
+    "screenNeedsRelaunch",
+    "accessibility",
+    "microphone",
+    "speech",
+    "onDevice",
+    "shortcut",
+    "complete",
+  ])
+    assert.equal(typeof setup[key], "boolean", `setupStatus.${key}`);
+  assert.equal(typeof setup.locale, "string");
+  assert.equal(setup.complete, false, "A fresh install has not finished setup");
+  assert(
+    ["none", "ollama", "cloud"].includes(setup.model.kind),
+    `Unexpected model kind ${setup.model.kind}`,
+  );
+  assert.equal(typeof setup.model.ready, "boolean");
+  assert.equal(typeof setup.model.detail, "string");
+  // A checklist that ticks Screen Recording before the process can capture is
+  // worse than none. The relaunch state is only ever reported for a grant the
+  // OS preflight already reports, which is exactly the lying case.
+  assert(
+    !setup.screenNeedsRelaunch || setup.screen,
+    "screenNeedsRelaunch is only meaningful once the OS says granted",
+  );
+  // The local probe goes through validateProviderEndpoint, so it answers a
+  // shape whether or not an Ollama is running on this machine.
+  const ollama = await page.evaluate(() => window.coarena.detectOllama());
+  assert.equal(typeof ollama.running, "boolean");
+  assert(Array.isArray(ollama.models));
+  for (const model of ollama.models) {
+    assert.equal(typeof model, "string");
+    assert(!/cloud|\//i.test(model), `Unusable local model offered: ${model}`);
+  }
+  // Setup is an additional view: Settings still opens and works as it did.
+  await page.evaluate(() => window.coarena.openSettings());
+  await page.waitForSelector(".settings-content", { timeout: 15000 });
+  assert.equal(
+    await page.locator(".setup-view").count(),
+    0,
+    "Opening Settings leaves the setup view",
+  );
   const info = await page.evaluate(() => window.coarena.info());
   assert.equal(info.desktop, true);
   assert.equal(info.encrypted, true);
@@ -145,6 +216,63 @@ try {
       "Config is not encrypted",
     );
   }
+  // One cheap provider request against the local ingest server: the whole
+  // checkProviderKey path without contacting a real provider, and without the
+  // key reaching the message.
+  const keyCheck = await page.evaluate(async (endpoint) => {
+    const saved = (await window.coarena.info()).settings;
+    return window.coarena.checkProviderKey(
+      {
+        ...saved,
+        privacy: "PRIVATE_BYOM",
+        provider: "compatible",
+        endpoint,
+        model: "fixture-vision-model",
+      },
+      "fixture-check-key",
+    );
+  }, `http://127.0.0.1:${port}`);
+  assert.equal(keyCheck.ok, false, "A local stub is not a working provider");
+  assert.equal(typeof keyCheck.message, "string");
+  assert(
+    !keyCheck.message.includes("fixture-check-key"),
+    "The key check echoed the key",
+  );
+  assert(
+    !keyCheck.message.includes("{"),
+    "The key check echoed the response body",
+  );
+  // Ollama needs no key, and checkProviderKey says so instead of probing.
+  const localKey = await page.evaluate(async () => {
+    const saved = (await window.coarena.info()).settings;
+    return window.coarena.checkProviderKey({
+      ...saved,
+      privacy: "PRIVATE_LOCAL",
+      provider: "ollama",
+      endpoint: "http://127.0.0.1:11434",
+      model: "qwen3-vl:8b",
+    });
+  });
+  assert.equal(localKey.ok, false);
+  assert.match(localKey.message, /no API key/);
+  // A non-loopback endpoint in PRIVATE_LOCAL is refused by the one network
+  // rule the run loop uses, not by a second, weaker one.
+  const refused = await page.evaluate(async () => {
+    const saved = (await window.coarena.info()).settings;
+    try {
+      await window.coarena.checkProviderKey({
+        ...saved,
+        privacy: "PRIVATE_LOCAL",
+        provider: "ollama",
+        endpoint: "https://ollama.example.com",
+        model: "qwen3-vl:8b",
+      });
+      return "allowed";
+    } catch {
+      return "refused";
+    }
+  });
+  assert.equal(refused, "refused", "The Ollama probe honours PRIVATE_LOCAL");
   const switching = await page.evaluate(async () => {
     const saved = (await window.coarena.info()).settings;
     await window.coarena.saveSettings({
@@ -433,6 +561,17 @@ try {
     path: "output/qa/electron-settings.png",
     fullPage: true,
   });
+  // Finishing setup is a saved flag, so the next launch opens Settings rather
+  // than walking the user through first run again.
+  await page.evaluate(() => window.coarena.completeSetup());
+  assert.equal(
+    (await page.evaluate(() => window.coarena.setupStatus())).complete,
+    true,
+  );
+  assert.equal(
+    (await page.evaluate(() => window.coarena.info())).settings.setupComplete,
+    true,
+  );
   const journal = readFileSync(
     join(desktopData, "runs", id, "events.enc"),
     "utf8",
@@ -472,6 +611,14 @@ try {
     "downloadKokoro",
     "cancelKokoroDownload",
     "removeKokoro",
+    // First run is settings-window only; the pill must not reach any of it,
+    // least of all relaunch.
+    "setupStatus",
+    "openPrivacyPane",
+    "relaunch",
+    "detectOllama",
+    "checkProviderKey",
+    "completeSetup",
   ])
     assert.equal(
       await overlay.evaluate(async (name) => {
@@ -501,6 +648,16 @@ try {
   if (!restarted) throw Error("Main window did not reopen");
   await restarted.waitForSelector("h1", { state: "attached" });
   const savedInfo = await restarted.evaluate(() => window.coarena.info());
+  assert.equal(
+    savedInfo.settings.setupComplete,
+    true,
+    "Finished setup persists across restarts",
+  );
+  assert.equal(
+    await restarted.locator(".setup-view").count(),
+    0,
+    "A configured install does not reopen first-run setup",
+  );
   assert.equal(savedInfo.hasKey, true);
   assert.equal(savedInfo.credentialScopes.length, 3);
   assert.equal(savedInfo.settings.model, "gpt-5.4-mini");
@@ -732,6 +889,8 @@ try {
           "provider switching without credential leakage",
           "scripted tutorial",
           "fresh memory is empty; tutorial runs do not learn; forget succeeds; learning toggle persists; overlay cannot read memory",
+          "first run opens the setup view, its status shape, the local model probe and the key check without echoing the key or the body",
+          "finished setup persists and does not reopen; the overlay cannot reach any setup method",
           "native voice status without requesting microphone access",
           "voice reply defaults, voice list, natural voice allowed with an OpenAI key, invalid rate refused, voice settings persist, overlay cannot list or preview voices",
           "free natural voice status shape, three voice engines, kokoro engine saves, overlay cannot read, download, cancel or remove it",

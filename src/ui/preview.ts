@@ -1,4 +1,4 @@
-import type { Bridge, KokoroUiStatus, MessagesInfo } from "./api";
+import type { Bridge, KokoroUiStatus, MessagesInfo, SetupStatus } from "./api";
 import {
   defaultSettings,
   type Frame,
@@ -34,6 +34,31 @@ const messagesUnavailable = {
 } satisfies MessagesInfo;
 const messagesMessage =
   "Text updates come from the macOS app. This preview never reads or sends messages.";
+/**
+ * The browser preview detects nothing: no permission read, no Ollama probe and
+ * no provider request. tests/e2e/app.spec.ts asserts that no request ever
+ * leaves 127.0.0.1:5173, and a live probe here would break it.
+ */
+const setupUnavailable: SetupStatus = {
+  supported: false,
+  screen: false,
+  screenNeedsRelaunch: false,
+  accessibility: false,
+  microphone: false,
+  speech: false,
+  onDevice: false,
+  locale: "",
+  shortcut: false,
+  model: {
+    kind: "none",
+    ready: false,
+    detail: "Open the macOS app to choose a model.",
+  },
+  kokoro: { ...kokoroUnsupported },
+  complete: true,
+};
+const setupMessage =
+  "First-run setup happens in the macOS app. This preview grants no permissions and contacts no provider.";
 export function previewBridge(): Bridge {
   let settings = structuredClone(defaultSettings),
     pill = { ...idlePill },
@@ -329,6 +354,21 @@ export function previewBridge(): Bridge {
     removeKokoro: async () => {
       throw new Error(kokoroMessage);
     },
+    setupStatus: async () => ({
+      ...setupUnavailable,
+      model: { ...setupUnavailable.model },
+      kokoro: { ...kokoroUnsupported },
+    }),
+    openPrivacyPane: async () => {
+      throw new Error(setupMessage);
+    },
+    relaunch: async () => {
+      throw new Error(setupMessage);
+    },
+    // Never probes: the preview cannot reach a local Ollama and must not try.
+    detectOllama: async () => ({ running: false, models: [] }),
+    checkProviderKey: async () => ({ ok: false, message: setupMessage }),
+    completeSetup: async () => {},
     messagesStatus: async () => ({ ...messagesUnavailable }),
     sendTestMessage: async () => {
       throw new Error(messagesMessage);

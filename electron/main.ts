@@ -11,6 +11,7 @@ import {
   Menu,
   nativeImage,
   shell,
+  systemPreferences,
 } from "electron";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -44,6 +45,7 @@ import {
   type DiagnosticSink,
 } from "../src/core/diagnostics";
 import { validateProviderEndpoint } from "../src/core/privacy";
+import { networkFailure } from "../src/providers/network";
 import { scanText } from "../src/core/sanitize";
 import { Vault, seal, unseal, digest } from "../src/storage/vault";
 import {
@@ -61,7 +63,16 @@ import { workflowCandidate } from "../src/gym/workflow";
 import { MemoryStore, forgetRunIn } from "../src/memory/store";
 import { createMemoryAccess } from "../src/memory/access";
 import type { MemoryAccess, SystemIndex } from "../src/core/memory";
-import { summarizeMemory } from "../src/ui/api";
+import {
+  privacyPanes,
+  privacySettingsRoot,
+  providerKeyMessage,
+  summarizeMemory,
+  usableOllamaModels,
+  type OllamaStatus,
+  type PrivacyPane,
+  type SetupStatus,
+} from "../src/ui/api";
 import { NativeController, budgetDelay } from "./controller";
 import {
   NativeVoice,
@@ -244,6 +255,120 @@ async function useNaturalVoice() {
   }
   debug("NaturalVoiceSelected");
   warmKokoro();
+}
+/**
+ * First run (docs/MODULARITY.md §6). macOS applies a Screen Recording grant
+ * only to a process started after it: this process keeps the decision it was
+ * launched with for its whole life. Remember that decision so the checklist
+ * says "restart needed" instead of showing a tick over a build that cannot
+ * capture. `screenSeenDenied` also catches a revoke-and-regrant while running.
+ */
+let screenSeenDenied = false;
+function readScreenAtLaunch() {
+  if (process.platform !== "darwin") return;
+  try {
+    screenSeenDenied =
+      systemPreferences.getMediaAccessStatus("screen") !== "granted";
+  } catch {
+    // Unknown is not "denied": never invent a restart the user does not need.
+    screenSeenDenied = false;
+  }
+}
+/** The last local Ollama probe, reused by the polled setup status. */
+let ollamaProbe: { at: number; status: OllamaStatus } | undefined;
+/** Bounded read; a provider body is inspected for one marker, never echoed. */
+async function readBounded(response: Response, limit: number) {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const parts: Uint8Array[] = [];
+  let bytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.length;
+    parts.push(value);
+    if (bytes >= limit) {
+      await reader.cancel();
+      break;
+    }
+  }
+  return Buffer.concat(parts).toString("utf8").slice(0, limit);
+}
+/**
+ * Is a local Ollama reachable, and which of its models could the loop use?
+ * The candidate settings go through `validateProviderEndpoint` first, so this
+ * is the same PRIVATE_LOCAL rule the run loop uses rather than a second,
+ * weaker definition of "local".
+ */
+async function probeOllama(): Promise<OllamaStatus> {
+  const candidate: Settings = {
+    ...settings,
+    provider: "ollama",
+    privacy: "PRIVATE_LOCAL",
+    endpoint:
+      settings.provider === "ollama"
+        ? settings.endpoint
+        : providerDefaults.ollama.endpoint,
+    model: providerDefaults.ollama.model,
+  };
+  const url = validateProviderEndpoint(candidate);
+  try {
+    const response = await desktopTransport(debug)(`${url.origin}/api/tags`, {
+      method: "GET",
+      redirect: "error",
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      return { running: true, models: [] };
+    }
+    const body = JSON.parse((await readBounded(response, 262144)) || "{}");
+    const names = Array.isArray(body?.models)
+      ? body.models.map((m: { name?: unknown }) => m?.name)
+      : [];
+    return { running: true, models: usableOllamaModels(names) };
+  } catch (error) {
+    debug("OllamaProbeFailed", errorDetails(error));
+    return { running: false, models: [] };
+  }
+}
+/** A probe at most every 8 s; `setupStatus` is polled every 2 s. */
+async function ollamaStatus(fresh = false): Promise<OllamaStatus> {
+  if (!fresh && ollamaProbe && Date.now() - ollamaProbe.at < 8000)
+    return ollamaProbe.status;
+  const status = await probeOllama().catch(
+    () => ({ running: false, models: [] }) as OllamaStatus,
+  );
+  ollamaProbe = { at: Date.now(), status };
+  return status;
+}
+/** One short line naming the chosen model; never a key or a response body. */
+async function modelStatus(): Promise<SetupStatus["model"]> {
+  if (settings.provider === "ollama") {
+    const local = await ollamaStatus();
+    if (!local.running)
+      return {
+        kind: "ollama",
+        ready: false,
+        detail: "Ollama is not running on this Mac.",
+      };
+    const ready = local.models.includes(settings.model);
+    return {
+      kind: "ollama",
+      ready,
+      detail: ready
+        ? `${settings.model} is installed and runs on this Mac.`
+        : `Ollama is running, but ${settings.model} is not installed yet.`,
+    };
+  }
+  const ready = !!providerKey(credentials, settings);
+  return {
+    kind: ready ? "cloud" : "none",
+    ready,
+    detail: ready
+      ? `${settings.model} · ${settings.provider}, using your own key.`
+      : `${settings.model} · ${settings.provider} needs your API key.`,
+  };
 }
 const kokoroErrors: Record<string, string> = {
   network: "The download was interrupted. Check your connection and try again.",
@@ -668,6 +793,10 @@ function updateTray() {
           ]).catch((e) => setPill({ phase: "error", label: e.message })),
       },
       { type: "separator" },
+      {
+        label: "Set up Open Assist…",
+        click: () => showSettings("setup"),
+      },
       { label: "Settings…", click: () => showSettings() },
       { label: "Review local runs…", click: () => showSettings("review") },
       { type: "separator" },
@@ -675,7 +804,14 @@ function updateTray() {
     ]),
   );
 }
+/**
+ * The section the settings window should be showing. A view pushed before the
+ * renderer subscribed (the first-run setup view, sent during startup) or lost
+ * to a renderer crash is re-sent on the next did-finish-load.
+ */
+let settingsSection = "";
 function showSettings(section = "settings") {
+  settingsSection = section;
   window.webContents.send("view", section);
   window.show();
   window.focus();
@@ -1581,6 +1717,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       showSettings(typeof args[0] === "string" ? args[0] : "settings");
       return;
     case "closeSettings":
+      settingsSection = "";
       window.hide();
       return;
     case "voicePermissions":
@@ -1765,6 +1902,173 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       sendKokoroStatus();
       return;
     }
+    // First run (docs/MODULARITY.md §6). Settings-window only: the overlay
+    // allow-list in the "coarena" handler never reaches any of these.
+    case "setupStatus": {
+      let permissions = {
+        screen: false,
+        accessibility: false,
+        supported: false,
+      };
+      let read = false;
+      try {
+        permissions = await getNative().request("permissions");
+        read = true;
+      } catch {}
+      // Only an answer counts. A helper that could not be reached is not a
+      // denial, and inventing one would ask for a restart nobody needs.
+      if (read && !permissions.screen) screenSeenDenied = true;
+      let voiceStatus = {
+        microphone: false,
+        speech: false,
+        onDevice: false,
+        shortcut: false,
+        locale: "",
+      };
+      try {
+        voiceStatus = { ...voiceStatus, ...(await getVoice().call("status")) };
+      } catch {}
+      const status: SetupStatus = {
+        supported: permissions.supported,
+        screen: permissions.screen,
+        // Granted in the OS, but this process was launched under the old
+        // decision, so capture would still fail. Never a tick.
+        screenNeedsRelaunch: permissions.screen && screenSeenDenied,
+        accessibility: permissions.accessibility,
+        microphone: voiceStatus.microphone,
+        speech: voiceStatus.speech,
+        onDevice: voiceStatus.onDevice,
+        locale: voiceStatus.locale,
+        shortcut: voiceStatus.shortcut,
+        model: await modelStatus(),
+        kokoro: kokoroUiStatus(),
+        complete: settings.setupComplete,
+      };
+      return status;
+    }
+    case "openPrivacyPane": {
+      const pane = z
+        .enum([
+          "screen",
+          "accessibility",
+          "microphone",
+          "speech",
+          "input",
+          "automation",
+          "fullDisk",
+        ])
+        .parse(args[0]) satisfies PrivacyPane;
+      // The pane identifiers are not API. Degrade to Privacy & Security, whose
+      // written path the setup copy names, rather than failing silently.
+      try {
+        await shell.openExternal(privacyPanes[pane]);
+      } catch (error) {
+        debug("PrivacyPaneFailed", { pane, ...errorDetails(error) });
+        await shell.openExternal(privacySettingsRoot);
+      }
+      return;
+    }
+    case "relaunch":
+      debug("RelaunchRequested");
+      app.relaunch();
+      app.quit();
+      return;
+    case "detectOllama":
+      return ollamaStatus(true);
+    case "checkProviderKey": {
+      const next = settingsSchema.parse(args[0]);
+      const url = validateProviderEndpoint(next);
+      if (next.provider === "ollama")
+        return {
+          ok: false,
+          message:
+            "A local Ollama model needs no API key. Use the check above instead.",
+        };
+      const key =
+        typeof args[1] === "string" && args[1]
+          ? args[1]
+          : providerKey(credentials, next);
+      if (!key)
+        return {
+          ok: false,
+          message: "Enter your provider key, then check it.",
+        };
+      const base = url.toString().replace(/\/$/, "");
+      const model = encodeURIComponent(next.model);
+      // One cheap metadata request per provider: no screenshot, no tokens and
+      // nothing that could act on the desktop.
+      const probe: { url: string; headers: Record<string, string> } =
+        next.provider === "anthropic"
+          ? {
+              url: `${base}/v1/models/${model}`,
+              headers: {
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+              },
+            }
+          : next.provider === "google"
+            ? {
+                url: `${base}/v1beta/models/${model}`,
+                headers: { "x-goog-api-key": key },
+              }
+            : next.provider === "openai"
+              ? {
+                  url: `${base}/v1/models/${model}`,
+                  headers: { Authorization: `Bearer ${key}` },
+                }
+              : {
+                  url: `${base}/models`,
+                  headers: { Authorization: `Bearer ${key}` },
+                };
+      try {
+        const response = await desktopTransport(debug)(probe.url, {
+          method: "GET",
+          headers: probe.headers,
+          redirect: "error",
+          signal: AbortSignal.timeout(8000),
+        });
+        // Exactly one fact is read out of the body, and it is never echoed:
+        // whether Google refused the key for its own API restrictions.
+        let blocked = false;
+        if (next.provider === "google" && [400, 403].includes(response.status))
+          blocked = (await readBounded(response, 4096)).includes(
+            "API_KEY_SERVICE_BLOCKED",
+          );
+        else await response.body?.cancel().catch(() => {});
+        debug("ProviderKeyChecked", {
+          provider: next.provider,
+          httpStatus: response.status,
+        });
+        return providerKeyMessage({
+          provider: next.provider,
+          model: next.model,
+          host: url.hostname,
+          status: response.status,
+          blocked,
+        });
+      } catch (error) {
+        debug("ProviderKeyCheckFailed", {
+          provider: next.provider,
+          ...errorDetails(error),
+        });
+        const failure = networkFailure(error).message;
+        return {
+          ok: false,
+          message: `Could not reach ${url.hostname}. ${
+            failure.startsWith("Provider connection failed")
+              ? "Check your connection or proxy."
+              : failure
+          }`,
+        };
+      }
+    }
+    case "completeSetup":
+      if (!settings.setupComplete) {
+        settings = { ...settings, setupComplete: true };
+        saveConfig();
+      }
+      debug("SetupCompleted");
+      return;
     case "openVoiceSettings":
       await shell.openExternal(
         "x-apple.systempreferences:com.apple.Accessibility-Settings.extension",
@@ -2002,6 +2306,7 @@ app
   .whenReady()
   .then(async () => {
     if (!ownsInstance) return;
+    readScreenAtLaunch();
     root =
       process.env.COARENA_TEST_DATA_DIR ??
       join(app.getPath("userData"), "private");
@@ -2026,7 +2331,8 @@ app
         { mode: 0o600 },
       );
     }
-    if (existsSync(join(root, "config.enc"))) {
+    const hadConfig = existsSync(join(root, "config.enc"));
+    if (hadConfig) {
       const c = JSON.parse(
         unseal(
           master,
@@ -2035,6 +2341,11 @@ app
         ).toString(),
       );
       settings = settingsSchema.parse(c.settings);
+      // A config written before first-run setup existed belongs to someone who
+      // already configured the app; the schema default must not send them
+      // through setup.
+      if (c.settings?.setupComplete === undefined)
+        settings = { ...settings, setupComplete: true };
       credentials = readCredentials(c.credentials);
       if (typeof c.providerKey === "string" && c.providerKey)
         credentials = withProviderKey(credentials, settings, c.providerKey);
@@ -2140,6 +2451,9 @@ app
       win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       win.webContents.on("will-navigate", (e) => e.preventDefault());
     }
+    window.webContents.on("did-finish-load", () => {
+      if (settingsSection) window.webContents.send("view", settingsSection);
+    });
     session.defaultSession.setPermissionRequestHandler(
       (_wc, _permission, callback) => callback(false),
     );
@@ -2223,7 +2537,10 @@ app
       }
     });
     app.dock?.hide();
-    if (imported || !existsSync(join(root, "config.enc"))) showSettings();
+    // First run: the setup view, which stays pending until it is finished or
+    // dismissed, so quitting to apply a Screen Recording grant comes back to it.
+    if (!settings.setupComplete) showSettings("setup");
+    else if (imported || !hadConfig) showSettings();
     if (process.platform === "darwin") void configureVoice();
     if (process.argv.includes("--natural-voice")) void useNaturalVoice();
     void messages.configure().catch((error) => {

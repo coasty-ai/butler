@@ -18,13 +18,13 @@ Requirements: a Mac with Apple Silicon (M1 or newer) running macOS 14 Sonoma or 
    ```sh
    xattr -dr com.apple.quarantine "/Applications/Open Assist.app"
    ```
-4. **Try it safely:** the settings window opens. Click **Try the safe tutorial**; it runs on a simulated board and needs no permissions or keys.
-5. **Grant permissions** from Settings when prompted: Screen Recording, Accessibility, Microphone and Speech Recognition. Quit and reopen the app after granting Screen Recording.
-6. **Choose a model** in Settings:
-   - **Private local (free):** install [Ollama](https://ollama.com), run `ollama pull qwen3-vl:8b` (about 6 GB; `qwen3-vl:2b` is smaller but much weaker at finding controls), and keep the default endpoint.
-   - **Bring your own key:** choose OpenAI, Anthropic or Google and paste your API key. Requests go directly to that provider.
+4. **Set up:** on the first launch the setup view opens and walks through permissions, a model, the optional natural voice and a first task. Every step is skippable and nothing is a dead end: it reopens from the menu bar (**Set up Open Assist…**) and from Settings. Prefer to look around first? Click **Try the safe tutorial first**; it runs on a simulated board and needs no permissions or keys.
+5. **Grant permissions** from the checklist: Screen Recording, Accessibility, Microphone and Speech Recognition. Each row explains what it is for and opens the exact System Settings pane, and the list rechecks itself every couple of seconds. **After granting Screen Recording, quit and reopen the app** — macOS applies it only to a process started after the grant, so the checklist says “Granted, restart needed” instead of showing a tick.
+6. **Choose a model** in the setup step or in Settings:
+   - **Private local (free):** install [Ollama](https://ollama.com), run `ollama pull qwen3-vl:8b` (about 6 GB; `qwen3-vl:2b` is smaller but much weaker at finding controls), and keep the default endpoint. Setup looks for a running Ollama on the loopback address and says whether that model is installed.
+   - **Bring your own key:** choose OpenAI, Anthropic or Google and paste your API key. **Check key** verifies it with one small request that never touches your screen, then saves it encrypted. Requests go directly to that provider.
 7. **Talk to it:** hold **Option + Space**, say what you want (“open Notes and write a shopping list”), and release. Tap the shortcut to type instead. For hands-free use, choose **Say “Hey Assist”** in Settings.
-8. **Optional natural voice:** in **Settings → Voice replies**, choose **Natural voice (free, on-device)** and click **Download** (332 MB, runs entirely on your Mac). Make sure your Mac's volume is up to hear replies.
+8. **Optional natural voice:** in the setup step, or in **Settings → Voice replies**, choose **Natural voice (free, on-device)** and click **Download** (332 MB, runs entirely on your Mac). Make sure your Mac's volume is up to hear replies.
 
 Stop anytime with **Escape** or by saying “stop”. Moving your mouse pauses the agent; it continues on its own when you let go.
 

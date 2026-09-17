@@ -1445,6 +1445,259 @@ textarea {
     font-size: 7px;
   }
 }
+
+/* First run (docs/MODULARITY.md section 6): six skippable steps in the
+   settings window, on the same `view` channel as Settings and Review. */
+.setup-view {
+  padding: 8px 24px 26px;
+}
+.setup-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  border-bottom: 1px solid #1a1a1a;
+  padding-bottom: 13px;
+}
+.setup-rail button {
+  font-size: 8px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #4a4a4a;
+  padding: 0;
+}
+.setup-rail .past button {
+  color: #6e6e6e;
+}
+.setup-rail .current button {
+  color: #d8d8d8;
+}
+.setup-step {
+  display: grid;
+  gap: 13px;
+  justify-items: start;
+}
+.setup-step .setup-keys {
+  justify-self: center;
+  margin-bottom: 2px;
+}
+.setup-step h1 {
+  font-size: 19px;
+  font-weight: 510;
+  letter-spacing: -0.7px;
+  line-height: 1.25;
+  color: #e2e2e2;
+}
+.setup-step h3 {
+  font-size: 11px;
+  font-weight: 600;
+  color: #d0d0d0;
+}
+.setup-step > p,
+.setup-permission p,
+.setup-card p {
+  font-size: 10px;
+  line-height: 1.8;
+  color: #929292;
+}
+.setup-step .sample-command {
+  justify-self: stretch;
+  font-size: 12px;
+  margin: 0;
+}
+.setup-step label {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  font-size: 9px;
+  color: #7c7c7c;
+}
+.setup-step .field-pair {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+.setup-hint {
+  font-size: 9px;
+  line-height: 1.7;
+  color: #6b6b6b;
+}
+.setup-problem,
+.setup-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: #e0e0e0;
+}
+.setup-problem {
+  background: #141414;
+  border: 1px solid #232323;
+  border-radius: 7px;
+  padding: 9px 11px;
+  margin-bottom: 13px;
+}
+.setup-problem svg,
+.setup-warning svg,
+.setup-ok svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.setup-ok {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: #e6e6e6;
+}
+.setup-permissions {
+  display: grid;
+  gap: 9px;
+  width: 100%;
+}
+.setup-permission {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  border: 1px solid #1e1e1e;
+  border-radius: 9px;
+  padding: 12px 13px;
+  background: #0e0e0e;
+}
+.setup-permission.granted {
+  opacity: 0.72;
+}
+.setup-permission.relaunch {
+  border-color: #3a3a3a;
+  background: #151515;
+}
+.setup-permission-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+.setup-permission b {
+  font-size: 11px;
+  font-weight: 560;
+  color: #ddd;
+}
+.setup-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 8px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  padding: 3px 5px;
+  color: #8a8a8a;
+}
+.granted > .setup-permission-head .setup-chip {
+  border-color: #3d3d3d;
+  color: #e2e2e2;
+}
+.relaunch > .setup-permission-head .setup-chip {
+  border-color: #585858;
+  color: #f0f0f0;
+}
+.setup-path {
+  font-size: 8px;
+  color: #5c5c5c;
+  line-height: 1.7;
+}
+.setup-card {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  width: 100%;
+  border: 1px solid #202020;
+  border-radius: 10px;
+  padding: 14px;
+  background: #101010;
+}
+.setup-card code {
+  font:
+    9px ui-monospace,
+    monospace;
+  background: #1b1b1b;
+  border-radius: 4px;
+  padding: 1px 4px;
+  color: #d2d2d2;
+}
+.setup-card pre {
+  width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  font:
+    11px ui-monospace,
+    monospace;
+  color: #e4e4e4;
+  background: #1b1b1b;
+  border-radius: 7px;
+  padding: 11px 12px;
+}
+.setup-card .download-progress {
+  width: 100%;
+}
+.setup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+}
+.setup-actions > span {
+  flex: 1;
+  min-width: 140px;
+  font-size: 9px;
+  line-height: 1.6;
+  color: #6b6b6b;
+}
+.setup-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  color: #8a8a8a;
+  padding: 0;
+}
+.setup-link:disabled {
+  color: #4a4a4a;
+}
+.setup-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid #1a1a1a;
+  margin-top: 22px;
+  padding-top: 15px;
+}
+.setup-footer > span {
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #4d4d4d;
+}
+.setup-view .setup-note {
+  margin-top: 14px;
+}
+.setup-view .setup-note .setup-link {
+  font-size: 8px;
+  color: #5e5e5e;
+}
+.permission-foot .setup-link {
+  color: #6b6b6b;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;

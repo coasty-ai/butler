@@ -430,6 +430,44 @@ the moment someone re-introduces the cycle. It landed with PR-1.
 
 ## 6. First run, end to end
 
+> **Implemented**, except step 0. The `setup` view lives in `src/ui/main.tsx`
+> (`SetupView`); its shared contract — `SetupStatus`, `PrivacyPane`,
+> `privacyPanes`, `privacySettingsRoot`, `privacyPanePaths`, `setupPermissions`,
+> `firstTask`, `localModelSizes`, `usableOllamaModels`, `permissionsReady`,
+> `resumeSetupAt`, `providerKeyMessage` — is in `src/ui/api.ts`, and the six
+> dispatch cases are in `electron/main.ts`. `tests/setup.test.ts` covers the
+> pure parts; `scripts/desktop-smoke.mjs` asserts that the view opens on a first
+> launch, the `setupStatus` field set, the local probe, the key check, and that
+> the overlay reaches none of it. What changed against the text below:
+>
+> - **`completeSetup()`** joins the five listed methods, and `SetupStatus` has
+>   one extra field, `complete`. It is backed by `settings.setupComplete`
+>   (`src/core/schema.ts`, `.default(false)`), which is what makes setup
+>   resumable: quitting to apply a Screen Recording grant comes back to it. A
+>   stored config written before the flag existed is treated as already set up,
+>   so an update never pushes an existing install back through setup.
+> - **`screenNeedsRelaunch`** is detected as *"the OS preflight says granted,
+>   but this process was launched under the old decision"*. `capture` cannot be
+>   the probe: the native helper starts latched (`stopped = true` in
+>   `Controller.swift`) and a setup screen must not install the event tap.
+>   Instead main records `systemPreferences.getMediaAccessStatus("screen")` at
+>   launch and every `screen: false` it sees afterwards, so a revoke-and-regrant
+>   while running is caught too.
+> - **The download size** lives in `src/ui/api.ts` as `localModelSizes`, keyed
+>   by model id, rather than in `src/providers/catalog.ts`, which was out of
+>   scope for this change. `tests/setup.test.ts` pins the key to
+>   `providerDefaults.ollama.model`, so it still cannot drift.
+> - **The model-id inconsistency is already resolved**:
+>   `providerDefaults.ollama.model`, `defaultSettings.model` and the README all
+>   say `qwen3-vl:8b`, and a test holds them together.
+> - **`showSettings` re-sends its section on `did-finish-load`**, because the
+>   first-run push happens during startup and could otherwise reach the window
+>   before the renderer had subscribed.
+> - **Step 0 (Gatekeeper) is not addressed here**: it is packaging, not UI. The
+>   README still carries the words; `FIRST-OPEN.txt` in the DMG is still open.
+>
+> `AppInfo.voice.kokoro` was not touched, as §9 requires.
+
 Today: download a DMG, defeat Gatekeeper, open Settings, press two buttons that
 trigger four OS prompts, type a model id and an endpoint, optionally paste a key,
 and guess whether it worked. The permission rows show a binary Allowed/Enable with
@@ -650,6 +688,10 @@ Implementation notes for this step:
 existing `subscribeKokoro` stream; no new plumbing.
 
 ### Step 5 — First task
+
+Implemented with **Run it for me** calling `command()`, the same path a typed
+command takes, so nothing is auto-approved and the run lands in history like any
+other.
 
 The proof step. Use a task that already has a deterministic grader in
 `src/gym/bench/catalogue.ts` (`calculator-multiply`), so the same instruction is

@@ -38,6 +38,12 @@ const bridge: Bridge = {
   removeKokoro: () => invoke("removeKokoro"),
   messagesStatus: () => invoke("messagesStatus"),
   sendTestMessage: () => invoke("sendTestMessage"),
+  setupStatus: () => invoke("setupStatus"),
+  openPrivacyPane: (pane) => invoke("openPrivacyPane", pane),
+  relaunch: () => invoke("relaunch"),
+  detectOllama: () => invoke("detectOllama"),
+  checkProviderKey: (...a) => invoke("checkProviderKey", ...a),
+  completeSetup: () => invoke("completeSetup"),
   subscribePill: (fn) => {
     const handler = (_e: unknown, s: any) => fn(s);
     ipcRenderer.on("pill", handler);

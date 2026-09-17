@@ -147,6 +147,233 @@ export interface AppInfo {
   /** Text updates and texted commands; off until the user turns them on. */
   messages: MessagesInfo;
 }
+/**
+ * First run (docs/MODULARITY.md §6). Everything below is the setup view's
+ * contract: the live permission picture, the deep links it opens and the two
+ * checks it runs. None of it belongs on `AppInfo.voice.kokoro`, whose exact
+ * key set scripts/desktop-smoke.mjs deep-equals.
+ */
+export type PrivacyPane =
+  | "screen"
+  | "accessibility"
+  | "microphone"
+  | "speech"
+  | "input"
+  | "automation"
+  | "fullDisk";
+/**
+ * These pane identifiers are not API and can disappear in a macOS release, so
+ * every button falls back to `privacySettingsRoot` and the copy always names
+ * the written path as well.
+ */
+export const privacyPanes: Record<PrivacyPane, string> = {
+  screen:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+  accessibility:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+  microphone:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+  speech:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
+  input:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+  automation:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+  fullDisk:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+};
+/** Where every pane button lands when its deep link does nothing. */
+export const privacySettingsRoot =
+  "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension";
+/** The written path, so the copy still makes sense without the deep link. */
+export const privacyPanePaths: Record<PrivacyPane, string> = {
+  screen: "Privacy & Security › Screen & System Audio Recording",
+  accessibility: "Privacy & Security › Accessibility",
+  microphone: "Privacy & Security › Microphone",
+  speech: "Privacy & Security › Speech Recognition",
+  input: "Privacy & Security › Input Monitoring",
+  automation: "Privacy & Security › Automation",
+  fullDisk: "Privacy & Security › Full Disk Access",
+};
+/** What the setup view needs, polled while it is visible. */
+export interface SetupStatus {
+  /** macOS 14 or later; desktop control is refused below it. */
+  supported: boolean;
+  screen: boolean;
+  /**
+   * Granted in the OS, but this process was launched under the old decision
+   * and still cannot capture. A tick here would be a lie: macOS applies
+   * Screen Recording only to a process started after the grant.
+   */
+  screenNeedsRelaunch: boolean;
+  accessibility: boolean;
+  microphone: boolean;
+  speech: boolean;
+  /** An on-device speech model exists for `locale`; there is no cloud fallback. */
+  onDevice: boolean;
+  locale: string;
+  /** The voice helper owns Option-Space. */
+  shortcut: boolean;
+  model: {
+    kind: "none" | "ollama" | "cloud";
+    ready: boolean;
+    /** One short line naming the model, never a key or a response body. */
+    detail: string;
+  };
+  kokoro: KokoroUiStatus;
+  /** The user finished or dismissed setup; the view is reachable either way. */
+  complete: boolean;
+}
+/** A local Ollama, seen through `validateProviderEndpoint`, never a raw fetch. */
+export interface OllamaStatus {
+  running: boolean;
+  /** Tags the run loop could actually use, newest listing order kept. */
+  models: string[];
+}
+/** One cheap provider request: it never captures the screen or acts on it. */
+export interface ProviderKeyResult {
+  ok: boolean;
+  message: string;
+}
+export const setupSteps = [
+  "welcome",
+  "permissions",
+  "model",
+  "voice",
+  "task",
+  "done",
+] as const;
+export type SetupStep = (typeof setupSteps)[number];
+/**
+ * The proof task. `calculator-multiply` in src/gym/bench/catalogue.ts grades
+ * this exact instruction, so `npm run bench` exercises what first run asks for.
+ */
+export const firstTask = "Open Calculator and multiply 128 by 46";
+/**
+ * Download size beside the model id, so the number cannot drift away from
+ * `providerDefaults.ollama.model`. Confirmed against the local tag list after
+ * a pull rather than trusted afterwards.
+ */
+export const localModelSizes: Record<string, string> = {
+  "qwen3-vl:8b": "about 6 GB",
+  "qwen3-vl:2b": "about 2 GB",
+};
+/** The four permissions the checklist shows, in the order it shows them. */
+export const setupPermissions = [
+  {
+    pane: "screen" as PrivacyPane,
+    title: "Screen Recording",
+    reason: "So it can see the screen it is working on.",
+  },
+  {
+    pane: "accessibility" as PrivacyPane,
+    title: "Accessibility",
+    reason:
+      "So it can click and type, and stop the moment you touch the mouse.",
+  },
+  {
+    pane: "microphone" as PrivacyPane,
+    title: "Microphone",
+    reason: "So it can hear you while you hold ⌥Space.",
+  },
+  {
+    pane: "speech" as PrivacyPane,
+    title: "Speech Recognition",
+    reason:
+      "So it can turn what you said into text on this Mac. There is no cloud transcription.",
+  },
+];
+/**
+ * Ollama tags the run loop can use. Embedding, reranking and audio models
+ * cannot drive a GUI, and an id with a slash or "cloud" in it is refused by
+ * `validateProviderEndpoint` in PRIVATE_LOCAL, so offering one would be a trap.
+ */
+export function usableOllamaModels(names: unknown): string[] {
+  if (!Array.isArray(names)) return [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (typeof name !== "string") continue;
+    const id = name.trim();
+    if (!id || id.length > 100 || seen.has(id)) continue;
+    if (/cloud|\//i.test(id)) continue;
+    if (/embed|rerank|whisper|(^|[-:_])tts([-:_]|$)|guard/i.test(id)) continue;
+    seen.add(id);
+  }
+  return [...seen];
+}
+/** True once all four permissions are usable, relaunch included. */
+export function permissionsReady(status: SetupStatus): boolean {
+  return (
+    status.screen &&
+    !status.screenNeedsRelaunch &&
+    status.accessibility &&
+    status.microphone &&
+    status.speech
+  );
+}
+/**
+ * Where setup resumes. A first launch starts at the welcome; a return after
+ * the Screen Recording relaunch lands back on the checklist rather than on a
+ * screen the user already read.
+ */
+export function resumeSetupAt(status: SetupStatus | null): SetupStep {
+  if (!status) return "welcome";
+  const started =
+    status.screen ||
+    status.accessibility ||
+    status.microphone ||
+    status.speech ||
+    status.model.ready;
+  if (!started) return "welcome";
+  if (!permissionsReady(status)) return "permissions";
+  if (!status.model.ready) return "model";
+  return "task";
+}
+/**
+ * One readable sentence per outcome of the key check. The provider's own
+ * response body is never echoed: `blocked` is the single fact read out of it.
+ */
+export function providerKeyMessage(result: {
+  provider: string;
+  model: string;
+  host: string;
+  status: number;
+  blocked?: boolean;
+}): ProviderKeyResult {
+  const { provider, model, host, status } = result;
+  if (status >= 200 && status < 300)
+    return {
+      ok: true,
+      message:
+        "The key works. The prices below are used only for the local cost estimate — edit them if the provider changes them.",
+    };
+  if (result.blocked)
+    return {
+      ok: false,
+      message:
+        "This Google key is restricted. Allow generativelanguage.googleapis.com in the key's API restrictions, then check again.",
+    };
+  if (status === 401 || status === 403)
+    return { ok: false, message: "The provider rejected this key." };
+  if (status === 404)
+    return {
+      ok: false,
+      message:
+        provider === "compatible"
+          ? `This endpoint does not list models at ${host}, so the key could not be checked here. Save it and try a task.`
+          : `The key works, but ${model} is not available to it. Check the model ID.`,
+    };
+  if (status === 429)
+    return {
+      ok: false,
+      message:
+        "The provider is rate limiting requests (HTTP 429). Try again shortly.",
+    };
+  return {
+    ok: false,
+    message: `The provider returned HTTP ${status}. Verify model access and quota.`,
+  };
+}
 export interface Bridge {
   info(): Promise<AppInfo>;
   saveSettings(settings: Settings, key?: string): Promise<void>;
@@ -200,6 +427,35 @@ export interface Bridge {
    * arrive; rejects with the macOS setup step that is missing.
    */
   sendTestMessage(): Promise<void>;
+  /**
+   * Settings window only. The live first-run picture, polled while the setup
+   * view is visible. Separate from `info()` so nothing is added to
+   * `AppInfo.voice.kokoro`.
+   */
+  setupStatus(): Promise<SetupStatus>;
+  /**
+   * Settings window only. Opens one System Settings privacy pane, falling back
+   * to Privacy & Security when the undocumented deep link is rejected.
+   */
+  openPrivacyPane(pane: PrivacyPane): Promise<void>;
+  /** Settings window only. Quits and reopens, so a Screen Recording grant applies. */
+  relaunch(): Promise<void>;
+  /**
+   * Settings window only. Looks for a local Ollama through
+   * `validateProviderEndpoint`, never a raw fetch to an arbitrary endpoint.
+   */
+  detectOllama(): Promise<OllamaStatus>;
+  /**
+   * Settings window only. One cheap provider request that never captures or
+   * drives the desktop. The key is used for the check and saved only by
+   * `saveSettings`.
+   */
+  checkProviderKey(
+    settings: Settings,
+    key?: string,
+  ): Promise<ProviderKeyResult>;
+  /** Settings window only. Marks first-run setup done; the view stays reachable. */
+  completeSetup(): Promise<void>;
   subscribePill(fn: (state: PillState) => void): () => void;
   subscribeView(fn: (view: string) => void): () => void;
   /** Download progress and install changes for the natural voice. */

@@ -209,6 +209,13 @@ export const settingsSchema = z
     messagesCommands: z.boolean().default(true),
     /** "texted": only runs started by message. "all": every run. */
     messagesUpdates: z.enum(["texted", "all"]).default("texted"),
+    /**
+     * First-run setup was finished or dismissed. False opens the setup view on
+     * launch, so quitting to apply a Screen Recording grant comes back to it.
+     * Defaults to false for a fresh install; electron/main.ts treats a stored
+     * config from before this field as already set up.
+     */
+    setupComplete: z.boolean().default(false),
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
@@ -253,6 +260,7 @@ export const defaultSettings: Settings = {
   messagesHandle: "",
   messagesCommands: true,
   messagesUpdates: "texted",
+  setupComplete: false,
 };
 export interface Geometry {
   display_id: number;
