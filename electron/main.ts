@@ -10,6 +10,7 @@ import {
   Tray,
   Menu,
   nativeImage,
+  shell,
 } from "electron";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -51,8 +52,31 @@ import {
   type UploadState,
 } from "../src/contribution/client";
 import { workflowCandidate } from "../src/gym/workflow";
-import { NativeController } from "./controller";
-import { NativeVoice, type VoiceEvent } from "./voice";
+import { MemoryStore, forgetRunIn } from "../src/memory/store";
+import { createMemoryAccess } from "../src/memory/access";
+import type { MemoryAccess, SystemIndex } from "../src/memory/types";
+import { summarizeMemory } from "../src/ui/api";
+import { NativeController, budgetDelay } from "./controller";
+import {
+  NativeVoice,
+  approvalHint,
+  continueHint,
+  pausedLabel,
+  type VoiceEvent,
+} from "./voice";
+import { Conversation, ANSWER_WINDOW } from "./conversation";
+import { createSpeechOutput, selectSpeechEngine } from "./speech-output";
+import { desktopTransport } from "./provider";
+import {
+  createKokoroVoice,
+  kokoroSupported,
+  type KokoroStatus,
+  type KokoroVoice,
+} from "./kokoro/client";
+import { credentialScope, providerDefaults } from "../src/providers/catalog";
+import { planVoiceTurn, type TurnPlan } from "../src/voice/turns";
+import { PHRASES } from "../src/voice/phrases";
+import { speakableSummary } from "../src/voice/speakable";
 import {
   importLaunchCredentials,
   providerKey,
@@ -89,6 +113,7 @@ let hideTimer: ReturnType<typeof setTimeout> | undefined;
 let runner: Runner | undefined;
 let native: NativeController | undefined;
 let vault: Vault;
+let memory: MemoryStore | undefined;
 let root: string;
 let master: Buffer;
 let settings: Settings = defaultSettings;
@@ -105,8 +130,123 @@ let shuttingDown = false;
 let donationBusy = false;
 let diagnostics: LocalDiagnostics | undefined;
 let diagnosticHeartbeat: ReturnType<typeof setInterval> | undefined;
+// True only while a voice or typed-command interruption paused a run that was
+// otherwise working. A voice outcome without a usable command keeps the run
+// paused; only dismissing an untouched text-entry pill undoes this hold.
+let voiceHeld = false;
+let voiceHeldSequence = 0;
+// A short acknowledgement shown under the working pill.
+let notice = { text: "", until: 0 };
+// Renderer crash reloads per window within the last minute, plus at most one
+// deferred reload per window once that budget is exhausted.
+const rendererReloads = new Map<BrowserWindow, number[]>();
+const deferredReloads = new Map<BrowserWindow, ReturnType<typeof setTimeout>>();
+const defaultPause = "Paused. Capture and input are stopped.";
+const helperPause = "Desktop control restarted. Say continue to resume.";
 const debug: DiagnosticSink = (event, data = {}) =>
   trace(diagnostics?.write, event, { runId: snapshot.run?.id, ...data });
+/** The OpenAI key, used for the optional natural voice only. */
+function openaiKey() {
+  return (
+    credentials[credentialScope("openai", providerDefaults.openai.endpoint)] ??
+    ""
+  );
+}
+/** Whether the natural (OpenAI) voice may be used with these settings. */
+function cloudVoiceAllowed() {
+  return (
+    settings.privacy === "PRIVATE_BYOM" &&
+    selectSpeechEngine({ ...settings, voiceEngine: "openai" }, openaiKey()) ===
+      "openai"
+  );
+}
+const voiceCall = async (method: string, data?: Record<string, unknown>) =>
+  getVoice().call(method, data);
+// The free on-device natural voice (Kokoro), created on first use. Its worker
+// forks lazily and exits when idle; the model is a one-time opt-in download.
+let kokoro: KokoroVoice | undefined;
+function getKokoro() {
+  kokoro ??= createKokoroVoice({
+    modelDir: join(app.getPath("userData"), "voices", "kokoro"),
+    fetch: desktopTransport(debug),
+    trace: debug,
+  });
+  return kokoro;
+}
+function kokoroUiStatus(status?: KokoroStatus) {
+  const supported = process.platform === "darwin" && kokoroSupported();
+  const empty = {
+    installed: false,
+    downloading: false,
+    progress: 0,
+    bytes: 0,
+    totalBytes: 0,
+  };
+  try {
+    return { ...(status ?? getKokoro().status()), supported };
+  } catch {
+    return { ...empty, supported };
+  }
+}
+function sendKokoroStatus(status?: KokoroStatus) {
+  if (window && !window.isDestroyed())
+    window.webContents.send("kokoro-status", kokoroUiStatus(status));
+}
+/** Starts the natural voice worker ahead of a reply when it is the engine. */
+function warmKokoro() {
+  if (settings.voiceEngine !== "kokoro" || !kokoroSupported()) return;
+  const voice = getKokoro();
+  if (!voice.status().installed) return;
+  void voice
+    .warm()
+    .catch((error) => debug("KokoroWarmFailed", errorDetails(error)));
+}
+let kokoroDownload: AbortController | undefined;
+const kokoroErrors: Record<string, string> = {
+  network: "The download was interrupted. Check your connection and try again.",
+  checksum_mismatch: "The downloaded voice did not verify. Try again.",
+  size_mismatch: "The downloaded voice did not verify. Try again.",
+  disk_full: "Not enough disk space for the natural voice (332 MB).",
+  load_failed: "The natural voice could not load on this Mac.",
+  worker_crashed: "The natural voice stopped unexpectedly. Try again.",
+};
+// Spoken replies: the Mac voice in coarena-voice, or natural PCM (on-device
+// Kokoro or opt-in OpenAI) played there.
+const speech = createSpeechOutput({
+  settings: () => settings,
+  openaiKey,
+  voiceCall,
+  fetch: desktopTransport(debug),
+  trace: debug,
+  kokoro: {
+    status: () => getKokoro().status(),
+    synthesize: (text, signal) => getKokoro().synthesize(text, signal),
+  },
+});
+const conversation = new Conversation({
+  settings: () => settings,
+  speech,
+  voiceCall,
+  trace: debug,
+  onChange: () => refreshSpeechPill(),
+});
+/** Mirrors speaking and follow-up state onto the pill without re-layout. */
+function refreshSpeechPill() {
+  const speaking = conversation.speaking,
+    followUp = conversation.followUp;
+  if (pill.speaking === speaking && pill.followUp === followUp) return;
+  pill = { ...pill, speaking, followUp };
+  if (!indicator || indicator.isDestroyed()) return;
+  indicator.webContents.send("pill", pill);
+  if (pill.phase === "done") armDoneHide();
+}
+function armDoneHide() {
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    pill = { ...idlePill };
+    indicator.hide();
+  }, conversation.doneHoldMs(doneRunId));
+}
 process.on("uncaughtExceptionMonitor", (error) =>
   debug("UncaughtException", errorDetails(error)),
 );
@@ -135,9 +275,12 @@ function getNative() {
     native = new NativeController(
       binary,
       () => {
+        // Only the native Escape emergency stop cancels a run.
         if (shuttingDown) return;
         if (!snapshot.run || terminal(snapshot.run.status)) return;
         cancelVoiceCapture();
+        void conversation.stopSpeaking();
+        voiceHeld = false;
         runner?.stop("Native emergency stop activated.");
         setPill({
           phase: "done",
@@ -148,21 +291,175 @@ function getNative() {
       },
       () => runner?.manualTakeover(),
       debug,
+      {
+        onUnavailable: () => {
+          if (shuttingDown) return;
+          const run = snapshot.run;
+          // A crash is not the user's intent to stop: hold the run so it can
+          // continue once the helper is back. The tutorial never uses it.
+          if (!run || terminal(run.status) || run.synthetic) return;
+          // Any helper loss makes an existing pause the system's: it never
+          // resumes on its own and the pill says why.
+          voiceHeld = false;
+          if (run.status === "takeover") return;
+          runner?.pause(helperPause);
+        },
+        onRestart: (pid) => {
+          if (shuttingDown) return;
+          // Protected apps, domains and display are process-local natively.
+          void native
+            ?.configure(settings)
+            .catch((error) => debug("NativeSetupFailed", errorDetails(error)));
+          void voice
+            ?.call("configure", { controllerPID: pid })
+            .catch((error) => debug("VoiceSetupFailed", errorDetails(error)));
+        },
+      },
     );
   }
   return native;
 }
+function nativePid() {
+  try {
+    return getNative().pid;
+  } catch {
+    return undefined;
+  }
+}
+/**
+ * Memory for a real run: recall uses the native system index (Spotlight
+ * metadata, never file contents), and learning stops as soon as the user turns
+ * the setting off, even for a run that already started.
+ */
+function runMemory(): MemoryAccess | undefined {
+  if (!memory || !settings.memory) return undefined;
+  const index = async (query?: string): Promise<SystemIndex | undefined> => {
+    try {
+      return await getNative().request("index", query ? { query } : {});
+    } catch {
+      return undefined;
+    }
+  };
+  return createMemoryAccess(memory, index, {
+    enabled: () => settings.memory,
+    onError: (error) => debug("MemoryAccessFailed", errorDetails(error)),
+  });
+}
+function flushMemory() {
+  try {
+    memory?.flush();
+  } catch (error) {
+    debug("MemoryFlushFailed", errorDetails(error));
+  }
+}
+/** Minimum spacing between best-effort system index prewarms. */
+export const INDEX_PREWARM_INTERVAL_MS = 10000;
+/**
+ * Whether to prewarm the native system index now: memory is on, nothing is
+ * using the serial native queue for a run, no prewarm is still running and the
+ * last one started long enough ago.
+ */
+export function shouldPrewarmIndex(state: {
+  memoryEnabled: boolean;
+  runBusy: boolean;
+  inFlight: boolean;
+  lastStartedAt?: number;
+  now: number;
+}): boolean {
+  return (
+    state.memoryEnabled &&
+    !state.runBusy &&
+    !state.inFlight &&
+    (state.lastStartedAt === undefined ||
+      state.now - state.lastStartedAt >= INDEX_PREWARM_INTERVAL_MS)
+  );
+}
+let indexPrewarming = false;
+let indexPrewarmedAt: number | undefined;
+/**
+ * Fires one best-effort "index" request without a query so the recall at the
+ * next run start hits the native cache. Never awaited, never logged, and never
+ * sent while a run owns the native queue.
+ */
+function prewarmIndex() {
+  if (process.platform !== "darwin" || shuttingDown) return;
+  const now = Date.now();
+  if (
+    !shouldPrewarmIndex({
+      memoryEnabled: !!memory && settings.memory,
+      runBusy: runActive() || (!!runner && !runner.settled),
+      inFlight: indexPrewarming,
+      lastStartedAt: indexPrewarmedAt,
+      now,
+    })
+  )
+    return;
+  let controller: NativeController;
+  try {
+    controller = getNative();
+  } catch {
+    return;
+  }
+  indexPrewarming = true;
+  indexPrewarmedAt = now;
+  void controller
+    .request("index")
+    .catch(() => undefined)
+    .finally(() => {
+      indexPrewarming = false;
+    });
+}
+function runActive() {
+  return !!snapshot.run && !terminal(snapshot.run.status);
+}
+function runHeld() {
+  return (
+    runActive() &&
+    (snapshot.run!.status === "paused" || snapshot.run!.status === "takeover")
+  );
+}
+let lastPillTrace = "";
+// The run a done pill describes (its spoken summary may hold it longer).
+let doneRunId: string | undefined;
+let nextDoneRunId: string | undefined;
 function setPill(update: Partial<PillState>, focus = false) {
   clearTimeout(hideTimer);
   pill = { ...pill, ...update };
+  doneRunId = pill.phase === "done" ? nextDoneRunId : undefined;
+  nextDoneRunId = undefined;
+  if (diagnostics?.verbose) {
+    const shown = JSON.stringify([
+      pill.phase,
+      pill.label,
+      pill.transcript,
+      pill.detail,
+    ]);
+    if (shown !== lastPillTrace) {
+      lastPillTrace = shown;
+      debug("Pill", {
+        phase: pill.phase,
+        label: pill.label,
+        transcript: pill.transcript,
+        detail: pill.detail,
+        canApprove: pill.canApprove,
+      });
+    }
+  }
   if (!indicator || indicator.isDestroyed()) return;
   indicator.webContents.send("pill", pill);
   const expanded = ["text", "approval", "error"].includes(pill.phase);
-  const area = screen.getPrimaryDisplay().workArea;
+  const area = (
+    (settings.displayId !== undefined &&
+      screen.getAllDisplays().find((d) => d.id === settings.displayId)) ||
+    screen.getPrimaryDisplay()
+  ).workArea;
   const width = expanded ? 460 : 340,
     height = expanded
       ? 190
-      : pill.phase === "listening" && pill.transcript
+      : (pill.phase === "listening" ||
+            pill.phase === "working" ||
+            pill.phase === "paused") &&
+          pill.transcript
         ? 130
         : 94;
   indicator.setBounds(
@@ -182,32 +479,41 @@ function setPill(update: Partial<PillState>, focus = false) {
     indicator.show();
     indicator.focus();
   } else indicator.showInactive();
-  if (pill.phase === "done")
-    hideTimer = setTimeout(() => {
-      pill = { ...idlePill };
-      indicator.hide();
-    }, 1800);
+  if (pill.phase === "done") armDoneHide();
+}
+function refreshSettingsView() {
+  // Re-read settings in place; a reload would discard unsaved edits.
+  if (window && !window.isDestroyed())
+    window.webContents.send("view", "refresh");
 }
 async function toggleHandsFree(enabled = !settings.handsFree) {
-  if (!enabled) cancelVoiceCapture();
+  if (!enabled) {
+    cancelVoiceCapture();
+    listening = false;
+  }
+  settings = { ...settings, handsFree: enabled };
+  saveConfig();
+  updateTray();
+  refreshSettingsView();
   await getVoice().call("configure", {
     handsFree: enabled,
-    controllerPID: getNative().pid,
+    controllerPID: nativePid(),
   });
-  settings = { ...settings, handsFree: enabled };
-  if (!enabled) {
-    listening = false;
-    runner?.pause();
+  if (enabled) return;
+  // Turning the microphone off neither pauses nor resumes the task; a run a
+  // voice interruption held stays paused until the user continues.
+  voiceHeld = false;
+  if (runHeld()) showFailure("Hands-free off.");
+  else if (runActive()) {
+    flash("Hands-free off.");
+    renderPill(snapshot);
+  } else
     setPill({
       phase: "done",
       label: "Hands-free off.",
       transcript: "",
       canApprove: false,
     });
-  }
-  saveConfig();
-  updateTray();
-  window.webContents.reload();
 }
 function updateTray() {
   if (!tray) return;
@@ -266,9 +572,63 @@ function getVoice() {
       : join(app.getAppPath(), "native/bin/coarena-voice");
     if (!existsSync(binary))
       throw new Error("Build the native voice helper first.");
-    voice = new NativeVoice(binary, (event) => void receiveVoice(event), debug);
+    voice = new NativeVoice(
+      binary,
+      (event) => void receiveVoice(event),
+      debug,
+      {
+        onUnavailable: () => {
+          if (shuttingDown) return;
+          conversation.reset();
+          wakeListening = false;
+          updateTray();
+          if (!listening) return;
+          listening = false;
+          voiceInvocation += 1;
+          showFailure("Voice restarted. Try again.");
+        },
+        onRestart: () => {
+          if (shuttingDown) return;
+          conversation.reset();
+          void configureVoice();
+        },
+      },
+    );
   }
   return voice;
+}
+/** Spoken-reply and listening settings the voice helper applies. */
+function voiceOutputConfig(s: Settings = settings) {
+  return {
+    speechEnabled: s.voiceReplies !== "off",
+    voiceId: s.voiceId,
+    voiceRate: s.voiceRate,
+    patience: s.listeningPatience,
+    followUp: s.followUpListening,
+    sounds: s.voiceSounds,
+  };
+}
+const voiceOutputKeys = [
+  "voiceReplies",
+  "voiceId",
+  "voiceRate",
+  "listeningPatience",
+  "followUpListening",
+  "voiceSounds",
+] as const;
+async function configureVoice() {
+  try {
+    await getVoice().call("enable");
+  } catch {}
+  try {
+    await getVoice().call("configure", {
+      handsFree: settings.handsFree,
+      controllerPID: nativePid(),
+      ...voiceOutputConfig(),
+    });
+  } catch (error) {
+    debug("VoiceSetupFailed", errorDetails(error));
+  }
 }
 function currentGate() {
   return snapshot.pending && snapshot.run
@@ -281,13 +641,138 @@ function cancelVoiceCapture() {
   voiceGate = undefined;
   void voice?.call("cancel").catch(() => {});
 }
+function interruptForVoice() {
+  const before = runActive() ? snapshot.run!.status : undefined,
+    stillHeld = voiceHoldResumable();
+  runner?.interruptForVoice();
+  // Only a pause an interruption caused may be undone automatically; a second
+  // press keeps that hold (the runner re-journals the pause).
+  if (
+    snapshot.run?.status === "paused" &&
+    (stillHeld ||
+      (before && !["paused", "takeover", "confirming"].includes(before)))
+  ) {
+    voiceHeld = true;
+    voiceHeldSequence = snapshot.events.at(-1)?.sequence_number ?? 0;
+  }
+}
+/**
+ * The run is still exactly as the interruption left it. A later takeover,
+ * helper restart or correction makes the pause the user's or the system's.
+ */
+function voiceHoldResumable() {
+  return (
+    voiceHeld &&
+    !!runner &&
+    snapshot.run?.status === "paused" &&
+    (snapshot.events.at(-1)?.sequence_number ?? 0) === voiceHeldSequence
+  );
+}
+function flash(text: string) {
+  notice = { text, until: Date.now() + 2500 };
+  if (pill.phase === "working") setPill({ transcript: text });
+}
+function approvalPill(
+  s: Snapshot,
+  transcript = approvalHint(settings.handsFree),
+): Partial<PillState> {
+  return {
+    synthetic: !!s.run?.synthetic,
+    inputLevel: 0,
+    phase: "approval",
+    label: s.pending!.reason,
+    detail: describeAction(s.pending!.action),
+    transcript,
+    canApprove: true,
+  };
+}
+function lastSequence() {
+  return snapshot.events.at(-1)?.sequence_number ?? 0;
+}
+/**
+ * Re-activates the remembered app and resumes a held run, unless anything
+ * happened to the run (a new pause, takeover, stop or voice capture) while the
+ * native restore was in flight. Returns whether the run was resumed.
+ */
+async function resumeHeldRun(held: () => boolean) {
+  const current = runner,
+    sequence = lastSequence();
+  if (!current || !snapshot.run || !held()) return false;
+  if (!snapshot.run.synthetic) {
+    indicator.hide();
+    await getNative().request("restore");
+    if (
+      listening ||
+      runner !== current ||
+      !held() ||
+      lastSequence() !== sequence
+    ) {
+      // The newer state owns the pill; re-show it if nothing else will.
+      if (!listening && runActive()) renderPill(snapshot);
+      return false;
+    }
+  }
+  await current.resume();
+  return true;
+}
+/**
+ * Undoes the hold of an untouched text-entry pill that a tap opened while the
+ * run was working. Every other voice outcome leaves the run paused.
+ */
+async function resumeVoiceHold() {
+  const resumable = voiceHoldResumable();
+  voiceHeld = false;
+  if (!resumable) return false;
+  try {
+    await resumeHeldRun(
+      () => runner !== undefined && snapshot.run?.status === "paused",
+    );
+  } catch (error) {
+    showFailure(
+      error instanceof Error ? error.message : "Something went wrong.",
+    );
+  }
+  return true;
+}
+/**
+ * Shows a failed command or voice hiccup without guessing the user's intent:
+ * an approval stays answerable, a held run stays paused with the reason and
+ * how to continue, otherwise an error card.
+ */
+function showFailure(message: string) {
+  voiceHeld = false;
+  if (snapshot.run?.status === "confirming" && snapshot.pending) {
+    setPill(approvalPill(snapshot, message));
+    return;
+  }
+  if (runHeld()) {
+    setPill({
+      synthetic: !!snapshot.run?.synthetic,
+      phase: "paused",
+      label: pausedLabel(message),
+      detail: undefined,
+      transcript: continueHint(settings.handsFree),
+      canApprove: false,
+      inputLevel: 0,
+    });
+    return;
+  }
+  setPill({
+    phase: "error",
+    label: message,
+    transcript: "",
+    canApprove: false,
+    inputLevel: 0,
+  });
+}
 async function showCommand() {
   cancelVoiceCapture();
   voiceGate = currentGate();
-  runner?.interruptForVoice();
+  interruptForVoice();
   try {
     await getNative().request("rememberForeground");
   } catch {}
+  prewarmIndex();
   setPill(
     {
       phase: "text",
@@ -302,16 +787,42 @@ async function showCommand() {
     true,
   );
 }
+/** Listening ended without a plan: a prompt held back while capturing may speak. */
+function listeningEnded() {
+  conversation.onSnapshot(snapshot, {
+    listening: false,
+    handsFree: settings.handsFree,
+  });
+}
 async function receiveVoice(event: VoiceEvent) {
-  if (!["transcript_partial", "audio_level"].includes(event.event))
+  if (
+    event.event !== "audio_level" &&
+    (event.event !== "transcript_partial" || diagnostics?.verbose)
+  )
     debug("VoiceEvent", {
       phase: event.event,
+      // Verbose-only: dropped by the diagnostic allow-list otherwise.
+      text: event.text,
+      command: event.command,
       textLength: event.text?.length ?? event.textLength,
       source: event.source,
       confidence: event.confidence,
       enabled: event.enabled,
       listening: event.listening,
       error: event.message,
+      utteranceId: event.utteranceId,
+      interrupted: event.interrupted,
+      code: event.code ?? event.reason,
+      kind: event.kind,
+      segments: event.segments,
+      remainingMs: event.remainingMs,
+      endReason: event.endReason,
+      stableMs: event.stableMs,
+      quietMs: event.quietMs,
+      completeness: event.completeness,
+      patience: event.patience,
+      noiseFloor: event.noiseFloor,
+      threshold: event.threshold,
     });
   try {
     if (event.event === "wake_status") {
@@ -319,16 +830,20 @@ async function receiveVoice(event: VoiceEvent) {
       updateTray();
     } else if (
       event.event === "shortcut_down" ||
-      event.event === "wake_detected"
+      event.event === "wake_detected" ||
+      event.event === "followup_detected"
     ) {
-      voiceGate = currentGate();
+      // The helper already latched input and stopped playback.
+      conversation.onVoiceEvent(event);
+      // A reply is likely soon: have the natural voice ready.
+      warmKokoro();
+      voiceGate =
+        event.event === "followup_detected" && event.kind === "approval"
+          ? conversation.windowGate
+          : currentGate();
       listening = true;
-      runner?.interruptForVoice();
-      // Final recognition also waits for context, even if it arrives immediately.
+      interruptForVoice();
       const invocation = ++voiceInvocation;
-      voiceContext = getNative().request("rememberForeground");
-      await voiceContext;
-      if (!listening || invocation !== voiceInvocation) return;
       setPill({
         phase: "listening",
         label: "Listening…",
@@ -336,32 +851,53 @@ async function receiveVoice(event: VoiceEvent) {
         detail: undefined,
         canApprove: false,
         inputLevel: 0,
+        closing: false,
       });
+      // Final recognition also waits for context, even if it arrives immediately.
+      voiceContext = getNative().request("rememberForeground");
+      await voiceContext;
+      if (!listening || invocation !== voiceInvocation) return;
+      prewarmIndex();
     } else if (event.event === "shortcut_tap") {
       listening = false;
       await showCommand();
     } else if (event.event === "shortcut_up") {
       if (listening)
-        setPill({ phase: "working", label: "On it.", inputLevel: 0 });
+        setPill({
+          phase: "working",
+          label: "One moment…",
+          inputLevel: 0,
+          closing: false,
+        });
+    } else if (event.event === "endpoint_near") {
+      if (listening && !pill.closing) setPill({ closing: true });
     } else if (event.event === "transcript_partial") {
-      if (listening) setPill({ transcript: event.text ?? "" });
+      if (listening) setPill({ transcript: event.text ?? "", closing: false });
     } else if (event.event === "audio_level") {
       pill.inputLevel = event.level ?? 0;
       indicator.webContents.send("pill", pill);
-    } else if (event.event === "voice_control") {
-      if (!listening) return;
-      if (event.command?.startsWith("stop")) runner?.stop("Stopped.");
-      else runner?.pause();
+    } else if (
+      event.event === "speech_started" ||
+      event.event === "speech_finished" ||
+      event.event === "speech_error" ||
+      event.event === "followup_open" ||
+      event.event === "followup_closed" ||
+      event.event === "turn_endpoint"
+    ) {
+      conversation.onVoiceEvent(event);
     } else if (event.event === "voice_cancelled") {
       listening = false;
       voiceInvocation += 1;
+      voiceHeld = false;
       runner?.stop("Stopped.");
       setPill({
         phase: "done",
         label: "Stopped.",
         transcript: "",
         canApprove: false,
+        closing: false,
       });
+      listeningEnded();
     } else if (
       event.event === "transcript_final" ||
       event.event === "transcript_recovered"
@@ -371,137 +907,300 @@ async function receiveVoice(event: VoiceEvent) {
       const invocation = voiceInvocation;
       await voiceContext;
       if (invocation !== voiceInvocation) return;
-      await command(event.text ?? "", true, voiceCommandConfidence(event));
+      const text = (event.text ?? "").trim();
+      if (!text) throw new Error("Didn’t catch that. Try again.");
+      await command(text, true, voiceCommandConfidence(event), {
+        segments: event.segments,
+      });
+    } else if (event.event === "transcript_unconfirmed") {
+      if (!listening) return;
+      listening = false;
+      const text = (event.text ?? "").trim();
+      if (conversation.planContext(true).source === "ptt" && text) {
+        // Never act on an unconfirmed hypothesis: offer it for a one-tap send.
+        // Dismissing this pill must not resume a run the voice hold paused.
+        voiceHeld = false;
+        setPill(
+          {
+            phase: "text",
+            label: "Send this?",
+            transcript: text,
+            canApprove: false,
+            closing: false,
+          },
+          false,
+        );
+        listeningEnded();
+      } else {
+        showFailure("Didn’t catch that. Try again.");
+        conversation.say("didntCatch", {
+          priority: "urgent",
+          listen: ANSWER_WINDOW,
+        });
+      }
     } else if (event.event === "voice_error" || event.event === "wake_error") {
       listening = false;
-      setPill({
-        phase: "error",
-        label: event.message ?? "Try again.",
-        canApprove: false,
-        inputLevel: 0,
-      });
+      if (event.code === "empty") {
+        if (runHeld()) showFailure("Didn’t hear anything.");
+        else if (runActive()) renderPill(snapshot);
+        else
+          setPill({
+            phase: "done",
+            label: "Didn’t hear anything.",
+            transcript: "",
+            canApprove: false,
+            closing: false,
+          });
+      } else showFailure(event.message ?? "Try again.");
+      listeningEnded();
     }
   } catch (error) {
     listening = false;
-    setPill({
-      phase: "error",
-      label: error instanceof Error ? error.message : "Something went wrong.",
-      canApprove: false,
-    });
+    showFailure(
+      error instanceof Error ? error.message : "Something went wrong.",
+    );
+    listeningEnded();
   }
 }
-async function command(text: string, fromVoice = false, confidence = 1) {
+function planRun() {
+  if (!runActive()) return undefined;
+  const run = snapshot.run!;
+  return {
+    id: run.id,
+    status: run.status,
+    // An interrupted action may still have acted: never amend after one.
+    actions: Math.max(run.actions, runner?.actionsAttempted ?? 0),
+    held: runHeld(),
+    pendingReason: snapshot.pending?.reason,
+    task: run.task,
+  };
+}
+async function command(
+  text: string,
+  fromVoice = false,
+  confidence = 1,
+  extra: { segments?: number } = {},
+) {
   text = z.string().trim().min(1).max(2000).parse(text);
-  if (!fromVoice) {
-    cancelVoiceCapture();
-    indicator.hide();
-  }
-  const intent = voiceIntent(text),
-    active = !!snapshot.run && !terminal(snapshot.run.status);
-  if (intent.kind === "stop") {
-    runner?.stop("Stopped.");
-    setPill({
+  const context = conversation.planContext(fromVoice);
+  const gate = currentGate();
+  const plan = planVoiceTurn({
+    text,
+    confidence,
+    segments: extra.segments,
+    gateMatches: fromVoice ? !!voiceGate && voiceGate === gate : !!gate,
+    now: Date.now(),
+    run: planRun(),
+    ...context,
+  });
+  debug("Command", {
+    text,
+    fromVoice,
+    confidence,
+    intent: voiceIntent(text).kind,
+    activeRun: snapshot.run?.status,
+  });
+  debug("TurnPlanned", {
+    plan: plan.kind,
+    source: context.source,
+    window: context.window,
+    segments: extra.segments,
+    confidence,
+    textLength: text.length,
+  });
+  // Typed text keeps the pill visible until a run actually starts or resumes,
+  // so a rejected command stays readable.
+  if (!fromVoice) cancelVoiceCapture();
+  await executePlan(plan, fromVoice);
+  conversation.acknowledge(plan, {
+    source: context.source,
+    handsFree: settings.handsFree,
+    activationAt: context.activationAt,
+  });
+}
+async function executePlan(plan: TurnPlan, fromVoice: boolean) {
+  // A newer voice turn that started while this plan runs owns the pill.
+  const show = (update: Partial<PillState>, focus = false) => {
+    if (!listening) setPill(update, focus);
+  };
+  const fail = (message: string) => {
+    if (!listening) showFailure(message);
+  };
+  const render = () => {
+    if (!listening) renderPill(snapshot);
+  };
+  const hide = () => {
+    if (!listening) indicator.hide();
+  };
+  const idleCard = (label: string) =>
+    show({
       phase: "done",
-      label: "Stopped.",
+      label,
       transcript: "",
       canApprove: false,
+      closing: false,
     });
-    return;
-  }
-  if (intent.kind === "pause") {
-    runner?.pause();
-    setPill({
-      phase: "paused",
-      label: "Paused.",
-      transcript: settings.handsFree
-        ? "Say ‘Hey Assist, continue’."
-        : "Hold ⌥ Space to continue.",
-      canApprove: false,
-    });
-    return;
-  }
-  if (intent.kind === "approve" || intent.kind === "decline") {
-    if (!currentGate()) throw new Error("Nothing to approve.");
-    if (
-      fromVoice &&
-      (!voiceGate || voiceGate !== currentGate() || confidence < 0.65)
-    )
-      throw new Error("Tap once to approve.");
-    await runner!.approveFromVoice(intent.kind === "approve");
-    voiceGate = undefined;
-    if (intent.kind === "decline") return;
-    setPill({
-      phase: "working",
-      label: "On it.",
-      transcript: "",
-      canApprove: false,
-    });
-    return;
-  }
-  if (intent.kind === "resume") {
-    if (!active) throw new Error("Nothing to resume.");
-    if (!snapshot.run?.synthetic) {
-      indicator.hide();
-      await native?.request("restore");
+  switch (plan.kind) {
+    case "stop":
+      voiceHeld = false;
+      runner?.stop("Stopped.");
+      idleCard("Stopped.");
+      return;
+    case "pause":
+      voiceHeld = false;
+      runner?.pause();
+      show({
+        phase: "paused",
+        label: "Paused.",
+        transcript: continueHint(settings.handsFree),
+        canApprove: false,
+        closing: false,
+      });
+      return;
+    case "approve":
+    case "decline":
+      // A gate that vanished since planning is a stale answer.
+      if (!currentGate()) {
+        fail("Nothing to approve.");
+        return;
+      }
+      await runner!.approveFromVoice(plan.kind === "approve");
+      // A newer turn's gate belongs to that turn.
+      if (!listening) voiceGate = undefined;
+      if (plan.kind === "decline") return;
+      show({
+        phase: "working",
+        label: "On it.",
+        transcript: "",
+        canApprove: false,
+        closing: false,
+      });
+      return;
+    case "needClick":
+      fail(
+        plan.reason === "restricted"
+          ? "Click Yes to confirm this one."
+          : "Tap once to approve.",
+      );
+      return;
+    case "confirmAgain":
+      fail("Was that a yes or a no?");
+      return;
+    case "nothingToApprove":
+      // A "yes" or "no" with nothing pending is never a request to continue.
+      fail("Nothing to approve.");
+      return;
+    case "nothingRunning":
+      voiceHeld = false;
+      idleCard("Nothing is running.");
+      return;
+    case "stillWorking":
+      voiceHeld = false;
+      // Nothing is held: acknowledge instead of re-activating apps.
+      if (snapshot.run?.status === "confirming" && snapshot.pending)
+        show(approvalPill(snapshot, "Still waiting for your approval."));
+      else {
+        notice = { text: "Still on it.", until: Date.now() + 2500 };
+        render();
+      }
+      return;
+    case "resume":
+      voiceHeld = false;
+      if (!runHeld()) {
+        if (runActive()) render();
+        return;
+      }
+      await resumeHeldRun(runHeld);
+      return;
+    case "acknowledge":
+      voiceHeld = false;
+      // A held run stays paused and keeps showing why.
+      if (runActive()) render();
+      else idleCard("Okay.");
+      return;
+    case "clarify":
+      // No run starts and no correction is recorded; the answer completes it.
+      // Dismissing the question must not resume a run the voice hold paused.
+      voiceHeld = false;
+      show(
+        {
+          phase: "text",
+          label: plan.question,
+          transcript: `${plan.fragment.replace(/[\s.,…]+$/, "")} `,
+          canApprove: false,
+          closing: false,
+        },
+        !fromVoice,
+      );
+      return;
+    case "amendTask":
+      voiceHeld = false;
+      if (!snapshot.run?.synthetic) {
+        hide();
+        await native?.request("restoreRemembered");
+      }
+      show({
+        phase: "working",
+        label: "Got it.",
+        transcript: "",
+        canApprove: false,
+        closing: false,
+      });
+      await runner!.amendTask(plan.text);
+      return;
+    case "revise":
+    case "start": {
+      voiceHeld = false;
+      const active = runActive();
+      if (!(snapshot.run?.synthetic && active)) {
+        hide();
+        await native?.request("restoreRemembered");
+      }
+      show({
+        phase: "working",
+        label: active ? "Got it." : "On it.",
+        transcript: "",
+        canApprove: false,
+        closing: false,
+      });
+      if (active) await runner!.revise(plan.text);
+      else await dispatch("start", [plan.text, false]);
+      return;
     }
-    await runner?.resume();
-    return;
-  }
-  if (!(snapshot.run?.synthetic && !terminal(snapshot.run.status))) {
-    indicator.hide();
-    await native?.request("restoreRemembered");
-  }
-  if (active) {
-    setPill({
-      phase: "working",
-      label: "Got it.",
-      transcript: "",
-      canApprove: false,
-    });
-    await runner!.revise(text);
-  } else {
-    setPill({
-      phase: "working",
-      label: "On it.",
-      transcript: "",
-      canApprove: false,
-    });
-    await dispatch("start", [text, false]);
   }
 }
 function emit(s: Snapshot) {
   snapshot = s;
   diagnostics?.snapshot(s);
   if (window && !window.isDestroyed()) window.webContents.send("snapshot", s);
+  // Decides what to say about this moment; it never speaks while listening.
+  conversation.onSnapshot(s, { listening, handsFree: settings.handsFree });
   if (listening) return;
+  renderPill(s);
+}
+function renderPill(s: Snapshot) {
   const status = s.run?.status;
   if (!status) return;
+  if (terminal(status)) nextDoneRunId = s.run!.id;
   const common = { synthetic: !!s.run?.synthetic, inputLevel: 0 };
-  if (status === "confirming")
-    setPill({
-      ...common,
-      phase: "approval",
-      label: s.pending?.reason ?? "Approve this action?",
-      detail: s.pending ? describeAction(s.pending.action) : undefined,
-      transcript: "Hold ⌥ Space and say “yes”, or click once.",
-      canApprove: true,
-    });
+  if (status === "confirming" && s.pending) setPill(approvalPill(s));
   else if (status === "paused" || status === "takeover")
     setPill({
       ...common,
       phase: "paused",
+      // Keep specific reasons (takeover, helper restart, unsettled target).
       label:
-        status === "takeover" || s.message.includes("you’re controlling")
+        status === "takeover" || (s.message && s.message !== defaultPause)
           ? s.message
           : "Paused.",
-      transcript: "Hold ⌥ Space to steer or continue.",
+      transcript: continueHint(settings.handsFree),
       canApprove: false,
     });
   else if (status === "completed")
     setPill({
       ...common,
       phase: "done",
-      label: "Done.",
+      label: speakableSummary(s.run?.summary) ?? "Done.",
       transcript: "",
       canApprove: false,
     });
@@ -525,10 +1224,15 @@ function emit(s: Snapshot) {
     setPill({
       ...common,
       phase: "working",
-      label: s.frame?.context?.appName
-        ? `Working in ${s.frame.context.appName}`
-        : "Working…",
-      transcript: "",
+      // Confirming without a pending action: approval was given and the
+      // screen is being revalidated.
+      label:
+        status === "confirming"
+          ? "Checking the screen…"
+          : s.frame?.context?.appName
+            ? `Working in ${s.frame.context.appName}`
+            : "Working…",
+      transcript: notice.until > Date.now() ? notice.text : "",
       canApprove: false,
     });
 }
@@ -581,10 +1285,19 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         locale: "",
         handsFree: false,
         wakeListening: false,
+        speaking: false,
+        voiceQuality: "none",
+        voiceName: "",
+        cloudVoiceAllowed: false,
       };
       try {
-        voiceStatus = await getVoice().call("status");
+        voiceStatus = {
+          ...voiceStatus,
+          ...(await getVoice().call("status")),
+        };
       } catch {}
+      voiceStatus.cloudVoiceAllowed = cloudVoiceAllowed();
+      const voiceInfo = { ...voiceStatus, kokoro: kokoroUiStatus() };
       debug("Permissions", {
         permissions: {
           screen: permissions.screen,
@@ -604,24 +1317,95 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         permissions,
         displays,
         encrypted: true,
-        voice: voiceStatus,
+        voice: voiceInfo,
       };
     }
     case "saveSettings": {
-      ensureIdle();
       const next = settingsSchema.parse(args[0]);
       validateProviderEndpoint(next);
-      if (args[1] !== undefined) {
-        credentials = withProviderKey(credentials, next, args[1]);
-      }
-      if (next.handsFree !== settings.handsFree)
-        await getVoice().call("configure", {
-          handsFree: next.handsFree,
-          controllerPID: getNative().pid,
-        });
+      const nextCredentials =
+        args[1] !== undefined
+          ? withProviderKey(credentials, next, args[1])
+          : credentials;
+      // The active Runner keeps its own provider and privacy; only changes to
+      // those require stopping it.
+      if (
+        next.provider !== settings.provider ||
+        next.endpoint !== settings.endpoint ||
+        next.model !== settings.model ||
+        next.privacy !== settings.privacy ||
+        providerKey(nextCredentials, next) !==
+          providerKey(credentials, settings)
+      )
+        ensureIdle();
+      // settings.memory is live and harmless: the active run checks it before
+      // learning, and the next run decides whether to recall.
+      // Protections, display and budgets apply to the active run immediately.
+      const live =
+        runActive() &&
+        !!runner &&
+        (JSON.stringify(next.protectedApps) !==
+          JSON.stringify(settings.protectedApps) ||
+          JSON.stringify(next.protectedDomains) !==
+            JSON.stringify(settings.protectedDomains) ||
+          next.displayId !== settings.displayId ||
+          next.maxCost !== settings.maxCost ||
+          next.maxActions !== settings.maxActions ||
+          next.maxSeconds !== settings.maxSeconds);
+      const handsFreeChanged = next.handsFree !== settings.handsFree;
+      const voiceOutputChanged = voiceOutputKeys.some(
+        (key) => next[key] !== settings[key],
+      );
+      const voiceEngineChanged = next.voiceEngine !== settings.voiceEngine;
+      credentials = nextCredentials;
       settings = next;
       saveConfig();
       updateTray();
+      if (voiceEngineChanged) {
+        // A reply in the old engine may still be playing.
+        await conversation.stopSpeaking();
+        warmKokoro();
+      }
+      let applyError: unknown;
+      if (live) {
+        const current = runner!;
+        try {
+          // The tutorial never uses the native helper.
+          if (!snapshot.run!.synthetic) await getNative().configure(next);
+          current.updateSettings(next);
+        } catch (error) {
+          debug("SettingsApplyFailed", errorDetails(error));
+          applyError = error;
+        }
+      }
+      if (voiceOutputChanged && next.voiceReplies === "off")
+        await conversation.stopSpeaking();
+      if (handsFreeChanged || voiceOutputChanged) {
+        if (handsFreeChanged && !next.handsFree) {
+          cancelVoiceCapture();
+          listening = false;
+        }
+        try {
+          await getVoice().call("configure", {
+            ...(handsFreeChanged ? { handsFree: next.handsFree } : {}),
+            controllerPID: nativePid(),
+            ...voiceOutputConfig(next),
+          });
+        } catch (error) {
+          debug("VoiceSetupFailed", errorDetails(error));
+          throw new Error(
+            `Settings saved, but the voice mode could not be applied: ${
+              error instanceof Error ? error.message : "try again."
+            }`,
+          );
+        }
+      }
+      if (applyError)
+        throw new Error(
+          `Settings saved, but they could not be applied to the active run: ${
+            applyError instanceof Error ? applyError.message : "try again."
+          }`,
+        );
       return;
     }
     case "command":
@@ -633,7 +1417,19 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     case "pillState":
       return pill;
     case "dismiss":
-      setPill({ ...idlePill });
+      void conversation.stopSpeaking();
+      conversation.clearFragment();
+      // Only an untouched text-entry pill that a tap opened while the run was
+      // working gives the run back; every other dismissal just collapses cards.
+      if (pill.phase === "text" && voiceHoldResumable()) {
+        cancelVoiceCapture();
+        await resumeVoiceHold();
+        return;
+      }
+      voiceHeld = false;
+      // An active run keeps a visible control; dismiss only collapses cards.
+      if (runActive()) renderPill(snapshot);
+      else setPill({ ...idlePill });
       return;
     case "openSettings":
       showSettings(typeof args[0] === "string" ? args[0] : "settings");
@@ -659,7 +1455,14 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       const controller = tutorial ? new TutorialController() : getNative();
       if (!tutorial) {
         await getNative().configure(settings);
-        await getVoice().call("configure", { controllerPID: getNative().pid });
+        // Voice is optional for a run; typed commands still work without it.
+        try {
+          await getVoice().call("configure", {
+            controllerPID: getNative().pid,
+          });
+        } catch (error) {
+          debug("VoiceSetupFailed", errorDetails(error));
+        }
       }
       const provider = tutorial
         ? new TutorialProvider()
@@ -680,38 +1483,150 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         settings,
         emit,
         recentTasks,
+        // The synthetic tutorial never recalls or learns.
+        tutorial ? undefined : runMemory(),
       );
+      voiceHeld = false;
       window.hide();
-      void runner.start(task).catch(() =>
+      void runner.start(task).catch((error) => {
+        debug("RunStartFailed", errorDetails(error));
         setPill({
           phase: "error",
-          label: "The local run could not be saved.",
+          label:
+            error instanceof Error && error.message
+              ? error.message
+              : "The local run could not be saved.",
+          transcript: "",
           canApprove: false,
-        }),
-      );
+        });
+      });
       return;
     }
     case "pause":
+      voiceHeld = false;
       runner?.pause();
       return;
     case "resume":
-      if (snapshot.run && !snapshot.run.synthetic) {
-        window.hide();
-        indicator.hide();
-        await getNative().request("restore");
+      voiceHeld = false;
+      // Re-activating the remembered app is only needed for a held run.
+      if (!runHeld()) {
+        if (runActive()) renderPill(snapshot);
+        return;
       }
-      await runner?.resume();
+      if (!snapshot.run!.synthetic) window.hide();
+      await resumeHeldRun(runHeld);
       return;
     case "stop":
       cancelVoiceCapture();
+      void conversation.stopSpeaking();
+      voiceHeld = false;
       runner?.stop();
       return;
     case "confirm": {
       const yes = z.boolean().parse(args[0]);
+      // A click answers: stop the spoken question and its listening window.
+      void conversation.stopSpeaking();
+      void voice?.call("endFollowUp").catch(() => {});
+      if (!currentGate()) {
+        // A stale card (the approval already went through or was withdrawn).
+        // Neither answer resumes a held run.
+        voiceHeld = false;
+        if (runActive()) renderPill(snapshot);
+        else throw new Error("Nothing to approve.");
+        return;
+      }
       if (yes) indicator.hide();
       await runner?.approveFromVoice(yes);
       return;
     }
+    case "voices": {
+      let list: { voices?: unknown; selected?: unknown } = {};
+      try {
+        list = await getVoice().call("voices");
+      } catch (error) {
+        debug("VoiceListFailed", errorDetails(error));
+      }
+      return {
+        voices: Array.isArray(list.voices) ? list.voices : [],
+        selected: typeof list.selected === "string" ? list.selected : "",
+        engine: settings.voiceEngine,
+        cloudAllowed: cloudVoiceAllowed(),
+      };
+    }
+    case "previewVoice": {
+      const result = await speech.preview(PHRASES.previewSample[0]);
+      if (!result.accepted)
+        throw new Error(
+          result.reason === "disabled"
+            ? "Turn on spoken replies to preview a voice."
+            : "The voice preview could not play right now. Try again in a moment.",
+        );
+      return;
+    }
+    case "kokoroStatus":
+      return kokoroUiStatus();
+    case "downloadKokoro": {
+      if (!kokoroSupported())
+        throw new Error("The natural voice needs a Mac with Apple Silicon.");
+      kokoroDownload ??= new AbortController();
+      const controller = kokoroDownload;
+      try {
+        await getKokoro().download(
+          (status) => sendKokoroStatus(status),
+          controller.signal,
+        );
+      } catch (error) {
+        const status = kokoroUiStatus();
+        sendKokoroStatus();
+        if (controller.signal.aborted) return;
+        debug("KokoroDownloadFailed", {
+          ...errorDetails(error),
+          code: status.error,
+        });
+        const code = status.error ?? "";
+        throw new Error(
+          kokoroErrors[code] ??
+            (code.startsWith("http_")
+              ? "The voice download server is unavailable. Try again later."
+              : "The natural voice could not be downloaded. Try again."),
+        );
+      } finally {
+        if (kokoroDownload === controller) kokoroDownload = undefined;
+      }
+      sendKokoroStatus();
+      return;
+    }
+    case "cancelKokoroDownload":
+      kokoroDownload?.abort();
+      kokoroDownload = undefined;
+      sendKokoroStatus();
+      return;
+    case "removeKokoro": {
+      kokoroDownload?.abort();
+      kokoroDownload = undefined;
+      await conversation.stopSpeaking();
+      await getKokoro().remove();
+      if (settings.voiceEngine === "kokoro") {
+        settings = { ...settings, voiceEngine: "system" };
+        saveConfig();
+        refreshSettingsView();
+      }
+      sendKokoroStatus();
+      return;
+    }
+    case "openVoiceSettings":
+      await shell.openExternal(
+        "x-apple.systempreferences:com.apple.Accessibility-Settings.extension",
+      );
+      return;
+    case "memorySummary":
+      return summarizeMemory(memory!.data());
+    case "forgetMemory":
+      // A finishing run would otherwise learn into the cleared store.
+      ensureIdle();
+      memory!.clear();
+      debug("MemoryCleared");
+      return;
     case "history":
       return vault.list();
     case "loadRun": {
@@ -732,6 +1647,12 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         throw new Error(
           "Withdraw the contribution before deleting this local run.",
         );
+      // What memory learned from the run goes with it, even when learning is
+      // off now. Forgotten first so a failed removal can simply be retried.
+      if (memory?.data().episodes.some((e) => e.id === id)) {
+        memory.update((data) => forgetRunIn(data, id));
+        flushMemory();
+      }
       vault.remove(id);
       reviewCache.delete(id);
       return;
@@ -819,6 +1740,40 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     default:
       throw new Error("Unsupported application command.");
   }
+}
+/**
+ * Reloads a crashed page so the pill never goes invisible: at most three
+ * reloads per window per minute, then one deferred reload once the oldest
+ * leaves that window (a later crash cannot be relied on to retry).
+ */
+function reloadRenderer(win: BrowserWindow) {
+  if (shuttingDown || win.isDestroyed() || deferredReloads.has(win)) return;
+  const now = Date.now(),
+    recent = (rendererReloads.get(win) ?? []).filter((t) => now - t < 60000),
+    delay = budgetDelay(recent, now, 3, 60000);
+  rendererReloads.set(win, recent);
+  if (delay) {
+    const timer = setTimeout(() => {
+      deferredReloads.delete(win);
+      if (shuttingDown || win.isDestroyed() || !win.webContents.isCrashed())
+        return;
+      reloadRenderer(win);
+    }, delay);
+    timer.unref?.();
+    deferredReloads.set(win, timer);
+    return;
+  }
+  recent.push(now);
+  void loadPage(win, win === indicator ? "pill" : "settings")
+    .then(() => {
+      if (win === indicator) setPill({});
+    })
+    .catch((error) => debug("RendererReloadFailed", errorDetails(error)));
+}
+function loadPage(win: BrowserWindow, hash: "settings" | "pill") {
+  return process.env.COARENA_DEV === "1"
+    ? win.loadURL(`http://127.0.0.1:5173/#${hash}`)
+    : win.loadFile(join(__dirname, "../dist/index.html"), { hash });
 }
 function importLaunch(args: string[]): boolean {
   const imported = importLaunchCredentials(args, settings, credentials);
@@ -942,10 +1897,17 @@ app
       );
     }
     vault = new Vault(join(root, "runs"), master);
+    // Sealed with the vault key (AAD "memory"); nothing is stored in plaintext.
+    memory = new MemoryStore(join(root, "memory"), master, undefined, {
+      onError: (error) => debug("MemoryStoreFailed", errorDetails(error)),
+    });
     if (process.env.COARENA_DIAGNOSTICS === "1") {
       diagnostics = new LocalDiagnostics(
         process.env.COARENA_DIAGNOSTICS_DIR ?? join(root, "diagnostics"),
         () => Object.values(credentials),
+        undefined,
+        undefined,
+        process.env.COARENA_DIAGNOSTICS_VERBOSE === "1",
       );
       debug("AppStarted", {
         provider: settings.provider,
@@ -1004,12 +1966,19 @@ app
     indicator.setAlwaysOnTop(true, "floating");
     indicator.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     for (const win of [window, indicator]) {
-      win.webContents.on("render-process-gone", (_event, details) =>
+      win.webContents.on("render-process-gone", (_event, details) => {
         debug("RendererGone", {
           reason: details.reason,
-          code: String(details.exitCode),
-        }),
-      );
+          exitCode: details.exitCode,
+        });
+        if (
+          shuttingDown ||
+          win.isDestroyed() ||
+          details.reason === "clean-exit"
+        )
+          return;
+        reloadRenderer(win);
+      });
       win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       win.webContents.on("will-navigate", (e) => e.preventDefault());
     }
@@ -1041,20 +2010,16 @@ app
         return await dispatch(method, args);
       } catch (error) {
         debug("CommandFailed", { method, ...errorDetails(error) });
+        // The overlay cannot resize itself; main owns every visible pill error.
+        if (!main && method !== "pillState")
+          showFailure(
+            error instanceof Error ? error.message : "Something went wrong.",
+          );
         throw error;
       }
     });
-    if (process.env.COARENA_DEV === "1") {
-      await window.loadURL("http://127.0.0.1:5173/#settings");
-      await indicator.loadURL("http://127.0.0.1:5173/#pill");
-    } else {
-      await window.loadFile(join(__dirname, "../dist/index.html"), {
-        hash: "settings",
-      });
-      await indicator.loadFile(join(__dirname, "../dist/index.html"), {
-        hash: "pill",
-      });
-    }
+    await loadPage(window, "settings");
+    await loadPage(indicator, "pill");
     const bitmap = Buffer.alloc(18 * 18 * 4);
     for (let y = 0; y < 18; y++)
       for (let x = 0; x < 18; x++) {
@@ -1083,6 +2048,8 @@ app
     });
     globalShortcut.register("Control+Alt+Escape", () => {
       cancelVoiceCapture();
+      void conversation.stopSpeaking();
+      voiceHeld = false;
       runner?.stop("Stopped.");
       setPill({
         phase: "done",
@@ -1099,17 +2066,7 @@ app
     });
     app.dock?.hide();
     if (imported || !existsSync(join(root, "config.enc"))) showSettings();
-    if (process.platform === "darwin") {
-      void getVoice()
-        .call("enable")
-        .catch(() => {});
-      void getVoice()
-        .call("configure", {
-          handsFree: settings.handsFree,
-          controllerPID: getNative().pid,
-        })
-        .catch((error) => debug("VoiceSetupFailed", errorDetails(error)));
-    }
+    if (process.platform === "darwin") void configureVoice();
     try {
       await launchCommand(process.argv);
     } catch (error) {
@@ -1121,6 +2078,9 @@ app
         canApprove: false,
       });
     }
+    // After any launch command, which would otherwise queue behind it; a run
+    // that command started skips it.
+    prewarmIndex();
   })
   .catch(() => {
     dialog.showErrorBox(
@@ -1130,12 +2090,22 @@ app
     app.quit();
   });
 app.on("window-all-closed", () => app.quit());
+// A run stopped during before-quit may learn afterwards; write that too.
+app.on("will-quit", () => {
+  flushMemory();
+  try {
+    kokoro?.dispose();
+  } catch {}
+});
 app.on("before-quit", () => {
   if (shuttingDown) return;
   shuttingDown = true;
   debug("AppStopping");
   clearInterval(diagnosticHeartbeat);
+  for (const timer of deferredReloads.values()) clearTimeout(timer);
+  deferredReloads.clear();
   runner?.stop();
+  flushMemory();
   native?.close();
   voice?.close();
   tray?.destroy();

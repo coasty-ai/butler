@@ -6,7 +6,11 @@ import { parseEnv } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { HttpProvider } from "../src/providers/http.ts";
-import { defaultSettings, validateAction } from "../src/core/schema.ts";
+import {
+  defaultSettings,
+  normalizePixelCoordinates,
+  validateAction,
+} from "../src/core/schema.ts";
 import { selectProvider } from "../src/providers/catalog.ts";
 import { importEnvCredentials, providerKey } from "../electron/credentials.ts";
 import { resolve, join } from "node:path";
@@ -127,9 +131,38 @@ try {
       : await client.next(observation, AbortSignal.timeout(65000));
     for (const key of Object.keys(report.usage))
       report.usage[key] += response.usage[key];
+    // A refusal will repeat on the same input; the runner pauses, so fail here.
+    if (response.refused) {
+      report.steps.push({
+        type: "provider_refused",
+        problem: response.problem,
+        latencyMs: Date.now() - start,
+      });
+      assert(false, "The model declined this step");
+    }
+    // A malformed model reply is a rejected step, like an invalid action.
+    if (response.problem) {
+      report.steps.push({
+        type: "rejected_provider_problem",
+        problem: response.problem,
+        latencyMs: Date.now() - start,
+      });
+      history.push({
+        type: "rejected",
+        result: `${response.problem} Return exactly one action for the current frame_id.`,
+      });
+      assert(++invalidActions < 3, "Repeated invalid actions");
+      continue;
+    }
     let action;
     try {
-      action = validateAction(response.action, observation.frame);
+      // The provider already maps the frame alias back to the real id; mirror
+      // the runner's pixel-coordinate normalization before validation.
+      action = validateAction(
+        normalizePixelCoordinates(response.action, observation.frame.geometry)
+          .action,
+        observation.frame,
+      );
     } catch {
       report.steps.push({
         type: "rejected_invalid_action",

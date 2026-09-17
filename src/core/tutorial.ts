@@ -62,6 +62,9 @@ export class TutorialController implements Controller {
   async execute(a: Action, _f: Frame, signal: AbortSignal) {
     signal.throwIfAborted();
     if (this.stopped) throw new Error("Stopped.");
+    // The practice space has no applications or files to open; policy
+    // retries open_app and open_file on synthetic runs, so this is unreachable.
+    if (a.type === "open_app" || a.type === "open_file") return;
     if (
       a.type === "drag" &&
       a.start_x < 0.48 &&

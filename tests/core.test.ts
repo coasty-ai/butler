@@ -95,6 +95,8 @@ describe("action boundary", () => {
       { type: "request_user", reason: "Login" },
       { type: "done", summary: "Done" },
       { type: "fail", reason: "Unavailable" },
+      { type: "open_app", name: "Notes" },
+      { type: "open_file", path: "~/Documents/Q3.xlsx" },
     ])
       expect(actionSchema.safeParse({ ...a, frame_id: frame.id }).success).toBe(
         true,
@@ -157,18 +159,22 @@ describe("hard policy", () => {
         false,
       ).kind,
     ).toBe("ALLOW");
-    expect(
-      evaluate(
-        action,
-        {
-          ...surface,
-          targetRole: "AXLink",
-          targetURL: "https://www.youtube.com.evil.test/watch?v=test",
-        },
-        settings,
-        false,
-      ).kind,
-    ).toBe("RETRY");
+    // Any ordinary web link is routine navigation; executable and local-file
+    // schemes are denied and protected sites still need approval.
+    for (const [targetURL, kind] of [
+      ["https://www.youtube.com.evil.test/watch?v=test", "ALLOW"],
+      ["javascript:alert(1)", "DENY"],
+      ["file:///tmp/task.command", "DENY"],
+      ["https://www.paypal.com/myaccount", "CONFIRM"],
+    ])
+      expect(
+        evaluate(
+          action,
+          { ...surface, targetRole: "AXLink", targetURL },
+          settings,
+          false,
+        ).kind,
+      ).toBe(kind);
     expect(
       evaluate(
         action,
@@ -188,27 +194,43 @@ describe("hard policy", () => {
   });
   it.each([
     {
-      query: "Chrome",
-      selectedResult: "Chrome Remote Desktop Host Uninstaller",
+      launcher: {
+        query: "Chrome",
+        selectedResult: "Chrome Remote Desktop Host Uninstaller",
+      },
+      kind: "DENY",
     },
-    { query: "Chrome", selectedResult: "Google Chrome" },
-    { query: "Notes", selectedResult: "Notes Installer" },
-    { query: "Chrome" },
-    { query: "", selectedResult: "Google Chrome" },
-  ])("rejects unverified or mismatched Spotlight launch: %j", (launcher) => {
-    expect(
-      evaluate(
-        { type: "key", key: "ENTER", frame_id: frame.id },
-        {
-          ...surface,
-          appId: "com.apple.Spotlight",
-          focusedRole: "AXTextField",
-          launcher,
-        },
-        settings,
-        false,
-      ).kind,
-    ).toBe("DENY");
+    {
+      launcher: { query: "Notes", selectedResult: "Notes Installer" },
+      kind: "DENY",
+    },
+    {
+      launcher: { query: "Chrome", selectedResult: "Google Chrome" },
+      kind: "ALLOW",
+    },
+    {
+      launcher: {
+        query: "Chrome",
+        selectedResult: "Chrome Remote Desktop Host",
+      },
+      kind: "RETRY",
+    },
+    { launcher: { query: "Chrome" }, kind: "RETRY" },
+    { launcher: { query: "", selectedResult: "Google Chrome" }, kind: "RETRY" },
+  ])("verifies the Spotlight launch selection: %j", ({ launcher, kind }) => {
+    const decision = evaluate(
+      { type: "key", key: "ENTER", frame_id: frame.id },
+      {
+        ...surface,
+        appId: "com.apple.Spotlight",
+        focusedRole: "AXTextField",
+        launcher,
+      },
+      settings,
+      false,
+    );
+    expect(decision.kind).toBe(kind);
+    if (kind === "RETRY") expect(decision.reason).toContain("open_app");
   });
   it("allows the full matching app name and stops an unexpected uninstaller", () => {
     expect(
@@ -270,7 +292,7 @@ describe("hard policy", () => {
         ).kind,
       ).toBe(["key", "hotkey"].includes(a.type) ? "CONFIRM" : "RETRY");
   });
-  it("opens verified Dock applications without allowing documents, Trash or lookalikes", () => {
+  it("redirects verified Dock launches to open_app without allowing documents, Trash or lookalikes", () => {
     const click = {
       type: "click" as const,
       button: "left" as const,
@@ -286,7 +308,9 @@ describe("hard policy", () => {
       launcherAppId: "com.apple.Notes",
       targetLabel: "Notes",
     };
-    expect(evaluate(click, dock, settings, false).kind).toBe("ALLOW");
+    const redirected = evaluate(click, dock, settings, false);
+    expect(redirected.kind).toBe("RETRY");
+    expect(redirected.reason).toContain("open_app");
     for (const changed of [
       { targetAppId: "com.fake.dock" },
       { targetSubrole: "AXTrashDockItem" },
@@ -337,14 +361,16 @@ describe("hard policy", () => {
     ]) {
       const a = actionSchema.parse({ ...action, frame_id: frame.id });
       expect(evaluate(a, note, settings, false).kind).toBe("ALLOW");
-      expect(
-        evaluate(
-          a,
-          { ...note, appId: "com.tinyspeck.slackmacgap" },
-          settings,
-          false,
-        ).kind,
-      ).not.toBe("ALLOW");
+      // CMD+N is a routine shortcut in every application.
+      if (a.type !== "hotkey")
+        expect(
+          evaluate(
+            a,
+            { ...note, appId: "com.tinyspeck.slackmacgap" },
+            settings,
+            false,
+          ).kind,
+        ).not.toBe("ALLOW");
       expect(
         evaluate(a, { ...note, secureInput: true }, settings, false).kind,
       ).toBe("USER_TAKEOVER");
@@ -369,6 +395,15 @@ describe("hard policy", () => {
         false,
       ).kind,
     ).toBe("ALLOW");
+    for (const label of ["New Note", "Create a note"])
+      expect(
+        evaluate(
+          click,
+          { ...note, targetRole: "AXButton", targetLabel: label },
+          settings,
+          false,
+        ).kind,
+      ).toBe("ALLOW");
     for (const label of ["Send", "Delete", "Share", "Buy", "Change password"])
       expect(
         evaluate(

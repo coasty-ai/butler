@@ -12,10 +12,12 @@ if (!existsSync(envFile)) {
 const appPath = join(project, "release/mac-arm64/Open Assist.app");
 const args = ["--import-env", envFile, ...process.argv.slice(2)];
 const packaged = process.platform === "darwin" && existsSync(appPath);
+const { ELECTRON_RUN_AS_NODE: _runAsNode, ...launchEnv } = process.env;
 const child = spawn(
   packaged ? "/usr/bin/open" : join(project, "node_modules/.bin/electron"),
   packaged ? ["-n", appPath, "--args", ...args] : [project, ...args],
-  { cwd: project, stdio: "inherit" },
+  // VS Code exports ELECTRON_RUN_AS_NODE=1; the app must not inherit it.
+  { cwd: project, stdio: "inherit", env: launchEnv },
 );
 child.on("error", () => {
   console.error("Could not launch Open Assist. Run npm run build first.");

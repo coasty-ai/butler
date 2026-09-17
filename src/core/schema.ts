@@ -79,6 +79,45 @@ export const actionSchema = z.discriminatedUnion("type", [
       keys: z.array(key).min(1).max(4),
     })
     .strict(),
+  // Launch-only primitive. A plain application display name, never a path,
+  // bundle identifier, URL or document. The native helper resolves it against
+  // allow-listed application folders; see docs/ARCHITECTURE.md.
+  z
+    .object({
+      ...base,
+      type: z.literal("open_app"),
+      name: z
+        .string()
+        .trim()
+        .min(1)
+        .max(100)
+        .regex(/^[^/\\:\u0000-\u001f\u007f]+$/, "Use a plain application name.")
+        .refine(
+          (name) => !name.startsWith("."),
+          "Use a plain application name.",
+        ),
+    })
+    .strict(),
+  // Open-only primitive for a document or folder the local system index
+  // reported (home-relative "~/..." path). Never executables, apps, scripts or
+  // installers; see docs/MEMORY.md.
+  z
+    .object({
+      ...base,
+      type: z.literal("open_file"),
+      path: z
+        .string()
+        .trim()
+        .min(3)
+        .max(500)
+        .regex(/^~\/[^\u0000-\u001f\u007f]+$/, "Use a ~/ path from context.")
+        .refine(
+          (path) =>
+            !path.split("/").some((part) => part === ".." || part === "."),
+          "Use a ~/ path from context.",
+        ),
+    })
+    .strict(),
   z
     .object({
       ...base,
@@ -111,6 +150,15 @@ export const providerSchema = z.enum([
   "compatible",
 ]);
 export type ProviderKind = z.infer<typeof providerSchema>;
+/** OpenAI gpt-4o-mini-tts voices offered for the opt-in natural voice. */
+export const cloudVoices = [
+  "marin",
+  "cedar",
+  "alloy",
+  "coral",
+  "sage",
+  "verse",
+] as const;
 export const settingsSchema = z
   .object({
     privacy: privacySchema,
@@ -127,6 +175,28 @@ export const settingsSchema = z
     displayId: z.number().int().nonnegative().optional(),
     contributionEndpoint: z.string().max(300),
     handsFree: z.boolean().default(false),
+    /** Learn from completed tasks (local encrypted memory, skills, index). */
+    memory: z.boolean().default(true),
+    /**
+     * Spoken replies: "voice" only for turns the user started by voice,
+     * "always" also for typed tasks (never typed acknowledgements).
+     */
+    voiceReplies: z.enum(["off", "voice", "always"]).default("voice"),
+    /** "openai" is opt-in and only used in PRIVATE_BYOM with an OpenAI key. */
+    /**
+     * system: Apple voice (on-device). kokoro: free natural on-device voice
+     * after its one-time model download. openai: opt-in cloud voice.
+     */
+    voiceEngine: z.enum(["system", "kokoro", "openai"]).default("system"),
+    /** System engine voice identifier; "" picks the best installed voice. */
+    voiceId: z.string().max(200).default(""),
+    cloudVoice: z.enum(cloudVoices).default("marin"),
+    voiceRate: z.number().min(0.8).max(1.4).default(1),
+    /** How long hands-free listening waits through a pause. */
+    listeningPatience: z.enum(["quick", "normal", "relaxed"]).default("normal"),
+    /** Hands-free only: listen briefly for a reply without the wake phrase. */
+    followUpListening: z.boolean().default(true),
+    voiceSounds: z.boolean().default(true),
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
@@ -158,6 +228,15 @@ export const defaultSettings: Settings = {
   ],
   contributionEndpoint: "",
   handsFree: false,
+  memory: true,
+  voiceReplies: "voice",
+  voiceEngine: "system",
+  voiceId: "",
+  cloudVoice: "marin",
+  voiceRate: 1,
+  listeningPatience: "normal",
+  followUpListening: true,
+  voiceSounds: true,
 };
 export interface Geometry {
   display_id: number;
@@ -192,6 +271,14 @@ export interface ScreenContext {
   recentWindows?: { appName: string; title: string }[];
   recentFiles?: string[];
   recentTasks?: { task: string; status: string }[];
+  /** Visible controls of the focused window; x/y are screenshot fractions. */
+  controls?: {
+    role: string;
+    label?: string;
+    x: number;
+    y: number;
+    enabled?: boolean;
+  }[];
 }
 export interface Surface {
   appId: string;
@@ -210,6 +297,23 @@ export interface Surface {
   addressBar?: boolean;
   focusedValue?: string;
   launcher?: { query: string; selectedResult?: string };
+  /** Text of the element originally hit before walking up to its control. */
+  targetText?: string;
+  /** Host of the web page containing the pointer target, if any. */
+  targetWebHost?: string;
+  /** A sheet, dialog or alert is focused or contains the target. */
+  modal?: boolean;
+  focusedSubrole?: string;
+  /** Title, description or placeholder of the focused element (bounded). */
+  focusedLabel?: string;
+  /** open_app resolution produced natively by surface(action). */
+  launcherName?: string;
+  launcherStatus?: "resolved" | "unresolved" | "ambiguous" | "refused";
+  launcherCandidates?: string[];
+  /** open_file resolution produced natively by surface(action). */
+  fileStatus?: "resolved" | "unresolved" | "refused";
+  fileKind?: "document" | "folder";
+  fileName?: string;
 }
 export interface Usage {
   inputTokens: number;
@@ -220,18 +324,62 @@ export interface Observation {
   task: string;
   frame: Frame;
   history: { type: string; action?: Record<string, unknown>; result: string }[];
+  /** Task-relevant memory and system index context (bounded; see docs/MEMORY.md). */
+  memory?: MemoryContext;
+}
+export interface MemoryContext {
+  /** Learned preferences relevant to the task (sanitized, short). */
+  preferences: string[];
+  /** Similar past tasks and how they ended (short lines). */
+  episodes: string[];
+  /** Installed applications relevant to the task or frequently used. */
+  apps?: { name: string; bundleId: string }[];
+  /** Files matching the task or recently used (home-relative paths). */
+  files?: { name: string; path: string; kind: string; lastUsed?: string }[];
+  folders?: { name: string; path: string }[];
+  /** Outline of a known plan (skill or built-in intent) for the model. */
+  plan?: { source: "skill" | "intent"; note: string; steps: string[] };
+}
+export interface ProviderResult {
+  action: unknown;
+  usage: Usage;
+  /**
+   * Set when an HTTP 200 response did not contain one usable action (no tool
+   * call, several calls, malformed JSON, truncated output). A fixed,
+   * content-free description; the runner treats it as a rejected step.
+   */
+  problem?: string;
+  /**
+   * The model or provider declined the step (for example a safety refusal).
+   * Retrying the same observation will not help; the run should pause.
+   */
+  refused?: boolean;
 }
 export interface Provider {
-  next(
-    observation: Observation,
-    signal: AbortSignal,
-  ): Promise<{ action: unknown; usage: Usage }>;
+  next(observation: Observation, signal: AbortSignal): Promise<ProviderResult>;
+}
+export interface ExecutionResult {
+  launched?: {
+    appId: string;
+    name: string;
+    frontmost: boolean;
+    wasRunning: boolean;
+  };
+  opened?: {
+    path: string;
+    kind: "document" | "folder";
+    appId?: string;
+  };
 }
 export interface Controller {
   kind: "tutorial" | "native";
   surface(action?: Action): Promise<Surface>;
   capture(): Promise<Frame>;
-  execute(action: Action, frame: Frame, signal: AbortSignal): Promise<void>;
+  execute(
+    action: Action,
+    frame: Frame,
+    signal: AbortSignal,
+  ): Promise<void | ExecutionResult>;
   stop(): void;
   resume(): Promise<void>;
   restore?(frame: Frame): Promise<void>;
@@ -298,6 +446,53 @@ export function validateAction(input: unknown, frame: Frame): Action {
   if (a.type === "hotkey" && a.keys.length === 1)
     return { type: "key", key: a.keys[0], frame_id: a.frame_id };
   return a;
+}
+const pointFields = [
+  ["x", "model_width"],
+  ["y", "model_height"],
+  ["start_x", "model_width"],
+  ["start_y", "model_height"],
+  ["end_x", "model_width"],
+  ["end_y", "model_height"],
+] as const;
+/**
+ * Models sometimes return screenshot pixels instead of 0..1 fractions. Values
+ * of 2 or more that fit inside the advertised image are unambiguous pixels and
+ * are divided by the image size. Values in (1, 2), negatives, non-finite
+ * numbers and values beyond the image stay untouched so validation rejects
+ * them. Returns the original object when nothing changed.
+ */
+export function normalizePixelCoordinates(
+  input: unknown,
+  geometry: Pick<Geometry, "model_width" | "model_height">,
+): { action: unknown; normalized: boolean } {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return { action: input, normalized: false };
+  const source = input as Record<string, unknown>;
+  const present = pointFields.filter(([field]) => field in source);
+  if (!present.length) return { action: input, normalized: false };
+  const pixels = present.some(
+    ([field]) =>
+      typeof source[field] === "number" && (source[field] as number) >= 2,
+  );
+  if (!pixels) return { action: input, normalized: false };
+  const fits = present.every(([field, size]) => {
+    const value = source[field];
+    return (
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value >= 0 &&
+      value <= geometry[size]
+    );
+  });
+  if (!fits || geometry.model_width < 2 || geometry.model_height < 2)
+    return { action: input, normalized: false };
+  const action: Record<string, unknown> = { ...source };
+  for (const [field, size] of present) {
+    const value = source[field] as number;
+    action[field] = Math.min(1, value / geometry[size]);
+  }
+  return { action, normalized: true };
 }
 export function sameGeometry(a: Geometry, b: Geometry): boolean {
   // Swift dictionaries do not promise a stable JSON property order. Check

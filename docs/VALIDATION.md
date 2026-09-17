@@ -2,6 +2,66 @@
 
 Validated September 16, 2026 on an Apple Silicon Mac. This is a development alpha with implemented native paths; automated synthetic success is not a claim of live agent reliability.
 
+The table and follow-ups below the next section are the earlier September 16 baseline; their test counts are superseded by the current change set.
+
+## Current change set: memory, spoken replies and forgiving turn-taking (September 17, 2026)
+
+Scope: local memory, system index, learned skills and `open_file` ([MEMORY.md](MEMORY.md)); spoken replies with the Mac voice, the free on-device Kokoro voice and the opt-in OpenAI voice; patience-based endpoints, segment accumulation, follow-up windows, fragment clarification and continuation amendment ([VOICE_PRODUCT.md](VOICE_PRODUCT.md)). Two independent reviews (memory: 25 confirmed findings; voice: 14 confirmed findings) were fixed and re-verified with tests that fail when each fix is reverted.
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | Pass |
+| `npx vitest run` | 21 files, 1008 passed, 1 skipped (real Kokoro data test runs only with `KOKORO_DATA_DIR`) |
+| `npm run test:native-safety` | 947 PASS, 0 FAIL |
+| `npm run build` | Pass |
+| `npm run test:e2e` | 3 passed |
+| `npm run test:desktop` | Passed, 21 checks (one earlier run timed out waiting for Settings under heavy CPU load from a parallel benchmark; it passed on retry) |
+| `npm run package:mac` (unsigned) | Pass; 347 MB app, ONNX Runtime darwin-arm64 binaries unpacked from asar |
+| Native index on this Mac | 58 apps, 8 folders, 20 recent files; 0.2–0.5 s warm after token and cache fixes |
+| Live built-in intent (“Open Calculator”) | Opened Calculator with no model call; both live runs then paused for a real hardware mouse movement (takeover worked as designed) |
+| Kokoro (onnxruntime-node, fp32, M2) | 332 MB verified download in 16 s; about 1.3 s cold to first audio; about 0.5 s per short sentence warm; about 700 MB worker memory; 0 word errors in a Whisper round trip during the spike |
+
+Not measured yet (need the microphone, speakers and a person): spoken-reply start latency on device, false activations in follow-up windows, echo with Bluetooth output, cut-off rate for disfluent speech at each patience level, and push-to-talk success for very short answers.
+
+## Current change set: open_app, grounded controls and recoverable run loop (September 16, 2026)
+
+Scope: launch-only `open_app` with native resolution and denial (`LaunchSafety.swift`); grounded `context.controls` including browser web-area controls; Safari page-host detection for protected domains; tolerant single-object extraction from model text; Calculator, search-result-page and heading policy; Dock clicks redirected to `open_app`; executed-target step history, loop and app-switch detection, refusal/outage/native-error recovery, active-time budget and live settings updates; helper auto-restart and parent-death exit; voice stop/pause from final transcripts only; the opt-in live harness.
+
+| Check | Result | Notes |
+|---|---|---|
+| `npm test` | 492 tests passed (11 files) | Final diff, including the post-review fixes below |
+| Native Swift checks | 190 passed | Frame, wake-policy and launch-safety checks; final diff |
+| `npm run test:e2e` | 3 passed | Final diff |
+| `npm run test:desktop` | 18 checks passed | Final diff (development Electron with isolated storage) |
+| `npm run test:native-input` | 24 checks passed before the review-fix round; not re-run on the final diff | Later runs failed only at the Spotlight step: with the unbundled fixture frontmost, macOS did not open Spotlight for a synthetic Command-Space at all (the same helper opened it from VS Code in 0.4–1 s, and the pre-change packaged helper could not reach the step because a 0.46 px pointer echo triggered the old false takeover). The step now records an explicit skip after one bounded retry. The final run was not executed because the user may have been using the Mac |
+| `npm run build`, `npm run build:native`, TypeScript, Prettier | Passed | Final diff |
+
+Live desktop runs used `npm run test:live` from a terminal on this Mac (source native helper, not the packaged app), GPT-5.4 mini unless noted. Reports: `output/qa/live-task-*.json`.
+
+| Task | Result | Detail |
+|---|---|---|
+| Calculator: 128 × 46 (four earlier runs) | Failed | Three runs hit their action budgets (25, 16 and 16 actions; $0.121, $0.090, $0.059), with repeated retargets or loop warnings. One run reported completion in 13 actions/45 s/$0.047 but stated 51888, a **wrong result**. The models treated their own entered digit as leftover state and cleared it |
+| Calculator: 128 × 46, `claude-sonnet-5` | Failed | Same clearing behaviour; action budget at 16 actions, $0.184 |
+| Calculator: 128 × 46, after executed-target step memory | Completed | Correct 5888 in 5 actions, 22 s, $0.020; one transient provider outage recovered without a pause |
+| Safari web search for San Francisco weather | Completed | 3 actions, 32 s, $0.013, no approvals |
+| Safari + Calculator: San Francisco temperature °F → °C (earlier attempts) | Failed | One run hit its 25-action budget ($0.143) after three declined approvals (the results-page unit toggle needed approval) and loop warnings; another stopped at takeover after five unidentified targets ($0.040). Also observed: a Dock mis-click launched Freeform, heading clicks returned `RETRY`, and web controls were not grounded |
+| Safari + Calculator: °F → °C (after fixes) | Completed | 63 °F = 17.2 °C, correct; 19 actions, 102 s, $0.10, no pauses. Fixes: search-result-host buttons, `AXHeading` content clicks, Dock → `open_app`, web-area control grounding and the app-switch warning |
+
+Post-review fixes to the last changes (a final safety review of grounding, search-result and Calculator policy): search-result-host buttons are routine only when the target is inside the browser's page with the same host (browser chrome, other apps' panels and embedded account/consent frames on other hosts need approval); Calculator keypad rules apply only to named keypad keys with no sheet or dialog open; the Safari page-host search skips hostless web areas and browser chrome; over-long titles and labels are truncated instead of dropping the whole context; executed-step history never names an editable field by its value; embedded JSON is accepted only when fenced or bare, never from surrounding prose or next to a truncated second object.
+
+Open limitations:
+
+- Mini-model planning is still the main limit on multi-app tasks: successful runs needed several recoveries and failed attempts outnumbered successes.
+- Spotlight on this Mac intermittently ignores the first synthetic Command-Space; the native smoke retries once.
+- The packaged app in `release/mac-arm64` was **not rebuilt** for this change set; the installed instance runs the earlier build.
+- Live voice/microphone paths (push-to-talk, wake phrase, spoken stop/pause/approval, voice hold) were not exercised.
+- Gemini remains untested for these tasks.
+- Grounded controls and search-result-host rules were validated only on the tasks above, not on arbitrary sites or apps. The post-review fixes were verified by unit tests; the live tasks ran before them.
+- Capture takes about 850 ms on a busy web page with grounding (about 500 ms before), from stable sampling plus the time-capped web walk.
+- The built-in search-result-host rule still trusts localized, non-consequential-looking buttons inside those result pages (for example a consent button).
+
+## Earlier baseline
+
 | Check | Result | What it establishes |
 |---|---|---|
 | `npm test` | 142 tests passed across nine files | Schema bounds, private routing, policy, budgets/cancellation, correction invalidation, manual takeover, scoped approval, context sanitization, provider fixtures, encrypted storage, safe env import, endpoint-bound credentials, changed-screen recovery, approval revalidation, consent/upload/withdrawal and seeded task grading; plus transient connection recovery, bounded retries, secret redaction, permanent errors, cancellation during retry delay, partial-body failure and a shared request deadline. Diagnostic checks verify key/content exclusion, rotation/permissions, event deduplication, UUID preservation and non-interference; desktop transport checks cover TLS-record fallback, proxy preservation and certificate failure |
@@ -36,10 +96,10 @@ During the live LaunchServices debug session, the package reported Screen Record
 ## Remaining live checks
 
 - Grant microphone/speech and screen/input permissions to the intended app/helpers; verify denial, revocation and restart behavior. Permission attribution and entitlements need validation in the final signed layout.
-- Test actual desktop tasks with the configured model. Live API success so far uses generated browser fixtures. Arbitrary-app success has not been established.
+- Test actual desktop tasks with the configured model in the packaged app. The live harness results above cover a few Calculator/Safari tasks; arbitrary-app success has not been established.
 - Measure local speech finalization, accent/noise behavior, confidence-gated approval and all interruption boundaries, including Escape, held modifiers, manual cursor movement and mid-drag release.
 - Measure key-down→pill, key-down→audio-ready, release→first useful action and interrupt→last input. The <100 ms feedback target has not been benchmarked.
-- Test Retina/external monitors, moving windows, stale-screen checks, protected surfaces, accessibility coverage and false approvals. Unknown controls currently require approval.
+- Test Retina/external monitors, moving windows, stale-screen checks, protected surfaces, accessibility coverage and false approvals. Labelled controls outside the benign allow-list currently require approval; unidentified targets retry without input.
 - Context is collected with the first observation after release. Invocation-time prefetch, a comprehensive recent-files index and optional spoken TTS are not implemented. Recent documents are bounded references observed during runs, not a filesystem scan.
 - Sign/notarize the release, verify helper entitlements, add signed updates and perform security/privacy review before public distribution. Contribution hosting remains a local reference implementation.
 
@@ -65,7 +125,7 @@ Approval interruption diagnosis (`2594b4be-212d-4b80-9d0d-37d1546e38d3`): three 
 
 The native animated-background regression now passes with real Command-A, Unicode typing and Escape while a large rectangle changes color continuously. Changed focus, field value and selection still reject typing. Seventeen checks passed in `output/qa/native-input-smoke.json`; pure native checks total 46.
 
-Approval-frequency follow-up: the Notes task requested approval for an app-launch click, then an unidentified target in Notes and a later target in Code. Added verified Dock application metadata/launch policy, Notes draft creation and multiline editing, and bounded non-executing targeting recovery. All 139 unit/integration tests and seventeen native input checks passed. A read-only probe through the actual Swift helper classified the Notes Dock icon as ALLOW, Terminal as USER_TAKEOVER, and Trash as RETRY. Protected and consequential controls retain their gates. Full task replay results are recorded separately below when available.
+Approval-frequency follow-up: the Notes task requested approval for an app-launch click, then an unidentified target in Notes and a later target in Code. Added verified Dock application metadata/launch policy, Notes draft creation and multiline editing, and bounded non-executing targeting recovery. All 139 unit/integration tests and seventeen native input checks passed. A read-only probe through the actual Swift helper classified the Notes Dock icon as ALLOW, Terminal as USER_TAKEOVER, and Trash as RETRY. (Superseded: Dock application clicks now return RETRY with a redirect to `open_app`.) Protected and consequential controls retain their gates. Full task replay results are recorded separately below when available.
 
 The final provider request uses low reasoning for GPT-5.4 mini, with 141 tests passing. Its generated-browser API fixture completed in five calls (16.503 seconds overall; estimated $0.00818). Two preceding real Notes launch attempts with reasoning unset failed on repeated Spotlight name mismatch; neither prompted for approval, and neither completed the note. These are recorded as failures, not task successes.
 

@@ -105,6 +105,17 @@ try {
   const info = await page.evaluate(() => window.coarena.info());
   assert.equal(info.desktop, true);
   assert.equal(info.encrypted, true);
+  const emptyMemory = {
+    counts: { episodes: 0, preferences: 0, skills: 0, apps: 0 },
+    preferences: [],
+    skills: [],
+  };
+  assert.equal(info.settings.memory, true, "Learning is on by default");
+  assert.deepEqual(
+    await page.evaluate(() => window.coarena.memorySummary()),
+    emptyMemory,
+    "A fresh store has learned nothing",
+  );
   const activation = await application.evaluate(({ app, BrowserWindow }) => {
     const settingsWindow = BrowserWindow.getAllWindows().find((w) =>
       w.webContents.getURL().endsWith("#settings"),
@@ -163,6 +174,149 @@ try {
       .inputValue(),
     "shortcut",
   );
+  // Spoken replies: defaults, status fields and the settings controls.
+  assert.deepEqual(
+    {
+      voiceReplies: info.settings.voiceReplies,
+      voiceEngine: info.settings.voiceEngine,
+      voiceId: info.settings.voiceId,
+      cloudVoice: info.settings.cloudVoice,
+      voiceRate: info.settings.voiceRate,
+      listeningPatience: info.settings.listeningPatience,
+      followUpListening: info.settings.followUpListening,
+      voiceSounds: info.settings.voiceSounds,
+    },
+    {
+      voiceReplies: "voice",
+      voiceEngine: "system",
+      voiceId: "",
+      cloudVoice: "marin",
+      voiceRate: 1,
+      listeningPatience: "normal",
+      followUpListening: true,
+      voiceSounds: true,
+    },
+    "Voice settings have their defaults",
+  );
+  assert.equal(info.voice.speaking, false, "Nothing is spoken at launch");
+  assert(
+    ["none", "default", "enhanced", "premium"].includes(
+      info.voice.voiceQuality,
+    ),
+    `Unexpected voiceQuality ${info.voice.voiceQuality}`,
+  );
+  assert.equal(typeof info.voice.voiceName, "string");
+  // The imported OpenAI key in PRIVATE_BYOM allows the opt-in natural voice.
+  assert.equal(info.voice.cloudVoiceAllowed, true);
+  // The free on-device natural voice reports its status without downloading.
+  const kokoroKeys = [
+    "bytes",
+    "downloading",
+    "installed",
+    "progress",
+    "supported",
+    "totalBytes",
+  ];
+  const assertKokoroStatus = (status, where) => {
+    assert.equal(typeof status, "object", `${where} is missing`);
+    assert.deepEqual(
+      Object.keys(status)
+        .filter((key) => key !== "error")
+        .sort(),
+      kokoroKeys,
+      `${where} has unexpected fields`,
+    );
+    for (const key of ["supported", "installed", "downloading"])
+      assert.equal(typeof status[key], "boolean", `${where}.${key}`);
+    for (const key of ["progress", "bytes", "totalBytes"])
+      assert(
+        Number.isFinite(status[key]) && status[key] >= 0,
+        `${where}.${key} must be a non-negative number`,
+      );
+    assert(status.progress <= 1, `${where}.progress must be 0-1`);
+    assert(
+      status.error === undefined || typeof status.error === "string",
+      `${where}.error must be a string code`,
+    );
+    assert.equal(status.downloading, false, `${where}: nothing downloads`);
+  };
+  assertKokoroStatus(info.voice.kokoro, "info.voice.kokoro");
+  const kokoroStatus = await page.evaluate(() => window.coarena.kokoroStatus());
+  assertKokoroStatus(kokoroStatus, "kokoroStatus()");
+  assert.equal(kokoroStatus.supported, info.voice.kokoro.supported);
+  // COARENA_TEST_DATA_DIR is userData, so nothing is installed yet.
+  assert.equal(kokoroStatus.installed, false, "A fresh store has no model");
+  assert.equal(kokoroStatus.bytes, 0, "A fresh store has no partial model");
+  const voiceList = await page.evaluate(() => window.coarena.voices());
+  assert(Array.isArray(voiceList.voices));
+  assert.equal(voiceList.engine, "system");
+  assert.equal(voiceList.cloudAllowed, true);
+  assert.equal(typeof voiceList.selected, "string");
+  for (const voice of voiceList.voices) {
+    assert.equal(typeof voice.id, "string");
+    assert.equal(typeof voice.name, "string");
+    assert.equal(typeof voice.language, "string");
+    assert(["default", "enhanced", "premium"].includes(voice.quality));
+  }
+  await page.locator("summary").filter({ hasText: "Voice replies" }).click();
+  assert.equal(
+    await page.getByRole("combobox", { name: "Speak replies" }).inputValue(),
+    "voice",
+  );
+  const engine = page.getByRole("combobox", { name: "Voice engine" });
+  assert.equal(await engine.inputValue(), "system");
+  assert.equal(
+    await engine
+      .locator('option[value="openai"]')
+      .evaluate((option) => option.disabled),
+    false,
+    "Natural voice is selectable with a saved OpenAI key",
+  );
+  assert.deepEqual(
+    await engine
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["system", "kokoro", "openai"],
+    "The engine select offers the Mac, free natural and OpenAI voices",
+  );
+  assert.equal(
+    await engine
+      .locator('option[value="kokoro"]')
+      .evaluate((option) => option.disabled),
+    !kokoroStatus.supported,
+    "The free natural voice is selectable only where it is supported",
+  );
+  const kokoroEngine = await page.evaluate(async () => {
+    const saved = (await window.coarena.info()).settings;
+    try {
+      await window.coarena.saveSettings({ ...saved, voiceEngine: "kokoro" });
+      return "saved";
+    } catch (error) {
+      return error.message;
+    } finally {
+      await window.coarena.saveSettings(saved);
+    }
+  });
+  assert.equal(kokoroEngine, "saved", "The schema accepts voiceEngine kokoro");
+  assert.equal(
+    (await page.evaluate(() => window.coarena.info())).settings.voiceEngine,
+    "system",
+  );
+  await page.locator("summary").filter({ hasText: "Listening" }).click();
+  assert.equal(
+    await page.getByRole("radio", { name: "Normal", exact: true }).isChecked(),
+    true,
+  );
+  const invalidVoice = await page.evaluate(async () => {
+    const saved = (await window.coarena.info()).settings;
+    try {
+      await window.coarena.saveSettings({ ...saved, voiceRate: 3 });
+      return "saved";
+    } catch {
+      return "rejected";
+    }
+  });
+  assert.equal(invalidVoice, "rejected", "Out-of-range voiceRate is refused");
   await page.getByRole("button", { name: "Try the safe tutorial" }).click();
   for (let i = 0; i < 100; i++) {
     if (
@@ -197,6 +351,49 @@ try {
   assert(
     !diagnosticLog.includes(runs[0].task),
     "Diagnostic stream included task text",
+  );
+  // The synthetic tutorial never recalls or learns.
+  assert.deepEqual(
+    await page.evaluate(() => window.coarena.memorySummary()),
+    emptyMemory,
+    "A tutorial run must not add memory",
+  );
+  assert(
+    !diagnosticEvents.some((event) => event.event === "MemoryRecalled"),
+    "A tutorial run must not recall memory",
+  );
+  // The finished run may still be settling; forgetting waits for it.
+  let forgot = "";
+  for (let i = 0; i < 40; i++) {
+    forgot = await page.evaluate(async () => {
+      try {
+        await window.coarena.forgetMemory();
+        return "ok";
+      } catch (error) {
+        return error.message;
+      }
+    });
+    if (forgot === "ok") break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(forgot, "ok", "Forgetting memory succeeds when idle");
+  assert(
+    !existsSync(join(desktopData, "memory", "memory.enc")),
+    "Forgetting leaves no memory file",
+  );
+  // "off" keeps later tutorial runs silent while checking persistence.
+  await page.evaluate(async () => {
+    const saved = (await window.coarena.info()).settings;
+    await window.coarena.saveSettings({
+      ...saved,
+      memory: false,
+      voiceReplies: "off",
+      listeningPatience: "relaxed",
+    });
+  });
+  assert.equal(
+    (await page.evaluate(() => window.coarena.info())).settings.memory,
+    false,
   );
   const id = runs[0].id;
   await page.evaluate(async (endpoint) => {
@@ -255,6 +452,39 @@ try {
     }),
     "denied",
   );
+  assert.equal(
+    await overlay.evaluate(async () => {
+      try {
+        await window.coarena.memorySummary();
+        return "allowed";
+      } catch {
+        return "denied";
+      }
+    }),
+    "denied",
+    "The overlay must not read learned memory",
+  );
+  for (const method of [
+    "voices",
+    "previewVoice",
+    "openVoiceSettings",
+    "kokoroStatus",
+    "downloadKokoro",
+    "cancelKokoroDownload",
+    "removeKokoro",
+  ])
+    assert.equal(
+      await overlay.evaluate(async (name) => {
+        try {
+          await window.coarena[name]();
+          return "allowed";
+        } catch {
+          return "denied";
+        }
+      }, method),
+      "denied",
+      `The overlay must not call ${method}`,
+    );
   await shutdown(application);
   console.log("Launching Electron");
   application = await launch();
@@ -274,6 +504,34 @@ try {
   assert.equal(savedInfo.hasKey, true);
   assert.equal(savedInfo.credentialScopes.length, 3);
   assert.equal(savedInfo.settings.model, "gpt-5.4-mini");
+  assert.equal(
+    savedInfo.settings.memory,
+    false,
+    "The learning toggle persists across restarts",
+  );
+  assert.equal(savedInfo.settings.voiceReplies, "off");
+  assert.equal(
+    savedInfo.settings.listeningPatience,
+    "relaxed",
+    "Voice settings persist across restarts",
+  );
+  await restarted.evaluate(async () => {
+    const saved = (await window.coarena.info()).settings;
+    await window.coarena.saveSettings({
+      ...saved,
+      memory: true,
+      voiceReplies: "voice",
+      listeningPatience: "normal",
+    });
+  });
+  assert.equal(
+    (await restarted.evaluate(() => window.coarena.info())).settings.memory,
+    true,
+  );
+  assert.deepEqual(
+    await restarted.evaluate(() => window.coarena.memorySummary()),
+    emptyMemory,
+  );
   runs = await restarted.evaluate(() => window.coarena.history());
   assert.equal(runs.length, 1);
   assert.equal(runs[0].contribution, result.receipt);
@@ -304,6 +562,110 @@ try {
   assert.equal(corrected.corrections.length, 1);
   assert.equal(corrected.corrections[0].text, "Use the September report.");
   await restarted.evaluate((id) => window.coarena.deleteRun(id), corrected.id);
+  await restarted.evaluate(async () => {
+    await window.coarena.start("Move the card and add a note.", true);
+    await window.coarena.pause();
+  });
+  const pausedPill = application
+    .windows()
+    .find((p) => p.url().endsWith("#pill"));
+  const dismissed = await pausedPill.evaluate(async () => {
+    await window.coarena.dismiss();
+    return (await window.coarena.pillState()).phase;
+  });
+  assert.equal(dismissed, "paused", "Dismiss must keep a paused run visible");
+  assert.equal(
+    (await restarted.evaluate(() => window.coarena.history()))[0].status,
+    "paused",
+    "Dismiss must not resume or stop the run",
+  );
+  const terminalStatus = (status) =>
+    ["completed", "cancelled", "failed"].includes(status);
+  const runStatus = async () =>
+    (await restarted.evaluate(() => window.coarena.history()))[0]?.status;
+  // A "no" or "yes" with nothing pending is not a usable command: the run
+  // stays paused and the pill says why.
+  const declined = await pausedPill.evaluate(async () => {
+    await window.coarena.command("no").catch(() => {});
+    return window.coarena.pillState();
+  });
+  assert.equal(declined.phase, "paused");
+  assert.equal(declined.label, "Paused — nothing to approve.");
+  await pausedPill.evaluate(() => window.coarena.confirm(true));
+  assert.equal(
+    await runStatus(),
+    "paused",
+    "A yes or no with nothing pending must not resume the run",
+  );
+  // A text pill opened on an already paused run never resumes on dismiss.
+  await pausedPill.evaluate(async () => {
+    await window.coarena.openCommand();
+    await window.coarena.dismiss();
+  });
+  assert.equal(await runStatus(), "paused");
+  // Dismissing an untouched text pill that paused a working run resumes it.
+  await pausedPill.evaluate(() => window.coarena.resume());
+  let working;
+  for (let i = 0; i < 100; i++) {
+    working = await runStatus();
+    if (!["paused", "confirming"].includes(working)) break;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  if (!terminalStatus(working)) {
+    const tapped = await pausedPill.evaluate(async () => {
+      await window.coarena.openCommand();
+      return (await window.coarena.pillState()).phase;
+    });
+    assert.equal(tapped, "text");
+    const held = await runStatus();
+    await pausedPill.evaluate(() => window.coarena.dismiss());
+    if (held === "paused") {
+      let resumed;
+      for (let i = 0; i < 100; i++) {
+        resumed = await runStatus();
+        if (resumed !== "paused") break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      assert.notEqual(
+        resumed,
+        "paused",
+        "Dismissing an untouched text pill must resume the run it paused",
+      );
+    }
+    await pausedPill.evaluate(() => window.coarena.pause());
+  }
+  await restarted.evaluate(() => window.coarena.stop());
+  let dismissedRun;
+  for (let i = 0; i < 100; i++) {
+    dismissedRun = (
+      await restarted.evaluate(() => window.coarena.history())
+    )[0];
+    if (terminalStatus(dismissedRun?.status)) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  // The resume check above can rarely let the tutorial finish first.
+  assert(["cancelled", "completed"].includes(dismissedRun.status));
+  for (let i = 0; i < 40; i++) {
+    const deleted = await restarted.evaluate(async (id) => {
+      try {
+        await window.coarena.deleteRun(id);
+        return true;
+      } catch {
+        return false;
+      }
+    }, dismissedRun.id);
+    if (deleted) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const idleContinue = await pausedPill.evaluate(async () => {
+    try {
+      await window.coarena.command("continue");
+      return "ok";
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.equal(idleContinue, "ok", "Continue with no run must not throw");
   await restarted.evaluate(async () => {
     await window.coarena.start("Move the card and add a note.", true);
     await window.coarena.pause();
@@ -369,7 +731,10 @@ try {
           "env import, encrypted credentials and restart persistence",
           "provider switching without credential leakage",
           "scripted tutorial",
+          "fresh memory is empty; tutorial runs do not learn; forget succeeds; learning toggle persists; overlay cannot read memory",
           "native voice status without requesting microphone access",
+          "voice reply defaults, voice list, natural voice allowed with an OpenAI key, invalid rate refused, voice settings persist, overlay cannot list or preview voices",
+          "free natural voice status shape, three voice engines, kokoro engine saves, overlay cannot read, download, cancel or remove it",
           "real HTTP contribution consent/chunk/commit",
           "approved workflow export",
           "overlay IPC denied",
@@ -377,6 +742,8 @@ try {
           "contribution deletion",
           "local deletion",
           "same-run correction and completion",
+          "dismissing a paused run keeps its pill; idle continue does not throw",
+          "yes/no without an approval keeps a held run paused; untouched text pill dismissal resumes",
           "second-instance Stop preserves exact command and cancels without corrections",
           "native text pill expansion",
         ],

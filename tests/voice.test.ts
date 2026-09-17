@@ -86,6 +86,29 @@ describe("voice intent boundary", () => {
   ])("routes %s exactly", (text, kind) =>
     expect(voiceIntent(text).kind).toBe(kind),
   );
+  it.each([
+    ["Stop it", "stop"],
+    ["Stop, stop!", "stop"],
+    ["Please stop.", "stop"],
+    ["Cancel that", "stop"],
+    ["Cancel task", "stop"],
+    ["Stop everything right now", "stop"],
+    ["stop the task please", "stop"],
+    ["Wait a second", "pause"],
+    ["Hold on, please", "pause"],
+    ["Hang on", "pause"],
+    ["One moment please", "pause"],
+    ["Just a moment", "pause"],
+    ["wait a minute", "pause"],
+    ["Please wait", "pause"],
+    ["Stop scrolling and click Save", "command"],
+    ["Stop, use the other tab instead.", "command"],
+    ["Wait for the page to load, then click Save", "command"],
+    ["Cancel the meeting on Friday", "command"],
+    ["Hold on to that file", "command"],
+  ])("matches whole stop and pause utterances: %s", (text, kind) =>
+    expect(voiceIntent(text).kind).toBe(kind),
+  );
   it("does not mistake a negated stop for a kill command", () =>
     expect(voiceIntent("Don't stop until it is ready.").kind).toBe("command"));
 });

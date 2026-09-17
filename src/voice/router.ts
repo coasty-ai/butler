@@ -28,6 +28,13 @@ export function describeAction(action: Action): string {
     case "double_click":
     case "right_click":
       return `${action.type.replaceAll("_", " ")} at ${Math.round(action.x * 100)}% across, ${Math.round(action.y * 100)}% down the selected screen.`;
+    case "open_app":
+      return `Open ${action.name}.`;
+    case "open_file": {
+      // Basename only: spoken and shown approvals never reveal folder layout.
+      const name = action.path.replace(/\/+$/, "").split("/").pop();
+      return `Open ${name && name !== "~" ? name : "your home folder"}.`;
+    }
     case "drag":
       return "Drag the selected item to a new position.";
     default:
@@ -35,40 +42,16 @@ export function describeAction(action: Action): string {
   }
 }
 
-export type VoiceIntent = {
-  kind: "stop" | "pause" | "resume" | "approve" | "decline" | "command";
-  text: string;
-};
-export function voiceIntent(text: string): VoiceIntent {
-  const normalized = text
-    .trim()
-    .toLowerCase()
-    .replace(/[.!?,]+$/g, "")
-    .trim();
-  if (["stop", "stop now", "cancel", "cancel task"].includes(normalized))
-    return { kind: "stop", text };
-  if (["wait", "pause", "hold on"].includes(normalized))
-    return { kind: "pause", text };
-  if (["resume", "continue", "keep going"].includes(normalized))
-    return { kind: "resume", text };
-  if (
-    ["yes", "yes please", "approve", "send it", "go ahead"].includes(normalized)
-  )
-    return { kind: "approve", text };
-  if (
-    [
-      "no",
-      "no thanks",
-      "deny",
-      "don’t",
-      "do not",
-      "don’t send",
-      "do not send",
-    ].includes(normalized)
-  )
-    return { kind: "decline", text };
-  return { kind: "command", text: text.trim() };
-}
+// Intent rules live in turns.ts (shared with the turn planner); re-exported
+// here for existing callers.
+export {
+  intentKey,
+  voiceIntent,
+  type VoiceIntent,
+  type VoiceIntentKind,
+} from "./turns";
+/** A short listening window after a reply or turn, without the wake phrase. */
+export type FollowUpKind = "answer" | "approval" | "continuation";
 export type PillPhase =
   | "idle"
   | "text"
@@ -86,6 +69,12 @@ export interface PillState {
   canApprove: boolean;
   synthetic: boolean;
   inputLevel: number;
+  /** The assistant is speaking (voice bars; label is the spoken text). */
+  speaking: boolean;
+  /** A follow-up window is open (soft glow). */
+  followUp?: FollowUpKind;
+  /** The hands-free endpoint is about to close the turn (shrinking ring). */
+  closing: boolean;
 }
 export const idlePill: PillState = {
   phase: "idle",
@@ -94,4 +83,7 @@ export const idlePill: PillState = {
   canApprove: false,
   synthetic: false,
   inputLevel: 0,
+  speaking: false,
+  followUp: undefined,
+  closing: false,
 };

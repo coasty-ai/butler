@@ -1,0 +1,197 @@
+import { describe, it, expect } from "vitest";
+import {
+  cloudVoices,
+  defaultSettings,
+  settingsSchema,
+  type Settings,
+} from "../src/core/schema";
+import { previewBridge } from "../src/ui/preview";
+
+const voiceKeys = [
+  "voiceReplies",
+  "voiceEngine",
+  "voiceId",
+  "cloudVoice",
+  "voiceRate",
+  "listeningPatience",
+  "followUpListening",
+  "voiceSounds",
+] as const satisfies readonly (keyof Settings)[];
+
+const expectedDefaults = {
+  voiceReplies: "voice",
+  voiceEngine: "system",
+  voiceId: "",
+  cloudVoice: "marin",
+  voiceRate: 1,
+  listeningPatience: "normal",
+  followUpListening: true,
+  voiceSounds: true,
+} satisfies Pick<Settings, (typeof voiceKeys)[number]>;
+
+/** A config saved before spoken replies existed. */
+function legacy(): Record<string, unknown> {
+  const config: Record<string, unknown> = structuredClone(defaultSettings);
+  for (const key of voiceKeys) delete config[key];
+  return config;
+}
+
+const parses = (patch: Record<string, unknown>) =>
+  settingsSchema.safeParse({ ...legacy(), ...patch }).success;
+
+describe("voice settings", () => {
+  it("parses a legacy config with every new default", () => {
+    const parsed = settingsSchema.parse(legacy());
+    for (const key of voiceKeys)
+      expect(parsed[key]).toEqual(expectedDefaults[key]);
+    // Configs from before hands-free and memory still parse too.
+    const { handsFree: _h, memory: _m, ...older } = legacy();
+    expect(settingsSchema.parse(older)).toMatchObject({
+      handsFree: false,
+      memory: true,
+      ...expectedDefaults,
+    });
+  });
+
+  it("accepts the free natural voice and keeps legacy configs on the Mac voice", () => {
+    expect(parses({ voiceEngine: "kokoro" })).toBe(true);
+    const saved = {
+      ...defaultSettings,
+      voiceEngine: "kokoro",
+    } satisfies Settings;
+    expect(settingsSchema.parse(structuredClone(saved)).voiceEngine).toBe(
+      "kokoro",
+    );
+    // A config saved before any voice engine existed still speaks with the Mac
+    // voice, and so does one saved before the natural voice was added.
+    expect(settingsSchema.parse(legacy()).voiceEngine).toBe("system");
+    const { voiceEngine: _e, ...noEngine } = structuredClone(defaultSettings);
+    expect(settingsSchema.parse(noEngine).voiceEngine).toBe("system");
+    for (const voiceEngine of ["system", "openai"])
+      expect(
+        settingsSchema.parse({ ...legacy(), voiceEngine }).voiceEngine,
+      ).toBe(voiceEngine);
+  });
+
+  it("keeps defaultSettings in step with the schema defaults", () => {
+    expect(settingsSchema.parse(defaultSettings)).toEqual(defaultSettings);
+    for (const key of voiceKeys)
+      expect(defaultSettings[key]).toEqual(expectedDefaults[key]);
+  });
+
+  it("round-trips saved voice choices", () => {
+    const saved = {
+      ...defaultSettings,
+      voiceReplies: "always",
+      voiceEngine: "openai",
+      voiceId: "com.apple.voice.premium.en-US.Ava",
+      cloudVoice: "cedar",
+      voiceRate: 1.25,
+      listeningPatience: "relaxed",
+      followUpListening: false,
+      voiceSounds: false,
+    } satisfies Settings;
+    expect(settingsSchema.parse(structuredClone(saved))).toEqual(saved);
+  });
+
+  it("rejects an out-of-range or non-numeric voiceRate", () => {
+    expect(parses({ voiceRate: 0.8 })).toBe(true);
+    expect(parses({ voiceRate: 1.4 })).toBe(true);
+    for (const voiceRate of [0.79, 1.41, 0, 2, -1, NaN, Infinity, "1", null])
+      expect(parses({ voiceRate }), String(voiceRate)).toBe(false);
+  });
+
+  it("enforces the enums", () => {
+    for (const voiceReplies of ["off", "voice", "always"])
+      expect(parses({ voiceReplies })).toBe(true);
+    for (const voiceReplies of ["on", "sometimes", "", true])
+      expect(parses({ voiceReplies })).toBe(false);
+
+    expect(parses({ voiceEngine: "system" })).toBe(true);
+    expect(parses({ voiceEngine: "kokoro" })).toBe(true);
+    expect(parses({ voiceEngine: "openai" })).toBe(true);
+    for (const voiceEngine of [
+      "Kokoro",
+      "kokoro-82m",
+      "cloud",
+      "OpenAI",
+      "elevenlabs",
+      "",
+      null,
+    ])
+      expect(parses({ voiceEngine })).toBe(false);
+
+    expect([...cloudVoices]).toEqual([
+      "marin",
+      "cedar",
+      "alloy",
+      "coral",
+      "sage",
+      "verse",
+    ]);
+    for (const cloudVoice of cloudVoices)
+      expect(parses({ cloudVoice })).toBe(true);
+    for (const cloudVoice of ["nova", "onyx", "Marin", ""])
+      expect(parses({ cloudVoice })).toBe(false);
+
+    for (const listeningPatience of ["quick", "normal", "relaxed"])
+      expect(parses({ listeningPatience })).toBe(true);
+    for (const listeningPatience of ["slow", "fast", 1])
+      expect(parses({ listeningPatience })).toBe(false);
+  });
+
+  it("type-checks the remaining voice fields", () => {
+    expect(parses({ voiceId: "x".repeat(200) })).toBe(true);
+    expect(parses({ voiceId: "x".repeat(201) })).toBe(false);
+    expect(parses({ voiceId: 7 })).toBe(false);
+    expect(parses({ followUpListening: "true" })).toBe(false);
+    expect(parses({ voiceSounds: 1 })).toBe(false);
+    // Still strict: unknown keys are refused.
+    expect(parses({ voiceVolume: 0.5 })).toBe(false);
+  });
+
+  it("gives the browser preview inert voice stubs", async () => {
+    const bridge = previewBridge();
+    const info = await bridge.info();
+    expect(info.settings).toMatchObject(expectedDefaults);
+    expect(info.voice).toMatchObject({
+      speaking: false,
+      voiceQuality: "none",
+      voiceName: "",
+      cloudVoiceAllowed: false,
+    });
+    expect(await bridge.voices()).toEqual({
+      voices: [],
+      selected: "",
+      engine: "system",
+      cloudAllowed: false,
+    });
+    await expect(bridge.previewVoice()).rejects.toThrow(/macOS app/);
+    await expect(bridge.openVoiceSettings()).rejects.toThrow(/macOS app/);
+  });
+
+  it("gives the browser preview an unsupported natural voice", async () => {
+    const bridge = previewBridge();
+    const unsupported = {
+      supported: false,
+      installed: false,
+      downloading: false,
+      progress: 0,
+      bytes: 0,
+      totalBytes: 0,
+    };
+    expect((await bridge.info()).voice.kokoro).toEqual(unsupported);
+    expect(await bridge.kokoroStatus()).toEqual(unsupported);
+    await expect(bridge.downloadKokoro()).rejects.toThrow(/macOS app/);
+    await expect(bridge.cancelKokoroDownload()).rejects.toThrow(/macOS app/);
+    await expect(bridge.removeKokoro()).rejects.toThrow(/macOS app/);
+    let calls = 0;
+    const unsubscribe = bridge.subscribeKokoro(() => calls++);
+    expect(typeof unsubscribe).toBe("function");
+    expect(() => unsubscribe()).not.toThrow();
+    expect(calls).toBe(0);
+    // Status is a copy: callers cannot mutate what later calls return.
+    (await bridge.kokoroStatus()).supported = true;
+    expect((await bridge.kokoroStatus()).supported).toBe(false);
+  });
+});

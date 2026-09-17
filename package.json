@@ -25,7 +25,8 @@
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "test:provider": "node --import tsx scripts/provider-smoke.mjs",
     "test:native-safety": "node scripts/test-native-safety.mjs",
-    "test:native-input": "node --import tsx scripts/native-input-smoke.mjs"
+    "test:native-input": "node --import tsx scripts/native-input-smoke.mjs",
+    "test:live": "node --import tsx scripts/live-task.mjs"
   },
   "build": {
     "appId": "ai.coarena.openassist",
@@ -34,7 +35,17 @@
       "dist/**/*",
       "dist-electron/main.cjs",
       "dist-electron/preload.cjs",
-      "package.json"
+      "dist-electron/kokoro/worker.cjs",
+      "package.json",
+      "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
+      "!node_modules/onnxruntime-node/bin/napi-v6/win32/**",
+      "!node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/libonnxruntime.1.30.0.dylib",
+      "!node_modules/onnxruntime-node/{lib,script}/**",
+      "!node_modules/onnxruntime-node/dist/*.map",
+      "!node_modules/onnxruntime-common/{lib,dist/esm}/**"
+    ],
+    "asarUnpack": [
+      "node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/*"
     ],
     "extraResources": [
       {
@@ -65,6 +76,7 @@
   "dependencies": {
     "@fontsource-variable/space-grotesk": "^5.3.0",
     "lucide-react": "^1.46.0",
+    "onnxruntime-node": "1.30.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zod": "^4.6.5"

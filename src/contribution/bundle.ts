@@ -76,10 +76,23 @@ export function prepareBundle(
         !review.excludedEvents.includes(e.event_id),
     )
     .map((e) => {
+      // Only the proposed action is exported. Execution results such as
+      // data.launched (bundle ids, running state) and data.opened (real
+      // paths, default apps) never enter a bundle.
       const a = e.data.action as Record<string, unknown>;
       const result: Record<string, unknown> = { type: a.type };
       for (const [k, v] of Object.entries(a)) {
         if (k === "frame_id") continue;
+        // Installed application names reveal the contributor's software.
+        if (a.type === "open_app" && k === "name") {
+          result[k] = "<APP>";
+          continue;
+        }
+        // File paths reveal the contributor's folders and document names.
+        if (a.type === "open_file" && k === "path") {
+          result[k] = "<FILE>";
+          continue;
+        }
         if (typeof v === "string") {
           const s = sanitizeText(v);
           result[k] = s.text;

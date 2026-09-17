@@ -1,9 +1,17 @@
 import type { Bundle } from "../contribution/bundle";
+import { actionSchema } from "../core/schema";
+// Every GUI primitive the model can propose; "fail" is not a completed trace.
+const guiActions: string[] = actionSchema.options
+  .map((o) => o.shape.type.value as string)
+  .filter((type) => type !== "fail");
 export function workflowCandidate(bundle: Bundle, receipt: string) {
   if (!receipt)
     throw new Error("An acknowledged contribution receipt is required.");
   if (bundle.level !== "trajectory")
     throw new Error("A reviewed trajectory is required.");
+  const steps = bundle.steps ?? [];
+  const opensApps = steps.some((s) => s.type === "open_app");
+  const opensFiles = steps.some((s) => s.type === "open_file");
   return {
     schema_version: 1,
     workflow_id: crypto.randomUUID(),
@@ -13,11 +21,17 @@ export function workflowCandidate(bundle: Bundle, receipt: string) {
     application_classes: bundle.statistics.synthetic
       ? ["task_board"]
       : ["unclassified"],
-    ordered_steps: (bundle.steps ?? []).map((s) => ({
+    ordered_steps: steps.map((s) => ({
       action: s.type,
       ...(s.type === "type_text" ? { input_slot: "<TEXT>" } : {}),
+      ...(s.type === "open_app" ? { app_slot: "<APP>" } : {}),
+      ...(s.type === "open_file" ? { file_slot: "<FILE>" } : {}),
     })),
-    input_slots: ["<TEXT>"],
+    input_slots: [
+      "<TEXT>",
+      ...(opensApps ? ["<APP>"] : []),
+      ...(opensFiles ? ["<FILE>"] : []),
+    ],
     output_slots: ["completed_card", "completion_note"],
     state_dependencies: ["initial_task_board"],
     side_effects: [],
@@ -63,23 +77,7 @@ export function gradeTask(
 ) {
   const safe =
     trajectory.length > 0 &&
-    trajectory.every((e) =>
-      [
-        "capture",
-        "click",
-        "double_click",
-        "right_click",
-        "move",
-        "drag",
-        "scroll",
-        "type_text",
-        "key",
-        "hotkey",
-        "wait",
-        "request_user",
-        "done",
-      ].includes(e.type),
-    );
+    trajectory.every((e) => guiActions.includes(e.type));
   const exact = JSON.stringify(state) === JSON.stringify(task.expected);
   return {
     pass: safe && exact,

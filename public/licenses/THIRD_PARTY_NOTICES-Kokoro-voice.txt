@@ -1,0 +1,73 @@
+THIRD-PARTY NOTICES: OPEN ASSIST ON-DEVICE VOICE (KOKORO)
+
+Open Assist is MIT-licensed. Its optional on-device voice uses the components
+below. The model, voice, tokenizer, lexicon and G2P files are not bundled in
+the app: they are downloaded on request from the pinned revisions listed here
+and checked against a fixed SHA-256. onnxruntime-node is bundled.
+
+No GPL or LGPL code or data is used. espeak-ng is not used, and misaki's
+us_silver lexicon (generated with espeak-ng) is not downloaded.
+
+------------------------------------------------------------------------------
+1. Kokoro-82M v1.0 (model weights and the af_heart voice)
+   License: Apache License 2.0 (full text: Apache-2.0.txt)
+   Author: hexgrad (https://huggingface.co/hexgrad/Kokoro-82M), built on
+   StyleTTS 2 (Li et al., https://github.com/yl4579/StyleTTS2) and ISTFTNet.
+   ONNX export: onnx-community/Kokoro-82M-v1.0-ONNX, revision
+   1939ad2a8e416c0acfeecc08a694d14ef25f2231
+     onnx/model.onnx       325532232 bytes  sha256 8fbea51ea711f2af382e88c833d9e288c6dc82ce5e98421ea61c058ce21a34cb
+     voices/af_heart.bin      522240 bytes  sha256 d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b
+     tokenizer.json             3497 bytes  sha256 77a02c8e164413299b4b4c403b14f8e0e1c1b727db4d46a09d6327b861060a34
+   The Kokoro v1.0 model card credits CC BY audio in its training data:
+   Koniwa "tnc" (CC BY 3.0, https://github.com/koniwa/koniwa) and SIWIS
+   (CC BY 4.0, https://datashare.ed.ac.uk/handle/10283/2353).
+
+------------------------------------------------------------------------------
+2. misaki English lexicon (us_gold.json) and G2P rules
+   License: Apache License 2.0 (full text: Apache-2.0.txt)
+   Author: hexgrad (https://github.com/hexgrad/misaki), revision
+   fba1236595f2d2bf21d414ba6e57d25256afada3
+     misaki/data/us_gold.json  3000469 bytes  sha256 dc414872a49a28ae6c141463d502fd945f3b2fde040484fdc47d00cc4612686f
+   src/voice/kokoro/g2p.ts is a TypeScript port of the lexicon logic in
+   misaki/en.py (stress rules, stemming, subtokens, special cases).
+   tests/fixtures/kokoro/us_gold_subset.json holds 117 entries of us_gold.json.
+
+------------------------------------------------------------------------------
+3. English grapheme-to-phoneme BART fallback
+   License: Apache License 2.0 (full text: Apache-2.0.txt)
+   Author: PeterReid (https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us),
+   revision a5631b285d18d59483c32c0c3379cb9fac924f4b
+     config.json               1257 bytes  sha256 8deb3537fb29c63cd9f20d75515ae06e4c92f1b6db0703a2d45bca95b33a53a4
+     model.safetensors      3011692 bytes  sha256 dc4a02e62d4fcb4bb4097ecf00db89b8e1a12a549a52ab6adfbba220b80a55c5
+   src/voice/kokoro/bart.ts runs this model in plain TypeScript.
+
+------------------------------------------------------------------------------
+4. onnxruntime-node 1.30.0 and onnxruntime-common 1.30.0
+   License: MIT
+   https://github.com/microsoft/onnxruntime
+
+   MIT License
+
+   Copyright (c) Microsoft Corporation
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+   The bundled libonnxruntime.1.dylib includes third-party components. Their
+   notices, from the onnxruntime v1.30.0 source tree, are in
+   onnxruntime-ThirdPartyNotices.txt.

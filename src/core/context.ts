@@ -1,7 +1,11 @@
 import { z } from "zod";
 import type { ScreenContext } from "./schema";
-import { scanText } from "./sanitize";
-const short = z.string().max(300);
+import { redactSecrets } from "./sanitize";
+// Truncate rather than reject: a single long title or label must not drop the
+// whole context, and cleaning is applied twice (controller and provider).
+const bounded = (limit: number) =>
+  z.string().transform((value) => value.slice(0, limit));
+const short = bounded(300);
 const contextSchema = z
   .object({
     appName: short,
@@ -23,17 +27,29 @@ const contextSchema = z
       .array(z.object({ task: z.string().max(500), status: short }).strict())
       .max(3)
       .optional(),
+    controls: z
+      .array(
+        z
+          .object({
+            role: z.string().max(40),
+            label: bounded(80).optional(),
+            x: z.number().finite().min(0).max(1),
+            y: z.number().finite().min(0).max(1),
+            enabled: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .max(60)
+      .optional(),
   })
   .strict();
-// Context can contain useful names/addresses. Remove detected credentials while
-// preserving ordinary task references; no context is included in donations.
+// Context can contain useful names/addresses. Remove only the detected
+// credential spans so surrounding labels and titles stay useful to the model;
+// no context is included in donations.
 export function cleanScreenContext(value: unknown): ScreenContext | undefined {
   const parsed = contextSchema.safeParse(value);
   if (!parsed.success) return undefined;
-  const clean = (s: string) => {
-    const secrets = scanText(s).filter((f) => f.action === "BLOCK_UPLOAD");
-    return secrets.length ? "[Sensitive text omitted]" : s;
-  };
+  const clean = (s: string) => redactSecrets(s);
   const c = parsed.data;
   return {
     appName: clean(c.appName),
@@ -65,5 +81,13 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
       task: clean(t.task),
       status: t.status,
     })),
+    ...(c.controls && {
+      controls: c.controls.map((control) => ({
+        ...control,
+        ...(control.label !== undefined && {
+          label: clean(control.label).slice(0, 80),
+        }),
+      })),
+    }),
   };
 }

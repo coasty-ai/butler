@@ -1,11 +1,14 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowRight,
   ArrowUp,
   Check,
   ChevronDown,
+  CircleAlert,
+  CircleCheck,
   Command,
+  Download,
   Heart,
   Keyboard,
   LockKeyhole,
@@ -21,9 +24,16 @@ import {
   Volume2,
   RotateCcw,
 } from "lucide-react";
-import type { AppInfo, ReviewData } from "./api";
+import type {
+  AppInfo,
+  KokoroUiStatus,
+  MemorySummary,
+  ReviewData,
+  VoiceList,
+  VoiceOption,
+} from "./api";
 import type { Settings, Run } from "../core/schema";
-import { defaultSettings } from "../core/schema";
+import { cloudVoices } from "../core/schema";
 import { credentialScope, selectProvider } from "../providers/catalog";
 import { idlePill, type PillState } from "../voice/router";
 import { previewBridge } from "./preview";
@@ -34,6 +44,12 @@ const api = window.coarena ?? previewBridge();
 const isPill = location.hash === "#pill",
   isSettings = location.hash === "#settings";
 const task = "Move the card to Completed and add a completion note.";
+/** Pill fields added for spoken replies; optional until main provides them. */
+type VoicePillFields = Partial<{
+  speaking: boolean;
+  followUp: string;
+  closing: boolean;
+}>;
 const providers = {
   ollama: "Ollama",
   openai: "OpenAI",
@@ -108,7 +124,13 @@ function App() {
     } catch (e) {
       const message = e instanceof Error ? e.message : "Try again.";
       setError(message);
-      if (isPill) setPill((p) => ({ ...p, phase: "error", label: message }));
+      // The desktop app pushes the authoritative pill for every failure (a
+      // held run stays a paused card); never override it here, and never swap
+      // an answerable approval card for an error card.
+      if (isPill && !window.coarena)
+        setPill((p) =>
+          p.canApprove ? p : { ...p, phase: "error", label: message },
+        );
       return false;
     } finally {
       setBusy(false);
@@ -119,7 +141,8 @@ function App() {
     if (!isPill) void act(async () => {});
     const a = api.subscribePill(setPill),
       b = api.subscribeView((v) => {
-        setView(v);
+        // "refresh" re-reads settings without leaving the current view.
+        if (v !== "refresh") setView(v);
         void act(async () => {});
       });
     return () => {
@@ -372,7 +395,9 @@ function App() {
                     <h2>Private, until you choose.</h2>
                     <p>
                       Review a run before contributing it. Your voice audio is
-                      never saved.
+                      never saved. Deleting a run also removes its task and
+                      corrections from what Open Assist learned; learned
+                      routines stay until you forget them in Settings.
                     </p>
                     {runs.length === 0 ? (
                       <div className="empty-review">
@@ -594,6 +619,19 @@ function App() {
                 onVoice={() => void act(() => api.voicePermissions())}
                 onRefresh={() => void act(async () => {})}
                 onTutorial={() => void act(() => api.start(task, true))}
+                onForgetMemory={() => act(() => api.forgetMemory())}
+                onPreviewVoice={(voice) =>
+                  act(async () => {
+                    // Preview speaks the saved settings: save the voice
+                    // choices first, leaving every other edit unsaved.
+                    if (voice) await api.saveSettings(voice);
+                    await api.previewVoice();
+                  })
+                }
+                onOpenVoiceSettings={() =>
+                  void act(() => api.openVoiceSettings())
+                }
+                onRemoveNaturalVoice={() => act(() => api.removeKokoro())}
                 onReview={() => {
                   setView("review");
                   void act(async () => {});
@@ -641,33 +679,76 @@ function Pill({
 }) {
   const [text, setText] = useState("");
   const input = useRef<HTMLInputElement>(null);
+  // Voice fields may not exist on PillState yet; read them defensively.
+  const voice = state as PillState & VoicePillFields;
+  const listening = state.phase === "listening",
+    working = state.phase === "working",
+    done = state.phase === "done",
+    speaking = voice.speaking === true,
+    followUp = !!voice.followUp,
+    closing = listening && voice.closing === true;
+  // A done pill that is speaking stays put; once speech ends it fades out
+  // shortly after (main hides the window about 0.6 s after speech ends).
+  const [spoke, setSpoke] = useState(false);
+  useEffect(() => {
+    if (!done) setSpoke(false);
+    else if (speaking) setSpoke(true);
+  }, [done, speaking]);
   useEffect(() => {
     if (state.phase === "text") {
-      setText("");
+      // A clarification or an unconfirmed hypothesis arrives prefilled.
+      setText(state.transcript ?? "");
       setTimeout(() => input.current?.focus(), 30);
     }
   }, [state.phase]);
   if (state.phase === "idle") return null;
-  const listening = state.phase === "listening",
-    working = state.phase === "working";
+  const classes = [
+    "pill-stack",
+    state.phase,
+    speaking && "speaking",
+    followUp && "follow-up",
+    closing && "closing",
+    done && speaking && "held",
+    done && spoke && !speaking && "spoken",
+  ].filter(Boolean);
   return (
-    <div
-      className={"pill-stack " + state.phase}
-      role="status"
-      aria-live="polite"
-    >
+    <div className={classes.join(" ")} role="status" aria-live="polite">
       <div className="status-pill">
         <span className="pill-orb">
-          {state.phase === "done" ? (
+          {closing && (
+            <svg
+              className="closing-ring"
+              viewBox="0 0 36 36"
+              aria-hidden="true"
+            >
+              <circle cx="18" cy="18" r="16.5" pathLength={100} />
+            </svg>
+          )}
+          {done ? (
             <Check size={17} />
           ) : (
             <Core phase={state.phase} level={state.inputLevel} />
           )}
         </span>
         <div className="pill-copy">
-          <b key={state.label}>{state.label}</b>
+          <b key={state.label} title={done ? state.label : undefined}>
+            {state.label}
+          </b>
           {state.synthetic && <span>Safe tutorial · simulated workspace</span>}
+          {followUp && !listening && (
+            <span className="visually-hidden">Listening for your reply.</span>
+          )}
         </div>
+        {speaking && !listening && (
+          <span className="speaking-bars" aria-hidden="true">
+            {[0, 1, 2, 3].map((i) => (
+              <i
+                key={i}
+                style={{ "--delay": `${i * -0.22}s` } as React.CSSProperties}
+              />
+            ))}
+          </span>
+        )}
         {listening ? (
           <div className="waveform" aria-label="Listening">
             {Array.from({ length: 10 }, (_, i) => (
@@ -764,10 +845,122 @@ function Pill({
           </button>
         </div>
       )}
-      {listening && state.transcript && (
-        <div className="transcript">{state.transcript}</div>
-      )}
+      {(listening || working || state.phase === "paused") &&
+        state.transcript && (
+          <div className="transcript">{state.transcript}</div>
+        )}
     </div>
+  );
+}
+/** Saved on Preview so the sample uses the voice being chosen. */
+const voiceKeys = [
+  "voiceReplies",
+  "voiceEngine",
+  "voiceId",
+  "cloudVoice",
+  "voiceRate",
+  "voiceSounds",
+] as const satisfies readonly (keyof Settings)[];
+function withVoice(base: Settings, edits: Settings): Settings {
+  const next = { ...base };
+  for (const k of voiceKeys) Object.assign(next, { [k]: edits[k] });
+  return next;
+}
+const repliesHints: Record<Settings["voiceReplies"], string> = {
+  off: "Replies stay on screen. Nothing is spoken.",
+  voice: "Answers out loud when you speak to it. Typed tasks stay quiet.",
+  always: "Also speaks results, questions and approvals for typed tasks.",
+};
+const patienceOptions: {
+  value: Settings["listeningPatience"];
+  label: string;
+}[] = [
+  { value: "quick", label: "Quick" },
+  { value: "normal", label: "Normal" },
+  { value: "relaxed", label: "Relaxed" },
+];
+const qualityRank: Record<string, number> = {
+  premium: 2,
+  enhanced: 1,
+  default: 0,
+};
+/** Premium first, then Enhanced, then default; stable otherwise. */
+function rankVoices(voices: VoiceOption[]): VoiceOption[] {
+  return [...voices].sort(
+    (a, b) => (qualityRank[b.quality] ?? 0) - (qualityRank[a.quality] ?? 0),
+  );
+}
+function qualityLabel(quality: string): string {
+  return quality === "premium"
+    ? "Premium"
+    : quality === "enhanced"
+      ? "Enhanced"
+      : "";
+}
+function voiceLabel(voice: VoiceOption, language: boolean): string {
+  return [voice.name, language && voice.language, qualityLabel(voice.quality)]
+    .filter(Boolean)
+    .join(" · ");
+}
+function cloudVoiceLabel(voice: Settings["cloudVoice"]): string {
+  const name = voice[0].toUpperCase() + voice.slice(1);
+  return voice === "marin" || voice === "cedar"
+    ? `${name} (most natural)`
+    : name;
+}
+function rateText(rate: number): string {
+  return Math.abs(rate - 1) < 0.001 ? "Normal" : `${Math.round(rate * 100)}%`;
+}
+/** Until main reports it (and in the browser preview): not available. */
+const kokoroFallback: KokoroUiStatus = {
+  supported: false,
+  installed: false,
+  downloading: false,
+  progress: 0,
+  bytes: 0,
+  totalBytes: 0,
+};
+/** Size of the pinned download; status reports the exact total. */
+const kokoroDownloadBytes = 332_071_387;
+function megabytes(bytes: number): string {
+  return `${Math.round(Math.max(0, bytes) / 1_000_000)} MB`;
+}
+/** Electron prefixes IPC rejections; keep only the app's own message. */
+function readableError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  return message
+    .replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, "")
+    .trim();
+}
+/** One readable sentence per failure code from the natural voice. */
+function kokoroErrorText(code: string, total: string): string {
+  if (code === "network")
+    return "Couldn’t reach the download server. Check your internet connection, then try again.";
+  if (code === "checksum_mismatch" || code === "size_mismatch")
+    return "A downloaded file didn’t match its expected checksum, so it was deleted. Try again.";
+  if (code === "disk_full")
+    return `Not enough free disk space for the ${total} download. Free up some space, then try again.`;
+  if (code === "load_failed" || code === "worker_crashed")
+    return "The natural voice couldn’t start, so your Mac voice spoke instead. Removing it and downloading it again may help.";
+  const http = /^http_(\d+)$/.exec(code);
+  if (http && Number(http[1]) > 0)
+    return `The download server isn’t available right now (HTTP ${http[1]}). Try again later.`;
+  return "The download stopped before it finished. Try again.";
+}
+function CurrentVoice({
+  id,
+  voice,
+}: {
+  id: string;
+  voice?: { name: string; quality: string };
+}) {
+  if (!voice?.name) return null;
+  const badge = qualityLabel(voice.quality);
+  return (
+    <p id={id} className="field-hint voice-current">
+      Speaking with {voice.name}
+      {badge && <span className="voice-badge">{badge}</span>}
+    </p>
   );
 }
 function SettingsPanel({
@@ -779,6 +972,10 @@ function SettingsPanel({
   onRefresh,
   onTutorial,
   onReview,
+  onForgetMemory,
+  onPreviewVoice,
+  onOpenVoiceSettings,
+  onRemoveNaturalVoice,
 }: {
   info: AppInfo;
   busy: boolean;
@@ -788,11 +985,144 @@ function SettingsPanel({
   onRefresh: () => void;
   onTutorial: () => void;
   onReview: () => void;
+  onForgetMemory: () => Promise<boolean>;
+  /** Saves `voice` first when given, then plays the preview sample. */
+  onPreviewVoice: (voice?: Settings) => Promise<boolean>;
+  onOpenVoiceSettings: () => void;
+  /** Deletes the natural voice; main switches a saved "kokoro" to "system". */
+  onRemoveNaturalVoice: () => Promise<boolean>;
 }) {
   const [s, setS] = useState<Settings>(info.settings),
     [key, setKey] = useState(""),
     [touched, setTouched] = useState(false),
-    [saved, setSaved] = useState(false);
+    [saved, setSaved] = useState(false),
+    [learned, setLearned] = useState<MemorySummary | null>(null),
+    [forgetting, setForgetting] = useState(false),
+    [voiceList, setVoiceList] = useState<VoiceList | null>(null),
+    [kokoro, setKokoro] = useState<KokoroUiStatus>(
+      info.voice.kokoro ?? kokoroFallback,
+    ),
+    // Chosen before it was installed: the saved engine stays put and the
+    // download panel shows instead. Resumes a download already under way.
+    [wantsKokoro, setWantsKokoro] = useState(
+      info.voice.kokoro?.downloading === true &&
+        info.settings.voiceEngine !== "kokoro",
+    ),
+    [requesting, setRequesting] = useState(false),
+    [downloadError, setDownloadError] = useState(""),
+    [confirmRemove, setConfirmRemove] = useState(false);
+  const cancelled = useRef(false),
+    naturalPanel = useRef<HTMLDivElement>(null),
+    lastNaturalMode = useRef("");
+  const ids = useId();
+  // Installed voices change when the user downloads one in System Settings,
+  // so re-read them on refresh and whenever the window regains focus. A
+  // failure only hides the list; it never replaces the settings error.
+  useEffect(() => {
+    let current = true;
+    const load = () =>
+      api
+        .voices()
+        .then((list) => current && setVoiceList(list))
+        .catch(() => current && setVoiceList(null));
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      current = false;
+      window.removeEventListener("focus", load);
+    };
+  }, [info]);
+  // Re-read what was learned whenever the app state refreshes (after a run,
+  // a save or forgetting).
+  useEffect(() => {
+    let current = true;
+    api
+      .memorySummary()
+      .then((summary) => current && setLearned(summary))
+      .catch(() => current && setLearned(null));
+    return () => {
+      current = false;
+    };
+  }, [info]);
+  // Download progress arrives from main; a refresh re-reads it too.
+  useEffect(() => {
+    if (info.voice.kokoro) setKokoro(info.voice.kokoro);
+  }, [info]);
+  useEffect(() => api.subscribeKokoro(setKokoro), []);
+  // Once the chosen natural voice is installed, select and save it, saving
+  // only the voice fields the way Preview does.
+  useEffect(() => {
+    if (!wantsKokoro || !kokoro.installed || kokoro.downloading) return;
+    setWantsKokoro(false);
+    const next: Settings = { ...s, voiceEngine: "kokoro" };
+    setS(next);
+    void onSave(withVoice(info.settings, next));
+  }, [wantsKokoro, kokoro.installed, kokoro.downloading]);
+  const downloadNaturalVoice = async () => {
+    cancelled.current = false;
+    setDownloadError("");
+    setConfirmRemove(false);
+    setWantsKokoro(true);
+    setRequesting(true);
+    try {
+      await api.downloadKokoro();
+    } catch (e) {
+      if (!cancelled.current)
+        setDownloadError(
+          readableError(e) ||
+            "The download stopped before it finished. Try again.",
+        );
+    } finally {
+      setRequesting(false);
+      // The last progress push can race the reply; read the outcome once.
+      api
+        .kokoroStatus()
+        .then(setKokoro)
+        .catch(() => {});
+    }
+  };
+  const cancelNaturalVoice = async () => {
+    cancelled.current = true;
+    try {
+      await api.cancelKokoroDownload();
+    } catch (e) {
+      cancelled.current = false;
+      setDownloadError(readableError(e) || "Couldn’t cancel. Try again.");
+    }
+  };
+  const removeNaturalVoice = async () => {
+    if (!(await onRemoveNaturalVoice())) return;
+    setConfirmRemove(false);
+    setWantsKokoro(false);
+    setDownloadError("");
+    setS((p) =>
+      p.voiceEngine === "kokoro" ? { ...p, voiceEngine: "system" } : p,
+    );
+  };
+  // When the panel swaps its buttons (download, cancel, remove, confirm),
+  // move the focus that was lost with them to the panel's first button.
+  const naturalMode = kokoro.installed
+    ? `installed-${confirmRemove}`
+    : kokoro.downloading || requesting
+      ? "downloading"
+      : "idle";
+  useEffect(() => {
+    const previous = lastNaturalMode.current;
+    lastNaturalMode.current = naturalMode;
+    const panel = naturalPanel.current,
+      active = document.activeElement;
+    if (
+      previous &&
+      panel &&
+      (active === document.body || panel.contains(active))
+    )
+      panel.querySelector<HTMLButtonElement>("button")?.focus();
+  }, [naturalMode]);
+  // Hands-free can change from the tray while this panel stays open.
+  useEffect(
+    () => setS((p) => ({ ...p, handsFree: info.settings.handsFree })),
+    [info.settings.handsFree],
+  );
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => {
     setS({ ...s, [k]: v });
     setSaved(false);
@@ -815,6 +1145,48 @@ function SettingsPanel({
   } catch {
     /* The endpoint can be incomplete while editing. */
   }
+  // Natural voice needs PRIVATE_BYOM plus a saved OpenAI key (main decides);
+  // switching this form to a local model turns it off before saving.
+  const cloudAllowed =
+    (info.voice.cloudVoiceAllowed ?? voiceList?.cloudAllowed ?? false) ===
+      true && s.privacy === "PRIVATE_BYOM";
+  const voices = voiceList?.voices ?? [];
+  // What the engine select shows; a natural voice still to download is not
+  // saved as the engine.
+  const engine: Settings["voiceEngine"] = wantsKokoro
+    ? "kokoro"
+    : s.voiceEngine;
+  const cloud = engine === "openai",
+    natural = engine === "kokoro",
+    naturalReady = kokoro.supported && kokoro.installed,
+    naturalDownloading = kokoro.downloading || requesting,
+    showNaturalPanel = kokoro.supported && (natural || naturalDownloading);
+  const naturalTotal = megabytes(kokoro.totalBytes || kokoroDownloadBytes);
+  const naturalProgress = Math.round(
+    Math.min(1, Math.max(0, kokoro.progress || 0)) * 100,
+  );
+  // A rejection that is only a failure code gets the same readable sentence.
+  const naturalError =
+    kokoro.error && kokoro.error !== "not_installed"
+      ? kokoroErrorText(kokoro.error, naturalTotal)
+      : /^[a-z]+(?:_[a-z0-9]+)*$/.test(downloadError)
+        ? kokoroErrorText(downloadError, naturalTotal)
+        : downloadError;
+  const engineName =
+    s.voiceEngine === "kokoro" && naturalReady
+      ? "Natural voice (on-device)"
+      : s.voiceEngine === "openai" && cloudAllowed
+        ? "Natural voice (OpenAI)"
+        : "Mac voice";
+  const quality = voices.length
+    ? rankVoices(voices)[0].quality
+    : (info.voice.voiceQuality ?? "none");
+  const showPremiumHint =
+    s.voiceReplies !== "off" && engine === "system" && quality === "default";
+  const selectedVoice = voices.find((v) => v.id === s.voiceId);
+  const manyLanguages = new Set(voices.map((v) => v.language)).size > 1;
+  const voiceChanged = voiceKeys.some((k) => s[k] !== info.settings[k]);
+  const patience = patienceOptions.find((p) => p.value === s.listeningPatience);
   return (
     <div className="settings-content">
       <div className="setup-intro">
@@ -838,7 +1210,7 @@ function SettingsPanel({
             : "Hold to speak. Release to act."}
           <br />
           {s.handsFree
-            ? "Pause when you’re done. It takes it from there."
+            ? "Take your time. I wait while you think."
             : "Hold again to interrupt or change direction."}
         </p>
       </div>
@@ -910,7 +1282,7 @@ function SettingsPanel({
           </label>
           <p>
             {s.handsFree
-              ? "Keeps your microphone on to listen locally for ‘Hey Assist’. A short pause ends your command. Turn it off anytime in the menu bar."
+              ? "Keeps your microphone on to listen locally for ‘Hey Assist’. It waits while you think, then takes it from there. Turn it off anytime in the menu bar."
               : "The microphone opens only while you hold the shortcut."}
             {s.handsFree &&
               " Background speech and audio are never saved or sent."}
@@ -923,6 +1295,433 @@ function SettingsPanel({
             </p>
           )}
         </div>
+        <details className="setting-group">
+          <summary>
+            <span>
+              Voice replies
+              <span>
+                {s.voiceReplies === "off"
+                  ? "Replies stay on screen"
+                  : `${
+                      s.voiceReplies === "always"
+                        ? "Speaks every reply"
+                        : "Speaks when you talk to it"
+                    } · ${engineName}`}
+              </span>
+            </span>
+            <ChevronDown size={15} />
+          </summary>
+          <div className="setting-fields">
+            <p>
+              Short and to the point: results, questions and approvals. Never
+              passwords, typed text or full web addresses.
+            </p>
+            <label>
+              Speak replies
+              <select
+                value={s.voiceReplies}
+                aria-describedby={`${ids}-replies`}
+                onChange={(e) =>
+                  set(
+                    "voiceReplies",
+                    e.target.value as Settings["voiceReplies"],
+                  )
+                }
+              >
+                <option value="off">Off</option>
+                <option value="voice">When I talk to it</option>
+                <option value="always">Always</option>
+              </select>
+            </label>
+            <p id={`${ids}-replies`} className="field-hint">
+              {repliesHints[s.voiceReplies]}
+            </p>
+            {s.voiceReplies !== "off" && (
+              <>
+                <label>
+                  Voice engine
+                  <select
+                    value={engine}
+                    aria-describedby={`${ids}-engine`}
+                    onChange={(e) => {
+                      const next = e.target.value as Settings["voiceEngine"];
+                      setDownloadError("");
+                      setConfirmRemove(false);
+                      if (next === "kokoro" && !naturalReady) {
+                        setWantsKokoro(true);
+                        return;
+                      }
+                      setWantsKokoro(false);
+                      set("voiceEngine", next);
+                    }}
+                  >
+                    <option value="system">Mac voice (free, on-device)</option>
+                    <option value="kokoro" disabled={!kokoro.supported}>
+                      {kokoro.supported
+                        ? "Natural voice (free, on-device)"
+                        : "Natural voice (free, on-device) · Apple Silicon only"}
+                    </option>
+                    <option value="openai" disabled={!cloudAllowed}>
+                      Natural voice (OpenAI)
+                    </option>
+                  </select>
+                </label>
+                {natural ? (
+                  naturalReady ? (
+                    <p id={`${ids}-engine`} className="field-hint">
+                      A natural voice that runs entirely on this Mac. If it
+                      can’t start, your Mac voice speaks instead.
+                    </p>
+                  ) : kokoro.supported ? null : (
+                    <p id={`${ids}-engine`} className="field-hint">
+                      The free natural voice needs a Mac with Apple Silicon.
+                      Your Mac voice speaks instead.
+                    </p>
+                  )
+                ) : cloud && cloudAllowed ? (
+                  <p id={`${ids}-engine`} className="voice-note" role="note">
+                    Replies are sent to OpenAI and spoken by an AI-generated
+                    voice, using your OpenAI key at about $0.015 per spoken
+                    minute. If OpenAI can’t be reached, your Mac voice speaks
+                    instead.
+                  </p>
+                ) : (
+                  <p id={`${ids}-engine`} className="field-hint">
+                    {cloud
+                      ? "Natural voice (OpenAI) needs your own OpenAI key, saved under Intelligence. Until then, your Mac voice speaks."
+                      : cloudAllowed
+                        ? "Your Mac voice speaks on this Mac. Natural voice (OpenAI) sends replies to OpenAI."
+                        : s.privacy === "PRIVATE_LOCAL"
+                          ? "Replies are spoken on this Mac. Natural voice (OpenAI) needs your own OpenAI key, saved under Intelligence."
+                          : "Natural voice (OpenAI) needs an OpenAI key, saved under Intelligence."}
+                  </p>
+                )}
+                {showNaturalPanel && (
+                  <div
+                    ref={naturalPanel}
+                    className="voice-note natural-voice"
+                    role="group"
+                    aria-label="Free natural voice"
+                  >
+                    {kokoro.installed ? (
+                      <>
+                        <p className="natural-status" role="status">
+                          <CircleCheck size={13} aria-hidden="true" />
+                          Natural voice installed
+                        </p>
+                        {confirmRemove ? (
+                          <>
+                            <p id={`${ids}-remove`}>
+                              Remove the natural voice from this Mac? Replies
+                              use your Mac voice until you download it again.
+                            </p>
+                            <div className="natural-actions">
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => setConfirmRemove(false)}
+                              >
+                                Keep
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={busy}
+                                aria-describedby={`${ids}-remove`}
+                                onClick={() => void removeNaturalVoice()}
+                              >
+                                <Trash2 size={13} />
+                                Remove
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={busy}
+                            onClick={() => setConfirmRemove(true)}
+                          >
+                            <Trash2 size={13} />
+                            {`Remove (${naturalTotal})`}
+                          </button>
+                        )}
+                        {naturalError && kokoro.error && (
+                          <p className="natural-error" role="alert">
+                            <CircleAlert size={13} aria-hidden="true" />
+                            {naturalError}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <p id={natural ? `${ids}-engine` : undefined}>
+                          A natural voice that runs entirely on this Mac.
+                          One-time {naturalTotal} download from Hugging Face and
+                          GitHub; nothing you say or type is sent.
+                        </p>
+                        {naturalDownloading ? (
+                          <div className="download-progress">
+                            <div
+                              className="progress-track"
+                              role="progressbar"
+                              aria-label="Natural voice download"
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={naturalProgress}
+                              aria-valuetext={`${megabytes(kokoro.bytes)} of ${naturalTotal}`}
+                            >
+                              <span style={{ width: `${naturalProgress}%` }} />
+                            </div>
+                            <div className="download-row">
+                              <span>
+                                {megabytes(kokoro.bytes)} of {naturalTotal}
+                              </span>
+                              <button
+                                type="button"
+                                className="secondary"
+                                aria-label="Cancel download"
+                                onClick={() => void cancelNaturalVoice()}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            {naturalError && (
+                              <p className="natural-error" role="alert">
+                                <CircleAlert size={13} aria-hidden="true" />
+                                {naturalError}
+                              </p>
+                            )}
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => void downloadNaturalVoice()}
+                            >
+                              {naturalError ? (
+                                <RotateCcw size={13} />
+                              ) : (
+                                <Download size={13} />
+                              )}
+                              {naturalError
+                                ? "Retry"
+                                : "Download natural voice"}
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+                {natural ? null : cloud ? (
+                  <label>
+                    Voice
+                    <select
+                      value={s.cloudVoice}
+                      onChange={(e) =>
+                        set(
+                          "cloudVoice",
+                          e.target.value as Settings["cloudVoice"],
+                        )
+                      }
+                    >
+                      {cloudVoices.map((v) => (
+                        <option key={v} value={v}>
+                          {cloudVoiceLabel(v)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <>
+                    <label>
+                      Voice
+                      <select
+                        value={s.voiceId}
+                        aria-describedby={`${ids}-voice`}
+                        onChange={(e) => set("voiceId", e.target.value)}
+                      >
+                        <option value="">Automatic (best installed)</option>
+                        {s.voiceId && !selectedVoice && (
+                          <option value={s.voiceId}>
+                            {voiceList
+                              ? "Chosen voice (not installed)"
+                              : "Chosen voice"}
+                          </option>
+                        )}
+                        {voices.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {voiceLabel(v, manyLanguages)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <CurrentVoice
+                      id={`${ids}-voice`}
+                      voice={
+                        selectedVoice ??
+                        (s.voiceId
+                          ? undefined
+                          : !info.settings.voiceId && info.voice.voiceName
+                            ? {
+                                name: info.voice.voiceName,
+                                quality: info.voice.voiceQuality,
+                              }
+                            : rankVoices(voices)[0])
+                      }
+                    />
+                    <div className="rate-field">
+                      <label htmlFor={`${ids}-rate`}>Speaking rate</label>
+                      <div className="rate-row">
+                        <span aria-hidden="true">Slower</span>
+                        <input
+                          id={`${ids}-rate`}
+                          type="range"
+                          min={0.8}
+                          max={1.4}
+                          step={0.05}
+                          value={s.voiceRate}
+                          aria-valuetext={rateText(s.voiceRate)}
+                          onChange={(e) =>
+                            set(
+                              "voiceRate",
+                              Math.round(Number(e.target.value) * 100) / 100,
+                            )
+                          }
+                        />
+                        <span aria-hidden="true">Faster</span>
+                        <output htmlFor={`${ids}-rate`}>
+                          {rateText(s.voiceRate)}
+                        </output>
+                      </div>
+                    </div>
+                    {showPremiumHint && (
+                      <div className="voice-note" role="note">
+                        <p>
+                          For a more natural voice, download a free Premium
+                          voice: System Settings &gt; Accessibility &gt; Spoken
+                          Content &gt; System Voice &gt; Manage Voices.
+                        </p>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={busy}
+                          onClick={onOpenVoiceSettings}
+                        >
+                          Open Spoken Content
+                          <ArrowRight size={13} />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+                {(!natural || naturalReady) && (
+                  <div className="voice-preview">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      aria-describedby={`${ids}-preview`}
+                      onClick={() =>
+                        void onPreviewVoice(
+                          voiceChanged
+                            ? withVoice(info.settings, s)
+                            : undefined,
+                        )
+                      }
+                    >
+                      <Volume2 size={13} />
+                      Preview
+                    </button>
+                    <span id={`${ids}-preview`}>
+                      {voiceChanged
+                        ? "Saves your voice choices, then plays a sample."
+                        : "Plays a short sample."}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+            <label className="consent">
+              <input
+                type="checkbox"
+                checked={s.voiceSounds}
+                onChange={(e) => set("voiceSounds", e.target.checked)}
+              />
+              <span>
+                Play a soft sound when I start and stop listening (‘Hey Assist’
+                only)
+              </span>
+            </label>
+          </div>
+        </details>
+        <details className="setting-group">
+          <summary>
+            <span>
+              Listening
+              <span>
+                {patience?.label ?? "Normal"} patience
+                {s.handsFree &&
+                  (s.followUpListening
+                    ? " · Hears replies without ‘Hey Assist’"
+                    : " · Wake phrase every time")}
+              </span>
+            </span>
+            <ChevronDown size={15} />
+          </summary>
+          <div className="setting-fields">
+            <fieldset className="choice-field">
+              <legend>Patience</legend>
+              <div className="segmented">
+                {patienceOptions.map((p) => (
+                  <label
+                    key={p.value}
+                    className={
+                      s.listeningPatience === p.value ? "selected" : undefined
+                    }
+                  >
+                    <input
+                      className="visually-hidden"
+                      type="radio"
+                      name={`${ids}-patience`}
+                      value={p.value}
+                      checked={s.listeningPatience === p.value}
+                      aria-describedby={`${ids}-patience`}
+                      onChange={() => set("listeningPatience", p.value)}
+                    />
+                    {p.label}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <p id={`${ids}-patience`}>
+              How long I wait when you pause. Choose Relaxed if you think out
+              loud.
+              {!s.handsFree &&
+                " This applies to ‘Hey Assist’. With Option + Space, I listen until you let go."}
+            </p>
+            {s.handsFree && (
+              <>
+                <label className="consent">
+                  <input
+                    type="checkbox"
+                    checked={s.followUpListening}
+                    aria-describedby={`${ids}-followup`}
+                    onChange={(e) => set("followUpListening", e.target.checked)}
+                  />
+                  <span>Listen for your reply without “Hey Assist”</span>
+                </label>
+                <p id={`${ids}-followup`}>
+                  After I ask something or you finish a sentence, I keep
+                  listening for a few seconds, and the pill glows while I do.
+                  Audio stays on this Mac and is never saved.
+                </p>
+              </>
+            )}
+          </div>
+        </details>
         <details className="setting-group">
           <summary>
             <span>
@@ -995,8 +1794,8 @@ function SettingsPanel({
                     Input $ / 1M tokens
                     <input
                       type="number"
-                      min=".001"
-                      step=".001"
+                      min="0"
+                      step="any"
                       value={s.inputPrice}
                       onChange={(e) =>
                         set("inputPrice", Number(e.target.value))
@@ -1007,8 +1806,8 @@ function SettingsPanel({
                     Output $ / 1M tokens
                     <input
                       type="number"
-                      min=".001"
-                      step=".001"
+                      min="0"
+                      step="any"
                       value={s.outputPrice}
                       onChange={(e) =>
                         set("outputPrice", Number(e.target.value))
@@ -1111,6 +1910,103 @@ function SettingsPanel({
                 }
               />
             </label>
+          </div>
+        </details>
+        <details className="setting-group">
+          <summary>
+            <span>
+              Learning
+              <span>
+                {s.memory ? "Learns on this Mac" : "Not learning new tasks"}
+              </span>
+            </span>
+            <ChevronDown size={15} />
+          </summary>
+          <div className="setting-fields">
+            <p>
+              Open Assist remembers how your tasks went, your corrections and
+              the apps you use, so repeated tasks get faster. It knows where
+              apps and files are from macOS metadata, never file contents.
+              Everything stays encrypted on this Mac; only a few relevant notes
+              go to your model with a task. The safe tutorial is never learned.
+            </p>
+            <label className="consent">
+              <input
+                type="checkbox"
+                checked={s.memory}
+                onChange={(e) => set("memory", e.target.checked)}
+              />
+              <span>Learn from my tasks</span>
+            </label>
+            {learned && (
+              <p role="status">
+                {learned.counts.episodes} tasks · {learned.counts.preferences}{" "}
+                preferences · {learned.counts.skills} learned routines ·{" "}
+                {learned.counts.apps} apps
+              </p>
+            )}
+            {!!learned?.preferences.length && (
+              <div className="correction-note">
+                <b>Preferences</b>
+                <ul>
+                  {learned.preferences.map((text, i) => (
+                    <li key={i}>{text}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {!!learned?.skills.length && (
+              <div className="correction-note">
+                <b>Routines</b>
+                <ul>
+                  {learned.skills.map((trigger, i) => (
+                    <li key={i}>{trigger}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {forgetting ? (
+              <div className="field-pair">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setForgetting(false)}
+                >
+                  Keep
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={async () => {
+                    if (await onForgetMemory()) setForgetting(false);
+                  }}
+                >
+                  <Trash2 size={13} />
+                  Forget everything
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="secondary"
+                disabled={
+                  busy ||
+                  !learned ||
+                  !Object.values(learned.counts).some((n) => n > 0)
+                }
+                onClick={() => setForgetting(true)}
+              >
+                <Trash2 size={13} />
+                Forget what Open Assist learned
+              </button>
+            )}
+            {forgetting && (
+              <p role="alert">
+                This deletes learned tasks, preferences and routines from this
+                Mac. Local run history is kept.
+              </p>
+            )}
           </div>
         </details>
         <details className="setting-group">

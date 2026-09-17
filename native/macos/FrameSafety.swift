@@ -55,9 +55,15 @@ struct ScreenPixels {
 
 func framePixelsChanged(_ old: ScreenPixels, _ fresh: ScreenPixels, window: CGRect, points: [CGPoint], stableControls: [CGRect] = []) -> Bool {
     if old.changed(comparedTo: fresh, in: window, target: false, ignoring: stableControls) { return true }
-    // A small change at the actual click/drag destination is significant even
-    // when it occupies very little of the whole window.
-    return points.contains { point in
+    return targetPixelsChanged(old, fresh, points: points, stableControls: stableControls)
+}
+
+// A small change at the actual click/drag destination is significant even
+// when it occupies very little of the whole window. Used alone when every
+// input point lies inside a verified, stable, hit-tested control, so unrelated
+// animation elsewhere in the window does not reject the step.
+func targetPixelsChanged(_ old: ScreenPixels, _ fresh: ScreenPixels, points: [CGPoint], stableControls: [CGRect] = []) -> Bool {
+    points.contains { point in
         old.changed(comparedTo: fresh, in: CGRect(x: point.x - 48, y: point.y - 32, width: 96, height: 64), target: true, ignoring: stableControls)
     }
 }

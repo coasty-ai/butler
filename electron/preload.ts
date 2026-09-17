@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { Bridge } from "../src/ui/api";
+import type { Bridge, KokoroUiStatus } from "../src/ui/api";
 const invoke = (method: string, ...args: unknown[]) =>
   ipcRenderer.invoke("coarena", method, args);
 const bridge: Bridge = {
@@ -26,6 +26,16 @@ const bridge: Bridge = {
   dismiss: () => invoke("dismiss"),
   openSettings: (section) => invoke("openSettings", section),
   closeSettings: () => invoke("closeSettings"),
+  memorySummary: () => invoke("memorySummary"),
+  forgetMemory: () => invoke("forgetMemory"),
+  // Settings window only: main rejects these from the pill overlay.
+  voices: () => invoke("voices"),
+  previewVoice: () => invoke("previewVoice"),
+  openVoiceSettings: () => invoke("openVoiceSettings"),
+  kokoroStatus: () => invoke("kokoroStatus"),
+  downloadKokoro: () => invoke("downloadKokoro"),
+  cancelKokoroDownload: () => invoke("cancelKokoroDownload"),
+  removeKokoro: () => invoke("removeKokoro"),
   subscribePill: (fn) => {
     const handler = (_e: unknown, s: any) => fn(s);
     ipcRenderer.on("pill", handler);
@@ -35,6 +45,11 @@ const bridge: Bridge = {
     const handler = (_e: unknown, s: string) => fn(s);
     ipcRenderer.on("view", handler);
     return () => ipcRenderer.removeListener("view", handler);
+  },
+  subscribeKokoro: (fn) => {
+    const handler = (_e: unknown, s: KokoroUiStatus) => fn(s);
+    ipcRenderer.on("kokoro-status", handler);
+    return () => ipcRenderer.removeListener("kokoro-status", handler);
   },
   subscribe: (fn) => {
     const handler = (_e: unknown, s: any) => fn(s);

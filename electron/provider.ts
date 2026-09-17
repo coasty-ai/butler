@@ -5,7 +5,7 @@ import { trace, type DiagnosticSink } from "../src/core/diagnostics";
 
 // Use macOS/Chromium networking, including system proxy configuration. Keep
 // provider traffic separate from renderer cookies/cache in an in-memory session.
-function desktopTransport(diagnostics?: DiagnosticSink): typeof fetch {
+export function desktopTransport(diagnostics?: DiagnosticSink): typeof fetch {
   let useNode = false;
   return async (input, init) => {
     if (useNode)

@@ -6,7 +6,7 @@ A macOS voice assistant built from the supplied 39-page strategy PDF and the sub
 
 Open Assist is the consumer product. CoArena is the intelligence/evaluation layer; CoArena Gym is the environment and evaluation product. Contributions connect them only after per-run review and consent.
 
-**Status: development alpha.** Native push-to-talk, optional on-device wake-phrase listening, on-device speech, screen capture/input, correction handling, approval, encrypted local trajectories and opt-in contribution are implemented. Offline checks use synthetic tasks and mocked providers; GPT-5.4 mini has also completed a generated-screen task through the live API. Live speech accuracy, arbitrary desktop reliability and shortcut latency still need device testing. See [validation](docs/VALIDATION.md), [implementation status](docs/IMPLEMENTATION.md) and [resources required](docs/RESOURCES.md).
+**Status: development alpha.** Native push-to-talk, optional on-device wake-phrase listening, on-device speech, screen capture/input, correction handling, approval, encrypted local trajectories and opt-in contribution are implemented. Offline checks use synthetic tasks and mocked providers; GPT-5.4 mini has also completed a generated-screen task through the live API and a few real Calculator/Safari tasks through the terminal live harness. Live speech accuracy, arbitrary desktop reliability and shortcut latency still need device testing. See [validation](docs/VALIDATION.md), [implementation status](docs/IMPLEMENTATION.md) and [resources required](docs/RESOURCES.md).
 
 ## Run
 
@@ -23,14 +23,17 @@ The app builds its two Swift helpers on first launch. Choose **Try the safe tuto
 
 For real tasks, open Settings once, configure a vision-capable model, and grant Screen Recording, Accessibility, Microphone and Speech Recognition (and Input Monitoring if macOS requests it). Restart if macOS requests it. On-device speech support depends on the installed language; there is no cloud transcription fallback. Text commands remain available. The selected display and bounded window/selection context supply automatic context to the model.
 
-Known text fields and recognized preparation/navigation controls can proceed automatically. Sending, publishing, paying and deleting require approval. Unidentified targets trigger up to three recovery attempts, then pause for manual help instead of requesting approval for blind input. Passwords and protected surfaces require manual takeover. These deterministic rules still need live/adversarial validation; arbitrary desktop UI is not perfectly classified.
+Known text fields, recognized navigation and controls with a benign label (Close, Search, Play, …) can proceed automatically. Sending, publishing, paying, deleting and other labelled controls require approval. Unidentified targets trigger up to three recovery attempts, then pause for manual help instead of requesting approval for blind input. To open or switch apps the model uses a launch-only `open_app` action limited to installed apps in the standard application folders; installers, terminals, script apps and protected apps are refused. Passwords and protected surfaces require manual takeover.
+
+Open Assist learns locally. It knows your installed apps, standard folders and recently used files from Spotlight metadata, remembers your corrections and past tasks, and turns procedures that succeed repeatedly into skills that replay without model calls. Every replayed step still goes through the same safety checks. Memory is encrypted on this Mac; turn it off or forget everything in **Settings → Learning**. See [docs/MEMORY.md](docs/MEMORY.md). These deterministic rules still need live/adversarial validation; arbitrary desktop UI is not perfectly classified.
 
 - **Local:** install Ollama, download a vision model, and use `http://127.0.0.1:11434`. The default `qwen3-vl:8b` is editable; it is not automatically downloaded. Cloud model identifiers are rejected.
 - **BYOM:** choose OpenAI, Anthropic, Google or an OpenAI-compatible endpoint. Enter your own API key, model ID, and current input/output token prices for estimated cost accounting. Requests go directly to that provider.
 - **Stop:** `Escape`, `Control + Option + Escape`, the stop control, or hold and say “stop.” Native Escape handling is independent of the renderer/model call during real runs.
-- **Talk / steer:** hold `Option + Space`; release to execute. The controller stops immediately on key-down. Say “Wait,” “Stop,” “Use Chrome, not Safari,” or another correction.
+- **Talk / steer:** hold `Option + Space`; release to execute. The controller stops and a working run pauses immediately on key-down; if nothing usable is recognized, the run stays paused. Say “Wait,” “Stop,” “Use Chrome, not Safari,” or another correction.
 - **Type:** tap `Option + Space`, or use `Command + Shift + Space`.
-- **Approve:** click once, or hold the shortcut and say “yes” to the current approval. In hands-free mode, say “Hey Assist, yes.” Spoken approval is still bound to the pending action and a finalized recognition confidence check.
+- **Approve:** click once, or hold the shortcut and say “yes” to the current approval. In hands-free mode, say “Hey Assist, yes,” or just “yes” while it is listening for your reply. Spoken approval is still bound to the pending action and a finalized recognition confidence check.
+- **Hear replies:** it answers out loud when you talk to it: questions, approvals and results. Pause to think; it waits longer when your sentence sounds unfinished. Choose the voice, speed and patience in **Settings → Voice replies / Listening**. See [docs/VOICE_PRODUCT.md](docs/VOICE_PRODUCT.md).
 - **Take over:** move the mouse, click, scroll or type to pause the agent. Hold and say “continue” when ready. The app records the takeover event, not your intervening keystrokes.
 
 The adapters use a single custom GUI-action tool over vision-capable provider APIs. They do not yet translate each vendor's specialized built-in computer-use tools; use a model supporting image input and function calling (or Ollama JSON output).
@@ -72,6 +75,8 @@ npm start
 
 `npm run test:desktop` checks the actual Electron shell with a synthetic run and isolated encrypted storage. `CSC_IDENTITY_AUTO_DISCOVERY=false npm run package:mac` produces a local `.app` directory without using your release signing identity. Release signing/notarization and signed updates are not configured. Both native helpers must match the target architecture.
 
+`npm run test:live -- --provider openai "Open Calculator"` is an optional **paid, real desktop** run: it drives this Mac with the source native helper under cost/action/time caps, declines approvals and stops at any pause. `--trace-dir` saves screenshots and per-step traces; keep that directory outside the repository. See the [developer guide](docs/DEVELOPMENT.md#live-task-harness).
+
 `npm run test:provider -- openai` is an optional **paid API** check using your `.env` key and generated screenshots in an isolated, offline browser. It exercises visual targeting, text entry and completion verification, with a six-step limit and a $0.05 estimated budget checked before each request. It never captures your desktop or sends OS input. Results go to `output/qa/provider-smoke-openai.json`. `anthropic` and `google` can be checked the same way; failures are recorded and return a nonzero exit code.
 
 ## Optional contribution service
@@ -100,6 +105,7 @@ Seeding writes a deterministic initial board, task instructions and an empty tra
 ## Repository
 
 - `src/core`: action schema, privacy boundary, policy, run state machine, tutorial and text sanitizer.
+- `scripts/live-task.mjs`: opt-in paid live desktop harness.
 - `src/providers`: OpenAI Responses, Anthropic Messages, Gemini, compatible and Ollama adapters.
 - `electron`, `native/macos`: menu-bar shell, floating pill, IPC boundary, native speech/capture/input and emergency stop.
 - `src/voice`: terse command classification and pill state. Completed corrections extend the active task. Audio and the stream of partial transcripts are not stored; a command recovered from an empty final recognition is stored only as the submitted command.

@@ -1,4 +1,4 @@
-import type { Bridge } from "./api";
+import type { Bridge, KokoroUiStatus } from "./api";
 import {
   defaultSettings,
   type Frame,
@@ -11,9 +11,24 @@ import { Runner, terminal } from "../core/runner";
 import { TutorialController, TutorialProvider } from "../core/tutorial";
 import { prepareBundle } from "../contribution/bundle";
 import { idlePill, voiceIntent, type PillState } from "../voice/router";
+/** The browser preview never downloads models or plays audio. */
+const kokoroUnsupported: KokoroUiStatus = {
+  supported: false,
+  installed: false,
+  downloading: false,
+  progress: 0,
+  bytes: 0,
+  totalBytes: 0,
+};
+const kokoroMessage =
+  "The natural voice downloads in the macOS app. This preview never downloads voices.";
 export function previewBridge(): Bridge {
   let settings = structuredClone(defaultSettings),
-    pill = { ...idlePill };
+    pill = { ...idlePill },
+    runPill: Partial<PillState> = idlePill,
+    // Journal position when a text-entry tap paused a working run; only
+    // dismissing that untouched pill gives the run back.
+    textHold: number | undefined;
   const runs = new Map<string, Run>(),
     events = new Map<string, JournalEvent[]>(),
     frames = new Map<string, Frame[]>();
@@ -25,6 +40,8 @@ export function previewBridge(): Bridge {
     pill = { ...pill, ...s };
     pillListeners.forEach((fn) => fn(pill));
   };
+  const lastSequence = () =>
+    runner?.snapshot.events.at(-1)?.sequence_number ?? 0;
   const recorder: Recorder = {
     begin: (r) => {
       runs.set(r.id, structuredClone(r));
@@ -69,6 +86,11 @@ export function previewBridge(): Bridge {
         locale: "",
         handsFree: false,
         wakeListening: false,
+        speaking: false,
+        voiceQuality: "none",
+        voiceName: "",
+        cloudVoiceAllowed: false,
+        kokoro: { ...kokoroUnsupported },
       },
     }),
     saveSettings: async (s) => {
@@ -87,7 +109,8 @@ export function previewBridge(): Bridge {
         (s) => {
           listeners.forEach((f) => f(s));
           const status = s.run?.status;
-          update({
+          const approval = status === "confirming" && !!s.pending;
+          runPill = {
             phase:
               status === "completed" || status === "cancelled"
                 ? "done"
@@ -95,7 +118,7 @@ export function previewBridge(): Bridge {
                   ? "paused"
                   : status === "failed"
                     ? "error"
-                    : status === "confirming"
+                    : approval
                       ? "approval"
                       : "working",
             label:
@@ -108,10 +131,14 @@ export function previewBridge(): Bridge {
                     : status === "failed"
                       ? s.message
                       : "Working…",
-            transcript: "",
+            transcript:
+              status === "paused" || status === "takeover"
+                ? "Hold ⌥ Space to continue."
+                : "",
             synthetic: true,
-            canApprove: status === "confirming",
-          });
+            canApprove: approval,
+          };
+          update(runPill);
         },
       );
       void runner.start(task);
@@ -121,7 +148,15 @@ export function previewBridge(): Bridge {
     stop: async () => runner?.stop(),
     confirm: async (yes) => runner?.approveFromVoice(yes),
     openCommand: async () => {
+      const before = runner?.snapshot.run?.status;
       runner?.interruptForVoice();
+      textHold =
+        before &&
+        !terminal(before) &&
+        !["paused", "takeover", "confirming"].includes(before) &&
+        runner?.snapshot.run?.status === "paused"
+          ? lastSequence()
+          : undefined;
       update({
         phase: "text",
         label: "Type a command",
@@ -130,6 +165,7 @@ export function previewBridge(): Bridge {
       });
     },
     command: async (text) => {
+      textHold = undefined;
       const i = voiceIntent(text);
       if (i.kind === "stop") {
         runner?.stop();
@@ -144,6 +180,19 @@ export function previewBridge(): Bridge {
         return;
       }
       if (i.kind === "approve" || i.kind === "decline") {
+        const status = runner?.snapshot.run?.status;
+        if (
+          !runner?.snapshot.pending &&
+          (status === "paused" || status === "takeover")
+        ) {
+          // A "yes" or "no" with nothing pending never resumes a held run.
+          update({
+            ...runPill,
+            label: "Paused — nothing to approve.",
+            transcript: "Hold ⌥ Space to continue.",
+          });
+          return;
+        }
         await runner?.approveFromVoice(i.kind === "approve");
         return;
       }
@@ -209,10 +258,65 @@ export function previewBridge(): Bridge {
       );
     },
     pillState: async () => pill,
-    dismiss: async () => update(idlePill),
+    // Like the desktop app, dismissing never hides an active run's controls.
+    dismiss: async () => {
+      const held = textHold;
+      textHold = undefined;
+      if (
+        pill.phase === "text" &&
+        held !== undefined &&
+        runner?.snapshot.run?.status === "paused" &&
+        lastSequence() === held
+      ) {
+        await runner.resume();
+        return;
+      }
+      update(
+        runner?.snapshot.run && !terminal(runner.snapshot.run.status)
+          ? runPill
+          : idlePill,
+      );
+    },
     openSettings: async (section = "settings") =>
       viewListeners.forEach((fn) => fn(section)),
     closeSettings: async () => viewListeners.forEach((fn) => fn("")),
+    // The browser preview never learns: runs here are synthetic tutorials.
+    memorySummary: async () => ({
+      counts: { episodes: 0, preferences: 0, skills: 0, apps: 0 },
+      preferences: [],
+      skills: [],
+    }),
+    forgetMemory: async () => {
+      if (runner?.snapshot.run && !terminal(runner.snapshot.run.status))
+        throw new Error("Stop the active run first.");
+    },
+    // The browser preview has no system voices and never plays audio or
+    // contacts a speech service.
+    voices: async () => ({
+      voices: [],
+      selected: settings.voiceId,
+      engine: settings.voiceEngine,
+      cloudAllowed: false,
+    }),
+    previewVoice: async () => {
+      throw new Error(
+        "Spoken replies play in the macOS app. This preview never plays audio.",
+      );
+    },
+    openVoiceSettings: async () => {
+      throw new Error("Open the macOS app to manage system voices.");
+    },
+    kokoroStatus: async () => ({ ...kokoroUnsupported }),
+    downloadKokoro: async () => {
+      throw new Error(kokoroMessage);
+    },
+    cancelKokoroDownload: async () => {
+      throw new Error(kokoroMessage);
+    },
+    removeKokoro: async () => {
+      throw new Error(kokoroMessage);
+    },
+    subscribeKokoro: () => () => {},
     subscribe: (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);

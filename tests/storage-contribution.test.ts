@@ -297,6 +297,140 @@ describe("synthetic Gym", () => {
       false,
     );
     expect(gradeTask(task, task.expected, []).pass).toBe(false);
+    expect(
+      gradeTask(task, task.expected, [{ type: "open_app" }, { type: "drag" }])
+        .pass,
+    ).toBe(true);
+    expect(
+      gradeTask(task, task.expected, [{ type: "drag" }, { type: "fail" }]).pass,
+    ).toBe(false);
+  });
+  it("exports opened applications only as an abstract slot", () => {
+    const r = makeRun(),
+      e: any = {
+        event_id: crypto.randomUUID(),
+        type: "ActionExecuted",
+        data: {
+          action: {
+            type: "open_app",
+            name: "Acme Private CRM",
+            frame_id: "local",
+          },
+          launched: {
+            appId: "com.acme.private-crm",
+            name: "Acme Private CRM",
+            frontmost: true,
+            wasRunning: false,
+          },
+        },
+      },
+      typed: any = {
+        event_id: crypto.randomUUID(),
+        type: "ActionExecuted",
+        data: {
+          action: { type: "type_text", text: "hello", frame_id: "local" },
+        },
+      };
+    const b = prepareBundle(r, [e, typed], [], {
+      runId: r.id,
+      level: "trajectory",
+      excludedFrames: [],
+      excludedEvents: [],
+    });
+    expect(b.steps?.[0]).toEqual({ type: "open_app", name: "<APP>" });
+    expect(JSON.stringify(b)).not.toContain("Acme");
+    expect(JSON.stringify(b)).not.toContain("com.acme");
+    expect(JSON.stringify(b)).not.toContain("launched");
+    const candidate = workflowCandidate(b, "receipt");
+    expect(candidate.ordered_steps).toEqual([
+      { action: "open_app", app_slot: "<APP>" },
+      { action: "type_text", input_slot: "<TEXT>" },
+    ]);
+    expect(candidate.input_slots).toEqual(["<TEXT>", "<APP>"]);
+    expect(JSON.stringify(candidate)).not.toContain("Acme");
+    expect(
+      workflowCandidate({ ...b, steps: [] }, "receipt").input_slots,
+    ).toEqual(["<TEXT>"]);
+  });
+  it("exports opened files only as an abstract slot", () => {
+    const r = makeRun(),
+      opened: any = {
+        event_id: crypto.randomUUID(),
+        type: "ActionExecuted",
+        data: {
+          action: {
+            type: "open_file",
+            path: "~/Documents/Jane Private/Salary 2026.xlsx",
+            frame_id: "local",
+          },
+          opened: {
+            path: "~/Documents/Jane Private/Salary 2026.xlsx",
+            kind: "document",
+            appId: "com.microsoft.Excel",
+          },
+        },
+      },
+      app: any = {
+        event_id: crypto.randomUUID(),
+        type: "ActionExecuted",
+        data: { action: { type: "open_app", name: "Acme", frame_id: "l" } },
+      },
+      typed: any = {
+        event_id: crypto.randomUUID(),
+        type: "ActionExecuted",
+        data: {
+          action: { type: "type_text", text: "hello", frame_id: "local" },
+        },
+      };
+    const b = prepareBundle(r, [opened, typed], [], {
+      runId: r.id,
+      level: "trajectory",
+      excludedFrames: [],
+      excludedEvents: [],
+    });
+    expect(b.steps?.[0]).toEqual({ type: "open_file", path: "<FILE>" });
+    const json = JSON.stringify(b);
+    for (const leaked of [
+      "Salary",
+      "Jane",
+      "Documents",
+      "~/",
+      "Excel",
+      "opened",
+    ])
+      expect(json).not.toContain(leaked);
+    const candidate = workflowCandidate(b, "receipt");
+    expect(candidate.ordered_steps).toEqual([
+      { action: "open_file", file_slot: "<FILE>" },
+      { action: "type_text", input_slot: "<TEXT>" },
+    ]);
+    expect(candidate.input_slots).toEqual(["<TEXT>", "<FILE>"]);
+    expect(JSON.stringify(candidate)).not.toContain("Salary");
+    const both = prepareBundle(r, [app, opened], [], {
+      runId: r.id,
+      level: "trajectory",
+      excludedFrames: [],
+      excludedEvents: [],
+    });
+    expect(workflowCandidate(both, "receipt").input_slots).toEqual([
+      "<TEXT>",
+      "<APP>",
+      "<FILE>",
+    ]);
+    // Statistics bundles contain no steps at all.
+    const stats = prepareBundle(r, [opened], [], {
+      runId: r.id,
+      level: "statistics",
+      excludedFrames: [],
+      excludedEvents: [],
+    });
+    expect(JSON.stringify(stats)).not.toContain("Salary");
+    expect(
+      gradeTask(seedTask(1), seedTask(1).expected, [
+        { type: "open_file" },
+        { type: "drag" },
+      ]).pass,
+    ).toBe(true);
   });
   it("requires a receipt and never exports raw source text", () => {
     const r = makeRun(),

@@ -5,6 +5,13 @@ func output(_ value: [String:Any]) {
     if let data = try? JSONSerialization.data(withJSONObject:value) { FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data([10])) }
 }
 class FixtureWindow: NSWindow { override var canBecomeKey: Bool { true }; override var canBecomeMain: Bool { true } }
+// A clickable web-style container (<div aria-label="Delete">) around an
+// unlabelled icon: the hit test lands on the icon, the name is on the group.
+class LabelledGroup: NSView {
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .group }
+    override func accessibilityLabel() -> String? { "Delete" }
+}
 class Fixture: NSObject, NSApplicationDelegate {
     var window: FixtureWindow!
     var second: NSWindow?
@@ -12,6 +19,10 @@ class Fixture: NSObject, NSApplicationDelegate {
     let other = NSTextField(string:"Other")
     let button = NSButton(title:"Continue",target:nil,action:nil)
     let clock = NSTextField(labelWithString:"Tick 0")
+    // Calculator-style keypad key: a symbol title with a spoken description.
+    let keypad = NSButton(title:"×",target:nil,action:nil)
+    let trash = LabelledGroup()
+    let trashIcon = NSImageView()
     var clicks = 0, tick = 0
     var shortcuts = 0
     var keyEvents = [[String: Any]]()
@@ -33,8 +44,12 @@ class Fixture: NSObject, NSApplicationDelegate {
         other.frame = NSRect(x:650,y:bounds.height-300,width:350,height:45);other.font = .systemFont(ofSize:24)
         button.frame = NSRect(x:100,y:bounds.height-410,width:180,height:60);button.bezelStyle = .rounded;button.target = self;button.action = #selector(clicked)
         clock.frame = NSRect(x:100,y:100,width:300,height:30);clock.textColor = .white
+        keypad.frame = NSRect(x:700,y:bounds.height-410,width:60,height:60);keypad.bezelStyle = .rounded;keypad.setAccessibilityLabel("multiply")
+        trash.frame = NSRect(x:820,y:bounds.height-410,width:60,height:60)
+        trashIcon.frame = NSRect(x:6,y:6,width:48,height:48);trashIcon.image = NSImage(size:NSSize(width:48,height:48), flipped:false) { rect in NSColor.systemRed.setFill();rect.insetBy(dx:8,dy:8).fill();return true }
+        trashIcon.setAccessibilityLabel("");trash.addSubview(trashIcon)
         video.frame=NSRect(x:430,y:80,width:700,height:300);video.wantsLayer=true;window.contentView!.addSubview(video)
-        for view in [title,subtitle,field,other,button,clock] { window.contentView!.addSubview(view) }
+        for view in [title,subtitle,field,other,button,clock,keypad,trash] { window.contentView!.addSubview(view) }
         let menu = NSMenu(), root = NSMenuItem(), submenu = NSMenu(title:"Fixture")
         let shortcut = NSMenuItem(title:"Fixture shortcut",action:#selector(shortcutInvoked),keyEquivalent:"k")
         shortcut.keyEquivalentModifierMask = [.command,.shift];shortcut.target = self
@@ -76,12 +91,15 @@ class Fixture: NSObject, NSApplicationDelegate {
         case "videoOff":animateVideo=false;video.layer?.backgroundColor=NSColor.clear.cgColor
         case "move":button.setFrameOrigin(NSPoint(x:button.frame.minX+180,y:button.frame.minY))
         case "relabel":button.title = "Delete"
-        case "stationaryPointer", "movePointer":
+        case "stationaryPointer", "echoPointer", "movePointer":
+            // echoPointer imitates WindowServer re-emitting the pointer at a
+            // slightly different fixed-point location with no hardware delta.
             let original = CGEvent(source:nil)?.location ?? CGPoint(x:400,y:400)
-            let move = request["method"] as? String == "movePointer"
-            let position = move ? CGPoint(x:original.x+1,y:original.y) : original
+            let method = request["method"] as? String
+            let offset: CGFloat = method == "movePointer" ? 8 : method == "echoPointer" ? 1 : 0
+            let position = CGPoint(x:original.x+offset,y:original.y)
             let event = CGEvent(mouseEventSource:nil,mouseType:.mouseMoved,mouseCursorPosition:position,mouseButton:.left)
-            event?.setIntegerValueField(.mouseEventDeltaX,value:move ? 1 : 0)
+            event?.setIntegerValueField(.mouseEventDeltaX,value:method == "movePointer" ? 8 : 0)
             event?.setIntegerValueField(.mouseEventDeltaY,value:0)
             event?.post(tap:.cghidEventTap)
         case "longValue":field.stringValue = String(repeating:"x",count:5000) + "old"
@@ -93,7 +111,9 @@ class Fixture: NSObject, NSApplicationDelegate {
         }
         let bounds = NSScreen.screens[0].frame
         let center = window.convertPoint(toScreen:NSPoint(x:button.frame.midX,y:button.frame.midY))
-        output(["id":request["id"] ?? "","result":["clicks":clicks,"shortcuts":shortcuts,"keyEvents":keyEvents,"selectionLength":(field.currentEditor() as? NSTextView)?.selectedRange().length ?? 0,"text":field.stringValue,"x":(center.x-bounds.minX)/bounds.width,"y":(bounds.maxY-center.y)/bounds.height]])
+        let keypadCenter = window.convertPoint(toScreen:NSPoint(x:keypad.frame.midX,y:keypad.frame.midY))
+        let trashCenter = window.convertPoint(toScreen:NSPoint(x:trash.frame.midX,y:trash.frame.midY))
+        output(["id":request["id"] ?? "","result":["clicks":clicks,"shortcuts":shortcuts,"keyEvents":keyEvents,"selectionLength":(field.currentEditor() as? NSTextView)?.selectedRange().length ?? 0,"text":field.stringValue,"x":(center.x-bounds.minX)/bounds.width,"y":(bounds.maxY-center.y)/bounds.height,"keypadX":(keypadCenter.x-bounds.minX)/bounds.width,"keypadY":(bounds.maxY-keypadCenter.y)/bounds.height,"trashX":(trashCenter.x-bounds.minX)/bounds.width,"trashY":(bounds.maxY-trashCenter.y)/bounds.height]])
     }
 }
 let application = NSApplication.shared

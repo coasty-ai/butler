@@ -1,0 +1,35 @@
+{
+  "comment": "Shared installer-name fixture. TypeScript isInstallerName (src/core/policy.ts) and native launchNameDenied (native/macos/LaunchSafety.swift) must give these verdicts; [._-] count as word breaks.",
+  "match": [
+    "Chrome Remote Desktop Host Uninstaller",
+    "Install macOS Sonoma",
+    "Installer",
+    "Notes Installer",
+    "com.google.chromeremotedesktop.me2me-host-uninstaller",
+    "com.apple.InstallAssistant.Sonoma",
+    "Setup Assistant",
+    "Setup_Helper",
+    "SetupHelper",
+    "Migration Assistant",
+    "Migrate Mail",
+    "com.foo.migrationtool",
+    "com.foo.migrator",
+    "Boot Camp Assistant",
+    "BootCampHelper",
+    "Zoom Updater",
+    "com.example.app-updater",
+    "Recovery",
+    "disk_recovery"
+  ],
+  "noMatch": [
+    "Google Chrome",
+    "com.apple.Notes",
+    "Stickies",
+    "Visual Studio Code",
+    "Calculator",
+    "Reinstall Notes",
+    "Software Updates",
+    "com.apple.Safari",
+    "Mail"
+  ]
+}

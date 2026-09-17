@@ -1,10 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface } from "node:readline";
 import {
   errorDetails,
   trace,
   type DiagnosticSink,
 } from "../src/core/diagnostics";
+import { HelperProcess, type HelperHooks } from "./controller";
 export interface VoiceEvent {
   event: string;
   text?: string;
@@ -16,87 +15,125 @@ export interface VoiceEvent {
   listening?: boolean;
   textLength?: number;
   source?: string;
+  /** speech_started / speech_finished / speech_error. */
+  utteranceId?: string;
+  interrupted?: boolean;
+  /** speech_finished: barge_in, escape, replaced, cancel, sleep, disabled. */
+  reason?: string;
+  /** followup_open / followup_detected / followup_closed: the window kind. */
+  kind?: string;
+  seconds?: number;
+  /** voice_error: empty, unfinalized, mic, permission, asleep, unavailable. */
+  code?: string;
+  /** transcript_final / turn_endpoint: recognizer segments in the turn. */
+  segments?: number;
+  /** endpoint_near. */
+  remainingMs?: number;
+  /** turn_endpoint (content-free) and followup_closed. */
+  endReason?: string;
+  stableMs?: number;
+  quietMs?: number;
+  completeness?: string;
+  patience?: string;
+  noiseFloor?: number;
+  threshold?: number;
 }
 export class NativeVoice {
-  private child: ChildProcessWithoutNullStreams;
-  private pending = new Map<
-    string,
-    {
-      resolve: (data: any) => void;
-      reject: (error: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
+  private helper: HelperProcess;
   constructor(
     binary: string,
     receive: (event: VoiceEvent) => void,
     private diagnostics?: DiagnosticSink,
+    hooks: HelperHooks = {},
   ) {
-    this.child = spawn(binary, [], { stdio: "pipe" });
-    this.child.stderr.resume();
-    createInterface({ input: this.child.stdout }).on("line", (line) => {
-      try {
-        const data = JSON.parse(line);
-        if (data.event) {
-          receive(data);
-          return;
-        }
-        const item = this.pending.get(data.id);
-        if (!item) return;
-        clearTimeout(item.timer);
-        this.pending.delete(data.id);
-        data.error
-          ? item.reject(new Error(data.error))
-          : item.resolve(data.result);
-      } catch {}
+    this.helper = new HelperProcess(binary, {
+      name: "Voice",
+      diagnostics,
+      hooks,
+      restarting: "Voice helper restarted. Try again.",
+      exhausted: "Voice helper is unavailable.",
+      closed: "Voice helper is unavailable.",
+      error: (data) =>
+        new Error(
+          typeof data.error === "string" && data.error
+            ? data.error
+            : "Voice helper failed.",
+        ),
+      event: (data) => {
+        if (typeof data.event !== "string") return false;
+        receive(data);
+        return true;
+      },
     });
-    const fail = () => {
-      trace(this.diagnostics, "VoiceUnavailable");
-      for (const item of this.pending.values()) {
-        clearTimeout(item.timer);
-        item.reject(new Error("Voice helper is unavailable."));
-      }
-      this.pending.clear();
-    };
-    this.child.on("exit", fail);
-    this.child.on("error", fail);
+  }
+  get pid() {
+    return this.helper.pid;
   }
   call(method: string, data: Record<string, unknown> = {}): Promise<any> {
-    if (this.child.killed || this.child.exitCode !== null)
-      return Promise.reject(new Error("Voice helper is unavailable."));
     const id = crypto.randomUUID();
     const started = performance.now();
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => {
-          this.pending.delete(id);
-          reject(new Error("Voice setup is waiting for macOS permission."));
+    // The permission prompt legitimately waits for the user; anything else
+    // that stalls means the helper's main thread is stuck, so restart it.
+    const permission = method === "requestPermissions";
+    return this.helper
+      .send(
+        method,
+        data,
+        permission ? 120000 : 5000,
+        permission
+          ? {
+              message: "Voice setup is waiting for macOS permission.",
+              kill: false,
+            }
+          : { message: "Voice helper did not respond.", kill: true },
+      )
+      .then(
+        (result) => {
+          trace(this.diagnostics, "VoiceResponse", {
+            requestId: id,
+            method,
+            durationMs: Math.round(performance.now() - started),
+          });
+          return result;
         },
-        method === "requestPermissions" ? 120000 : 5000,
+        (error) => {
+          trace(this.diagnostics, "VoiceError", {
+            requestId: id,
+            method,
+            durationMs: Math.round(performance.now() - started),
+            ...errorDetails(error),
+          });
+          throw error;
+        },
       );
-      this.pending.set(id, { resolve, reject, timer });
-      this.child.stdin.write(JSON.stringify({ id, method, ...data }) + "\n");
-    }).then(
-      (result) => {
-        trace(this.diagnostics, "VoiceResponse", {
-          requestId: id,
-          method,
-          durationMs: Math.round(performance.now() - started),
-        });
-        return result;
-      },
-      (error) => {
-        trace(this.diagnostics, "VoiceError", {
-          requestId: id,
-          method,
-          durationMs: Math.round(performance.now() - started),
-          ...errorDetails(error),
-        });
-        throw error;
-      },
-    );
   }
   close() {
-    this.child.kill();
+    this.helper.close();
   }
+}
+/** How to continue a paused run with the current voice mode. */
+export function continueHint(handsFree: boolean) {
+  return handsFree ? "Say ‘continue’ or ‘stop’." : "Hold ⌥ Space to continue.";
+}
+/** How to answer a pending approval with the current voice mode. */
+export function approvalHint(handsFree: boolean) {
+  return handsFree
+    ? "Say “yes” or “no”, or click."
+    : "Hold ⌥ Space and say “yes”, or click once.";
+}
+/**
+ * The paused pill label for an interruption that produced no usable command:
+ * "Didn’t catch that. Try again." becomes "Paused — didn’t catch that."
+ */
+export function pausedLabel(message: string) {
+  let reason = message
+    .trim()
+    .replace(/\s*Try again\.?$/i, "")
+    .trim();
+  if (!reason) return "Paused.";
+  // Keep acronyms ("API key…") and proper casing beyond the first word.
+  if (!/^[A-Z]{2}/.test(reason))
+    reason = reason[0].toLowerCase() + reason.slice(1);
+  if (!/[.!?…]$/.test(reason)) reason += ".";
+  return `Paused — ${reason}`;
 }

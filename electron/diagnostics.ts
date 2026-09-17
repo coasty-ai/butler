@@ -1,5 +1,7 @@
 import {
   appendFileSync,
+  readdirSync,
+  writeFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -8,7 +10,7 @@ import {
   statSync,
 } from "node:fs";
 import { join } from "node:path";
-import { sanitizeText } from "../src/core/sanitize";
+import { redactSecrets, sanitizeText, scanText } from "../src/core/sanitize";
 import type { Snapshot } from "../src/core/schema";
 import type { DiagnosticSink } from "../src/core/diagnostics";
 
@@ -78,7 +80,116 @@ const fields = new Set([
   "eventType",
   "flags",
   "pointerDistance",
+  "launcherStatus",
+  "launchedAppId",
+  "frontmost",
+  "wasRunning",
+  "nameLength",
+  "problem",
+  "normalized",
+  "exitCode",
+  "signal",
+  "restarts",
+  "incompleteReason",
+  "stopReason",
+  "outputTypes",
+  "period",
+  // Memory and replay plans: content-free counts and fixed codes only.
+  "preferences",
+  "episodes",
+  "apps",
+  "files",
+  "folders",
+  "skills",
+  "index",
+  "plan",
+  "mode",
+  "openedKind",
+  "openedAppId",
+  // Voice turns and spoken replies: codes, timings, levels and flags only.
+  // Spoken or recognized text stays under `text`, which is never allow-listed.
+  "kind",
+  "priority",
+  "interrupted",
+  "engine",
+  "voiceQuality",
+  "window",
+  "completeness",
+  "patience",
+  "endReason",
+  "segments",
+  "stableMs",
+  "quietMs",
+  "latencyMs",
+  "noiseFloor",
+  "threshold",
+  "merged",
+  "speaking",
+  "rate",
+  "fallback",
+  "utteranceId",
+  "remainingMs",
 ]);
+/** Allow-listed keys that only ever carry a count or position. */
+const countFields = new Set([
+  "preferences",
+  "episodes",
+  "apps",
+  "files",
+  "folders",
+  "skills",
+  "index",
+  "segments",
+]);
+/** Allow-listed keys that only ever carry a finite measurement. */
+const numberFields = new Set([
+  "textLength",
+  "taskLength",
+  "durationMs",
+  "confidence",
+  "stableMs",
+  "quietMs",
+  "latencyMs",
+  "remainingMs",
+  "noiseFloor",
+  "threshold",
+  "rate",
+]);
+/** Allow-listed keys that only ever carry a boolean. */
+const flagFields = new Set(["interrupted", "merged", "speaking", "fallback"]);
+/**
+ * Allow-listed keys that only ever carry a short fixed code. A numeric value
+ * is dropped here: HTTP and exit statuses belong in httpStatus and exitCode.
+ */
+const codeFields = new Set([
+  "plan",
+  "mode",
+  "openedKind",
+  "kind",
+  "priority",
+  "engine",
+  "voiceQuality",
+  "window",
+  "completeness",
+  "patience",
+  "endReason",
+  "source",
+  "phase",
+  "code",
+  "status",
+]);
+const memoryEvents = new Set([
+  "MemoryRecalled",
+  "PlanStepProposed",
+  "PlanAbandoned",
+  "PlanCompleted",
+]);
+const code = (value: unknown) =>
+  typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value)
+    ? value
+    : undefined;
+const count = (value: unknown) =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
 export class LocalDiagnostics {
   readonly file: string;
@@ -88,27 +199,72 @@ export class LocalDiagnostics {
   private lastEvent = 0;
   private lastStatus = "";
   private warned = false;
+  private lastFrame = "";
+  private readonly frames: string;
   constructor(
     directory: string,
     private secrets: () => string[] = () => [],
     private output: (line: string) => void = (line) =>
       process.stdout.write(line),
     private maxBytes = 5 * 1024 * 1024,
+    /**
+     * Opt-in local debugging (COARENA_DIAGNOSTICS_VERBOSE=1): records spoken and
+     * typed text, task text, full model actions, pill text, screen context and
+     * screenshots. Provider keys are still redacted. Never enable by default.
+     */
+    readonly verbose = false,
   ) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     chmodSync(directory, 0o700);
+    this.frames = join(directory, "frames");
     this.file = join(directory, "current.jsonl");
     if (existsSync(this.file)) {
       chmodSync(this.file, 0o600);
       this.bytes = statSync(this.file).size;
     }
   }
+  private cleanVerbose(value: unknown, depth = 0): unknown {
+    if (depth > 7) return undefined;
+    if (typeof value === "string") {
+      if (/^data:image\//.test(value)) return "[image]";
+      let text = value;
+      for (const secret of this.secrets())
+        if (secret) text = text.replaceAll(secret, "[REDACTED:key]");
+      // Everything stays readable except credential-shaped spans (tokens,
+      // private keys, password/OTP assignments) that were spoken, typed or seen.
+      return redactSecrets(text, "[REDACTED:secret]").slice(0, 4000);
+    }
+    if (typeof value === "number")
+      return Number.isFinite(value) ? value : undefined;
+    if (typeof value === "boolean" || value === null) return value;
+    if (Array.isArray(value))
+      return value.slice(0, 80).map((v) => this.cleanVerbose(v, depth + 1));
+    if (!value || typeof value !== "object") return undefined;
+    return Object.fromEntries(
+      Object.entries(value).map(([key, v]) => [
+        key,
+        this.cleanVerbose(v, depth + 1),
+      ]),
+    );
+  }
   private clean(value: unknown, depth = 0, field = ""): unknown {
+    if (this.verbose) return this.cleanVerbose(value, depth);
     if (depth > 4) return undefined;
+    // Counts, measurements and flags never carry text; codes never carry
+    // free-form sentences.
+    if (countFields.has(field) || numberFields.has(field)) return count(value);
+    if (flagFields.has(field))
+      return typeof value === "boolean" ? value : undefined;
+    if (codeFields.has(field)) return code(value);
     if (typeof value === "string") {
       let text = value;
       for (const secret of this.secrets())
         if (secret) text = text.replaceAll(secret, "[REDACTED:key]");
+      // An utterance id is an opaque token (normally a UUID), never a sentence.
+      if (field === "utteranceId")
+        return /^[A-Za-z0-9_-]{1,64}$/.test(text) && !scanText(text).length
+          ? text
+          : undefined;
       if (
         ["runId", "frameId", "requestId"].includes(field) &&
         /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
@@ -161,8 +317,39 @@ export class LocalDiagnostics {
       }
     }
   };
+  private saveFrame(s: Snapshot) {
+    const frame = s.frame;
+    if (!this.verbose || !s.run || !frame || frame.id === this.lastFrame)
+      return;
+    this.lastFrame = frame.id;
+    try {
+      const match = /^data:image\/(png|jpeg|webp);base64,(.+)$/.exec(
+        frame.image,
+      );
+      if (!match) return;
+      mkdirSync(this.frames, { recursive: true, mode: 0o700 });
+      const name = `${new Date().toISOString().replace(/[:.]/g, "-")}-${s.run.id.slice(0, 8)}-${frame.id.slice(0, 8)}.${match[1] === "jpeg" ? "jpg" : match[1]}`;
+      writeFileSync(join(this.frames, name), Buffer.from(match[2], "base64"), {
+        mode: 0o600,
+      });
+      // Keep the newest 300 screenshots.
+      const files = readdirSync(this.frames).sort();
+      for (const old of files.slice(0, Math.max(0, files.length - 300)))
+        rmSync(join(this.frames, old), { force: true });
+      this.write("FrameSaved", {
+        runId: s.run.id,
+        frameId: frame.id,
+        file: join(this.frames, name),
+        appId: frame.appId,
+        context: frame.context,
+      });
+    } catch {
+      /* Debug screenshots must never interrupt a run. */
+    }
+  }
   snapshot(s: Snapshot) {
     if (!s.run) return;
+    this.saveFrame(s);
     if (this.lastRun !== s.run.id) {
       this.lastRun = s.run.id;
       this.lastEvent = 0;
@@ -172,9 +359,14 @@ export class LocalDiagnostics {
       if (e.sequence_number <= this.lastEvent) continue;
       this.lastEvent = e.sequence_number;
       const action = e.data.action as Record<string, unknown> | undefined;
+      const launched = e.data.launched as Record<string, unknown> | undefined;
+      const opened = e.data.opened as Record<string, unknown> | undefined;
       this.write(e.type, {
         runId: s.run.id,
         sequence: e.sequence_number,
+        // Full event payload (action text, corrections, summaries); dropped by
+        // the allow-list unless verbose debugging is on.
+        data: e.data,
         code: e.data.code,
         reason: e.data.reason,
         usage: e.data.usage,
@@ -185,6 +377,45 @@ export class LocalDiagnostics {
         appId: e.data.appId,
         targetRole: e.data.targetRole,
         focusedRole: e.data.focusedRole,
+        launcherStatus: e.data.launcherStatus,
+        normalized: e.data.normalized,
+        // The cycle length of a repeated action; ActionLoopDetected carries no
+        // content, and a REFUSED failure is logged by its code alone.
+        period: e.data.period,
+        // TaskAmended records only the new task's length, never its text.
+        taskLength: count(e.data.taskLength),
+        // Only the fixed, content-free problem description of a malformed reply.
+        problem:
+          e.data.code === "MALFORMED_RESPONSE" ? e.data.problem : undefined,
+        // Memory recall and replay plans: counts, positions and fixed codes.
+        // Preference, episode, skill and file text or paths never appear.
+        ...(memoryEvents.has(e.type)
+          ? {
+              preferences: count(e.data.preferences),
+              episodes: count(e.data.episodes),
+              apps: count(e.data.apps),
+              files: count(e.data.files),
+              folders: count(e.data.folders),
+              skills: count(e.data.skills),
+              index: count(e.data.index),
+              plan: code(e.data.plan),
+              mode: code(e.data.mode),
+              source: code(e.data.source),
+              reason: code(e.data.reason),
+            }
+          : {}),
+        // App names are user metadata; only the bundle id and flags are logged.
+        ...(e.type === "ActionExecuted" && launched
+          ? {
+              launchedAppId: launched.appId,
+              frontmost: launched.frontmost,
+              wasRunning: launched.wasRunning,
+            }
+          : {}),
+        // An opened file is logged by kind and handling app, never its path.
+        ...(e.type === "ActionExecuted" && opened
+          ? { openedKind: code(opened.kind), openedAppId: opened.appId }
+          : {}),
         ...(action
           ? {
               actionType: action.type,
@@ -199,6 +430,10 @@ export class LocalDiagnostics {
               textLength:
                 typeof action.text === "string"
                   ? action.text.length
+                  : undefined,
+              nameLength:
+                action.type === "open_app" && typeof action.name === "string"
+                  ? action.name.length
                   : undefined,
             }
           : {}),
@@ -216,6 +451,12 @@ export class LocalDiagnostics {
         usage: s.run.usage,
         taskLength: s.run.task.length,
         appId: s.frame?.appId,
+        // Verbose-only fields (not in the allow-list).
+        task: s.run.task,
+        message: s.message,
+        summary: s.run.summary,
+        corrections: s.run.corrections,
+        pending: s.pending,
         ...(s.run.status === "failed" ? { error: s.message } : {}),
       });
     }
