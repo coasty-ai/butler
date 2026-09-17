@@ -87,6 +87,35 @@ export interface KokoroUiStatus {
    */
   error?: string;
 }
+/**
+ * The iMessage channel as Settings sees it (electron/messages.ts owns it).
+ * `automation` and `database` are the two macOS permissions in disguise:
+ * Automation for the Messages app, Full Disk Access for its database.
+ */
+export interface MessagesInfo {
+  enabled: boolean;
+  configured: boolean;
+  commands: boolean;
+  updates: "texted" | "all";
+  automation:
+    | "granted"
+    | "denied"
+    | "ask"
+    | "messages_closed"
+    | "unknown"
+    | "unavailable";
+  database:
+    | "ok"
+    | "no_access"
+    | "locked"
+    | "missing"
+    | "unsupported"
+    | "unopened"
+    | "off";
+  listening: boolean;
+  /** Last readable failure. Never message content. */
+  error?: string;
+}
 export interface AppInfo {
   desktop: boolean;
   platform: string;
@@ -115,6 +144,8 @@ export interface AppInfo {
     /** The free on-device natural voice. */
     kokoro: KokoroUiStatus;
   };
+  /** Text updates and texted commands; off until the user turns them on. */
+  messages: MessagesInfo;
 }
 export interface Bridge {
   info(): Promise<AppInfo>;
@@ -162,6 +193,13 @@ export interface Bridge {
   cancelKokoroDownload(): Promise<void>;
   /** Settings window only. Deletes the model; a saved "kokoro" engine becomes "system". */
   removeKokoro(): Promise<void>;
+  /** Settings window only. Re-reads the two macOS permissions for texting. */
+  messagesStatus(): Promise<MessagesInfo>;
+  /**
+   * Settings window only. Texts the saved handle once so the user can see it
+   * arrive; rejects with the macOS setup step that is missing.
+   */
+  sendTestMessage(): Promise<void>;
   subscribePill(fn: (state: PillState) => void): () => void;
   subscribeView(fn: (view: string) => void): () => void;
   /** Download progress and install changes for the natural voice. */

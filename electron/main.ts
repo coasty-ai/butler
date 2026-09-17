@@ -71,6 +71,12 @@ import {
   type VoiceEvent,
 } from "./voice";
 import { Conversation, ANSWER_WINDOW } from "./conversation";
+import {
+  MessagesChannel,
+  createMessagesHelper,
+  importEnvHandle,
+  validateMessageSettings,
+} from "./messages";
 import { createSpeechOutput, selectSpeechEngine } from "./speech-output";
 import { desktopTransport } from "./provider";
 import {
@@ -259,6 +265,44 @@ const speech = createSpeechOutput({
     status: () => getKokoro().status(),
     synthesize: (text, signal) => getKokoro().synthesize(text, signal),
   },
+});
+/** The iMessage helper binary, packaged beside the other helpers. */
+function messagesBinary() {
+  return app.isPackaged
+    ? join(process.resourcesPath, "coarena-messages")
+    : join(app.getAppPath(), "native/bin/coarena-messages");
+}
+/**
+ * Texting: updates about a run, and the short command vocabulary (status,
+ * stop, pause, continue, do <task>). Approvals never happen by text.
+ */
+const messages = new MessagesChannel({
+  settings: () => settings,
+  helper: () => createMessagesHelper(messagesBinary(), { diagnostics: debug }),
+  startTask: async (task) => {
+    ensureIdle();
+    try {
+      await getNative().request("rememberForeground");
+    } catch {}
+    await dispatch("start", [task, false]);
+  },
+  control: {
+    pause: () => {
+      voiceHeld = false;
+      runner?.pause();
+    },
+    stop: () => {
+      cancelVoiceCapture();
+      void conversation.stopSpeaking();
+      voiceHeld = false;
+      runner?.stop();
+    },
+    resume: async () => {
+      voiceHeld = false;
+      if (runHeld()) await resumeHeldRun(runHeld);
+    },
+  },
+  trace: debug,
 });
 const conversation = new Conversation({
   settings: () => settings,
@@ -1245,6 +1289,7 @@ async function executePlan(plan: TurnPlan, fromVoice: boolean) {
 function emit(s: Snapshot) {
   snapshot = s;
   diagnostics?.snapshot(s);
+  messages.onSnapshot(s);
   if (window && !window.isDestroyed()) window.webContents.send("snapshot", s);
   // Decides what to say about this moment; it never speaks while listening.
   conversation.onSnapshot(s, { listening, handsFree: settings.handsFree });
@@ -1403,11 +1448,13 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         displays,
         encrypted: true,
         voice: voiceInfo,
+        messages: messages.status(),
       };
     }
     case "saveSettings": {
       const next = settingsSchema.parse(args[0]);
       validateProviderEndpoint(next);
+      validateMessageSettings(next);
       const nextCredentials =
         args[1] !== undefined
           ? withProviderKey(credentials, next, args[1])
@@ -1451,6 +1498,12 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         await conversation.stopSpeaking();
         warmKokoro();
       }
+      let messagesError: unknown;
+      // Saved either way: the channel reports why it is not live.
+      await messages.configure().catch((error) => {
+        debug("MessagesSetupFailed", errorDetails(error));
+        messagesError = error;
+      });
       let applyError: unknown;
       if (live) {
         const current = runner!;
@@ -1489,6 +1542,14 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         throw new Error(
           `Settings saved, but they could not be applied to the active run: ${
             applyError instanceof Error ? applyError.message : "try again."
+          }`,
+        );
+      if (messagesError)
+        throw new Error(
+          `Settings saved, but texting could not start: ${
+            messagesError instanceof Error
+              ? messagesError.message
+              : "try again."
           }`,
         );
       return;
@@ -1648,6 +1709,11 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         );
       return;
     }
+    case "messagesStatus":
+      return messages.refresh();
+    case "sendTestMessage":
+      await messages.sendTest();
+      return;
     case "kokoroStatus":
       return kokoroUiStatus();
     case "downloadKokoro": {
@@ -1865,6 +1931,12 @@ function importLaunch(args: string[]): boolean {
   if (!imported) return false;
   settings = imported.settings;
   credentials = imported.credentials;
+  // The phone number to text, imported like an API key and never auto-enabled.
+  const index = args.indexOf("--import-env");
+  const file = index >= 0 ? args[index + 1] : undefined;
+  const handle = file ? importEnvHandle(file) : "";
+  if (handle && !settings.messagesHandle)
+    settings = { ...settings, messagesHandle: handle };
   saveConfig();
   return true;
 }
@@ -2154,6 +2226,9 @@ app
     if (imported || !existsSync(join(root, "config.enc"))) showSettings();
     if (process.platform === "darwin") void configureVoice();
     if (process.argv.includes("--natural-voice")) void useNaturalVoice();
+    void messages.configure().catch((error) => {
+      debug("MessagesSetupFailed", errorDetails(error));
+    });
     try {
       await launchCommand(process.argv);
     } catch (error) {
@@ -2187,6 +2262,7 @@ app.on("will-quit", () => {
 app.on("before-quit", () => {
   if (shuttingDown) return;
   shuttingDown = true;
+  messages.close();
   debug("AppStopping");
   clearInterval(diagnosticHeartbeat);
   for (const timer of deferredReloads.values()) clearTimeout(timer);

@@ -36,6 +36,8 @@ const bridge: Bridge = {
   downloadKokoro: () => invoke("downloadKokoro"),
   cancelKokoroDownload: () => invoke("cancelKokoroDownload"),
   removeKokoro: () => invoke("removeKokoro"),
+  messagesStatus: () => invoke("messagesStatus"),
+  sendTestMessage: () => invoke("sendTestMessage"),
   subscribePill: (fn) => {
     const handler = (_e: unknown, s: any) => fn(s);
     ipcRenderer.on("pill", handler);

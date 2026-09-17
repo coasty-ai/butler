@@ -342,6 +342,54 @@ func exposeAccessibilityTree(_ app: NSRunningApplication) {
         Thread.sleep(forTimeInterval: 0.25)
     }
 }
+// Anything inside a window the agent could target. A single one is enough to
+// show the application publishes its interface, so the walk stops at the first.
+let actionableWalkRoles: Set<String> = ["AXButton","AXLink","AXTextField","AXTextArea","AXComboBox","AXCheckBox","AXRadioButton","AXPopUpButton","AXMenuButton","AXTab","AXCell","AXRow","AXMenuItem","AXSlider","AXDisclosureTriangle","AXToolbar","AXTabGroup","AXOutline","AXTable","AXList"]
+/**
+ Bounded breadth-first search of the frontmost window for the first element the
+ agent could target. `complete` is true only when the walk ran out of nodes
+ rather than out of budget, so a tree too large to finish is never mistaken for
+ an application that publishes nothing. Roles only; no names are read.
+ */
+func actionableWalk(_ window: AXUIElement, limit: Int = 1) -> (found: Int, complete: Bool) {
+    let started = ProcessInfo.processInfo.systemUptime
+    var queue: [(AXUIElement, Int)] = [(window, 0)], index = 0, found = 0, truncated = false
+    while index < queue.count && found < limit {
+        if index >= 600 || ProcessInfo.processInfo.systemUptime - started > 0.12 { truncated = true; break }
+        let (node, depth) = queue[index]; index += 1
+        if actionableWalkRoles.contains(attribute(node, kAXRoleAttribute) as? String ?? "") { found += 1; continue }
+        guard depth < 12 else { truncated = true; continue }
+        let children = (attribute(node, "AXVisibleChildren") ?? attribute(node, kAXChildrenAttribute)) as? [AXUIElement] ?? []
+        if children.count > 40 { truncated = true }
+        for child in children.prefix(40) { queue.append((child, depth + 1)) }
+    }
+    return (found, found > 0 || !truncated)
+}
+// Top-level menu titles of the frontmost application. AppKit builds the menu
+// bar from the application's own NSMenu, so it stays in the system-wide
+// accessibility tree even when the application publishes nothing else (a
+// Chromium/CEF window such as Spotify). Titles only, bounded; menu contents
+// are never read here.
+func menuBarTitles(_ app: AXUIElement, limit: Int = 12) -> [String] {
+    guard let bar = attribute(app, kAXMenuBarAttribute) else { return [] }
+    var titles = [String]()
+    for item in (attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(limit + 4) {
+        guard titles.count < limit, let raw = attribute(item, kAXTitleAttribute) as? String else { continue }
+        // The Apple menu carries an empty title and is not the application's.
+        let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty { titles.append(utf16Prefix(title, 40)) }
+    }
+    return titles
+}
+// The accessibility level of the frontmost application's own window, as
+// reported on the surface and in the screen context.
+func accessibilityLevel(_ element: AXUIElement, focusedRole: String, hitTarget: Bool) -> SurfaceAccessibility? {
+    let window = attribute(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
+    let bounds = window.flatMap(elementRect) ?? .zero
+    let walk = window.map { actionableWalk($0) } ?? (found: 0, complete: false)
+    return surfaceAccessibility(trusted: AXIsProcessTrusted(), windowWidth: Double(bounds.width), windowHeight: Double(bounds.height),
+                                focusedRole: focusedRole, actionable: walk.found, walkComplete: walk.complete, hitTarget: hitTarget)
+}
 func surface(_ action: [String:Any]? = nil) -> [String: Any] {
     guard let app = inputApplication() else { return ["appId":"unknown", "pid":0, "secureInput":true, "unknown":true] }
     exposeAccessibilityTree(app)
@@ -372,6 +420,9 @@ func surface(_ action: [String:Any]? = nil) -> [String: Any] {
         if domain == nil { domain = webAreaHost(window as! AXUIElement) }
     }
     var result: [String: Any] = ["appId":app.bundleIdentifier ?? "unknown", "pid":Int(app.processIdentifier), "secureInput":secure, "unknown":!AXIsProcessTrusted()]
+    // Display name, so an approval question can name the application the user
+    // sees ("Spotify") rather than its bundle identifier.
+    if let name = app.localizedName, !name.isEmpty { result["appName"] = utf16Prefix(name, 100) }
     let focusedWindow = attribute(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
     let focusedElement = attribute(element, kAXFocusedUIElementAttribute).map { $0 as! AXUIElement }
     if modalContext(window: focusedWindow, element: focusedElement) { result["modal"] = true }
@@ -453,6 +504,11 @@ func surface(_ action: [String:Any]? = nil) -> [String: Any] {
         case .refused: result["fileStatus"] = "refused"
         }
         stateLock.lock(); fileBinding = cached; stateLock.unlock()
+    }
+    // Computed last: the hit test above is the pointer evidence that this
+    // application publishes something at the requested position.
+    if let level = accessibilityLevel(element, focusedRole: focusedRole ?? "", hitTarget: result["targetRole"] != nil) {
+        result["accessibility"] = level.rawValue
     }
     return result
 }
@@ -663,6 +719,18 @@ func screenContext() -> [String:Any] {
         }
     }
     result["recentWindows"]=windows;result["recentFiles"]=recentFiles
+    // Tell the model when this application publishes no usable accessibility,
+    // so it stops guessing pixels and drives the menu bar and shortcuts. The
+    // menu bar is a native NSMenu and normally survives a blind window; the
+    // titles are bounded and carry no menu contents.
+    let focusedRole=attribute(element,kAXFocusedUIElementAttribute).flatMap{attribute($0 as! AXUIElement,kAXRoleAttribute) as? String} ?? ""
+    if let level=accessibilityLevel(element,focusedRole:focusedRole,hitTarget:false) {
+        result["accessibility"]=level.rawValue
+        if level == SurfaceAccessibility.none {
+            let titles=menuBarTitles(element)
+            if !titles.isEmpty {result["menuBar"]=titles}
+        }
+    }
     return result
 }
 let pointerEventTypes:[CGEventType] = [.mouseMoved,.leftMouseDragged,.rightMouseDragged,.leftMouseDown,.rightMouseDown,.otherMouseDown,.leftMouseUp,.rightMouseUp]

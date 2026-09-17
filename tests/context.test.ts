@@ -85,4 +85,41 @@ describe("bounded screen context", () => {
         cleanScreenContext({ appName: "A", windowTitle: "B", controls: bad }),
       ).toBeUndefined();
   });
+  it("reports a blind application and its bounded menu titles", () => {
+    const result = cleanScreenContext({
+      appName: "Spotify",
+      windowTitle: "Spotify Premium",
+      accessibility: "none",
+      menuBar: ["Spotify", "File", "Edit", "View", "Playback", "Window"],
+      controls: [],
+    });
+    expect(result?.accessibility).toBe("none");
+    expect(result?.menuBar).toEqual([
+      "Spotify",
+      "File",
+      "Edit",
+      "View",
+      "Playback",
+      "Window",
+    ]);
+    expect(
+      cleanScreenContext({ appName: "A", windowTitle: "B" })?.accessibility,
+    ).toBeUndefined();
+    const long = cleanScreenContext({
+      appName: "A",
+      windowTitle: "B",
+      accessibility: "partial",
+      menuBar: ["M".repeat(80), "token=sk-fixtureSECRET123456"],
+    });
+    expect(long?.menuBar?.[0]).toHaveLength(40);
+    expect(long?.menuBar?.[1]).not.toContain("fixtureSECRET");
+    for (const bad of [
+      { accessibility: "unknown" },
+      { menuBar: Array.from({ length: 13 }, (_, i) => `M${i}`) },
+      { menuBar: [{ title: "File" }] },
+    ])
+      expect(
+        cleanScreenContext({ appName: "A", windowTitle: "B", ...bad }),
+      ).toBeUndefined();
+  });
 });

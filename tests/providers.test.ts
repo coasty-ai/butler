@@ -15,6 +15,11 @@ import {
   type Observation,
   type Settings,
 } from "../src/core/schema";
+import {
+  playbookFor,
+  PLAYBOOK_MAX_CHARS,
+  PLAYBOOK_MAX_LINES,
+} from "../src/memory/playbooks";
 const o: Observation = {
   task: "local task",
   history: [],
@@ -243,6 +248,142 @@ describe("provider-neutral adapters", () => {
       "never invent or edit a path",
     ])
       expect(instruction).toContain(phrase);
+  });
+  it("teaches the keyboard and menu-bar route for blind applications", () => {
+    const instruction = buildRequest(s("openai"), "K", o).body.instructions;
+    for (const phrase of [
+      'context.accessibility is "none"',
+      "publishes no accessibility information",
+      "Do not call open_app for an application that is already frontmost",
+      "never repeat a blind click",
+      "CMD+K or CMD+L for Spotify's search",
+      "arrow keys and ENTER",
+      "context.menuBar lists the top-level menu titles",
+      "at most one click to place the cursor in a text field",
+      "say in the done summary what you did in that application",
+    ])
+      expect(instruction).toContain(phrase);
+    // Still per-run constant, so provider prompt caches stay warm.
+    expect(instruction).toBe(
+      buildRequest(s("openai"), "K", { ...o, task: "other" }).body.instructions,
+    );
+  });
+  it("serializes the blind surface and its menu titles as screen context", () => {
+    const frame = {
+      ...o.frame,
+      context: {
+        appName: "Spotify",
+        windowTitle: "Spotify Premium",
+        accessibility: "none" as const,
+        menuBar: ["Spotify", "File", "Edit", "Playback"],
+        controls: [],
+      },
+    };
+    const request = buildRequest(s("openai"), "K", { ...o, frame });
+    const context = JSON.parse(request.body.input[0].content[0].text).context;
+    expect(context.accessibility).toBe("none");
+    expect(context.menuBar).toEqual(["Spotify", "File", "Edit", "Playback"]);
+    expect(context.appName).toBe("Spotify");
+    // An unknown level is dropped with the rest of an unbounded context.
+    const bad = buildRequest(s("openai"), "K", {
+      ...o,
+      frame: {
+        ...frame,
+        context: { ...frame.context, accessibility: "?" } as any,
+      },
+    });
+    expect(
+      JSON.parse(bad.body.input[0].content[0].text).context,
+    ).toBeUndefined();
+  });
+  it("explains the playbook and the no-progress note in the instruction", () => {
+    const instruction = buildRequest(s("openai"), "K", o).body.instructions;
+    for (const phrase of [
+      "context.playbook, when present, lists short, reliable keyboard routes for the frontmost application",
+      "follow those lines before improvising",
+      "follow context.memory.plan first when it already covers this task",
+      "no visible change",
+      "do not repeat it, and take a different route instead",
+    ])
+      expect(instruction).toContain(phrase);
+    // Per-run constant: naming the field costs no prompt-cache warmth.
+    expect(instruction).toBe(
+      buildRequest(s("openai"), "K", {
+        ...o,
+        frame: { ...o.frame, appId: "com.spotify.client" },
+      }).body.instructions,
+    );
+  });
+  it("sends the frontmost app's playbook as per-request context.playbook", () => {
+    const spotify = {
+      ...o.frame,
+      appId: "com.spotify.client",
+      context: {
+        appName: "Spotify",
+        windowTitle: "Spotify Premium",
+        accessibility: "none" as const,
+        menuBar: ["Spotify", "File"],
+        controls: [],
+      },
+    };
+    const request = buildRequest(s("openai"), "K", { ...o, frame: spotify });
+    const context = JSON.parse(request.body.input[0].content[0].text).context;
+    expect(context.playbook).toEqual(playbookFor("com.spotify.client"));
+    expect(context.playbook.join(" ")).toContain("CMD+K");
+    expect(context.playbook.length).toBeLessThanOrEqual(PLAYBOOK_MAX_LINES);
+    for (const line of context.playbook)
+      expect(line.length).toBeLessThanOrEqual(PLAYBOOK_MAX_CHARS);
+    // Every provider carries it in the per-request JSON, beside the screen.
+    const anthropic = buildRequest(s("anthropic"), "K", {
+      ...o,
+      frame: spotify,
+    }).body;
+    expect(
+      JSON.parse(anthropic.messages[0].content[1].text).context.playbook,
+    ).toEqual(context.playbook);
+    // ...and never in the cached system instruction, which stays byte-equal.
+    expect(JSON.stringify(anthropic.system)).not.toContain("CMD+K, type the");
+    expect(anthropic.system).toEqual(
+      buildRequest(s("anthropic"), "K", o).body.system,
+    );
+    // The display name alone is enough when no bundle id was reported.
+    const named = buildRequest(s("openai"), "K", {
+      ...o,
+      frame: { ...spotify, appId: undefined },
+    });
+    expect(
+      JSON.parse(named.body.input[0].content[0].text).context.playbook,
+    ).toEqual(context.playbook);
+  });
+  it("omits the playbook for an unknown app and under a learned skill", () => {
+    // Nothing identifies the frontmost application: no hints to send.
+    const plain = JSON.parse(
+      buildRequest(s("openai"), "K", o).body.input[0].content[0].text,
+    );
+    expect(plain.context).toBeUndefined();
+    const frame = { ...o.frame, appId: "com.google.Chrome" };
+    const playbook = (memory?: Observation["memory"]) =>
+      JSON.parse(
+        buildRequest(s("openai"), "K", { ...o, frame, memory }).body.input[0]
+          .content[0].text,
+      ).context?.playbook;
+    expect(playbook()).toEqual(playbookFor("com.google.Chrome"));
+    // A learned skill already has the steps that worked for this task.
+    expect(
+      playbook({
+        preferences: [],
+        episodes: [],
+        plan: { source: "skill", note: "n", steps: ["open_app"] },
+      }),
+    ).toBeUndefined();
+    // A built-in intent is generic, so the app's own routes still help.
+    expect(
+      playbook({
+        preferences: [],
+        episodes: [],
+        plan: { source: "intent", note: "n", steps: ["open_app"] },
+      }),
+    ).toEqual(playbookFor("com.google.Chrome"));
   });
   it("sends bounded, redacted memory as context.memory", () => {
     const secret = "api_key=sk-fixtureSECRET123456";

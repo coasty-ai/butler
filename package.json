@@ -27,7 +27,9 @@
     "test:provider": "node --import tsx scripts/provider-smoke.mjs",
     "test:native-safety": "node scripts/test-native-safety.mjs",
     "test:native-input": "node --import tsx scripts/native-input-smoke.mjs",
-    "test:live": "node --import tsx scripts/live-task.mjs"
+    "test:live": "node --import tsx scripts/live-task.mjs",
+    "bench": "node scripts/bench.mjs",
+    "analyze-runs": "node scripts/analyze-runs.mjs"
   },
   "build": {
     "appId": "ai.coarena.openassist",
@@ -56,6 +58,10 @@
       {
         "from": "native/bin/coarena-voice",
         "to": "coarena-voice"
+      },
+      {
+        "from": "native/bin/coarena-messages",
+        "to": "coarena-messages"
       }
     ],
     "mac": {

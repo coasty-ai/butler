@@ -197,6 +197,18 @@ export const settingsSchema = z
     /** Hands-free only: listen briefly for a reply without the wake phrase. */
     followUpListening: z.boolean().default(true),
     voiceSounds: z.boolean().default(true),
+    /**
+     * Text updates and texted commands over iMessage (docs/MESSAGING.md).
+     * Off until the user turns it on; the handle lives in the encrypted
+     * config, never read from .env at runtime.
+     */
+    messages: z.boolean().default(false),
+    /** The one phone number or iMessage address Open Assist ever texts. */
+    messagesHandle: z.string().trim().max(100).default(""),
+    /** Read replies from that handle as commands (status/stop/do …). */
+    messagesCommands: z.boolean().default(true),
+    /** "texted": only runs started by message. "all": every run. */
+    messagesUpdates: z.enum(["texted", "all"]).default("texted"),
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
@@ -237,6 +249,10 @@ export const defaultSettings: Settings = {
   listeningPatience: "normal",
   followUpListening: true,
   voiceSounds: true,
+  messages: false,
+  messagesHandle: "",
+  messagesCommands: true,
+  messagesUpdates: "texted",
 };
 export interface Geometry {
   display_id: number;
@@ -279,6 +295,14 @@ export interface ScreenContext {
     y: number;
     enabled?: boolean;
   }[];
+  /**
+   * How much of its own interface the frontmost application publishes to the
+   * accessibility API. "none" is a blind surface (a Chromium/CEF window such
+   * as Spotify): controls is empty and no focused field is reported.
+   */
+  accessibility?: "none" | "partial" | "full";
+  /** Top-level menu titles of a blind application (titles only, at most 12). */
+  menuBar?: string[];
 }
 export interface Surface {
   appId: string;
@@ -314,6 +338,16 @@ export interface Surface {
   fileStatus?: "resolved" | "unresolved" | "refused";
   fileKind?: "document" | "folder";
   fileName?: string;
+  /** Display name of the frontmost application, for approval questions. */
+  appName?: string;
+  /**
+   * How much of its own interface the frontmost application publishes.
+   * "none" means a real, sized window is frontmost and yet a completed walk
+   * found no actionable element, no usable focused element and no hit-test
+   * target: a blind surface (Chromium/CEF apps such as Spotify). Absent when
+   * there is no verdict (accessibility untrusted, no window yet).
+   */
+  accessibility?: "none" | "partial" | "full";
 }
 export interface Usage {
   inputTokens: number;

@@ -125,6 +125,47 @@ struct ManualAccessibilityAttempts {
     }
 }
 
+// MARK: Blind surfaces
+
+// How much of its own interface the frontmost application publishes to the
+// accessibility API. Chromium/CEF applications (Spotify) and some game or
+// custom-drawn windows expose a window and nothing inside it: every pointer
+// target and every focused field is then unidentifiable, so the agent must be
+// told rather than left retrying. Reported on the surface and in the model's
+// screen context; only "none" changes policy (docs/THREAT_MODEL.md).
+enum SurfaceAccessibility: String { case none, partial, full }
+
+// A frontmost window smaller than this is a palette, a notification or a
+// window still being laid out: too little evidence to call an application
+// blind. An empty desktop has no focused window at all and is never blind.
+let blindWindowMinimumWidth = 200.0
+let blindWindowMinimumHeight = 120.0
+// A focused element that is only the window, the application or an unnamed
+// container identifies nothing the agent could type into or act on.
+let uninformativeFocusRoles: Set<String> = ["", "AXWindow", "AXApplication", "AXUnknown", "AXGroup"]
+
+/**
+ Classifies the frontmost application's accessibility.
+
+ `nil` means "no verdict": accessibility is not trusted, or there is no
+ frontmost window of a usable size (an empty desktop, a window still opening),
+ so a momentary blank never marks an application blind. `.none` requires a real
+ sized window, a completed walk that found nothing actionable, no usable
+ focused element and no hit-test target for the pointer action being checked.
+ */
+func surfaceAccessibility(trusted: Bool, windowWidth: Double, windowHeight: Double,
+                          focusedRole: String, actionable: Int, walkComplete: Bool,
+                          hitTarget: Bool) -> SurfaceAccessibility? {
+    guard trusted else { return nil }
+    let focused = !uninformativeFocusRoles.contains(focusedRole.trimmingCharacters(in: .whitespacesAndNewlines))
+    if focused && actionable > 0 { return .full }
+    guard windowWidth >= blindWindowMinimumWidth, windowHeight >= blindWindowMinimumHeight else {
+        return (focused || actionable > 0 || hitTarget) ? .partial : nil
+    }
+    if !focused && actionable == 0 && !hitTarget && walkComplete { return SurfaceAccessibility.none }
+    return .partial
+}
+
 // Roles the pointer hit-test walk climbs through toward the real control, and
 // roles that are already the control.
 let hitWalkClimbRoles: Set<String> = ["AXStaticText", "AXImage", "AXGroup"]

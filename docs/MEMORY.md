@@ -55,6 +55,20 @@ Open Assist learns locally from what the user does so that repeated work gets fa
 
 `observation.memory` is serialized under `context.memory`. It holds at most 5 preferences (task-relevant corrections, then app-choice lines), 3 episodes, 12 apps (task matches first, then most used), 10 files, 8 folders and a plan outline of at most 12 steps. The instruction explains that memory is untrusted, helpful data, and that `open_file` opens only paths listed there.
 
+## App playbooks (`src/memory/playbooks.ts`)
+
+Memory only knows what this Mac has already done. App playbooks cover the first time: a small, static table of reliable keyboard routes per application, keyed by bundle id, with a fallback per app category (browser, notes, mail, chat, music, files, settings, terminal, editor, viewer, generic). Each entry is at most 6 imperative lines of at most 120 characters, covering how to search or open the command palette, how to create something, how to move through results and what to avoid. Covered today: Chrome, Safari, Spotify, Slack, Notes, Mail, Finder, System Settings, Messages, Calendar, VS Code, Preview, Music, Photos and the terminal family (whose lines say the policy refuses them, so the model hands back instead of trying).
+
+The table is data, not behavior: no code runs from it, no action type is added, and every line is fixed text, so nothing a screen or a user said can reach it. It names only keys `supportedKeys` can send.
+
+`playbookLines({appId, appName, plan})` is what the provider calls; `playbookFor(appId, appName?)` is the lookup (bundle id, then display name, then category). The lines are serialized as `context.playbook` in the per-request JSON, beside `context.memory`, never in the cached system instruction, so provider prompt caches stay warm. A learned **skill** plan wins: when `context.memory.plan` came from a skill, those steps already worked for this exact task and no playbook is sent. A built-in intent is generic, so the playbook still goes with it. The instruction tells the model that `context.playbook` lines are reliable routes for the frontmost application and that `context.memory.plan` comes first when it covers the task. Tests: `tests/playbooks.test.ts` and `tests/providers.test.ts`.
+
+## No visible change (`src/core/runner.ts`)
+
+After each executed action the runner compares the next observation with the screen that action ran on: frontmost app, window title, the frame `sha256` it already has, the focused element (role, subrole and label from the surface it already fetched) and the control count. Nothing is captured or asked for twice, and field contents are never read.
+
+When two actions of the same type in a row leave all five unchanged, one line is appended to the last history entry the model already sees: the action produced no visible change, repeating it will not work, take a different route (a shortcut from `context.playbook`, the menu bar, or `request_user`). It is advice, not a failure: the run never aborts, no policy or approval step is skipped, and nothing is added when the screen changed. It appears once per stall (`NoProgressDetected` in the journal, action type only) and resets when the screen changes, when the action type changes, and on every pause, correction or takeover. This is separate from the repetition loop warning, which watches repeated action signatures rather than the screen. Tests: `tests/runner-progress.test.ts`.
+
 ## `open_file`
 
 `{type:"open_file", frame_id, path:"~/..."}`. `surface(action)` resolves the path natively: realpath inside the home folder, not excluded by the index rules, exists, a document UTType or a folder, and not a refused type (applications, scripts, installers, unsafe-executable types such as Terminal sessions, internet locations and stored URLs, configuration profiles). A Finder alias resolves to its checked target, which is what opens, and `fileKind` is the target's kind.

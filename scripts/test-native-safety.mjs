@@ -27,4 +27,25 @@ const build = spawnSync(
 );
 if (build.status !== 0) process.exit(build.status ?? 1);
 const test = spawnSync("tmp/frame-safety-tests", [], { stdio: "inherit" });
-process.exit(test.status ?? 1);
+if (test.status !== 0) process.exit(test.status ?? 1);
+// The messaging rules build separately: they have their own entry point so
+// the helper binary stays free of test code.
+const messages = spawnSync(
+  "swiftc",
+  [
+    "-O",
+    "-parse-as-library",
+    "-module-cache-path",
+    "tmp/swift-cache",
+    "native/macos/MessageSafety.swift",
+    "tests/native/MessageSafetyTests.swift",
+    "-o",
+    "tmp/message-safety-tests",
+  ],
+  { stdio: "inherit" },
+);
+if (messages.status !== 0) process.exit(messages.status ?? 1);
+const messageTest = spawnSync("tmp/message-safety-tests", [], {
+  stdio: "inherit",
+});
+process.exit(messageTest.status ?? 1);

@@ -12,6 +12,7 @@ import {
   Heart,
   Keyboard,
   LockKeyhole,
+  MessageSquare,
   Mic,
   MoreHorizontal,
   Pause,
@@ -28,6 +29,7 @@ import type {
   AppInfo,
   KokoroUiStatus,
   MemorySummary,
+  MessagesInfo,
   ReviewData,
   VoiceList,
   VoiceOption,
@@ -866,6 +868,42 @@ function withVoice(base: Settings, edits: Settings): Settings {
   for (const k of voiceKeys) Object.assign(next, { [k]: edits[k] });
   return next;
 }
+const messageKeys = [
+  "messages",
+  "messagesHandle",
+  "messagesCommands",
+  "messagesUpdates",
+] as const satisfies readonly (keyof Settings)[];
+function withMessages(base: Settings, edits: Settings): Settings {
+  const next = { ...base };
+  for (const k of messageKeys) Object.assign(next, { [k]: edits[k] });
+  return next;
+}
+const messagesFallback: MessagesInfo = {
+  enabled: false,
+  configured: false,
+  commands: true,
+  updates: "texted",
+  automation: "unknown",
+  database: "off",
+  listening: false,
+};
+/** The plain-language setup step each macOS permission state needs. */
+function messagesSetup(m: MessagesInfo): string {
+  if (m.automation === "denied")
+    return "macOS is blocking Open Assist from using Messages. Allow it in System Settings › Privacy & Security › Automation › Open Assist › Messages.";
+  if (m.database === "no_access")
+    return "To read your replies, Open Assist needs Full Disk Access in System Settings › Privacy & Security, then a restart of the app.";
+  if (m.database === "locked")
+    return "Leave the Messages app open: its database cannot be read while Messages is closed.";
+  if (m.database === "missing")
+    return "Open Messages and sign in to iMessage on this Mac first.";
+  if (m.database === "unsupported")
+    return "This macOS version stores messages differently, so replies cannot be read.";
+  if (m.automation === "ask" || m.automation === "messages_closed")
+    return "The first update will ask macOS for permission to use Messages. Allow it once.";
+  return "";
+}
 const repliesHints: Record<Settings["voiceReplies"], string> = {
   off: "Replies stay on screen. Nothing is spoken.",
   voice: "Answers out loud when you speak to it. Typed tasks stay quiet.",
@@ -1010,7 +1048,12 @@ function SettingsPanel({
     ),
     [requesting, setRequesting] = useState(false),
     [downloadError, setDownloadError] = useState(""),
-    [confirmRemove, setConfirmRemove] = useState(false);
+    [confirmRemove, setConfirmRemove] = useState(false),
+    [messages, setMessages] = useState<MessagesInfo>(
+      info.messages ?? messagesFallback,
+    ),
+    [texting, setTexting] = useState(false),
+    [textResult, setTextResult] = useState("");
   const cancelled = useRef(false),
     naturalPanel = useRef<HTMLDivElement>(null),
     lastNaturalMode = useRef("");
@@ -1047,6 +1090,20 @@ function SettingsPanel({
   // Download progress arrives from main; a refresh re-reads it too.
   useEffect(() => {
     if (info.voice.kokoro) setKokoro(info.voice.kokoro);
+  }, [info]);
+  // Texting permissions can change in System Settings while this panel is
+  // open; a failure only leaves the last state, never an error card.
+  useEffect(() => {
+    setMessages(info.messages ?? messagesFallback);
+    if (!info.settings.messages) return;
+    let current = true;
+    api
+      .messagesStatus()
+      .then((status) => current && setMessages(status))
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
   }, [info]);
   useEffect(() => api.subscribeKokoro(setKokoro), []);
   // Once the chosen natural voice is installed, select and save it, saving
@@ -1098,6 +1155,27 @@ function SettingsPanel({
     setS((p) =>
       p.voiceEngine === "kokoro" ? { ...p, voiceEngine: "system" } : p,
     );
+  };
+  // The test text goes to the saved number, so the message settings are
+  // saved first, exactly as previewing a voice saves the voice settings.
+  const sendTestMessage = async () => {
+    setTextResult("");
+    setTexting(true);
+    try {
+      if (!(await onSave(withMessages(info.settings, s)))) return;
+      await api.sendTestMessage();
+      setTextResult("Sent. It should arrive on your phone in a moment.");
+    } catch (e) {
+      setTextResult(
+        readableError(e) || "The test message could not be sent. Try again.",
+      );
+    } finally {
+      setTexting(false);
+      api
+        .messagesStatus()
+        .then(setMessages)
+        .catch(() => {});
+    }
   };
   // When the panel swaps its buttons (download, cancel, remove, confirm),
   // move the focus that was lost with them to the panel's first button.
@@ -1910,6 +1988,112 @@ function SettingsPanel({
                 }
               />
             </label>
+          </div>
+        </details>
+        <details className="setting-group">
+          <summary>
+            <span>
+              Text updates
+              <span>
+                {s.messages
+                  ? s.messagesCommands
+                    ? "Texts you · takes texted commands"
+                    : "Texts you · no texted commands"
+                  : "Off"}
+              </span>
+            </span>
+            <ChevronDown size={15} />
+          </summary>
+          <div className="setting-fields">
+            <p>
+              Open Assist can text one number — yours — when a task starts,
+              needs you or finishes, and read short replies from that same
+              number as commands. It never texts anyone else, never approves
+              anything by text, and only reads messages that arrive after you
+              turn this on.
+            </p>
+            <label className="consent">
+              <input
+                type="checkbox"
+                checked={s.messages}
+                onChange={(e) => set("messages", e.target.checked)}
+              />
+              <span>Send me updates by iMessage</span>
+            </label>
+            <label>
+              Your number or iMessage address
+              <input
+                type="text"
+                inputMode="tel"
+                autoComplete="off"
+                value={s.messagesHandle}
+                onChange={(e) => set("messagesHandle", e.target.value)}
+                placeholder="+1 555 123 4567"
+                aria-describedby={`${ids}-messages-handle`}
+              />
+            </label>
+            <p id={`${ids}-messages-handle`}>
+              Stored encrypted on this Mac. It must be a number or address that
+              is not signed in to Messages on this Mac, so your own texts can be
+              told apart from the ones Open Assist sends.
+            </p>
+            <label>
+              What gets sent
+              <select
+                value={s.messagesUpdates}
+                onChange={(e) =>
+                  set(
+                    "messagesUpdates",
+                    e.target.value as Settings["messagesUpdates"],
+                  )
+                }
+              >
+                <option value="texted">Only tasks I start by text</option>
+                <option value="all">Every task, however it started</option>
+              </select>
+            </label>
+            <p>
+              One short line per moment: started, needs your approval, paused,
+              finished, failed. Never screenshots, typed text or transcripts.
+            </p>
+            <label className="consent">
+              <input
+                type="checkbox"
+                checked={s.messagesCommands}
+                aria-describedby={`${ids}-messages-commands`}
+                onChange={(e) => set("messagesCommands", e.target.checked)}
+              />
+              <span>Let me start and stop tasks by text</span>
+            </label>
+            <p id={`${ids}-messages-commands`}>
+              From your number only: <b>status</b>, <b>stop</b>, <b>pause</b>,{" "}
+              <b>continue</b>, or <b>do</b> followed by a task. Anything else
+              gets one line explaining those words. A task you text starts on
+              this Mac like any other, and anything consequential still waits
+              for your approval here.
+            </p>
+            <p>
+              macOS asks for two permissions: Automation for the Messages app
+              (to send), and Full Disk Access (to read your replies). Turn off
+              “start and stop tasks by text” if you would rather not grant Full
+              Disk Access.
+            </p>
+            {s.messages && messagesSetup(messages) && (
+              <p role="status">{messagesSetup(messages)}</p>
+            )}
+            <button
+              type="button"
+              className="secondary"
+              disabled={
+                busy || texting || !s.messages || !s.messagesHandle.trim()
+              }
+              onClick={sendTestMessage}
+            >
+              <MessageSquare size={13} />
+              {texting ? "Sending…" : "Send a test message"}
+            </button>
+            {textResult && <p role="status">{textResult}</p>}
+            {messages.error && <p role="alert">{messages.error}</p>}
           </div>
         </details>
         <details className="setting-group">

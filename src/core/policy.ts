@@ -204,6 +204,41 @@ function benignControl(role: string, label: string): boolean {
       benignControlPrefix.test(normalized))
   );
 }
+/**
+ * A blind surface: the frontmost application publishes no usable accessibility
+ * information (a Chromium/CEF window such as Spotify). The native helper only
+ * reports "none" when Accessibility is trusted, a frontmost window of a
+ * non-trivial size exists and a completed walk found no actionable element, no
+ * usable focused element and no hit-test target. There, retrying an
+ * unidentified target can never succeed, so the user is asked to approve one
+ * action instead of being handed the whole task. Secure input and protected
+ * applications are stopped before this is ever consulted.
+ */
+function blindSurface(surface: Surface): boolean {
+  return (
+    !surface.unknown && !surface.secureInput && surface.accessibility === "none"
+  );
+}
+/** The application name an approval question names, never a bundle id. */
+function appLabel(surface: Surface): string {
+  const name = quote((surface.appName ?? "").trim());
+  if (name) return name;
+  const tail = surface.appId.split(".").filter(Boolean).pop() ?? "";
+  return quote(tail) || "this app";
+}
+/**
+ * Refusals that still apply when nothing on screen can be identified. Blind or
+ * not, the agent never operates an installer, uninstaller or updater.
+ */
+function blindRefusal(surface: Surface): Decision | undefined {
+  if (isInstallerName(surface.appId) || isInstallerName(surface.appName))
+    return {
+      kind: "DENY",
+      reason:
+        "Installer, uninstaller and updater windows require manual operation. Return to the requested task, or ask the user with request_user.",
+    };
+  return undefined;
+}
 const chord = (keys: readonly string[]) => [...keys].sort().join("+");
 const arrows = ["UP", "DOWN", "LEFT", "RIGHT"];
 const routineShortcuts = new Set(
@@ -233,6 +268,14 @@ const routineShortcuts = new Set(
     ].flatMap((mods) => arrows.map((arrow) => [...mods, arrow])),
   ].map(chord),
 );
+// In a blind application the only routes left are its own shortcuts and its
+// menu bar. These chords open an application's search or command palette
+// (Spotify's CMD+K and CMD+L); they carry no send or delete meaning, and
+// chords containing Enter, Backspace or Delete are gated before this.
+const blindSearchShortcuts = new Set([
+  chord(["CMD", "K"]),
+  chord(["CMD", "L"]),
+]);
 const navigationKeys = [
   "UP",
   "DOWN",
@@ -525,6 +568,9 @@ export function evaluate(
   if (action.type === "open_file") return openFileDecision(surface, synthetic);
   if (synthetic)
     return { kind: "ALLOW", reason: "CoArena-owned tutorial surface." };
+  // Only consulted where an identified target or field is missing; it never
+  // relaxes a rule that applies to an application that does expose controls.
+  const blind = blindSurface(surface);
   if (surface.targetEnabled === false)
     return {
       kind: "RETRY",
@@ -588,6 +634,13 @@ export function evaluate(
       };
     if (keys === "CMD+F")
       return { kind: "ALLOW", reason: "Find within the current application." };
+    // Before the browser-only CMD+L rule: in an application that publishes
+    // nothing, its own search shortcut is the route that replaces clicking.
+    if (blind && blindSearchShortcuts.has(keys))
+      return {
+        kind: "ALLOW",
+        reason: "Open this application's own search or command palette.",
+      };
     if (keys === "CMD+L")
       return browsers.includes(surface.appId)
         ? { kind: "ALLOW", reason: "Focus the browser address bar." }
@@ -970,19 +1023,48 @@ export function evaluate(
       kind: "CONFIRM",
       reason: "Activate this control? It may submit or change content.",
     };
-  if (action.type === "type_text")
+  if (action.type === "type_text") {
+    // A blind application reports no focused field even when the cursor is in
+    // one, so retrying only burns steps. Ask the user instead. The text itself
+    // is never quoted; credentials and secure input were refused above.
+    if (blind)
+      return (
+        blindRefusal(surface) ?? {
+          kind: "CONFIRM",
+          reason: `Type here in ${appLabel(surface)}? I can’t see its text fields.`,
+        }
+      );
     return {
       kind: "RETRY",
       reason: surface.unknown
         ? "No input was sent. The focused field could not be identified. Capture a fresh screenshot and focus the intended text field first."
         : "No input was sent. No known text field is focused. Click the intended text field first, then type.",
     };
+  }
   if (action.type === "key")
     return {
       kind: "RETRY",
       reason:
         "No input was sent. This key cannot be verified here. Use type_text for text in a focused field, or a navigation key once the application is identified.",
     };
+  // A blind application identifies no pointer target anywhere, so retrying
+  // ends in a takeover of the whole task. Ask the user to approve this one
+  // click instead, naming the application and what will happen. Protected
+  // applications, secure input and uninstallers were refused above; installers
+  // and updaters are refused here.
+  if (blind && (leftClick || rightClick) && !surface.targetRole)
+    return (
+      blindRefusal(surface) ?? {
+        kind: "CONFIRM",
+        reason: `${
+          rightClick
+            ? "Right-click"
+            : action.type === "double_click"
+              ? "Double-click"
+              : "Click"
+        } here in ${appLabel(surface)}? I can’t see its controls.`,
+      }
+    );
   // Unrecognized navigation is a targeting failure, not a request for the user
   // to bless a blind click. Give the agent bounded recovery before takeover.
   return {

@@ -215,6 +215,51 @@ export const loopWarning =
   " Warning: you have repeated the same actions several times without finishing. The last steps did not make progress; re-read the screenshot and context.controls and choose a different approach.";
 export const appSwitchWarning =
   " Warning: you keep switching between applications. Switching again will not show new information. Read the values you need from the current screenshot and context now, then finish the step in this application.";
+/**
+ * What one observation looked like, for the no-progress check. It is compared
+ * in memory only: never journaled, never sent and never stored.
+ */
+export interface ProgressProbe {
+  appId?: string;
+  windowTitle?: string;
+  sha256: string;
+  /** Identity (not contents) of the focused element, from the same surface. */
+  focused?: string;
+  controls: number;
+}
+/** Reuses the fields the runner already has; it costs no extra native call. */
+export function progressProbe(frame: Frame, surface?: Surface): ProgressProbe {
+  return {
+    appId: frame.appId,
+    windowTitle: frame.context?.windowTitle,
+    sha256: frame.sha256,
+    focused: surface
+      ? [
+          surface.focusedRole ?? "",
+          surface.focusedSubrole ?? "",
+          surface.focusedLabel ?? "",
+        ].join("\u0000")
+      : undefined,
+    controls: frame.context?.controls?.length ?? 0,
+  };
+}
+/** True when nothing the runner can see changed between the two observations. */
+export function sameProbe(a: ProgressProbe, b: ProgressProbe): boolean {
+  return (
+    a.sha256 === b.sha256 &&
+    a.appId === b.appId &&
+    a.windowTitle === b.windowTitle &&
+    a.focused === b.focused &&
+    a.controls === b.controls
+  );
+}
+/**
+ * Advice added to the last history entry when two actions of the same type in
+ * a row changed nothing on screen. It is advice, not a failure: the run keeps
+ * going, policy still decides every step, and it is added once per stall.
+ */
+export const noProgressWarning =
+  " Note: this action produced no visible change (same application, window, screenshot and focus), and the one before it did not either. Repeating it will not work: take a different route now, such as a keyboard shortcut from context.playbook, the menu bar, or request_user to ask the user.";
 const noInput = (reason: string) =>
   /^No input was (sent|executed)/.test(reason)
     ? reason
@@ -376,6 +421,12 @@ export class Runner {
   private switchWarned = false;
   private loopWarned = false;
   private sinceLoopWarning = 0;
+  /** The screen the last executed action ran on, with that action's type. */
+  private progress?: { type: string; probe: ProgressProbe };
+  /** Type of the run of actions that is changing nothing, and its length. */
+  private stalledType?: string;
+  private stalls = 0;
+  private stallNoted = false;
   private memoryContext?: MemoryContext;
   /** Active replay plan; cleared for good once abandoned or finished. */
   private plan?: ReplayPlan;
@@ -421,6 +472,44 @@ export class Runner {
     this.switchWarned = false;
     this.loopWarned = false;
     this.sinceLoopWarning = 0;
+    this.resetProgress();
+  }
+  private resetProgress() {
+    this.progress = undefined;
+    this.stalledType = undefined;
+    this.stalls = 0;
+    this.stallNoted = false;
+  }
+  /**
+   * Compares the fresh observation with the screen the last executed action
+   * ran on. When two actions of the same type in a row leave the application,
+   * window, screenshot, focus and control count unchanged, one line of advice
+   * is added to the history the model already sees, once per stall. The run is
+   * never aborted and no policy step is skipped; when the screen changed, the
+   * counters reset and nothing is added.
+   */
+  private trackProgress(frame: Frame) {
+    const last = this.progress;
+    this.progress = undefined;
+    if (!last) return;
+    if (!sameProbe(last.probe, progressProbe(frame, this.lastSurface))) {
+      this.stalledType = undefined;
+      this.stalls = 0;
+      this.stallNoted = false;
+      return;
+    }
+    if (last.type !== this.stalledType) {
+      this.stalledType = last.type;
+      this.stalls = 1;
+      this.stallNoted = false;
+      return;
+    }
+    if (++this.stalls < 2 || this.stallNoted) return;
+    const entry = this.history[this.history.length - 1];
+    if (!entry || entry.type !== last.type) return;
+    this.stallNoted = true;
+    this.event("NoProgressDetected", { actionType: last.type });
+    entry.result += noProgressWarning;
   }
   /**
    * Track an executed action. Returns "warn" when the last executed actions
@@ -1146,6 +1235,8 @@ export class Runner {
           throw error;
         }
         if (!frame || epoch !== this.epoch) continue;
+        // Advice only, before the model sees this step's history.
+        this.trackProgress(frame);
         this.abort = new AbortController();
         if (this.planPending !== undefined) this.abandonPlan("interrupted");
         if (this.plan && this.planIndex >= this.plan.steps.length) {
@@ -1569,6 +1660,11 @@ export class Runner {
         });
         const loop = this.trackLoop(action);
         const thrashing = this.trackAppSwitch(action, launched?.appId);
+        // Compared against the next capture; no extra native call is made.
+        this.progress = {
+          type: action.type,
+          probe: progressProbe(executionFrame, this.lastSurface),
+        };
         history.push({
           type: action.type,
           action: executedAction,

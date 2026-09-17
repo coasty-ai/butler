@@ -58,4 +58,23 @@ const voice = spawnSync(
   ],
   { stdio: "inherit" },
 );
-process.exit(voice.status ?? 1);
+if (voice.status !== 0) process.exit(voice.status ?? 1);
+// The iMessage helper: AppleScript sending plus a read-only SQLite reader.
+const messages = spawnSync(
+  "swiftc",
+  [
+    "-O",
+    "-parse-as-library",
+    "-module-cache-path",
+    "tmp/swift-cache",
+    "-o",
+    "native/bin/coarena-messages",
+    "native/macos/Messages.swift",
+    "native/macos/MessageSafety.swift",
+    "-framework",
+    "AppKit",
+    "-lsqlite3",
+  ],
+  { stdio: "inherit" },
+);
+process.exit(messages.status ?? 1);

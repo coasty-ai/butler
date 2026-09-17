@@ -1632,3 +1632,140 @@ describe("YouTube search and results", () => {
     ).toBe("CONFIRM");
   });
 });
+
+// Live run, 2026-09-17: "Open Spotify and play Weeknd after hours". Spotify
+// (Chromium/CEF) opened, then every observation returned no focused element,
+// no controls and no hit-test target, so the model repeated open_app six
+// times, pressed CMD+TAB twice and clicked blind until the run handed off.
+describe("applications that publish no accessibility", () => {
+  const spotify = {
+    appId: "com.spotify.client",
+    appName: "Spotify",
+    accessibility: "none" as const,
+  };
+  const seeing = { ...spotify, accessibility: "full" as const };
+  it("offers one approved click instead of a retry that cannot succeed", () => {
+    expect(decide(click(), spotify)).toEqual({
+      kind: "CONFIRM",
+      reason: "Click here in Spotify? I can’t see its controls.",
+    });
+    expect(decide(doubleClick, spotify)).toEqual({
+      kind: "CONFIRM",
+      reason: "Double-click here in Spotify? I can’t see its controls.",
+    });
+    expect(decide(rightClick, spotify)).toEqual({
+      kind: "CONFIRM",
+      reason: "Right-click here in Spotify? I can’t see its controls.",
+    });
+    expect(decide(click("right"), spotify).kind).toBe("CONFIRM");
+  });
+  it("asks before typing into a field it cannot see, without the text", () => {
+    const decision = decide(type("Discover Weekly"), spotify);
+    expect(decision).toEqual({
+      kind: "CONFIRM",
+      reason: "Type here in Spotify? I can’t see its text fields.",
+    });
+    expect(decision.reason).not.toContain("Discover Weekly");
+    expect(decide(type("new music\n"), spotify).kind).toBe("CONFIRM");
+  });
+  it("names the application even without a display name", () => {
+    expect(
+      decide(click(), { ...spotify, appName: undefined }).reason,
+    ).toContain("Click here in client?");
+    expect(
+      decide(click(), { appId: "", accessibility: "none" }).reason,
+    ).toContain("Click here in this app?");
+  });
+  it("keeps every refusal that applies when nothing can be identified", () => {
+    // Secure input, protected apps and uninstallers stop before the surface is
+    // ever called blind.
+    expect(decide(click(), { ...spotify, secureInput: true }).kind).toBe(
+      "USER_TAKEOVER",
+    );
+    expect(decide(type("hello"), { ...spotify, secureInput: true }).kind).toBe(
+      "USER_TAKEOVER",
+    );
+    expect(
+      decide(click(), {
+        ...spotify,
+        appId: "com.1password.1password",
+        appName: "1Password",
+      }).kind,
+    ).toBe("USER_TAKEOVER");
+    expect(
+      decide(click(), {
+        ...spotify,
+        appId: "com.apple.terminal",
+        appName: "Terminal",
+      }).kind,
+    ).toBe("USER_TAKEOVER");
+    expect(
+      decide(click(), { ...spotify, appId: "com.acme.Uninstaller" }).kind,
+    ).toBe("USER_TAKEOVER");
+    for (const app of [
+      { appId: "com.acme.installer", appName: "Acme Installer" },
+      { appId: "com.acme.opaque", appName: "Acme Setup Assistant" },
+      { appId: "com.acme.updater", appName: "Acme Updater" },
+    ]) {
+      expect(decide(click(), { ...spotify, ...app }).kind).toBe("DENY");
+      expect(decide(type("next"), { ...spotify, ...app }).kind).toBe("DENY");
+    }
+    expect(decide(type("api_key=sk-fixtureSECRET123456"), spotify).kind).toBe(
+      "DENY",
+    );
+  });
+  it("does not relax applications that do expose controls", () => {
+    for (const surface of [
+      seeing,
+      { ...spotify, accessibility: "partial" as const },
+      { ...spotify, accessibility: undefined },
+      { ...spotify, unknown: true },
+    ]) {
+      expect(decide(click(), surface).kind).toBe("RETRY");
+      expect(decide(doubleClick, surface).kind).toBe("RETRY");
+      expect(decide(type("hello"), surface).kind).toBe("RETRY");
+    }
+    // A blind surface that did identify something is not blind for that step.
+    expect(decide(click(), { ...spotify, targetRole: "AXButton" }).kind).toBe(
+      "RETRY",
+    );
+    expect(decide(click(), { ...seeing, targetRole: "AXButton" }).kind).toBe(
+      "RETRY",
+    );
+    expect(
+      decide(click(), {
+        ...seeing,
+        targetRole: "AXButton",
+        targetLabel: "Delete playlist",
+      }).kind,
+    ).toBe("CONFIRM");
+    // The tutorial surface is never treated as a blind application.
+    expect(decide(click(), spotify, true).kind).toBe("ALLOW");
+  });
+  it("opens the application's own search from the keyboard", () => {
+    for (const keys of [
+      ["CMD", "K"],
+      ["CMD", "L"],
+    ]) {
+      expect(decide(hotkey(...keys), spotify).kind).toBe("ALLOW");
+      expect(decide(hotkey(...keys), seeing).kind).toBe(
+        keys[1] === "L" ? "DENY" : "RETRY",
+      );
+    }
+    // Keyboard navigation and Enter already work; the gates are unchanged.
+    for (const k of ["DOWN", "UP", "TAB", "ESC"])
+      expect(decide(key(k), spotify).kind).toBe("ALLOW");
+    expect(decide(key("ENTER"), spotify).kind).toBe("CONFIRM");
+    expect(decide(hotkey("CMD", "ENTER"), spotify).kind).toBe("CONFIRM");
+    expect(decide(hotkey("CMD", "Q"), spotify).kind).toBe("CONFIRM");
+    expect(decide(hotkey("CMD", "SHIFT", "K"), spotify).kind).toBe("RETRY");
+    // Relaunching the frontmost application still costs nothing and retries.
+    expect(
+      decide(openApp("Spotify"), {
+        ...spotify,
+        launcherStatus: "resolved",
+        launcherAppId: spotify.appId,
+      }).kind,
+    ).toBe("RETRY");
+  });
+});

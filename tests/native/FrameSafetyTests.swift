@@ -22,6 +22,27 @@ import CoreGraphics
         fileSafetyChecks(check)
         inputIdleChecks(check)
         electronAccessibilityChecks(check)
+        // Blind surfaces: Spotify (Chromium/CEF) publishes a real window and
+        // nothing inside it; a loading window or an empty desktop must not be
+        // reported blind, and a tree too large to finish is never blind.
+        func level(trusted: Bool = true, w: Double = 1200, h: Double = 800, role: String = "",
+                   actionable: Int = 0, complete: Bool = true, hit: Bool = false) -> SurfaceAccessibility? {
+            surfaceAccessibility(trusted: trusted, windowWidth: w, windowHeight: h, focusedRole: role,
+                                 actionable: actionable, walkComplete: complete, hitTarget: hit)
+        }
+        check(level() == SurfaceAccessibility.none, "a sized window with nothing actionable, focused or hit is blind")
+        check(level(role: "AXTextField", actionable: 3) == .full, "a focused field and controls is full accessibility")
+        check(level(actionable: 7) == .partial, "controls without a focused element is partial")
+        check(level(role: "AXTextField") == .partial, "a focused field without controls is partial")
+        check(level(hit: true) == .partial, "a pointer target found by hit test is not blind")
+        check(level(role: "AXWindow") == SurfaceAccessibility.none, "a focused window or unnamed container identifies nothing")
+        check(level(role: "AXGroup") == SurfaceAccessibility.none, "a focused unnamed group identifies nothing")
+        check(level(complete: false) == .partial, "a walk that ran out of budget is never called blind")
+        check(level(trusted: false) == nil, "without Accessibility permission there is no verdict")
+        check(level(w: 0, h: 0) == nil, "an empty desktop with no window is not blind")
+        check(level(w: 1200, h: 60) == nil, "a window too small to judge is not blind")
+        check(level(w: 180, h: 800, role: "AXTextField") == .partial, "a small window that does publish is partial")
+        check(level(w: 200, h: 120) == SurfaceAccessibility.none, "the minimum window size is enough to judge")
         let cursor = CGPoint(x:300,y:400)
         check(hitWalkStopsAt(role:"AXGroup",description:"Delete",actions:[]), "hit walk stops at an ancestor with its own accessible description")
         check(hitWalkStopsAt(role:"AXGroup",description:"",actions:["AXShowMenu","AXPress"]), "hit walk stops at a pressable ancestor")

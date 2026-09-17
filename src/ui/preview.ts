@@ -1,4 +1,4 @@
-import type { Bridge, KokoroUiStatus } from "./api";
+import type { Bridge, KokoroUiStatus, MessagesInfo } from "./api";
 import {
   defaultSettings,
   type Frame,
@@ -22,6 +22,18 @@ const kokoroUnsupported: KokoroUiStatus = {
 };
 const kokoroMessage =
   "The natural voice downloads in the macOS app. This preview never downloads voices.";
+/** The browser preview never reads or sends messages. */
+const messagesUnavailable = {
+  enabled: false,
+  configured: false,
+  commands: false,
+  updates: "texted",
+  automation: "unavailable",
+  database: "off",
+  listening: false,
+} satisfies MessagesInfo;
+const messagesMessage =
+  "Text updates come from the macOS app. This preview never reads or sends messages.";
 export function previewBridge(): Bridge {
   let settings = structuredClone(defaultSettings),
     pill = { ...idlePill },
@@ -92,6 +104,7 @@ export function previewBridge(): Bridge {
         cloudVoiceAllowed: false,
         kokoro: { ...kokoroUnsupported },
       },
+      messages: { ...messagesUnavailable },
     }),
     saveSettings: async (s) => {
       settings = s;
@@ -315,6 +328,10 @@ export function previewBridge(): Bridge {
     },
     removeKokoro: async () => {
       throw new Error(kokoroMessage);
+    },
+    messagesStatus: async () => ({ ...messagesUnavailable }),
+    sendTestMessage: async () => {
+      throw new Error(messagesMessage);
     },
     subscribeKokoro: () => () => {},
     subscribe: (fn) => {

@@ -59,6 +59,7 @@ Open Assist learns locally. It knows your installed apps, standard folders and r
 - **Approve:** click once, or hold the shortcut and say “yes” to the current approval. In hands-free mode, say “Hey Assist, yes,” or just “yes” while it is listening for your reply. Spoken approval is still bound to the pending action and a finalized recognition confidence check.
 - **Hear replies:** it answers out loud when you talk to it: questions, approvals and results. Pause to think; it waits longer when your sentence sounds unfinished. Choose the voice, speed and patience in **Settings → Voice replies / Listening**. See [docs/VOICE_PRODUCT.md](docs/VOICE_PRODUCT.md).
 - **Take over:** move the mouse, click, scroll or type to pause the agent. Hold and say “continue” when ready. The app records the takeover event, not your intervening keystrokes.
+- **Text yourself updates:** optional, off by default. Open Assist can text one number — yours — when a task starts, needs you or finishes, and read short replies from that number: `status`, `stop`, `pause`, `continue`, or `do <task>`. Approvals never happen by text. Turn it on under **Settings → Text updates**, where the two macOS permissions (Automation for Messages, Full Disk Access to read replies) are explained. See [docs/MESSAGING.md](docs/MESSAGING.md).
 
 The adapters use a single custom GUI-action tool over vision-capable provider APIs. They do not yet translate each vendor's specialized built-in computer-use tools; use a model supporting image input and function calling (or Ollama JSON output).
 
@@ -71,6 +72,8 @@ npm run start:local -- --provider openai
 ```
 
 This selects `gpt-5.4-mini` and its estimated token rates. `--provider google` selects `gemini-3.5-flash-lite`; `--provider anthropic` selects `claude-sonnet-5`. These are editable starting points, not a guarantee of task success. The command without `--provider` imports keys while preserving the current model and privacy mode. Run it again after rotating a key.
+
+`PHONE_NO` is imported the same way, as the number for optional text updates. It is saved in the encrypted config and nothing is texted until you turn the feature on in **Settings → Text updates**; use a number or iMessage address that is not signed in to Messages on this Mac, so your own texts can be told apart from Open Assist's.
 
 The main process imports only known API-key variables and saves them in the encrypted local store, bound to their provider and endpoint. Keys are never loaded into Vite, returned to the renderer, or included in the app package. After import, double-click the app normally; `.env` is no longer needed to launch it. Screen context goes directly to the selected provider; microphone audio stays local.
 
