@@ -422,6 +422,13 @@ function openAppDecision(
     .filter(Boolean)
     .join(", ");
   if (status === "resolved" && surface.launcherAppId) {
+    // Already frontmost: launching again changes nothing and the model would
+    // repeat it. Say so instead of spending a step (live: Spotify, 12 times).
+    if (surface.launcherAppId === surface.appId)
+      return {
+        kind: "RETRY",
+        reason: `No input was sent. ${quote(action.name)} is already open and frontmost. Work with what is on screen, or use a keyboard shortcut.`,
+      };
     // DENY, not USER_TAKEOVER: the protected app is not active yet, and the
     // denial counter stops an injected request from looping.
     if (

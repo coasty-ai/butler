@@ -487,6 +487,32 @@ describe("Kokoro worker lifecycle", () => {
       ...extra,
     });
 
+  it("replays warmed phrases from memory instead of the worker", async () => {
+    const voice = create();
+    await voice.warm(["On it.", "Done."]);
+    const warmRequests = workers[0].messages.filter(
+      (m) => (m as { type?: string }).type === "synthesize",
+    ).length;
+    expect(warmRequests).toBe(3); // warm text plus the two phrases
+    expect(await collect(voice.synthesize("On it."))).toEqual([
+      [1, 2, 3],
+      [4, 5],
+    ]);
+    expect(await collect(voice.synthesize("Done."))).toHaveLength(2);
+    expect(
+      workers[0].messages.filter(
+        (m) => (m as { type?: string }).type === "synthesize",
+      ).length,
+    ).toBe(warmRequests);
+    // Anything else still goes to the worker.
+    await collect(voice.synthesize("Opening Spotify."));
+    expect(
+      workers[0].messages.filter(
+        (m) => (m as { type?: string }).type === "synthesize",
+      ).length,
+    ).toBe(warmRequests + 1);
+  });
+
   it("forks lazily on first iteration and reuses the worker", async () => {
     const voice = create();
     voice.status();

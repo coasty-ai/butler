@@ -81,7 +81,7 @@ import {
 } from "./kokoro/client";
 import { credentialScope, providerDefaults } from "../src/providers/catalog";
 import { planVoiceTurn, type TurnPlan } from "../src/voice/turns";
-import { PHRASES } from "../src/voice/phrases";
+import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
 import {
   importLaunchCredentials,
@@ -204,7 +204,8 @@ function warmKokoro() {
   const voice = getKokoro();
   if (!voice.status().installed) return;
   void voice
-    .warm()
+    // Only the short fixed replies are worth pre-synthesizing.
+    .warm(allAssistantPhrases().filter((phrase) => phrase.length <= 28))
     .catch((error) => debug("KokoroWarmFailed", errorDetails(error)));
 }
 let kokoroDownload: AbortController | undefined;

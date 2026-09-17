@@ -102,7 +102,8 @@ export interface KokoroVoice {
   ): Promise<void>;
   remove(): Promise<void>;
   /** Starts the worker and runs one short synthesis. */
-  warm(): Promise<void>;
+  /** Loads the model, and caches any fixed phrases passed in. */
+  warm(phrases?: readonly string[]): Promise<void>;
   /**
    * One PCM chunk per sentence, first sentence first. Nothing starts until
    * iteration begins. Aborting rejects with `signal.reason` and cancels the
@@ -527,11 +528,26 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     return target;
   }
 
+  /** Short fixed replies ("On it.") are synthesized once and replayed. */
+  const phraseCache = new Map<string, KokoroChunk[]>();
+  const CACHE_MAX_CHARS = 60;
+  const CACHE_MAX_ENTRIES = 48;
+  function cacheable(text: string) {
+    return text.length <= CACHE_MAX_CHARS;
+  }
   async function* run(
     text: string,
     signal?: AbortSignal,
   ): AsyncGenerator<KokoroChunk, void, undefined> {
     signal?.throwIfAborted();
+    const cached = phraseCache.get(String(text ?? "").trim());
+    if (cached) {
+      for (const chunk of cached) {
+        signal?.throwIfAborted();
+        yield chunk;
+      }
+      return;
+    }
     if (disposed) throw new KokoroError("disposed");
     if (!installed()) throw new KokoroError("not_installed");
     if (now() < cooldownUntil) throw new KokoroError("worker_unavailable");
@@ -810,8 +826,21 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     status,
     download,
     remove,
-    async warm() {
+    async warm(phrases: readonly string[] = []) {
       for await (const _chunk of run(kokoroDefaults.warmText));
+      // Pre-synthesize the fixed acknowledgements so they play instantly.
+      for (const phrase of phrases) {
+        const clean = String(phrase ?? "").trim();
+        if (!clean || !cacheable(clean) || phraseCache.has(clean)) continue;
+        if (phraseCache.size >= CACHE_MAX_ENTRIES) break;
+        const chunks: KokoroChunk[] = [];
+        try {
+          for await (const chunk of run(clean)) chunks.push(chunk);
+        } catch {
+          return;
+        }
+        if (chunks.length) phraseCache.set(clean, chunks);
+      }
     },
     synthesize: (text, signal) => run(text, signal),
     dispose() {

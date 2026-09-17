@@ -1129,6 +1129,24 @@ describe("open_app policy", () => {
     launcherAppId: "com.google.Chrome",
     launcherName: "Google Chrome",
   };
+  it("refuses to open the app that is already frontmost", () => {
+    // Live: Spotify was frontmost and the model sent open_app twelve times.
+    const decision = decide(openApp("Spotify"), {
+      appId: "com.spotify.client",
+      launcherStatus: "resolved",
+      launcherAppId: "com.spotify.client",
+      launcherName: "Spotify",
+    });
+    expect(decision.kind).toBe("RETRY");
+    expect(decision.reason).toMatch(/already open and frontmost/);
+    // Switching to a different app still works.
+    expect(
+      decide(openApp("Google Chrome"), {
+        ...resolved,
+        appId: "com.spotify.client",
+      }).kind,
+    ).toBe("ALLOW");
+  });
   it("opens a verified installed application", () => {
     expect(decide(openApp("Google Chrome"), resolved)).toEqual({
       kind: "ALLOW",
