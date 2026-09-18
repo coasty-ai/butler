@@ -2185,6 +2185,20 @@ function SettingsPanel({
               />
               <span>Learn from my tasks</span>
             </label>
+            <p>
+              While it runs, Open Assist also sees which apps you have open and
+              notifications as they arrive, so it can pick up work already in
+              progress and tell you what you missed. Notifications from
+              protected apps are never read.
+            </p>
+            <label className="consent">
+              <input
+                type="checkbox"
+                checked={s.notifications}
+                onChange={(e) => set("notifications", e.target.checked)}
+              />
+              <span>Read my notifications</span>
+            </label>
             {learned && (
               <p role="status">
                 {learned.counts.episodes} tasks · {learned.counts.preferences}{" "}

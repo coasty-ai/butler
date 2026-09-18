@@ -46,6 +46,9 @@ const contextSchema = z
     // left when it publishes nothing else (docs/THREAT_MODEL.md).
     accessibility: z.enum(["none", "partial", "full"]).optional(),
     menus: z.array(bounded(400)).max(12).optional(),
+    // The rest of the workspace: what else is open, and what has arrived.
+    openApps: z.array(bounded(300)).max(14).optional(),
+    notifications: z.array(bounded(300)).max(12).optional(),
   })
   .strict();
 // Context can contain useful names/addresses. Remove only the detected
@@ -97,6 +100,12 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
     ...(c.accessibility !== undefined && { accessibility: c.accessibility }),
     ...(c.menus && {
       menus: c.menus.map((line) => clean(line).slice(0, 400)),
+    }),
+    ...(c.openApps && {
+      openApps: c.openApps.map((line) => clean(line).slice(0, 300)),
+    }),
+    ...(c.notifications && {
+      notifications: c.notifications.map((line) => clean(line).slice(0, 300)),
     }),
   };
 }

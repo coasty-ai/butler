@@ -482,6 +482,7 @@ export class NativeController implements Controller {
     await this.request("configure", {
       protectedApps: s.protectedApps,
       protectedDomains: s.protectedDomains,
+      notifications: s.notifications,
       ...(s.displayId ? { displayId: s.displayId } : {}),
     });
   }

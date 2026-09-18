@@ -212,6 +212,11 @@ export const settingsSchema = z
     /** Learn from completed tasks (local encrypted memory, skills, index). */
     memory: z.boolean().default(true),
     /**
+     * Read notification banners as they arrive and carry the recent ones in
+     * the model's context. Off means the helper never reads them at all.
+     */
+    notifications: z.boolean().default(true),
+    /**
      * Spoken replies: "voice" only for turns the user started by voice,
      * "always" also for typed tasks (never typed acknowledgements).
      */
@@ -282,6 +287,7 @@ export const defaultSettings: Settings = {
   contributionEndpoint: "",
   handsFree: false,
   memory: true,
+  notifications: true,
   voiceReplies: "voice",
   voiceEngine: "system",
   voiceId: "",
@@ -350,6 +356,18 @@ export interface ScreenContext {
    * only, never document contents.
    */
   menus?: string[];
+  /**
+   * Every application the user has open, most recently used first, with the
+   * titles of its windows ("Slack: Prateek J (DM)"), so work already in
+   * progress is picked up rather than started again.
+   */
+  openApps?: string[];
+  /**
+   * Notifications that arrived while the assistant was running, oldest first
+   * ("Slack, 4m ago: Nitish — can you look at this?"). Only while the user
+   * has them switched on, never from a protected application (docs/PRIVACY.md).
+   */
+  notifications?: string[];
 }
 export interface Surface {
   appId: string;

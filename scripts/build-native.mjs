@@ -19,6 +19,7 @@ const result = spawnSync(
     "native/macos/LaunchSafety.swift",
     "native/macos/FileSafety.swift",
     "native/macos/NamedTargets.swift",
+    "native/macos/Workspace.swift",
     "-framework",
     "AppKit",
     "-framework",

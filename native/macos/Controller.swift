@@ -382,6 +382,102 @@ func menuBarTitles(_ app: AXUIElement, limit: Int = 12) -> [String] {
     }
     return titles
 }
+// MARK: Workspace
+
+// Notifications seen while the helper has been running, and whether the user
+// asked for them at all (docs/PRIVACY.md). Guarded by stateLock.
+var deliveredNotifications = [DeliveredNotification]()
+var notificationsEnabled = true
+var notificationObserver: AXObserver? = nil
+// Reading a banner is a handful of accessibility reads on another process; the
+// observer fires on the main run loop, so it stays bounded and never blocks a
+// capture.
+func readNotificationBanner(_ window: AXUIElement) {
+    var texts = [String](), queue = [window], index = 0
+    while index < queue.count && index < 120 && texts.count < 8 {
+        let node = queue[index]; index += 1
+        if attribute(node, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole { continue }
+        for name in [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute] {
+            if let value = attribute(node, name) as? String,
+               !value.trimmingCharacters(in: .whitespaces).isEmpty {
+                texts.append(utf16Prefix(value, 400))
+            }
+        }
+        queue.append(contentsOf: (attribute(node, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(20))
+    }
+    let parts = notificationParts(texts)
+    // A notification from a protected application is not read at all.
+    guard !protectedApps.contains(where: { parts.app.lowercased().contains($0.lowercased()) }) else { return }
+    let entry = DeliveredNotification(at: Date().timeIntervalSince1970,
+                                      app: utf16Prefix(parts.app, 60),
+                                      title: utf16Prefix(parts.title, notificationTextLimit),
+                                      body: utf16Prefix(parts.body, notificationTextLimit))
+    withState { deliveredNotifications = mergeNotification(deliveredNotifications, entry) }
+}
+/**
+ Watches Notification Center for banners.
+
+ A delivered notification is only in the accessibility tree while its banner is
+ on screen, so there is nothing to read after the fact: the helper has to be
+ watching. Installed once, on the main run loop, and only while the user has
+ notifications switched on.
+ */
+func watchNotifications() {
+    // The observer and its state belong to the main run loop, where its
+    // callbacks fire; configure and capture reach this from other threads.
+    guard Thread.isMainThread else { DispatchQueue.main.async { watchNotifications() }; return }
+    guard notificationObserver == nil, AXIsProcessTrusted(),
+          let center = NSWorkspace.shared.runningApplications.first(where: {
+              $0.bundleIdentifier == "com.apple.notificationcenterui"
+          }) else { return }
+    var observer: AXObserver?
+    guard AXObserverCreate(center.processIdentifier, { _, element, _, _ in
+        guard withState({ notificationsEnabled }) else { return }
+        readNotificationBanner(element)
+    }, &observer) == .success, let observer else { return }
+    let app = AXUIElementCreateApplication(center.processIdentifier)
+    guard AXObserverAddNotification(observer, app, kAXWindowCreatedNotification as CFString, nil) == .success else { return }
+    CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+    notificationObserver = observer
+}
+/**
+ The applications the user has open, most recently used first, with the titles
+ of their windows. Background and agent processes are skipped, as are protected
+ applications and this agent's own windows.
+ */
+func openApplications() -> [OpenApp] {
+    var titles = [pid_t: [String]]()
+    if let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] {
+        for window in list {
+            guard let pid = window[kCGWindowOwnerPID as String] as? Int,
+                  let title = window[kCGWindowName as String] as? String,
+                  !title.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            titles[pid_t(pid), default: []].append(utf16Prefix(title, windowTitleLimit))
+        }
+    }
+    let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    // Recently focused applications first: recentWindows is in use order.
+    let recency = recentWindows.compactMap { $0["appName"] }
+    let running = NSWorkspace.shared.runningApplications.filter { running in
+        let id = (running.bundleIdentifier ?? "").lowercased()
+        return running.activationPolicy == .regular && running.processIdentifier != getppid()
+            && id != "ai.coarena.openassist"
+            && !protectedApps.contains(where: { id.contains($0.lowercased()) })
+    }
+    let apps = running.map {
+        OpenApp(name: utf16Prefix($0.localizedName ?? "", 60),
+                windows: titles[$0.processIdentifier] ?? [],
+                frontmost: $0.processIdentifier == frontmost)
+    }.filter { !$0.name.isEmpty }
+    return apps.sorted { first, second in
+        if first.frontmost != second.frontmost { return first.frontmost }
+        let a = recency.firstIndex(of: first.name) ?? Int.max
+        let b = recency.firstIndex(of: second.name) ?? Int.max
+        if a != b { return a < b }
+        return first.windows.count > second.windows.count
+    }
+}
+
 // MARK: Named targets
 
 // The frontmost application's menus, read once and reused for a few seconds.
@@ -907,6 +1003,14 @@ func screenContext() -> [String:Any] {
         }
     }
     result["recentWindows"]=windows;result["recentFiles"]=recentFiles
+    // The rest of the picture: what else is open, and what has arrived.
+    let open=openAppLines(openApplications())
+    if !open.isEmpty {result["openApps"]=open}
+    watchNotifications()
+    let now=Date().timeIntervalSince1970
+    let recent=withState { notificationsEnabled ? deliveredNotifications : [] }
+        .filter { now - $0.at <= notificationHorizonSeconds }
+    if !recent.isEmpty {result["notifications"]=recent.map { notificationLine($0, now: now) }}
     // Tell the model when this application publishes no usable accessibility,
     // so it stops guessing pixels and drives the menu bar and shortcuts. The
     // menu bar is a native NSMenu and normally survives a blind window; the
@@ -1554,7 +1658,12 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
     case "requestPermissions":
         _ = CGRequestScreenCaptureAccess();_ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String:true] as CFDictionary);return ["requested":true]
     case "configure":
-        if let apps = command["protectedApps"] as? [String]{protectedApps = apps};if let domains = command["protectedDomains"] as? [String]{protectedDomains = domains};if let id = command["displayId"] as? UInt32{displayID = id};return ["configured":true]
+        if let apps = command["protectedApps"] as? [String]{protectedApps = apps};if let domains = command["protectedDomains"] as? [String]{protectedDomains = domains};if let id = command["displayId"] as? UInt32{displayID = id}
+        if let notifications = command["notifications"] as? Bool {
+            withState { notificationsEnabled = notifications; if !notifications { deliveredNotifications = [] } }
+            if notifications { watchNotifications() }
+        }
+        return ["configured":true]
     case "surface":return surface(command["action"] as? [String:Any])
     // Read-only local system index: sends no input, so it needs no resume.
     case "index":return await systemIndex(query: command["query"] as? String ?? "", limit: indexLimit(command["limit"]))

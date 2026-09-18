@@ -122,3 +122,39 @@ describe("bounded screen context", () => {
       ).toBeUndefined();
   });
 });
+
+describe("workspace context", () => {
+  it("carries every open application and recent notifications, redacted", () => {
+    const result = cleanScreenContext({
+      appName: "Code",
+      windowTitle: "open-assist",
+      openApps: [
+        "Code (frontmost): open-assist",
+        "Slack: Prateek J (DM) - Coasty - Slack",
+      ],
+      notifications: [
+        "Slack, 4m ago: Prateek — can you look at the deck?",
+        "Mail, just now: Reset — your code is token=sk-fixtureSECRET123456",
+      ],
+    });
+    expect(result?.openApps).toEqual([
+      "Code (frontmost): open-assist",
+      "Slack: Prateek J (DM) - Coasty - Slack",
+    ]);
+    expect(result?.notifications?.[0]).toBe(
+      "Slack, 4m ago: Prateek — can you look at the deck?",
+    );
+    // A secret in a notification never reaches the model.
+    expect(result?.notifications?.[1]).not.toContain("fixtureSECRET");
+  });
+  it("drops a workspace that exceeds its bounds", () => {
+    for (const bad of [
+      { openApps: Array.from({ length: 15 }, (_, i) => `App${i}`) },
+      { notifications: Array.from({ length: 13 }, (_, i) => `N${i}`) },
+      { notifications: [{ app: "Slack" }] },
+    ])
+      expect(
+        cleanScreenContext({ appName: "A", windowTitle: "B", ...bad }),
+      ).toBeUndefined();
+  });
+});
