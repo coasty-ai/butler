@@ -210,3 +210,32 @@ func normalizeChord(_ keys: [String]) -> String {
     let rest = upper.filter { !order.contains($0) }.sorted()
     return (modifiers + rest).joined(separator: "+")
 }
+
+// MARK: Search opened by the application's own command
+
+/**
+ Whether a menu command opens a search, find or quick-switch field. After the
+ application's own command for that (Spotify's Edit > Search, Slack's Jump to,
+ VS Code's Quick Open), the text the agent types next goes into that field even
+ when the application does not expose the field to accessibility. "Replace"
+ is excluded: it edits content rather than looking something up.
+ */
+func searchCommandTitle(_ title: String) -> Bool {
+    let words = normalizeTargetTitle(title).lowercased()
+    guard !words.isEmpty, !words.contains("replace") else { return false }
+    let openers = ["search", "find", "filter", "quick open", "go to file", "go to symbol",
+                   "jump to", "command palette", "quick switcher", "quick search", "open quickly", "switch to"]
+    return openers.contains { opener in
+        words == opener || words.hasPrefix(opener + " ") || words.hasSuffix(" " + opener)
+            || words.contains(" " + opener + " ")
+    }
+}
+/**
+ A search command stays the context for typing only briefly and only in the
+ application that ran it: long enough to type a query, use the arrow keys and
+ press Enter, never across an application switch or a pause.
+ */
+let searchCommandSeconds = 45.0
+func searchCommandCurrent(commandPid: pid_t, commandAt: TimeInterval, pid: pid_t, now: TimeInterval) -> Bool {
+    commandPid == pid && now >= commandAt && now - commandAt <= searchCommandSeconds
+}

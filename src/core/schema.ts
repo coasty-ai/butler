@@ -428,6 +428,12 @@ export interface Surface {
   controlLabel?: string;
   /** The menu item a proposed shortcut invokes in this application, if any. */
   shortcutLabel?: string;
+  /**
+   * The application's own search command the agent just ran here ("Search",
+   * "Jump to…"), while it is still the context for typing: text typed now
+   * goes into that search field even when the field is not exposed.
+   */
+  searchOpenedBy?: string;
 }
 export interface Usage {
   inputTokens: number;

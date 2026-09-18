@@ -23,6 +23,7 @@ import CoreGraphics
         inputIdleChecks(check)
         electronAccessibilityChecks(check)
         namedTargetChecks(check)
+        searchCommandChecks(check)
         workspaceChecks(check)
         agendaRulesChecks(check)
         // Blind surfaces: Spotify (Chromium/CEF) publishes a real window and

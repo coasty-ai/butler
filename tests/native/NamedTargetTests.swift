@@ -71,3 +71,15 @@ func namedTargetChecks(_ check: (Bool, String) -> Void) {
     let many = (0..<30).map { MenuItemDigest(title: "Item \($0)", shortcut: nil, enabled: true, submenu: false) }
     check(menuDigestLine(menu: "Long", items: many, itemLimit: 3) == "Long: Item 0, Item 1, Item 2", "items are bounded")
 }
+
+func searchCommandChecks(_ check: (Bool, String) -> Void) {
+    for title in ["Search", "Find…", "Find in Files", "Quick Open", "Jump to…", "Command Palette…", "Filter", "Go to File…", "Quick Search"] {
+        check(searchCommandTitle(title), "\(title) opens a search field")
+    }
+    for title in ["Replace", "Find and Replace…", "Play", "New Playlist", "Save", "Searchlight Settings", ""] {
+        check(!searchCommandTitle(title), "\(title) does not open a search field")
+    }
+    check(searchCommandCurrent(commandPid: 7, commandAt: 100, pid: 7, now: 130), "a search opened moments ago in this app is current")
+    check(!searchCommandCurrent(commandPid: 7, commandAt: 100, pid: 8, now: 101), "another application never inherits it")
+    check(!searchCommandCurrent(commandPid: 7, commandAt: 100, pid: 7, now: 100 + searchCommandSeconds + 1), "it expires")
+}

@@ -39,7 +39,7 @@ func emit(_ obj: [String: Any]) {
 func latch(_ value: Bool) {
     let point = value ? nil : CGEvent(source:nil)?.location
     stateLock.lock(); stopped = value
-    if !value { lastPointerPosition = point; pointerGraceUntil = ProcessInfo.processInfo.systemUptime + 0.75 }
+    if !value { lastPointerPosition = point; pointerGraceUntil = ProcessInfo.processInfo.systemUptime + 0.75; searchCommand = nil }
     stateLock.unlock()
 }
 func withState<T>(_ body: () -> T) -> T { stateLock.lock(); defer { stateLock.unlock() }; return body() }
@@ -492,6 +492,16 @@ struct MenuSnapshot {
     let shortcuts: [String: String]
 }
 var menuSnapshot: MenuSnapshot? = nil // guarded by stateLock
+// The application's own search command the agent ran last, if any, so text
+// typed next is known to go into that search field (guarded by stateLock).
+var searchCommand: (pid: pid_t, at: TimeInterval, title: String)? = nil
+func noteCommand(_ title: String?, pid: pid_t) {
+    withState {
+        if let title, searchCommandTitle(title) {
+            searchCommand = (pid, ProcessInfo.processInfo.systemUptime, utf16Prefix(normalizeTargetTitle(title), 60))
+        } else { searchCommand = nil }
+    }
+}
 let menuSnapshotSeconds = 4.0
 // The AXMenu holding a menu bar item's or a submenu item's entries.
 func submenuOf(_ item: AXUIElement) -> AXUIElement? {
@@ -605,6 +615,7 @@ func pressMenuPath(_ path: [String]) throws {
         throw ControlError("\(named) could not be chosen.", code: "INPUT_FAILED")
     }
     withState { menuSnapshot = nil } // menus revalidate after their own command
+    noteCommand(item.title, pid: app.processIdentifier)
 }
 /**
  The controls the model was shown, read again now: the same walk capture uses,
@@ -771,6 +782,10 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
         case .refused: result["fileStatus"] = "refused"
         }
         stateLock.lock(); fileBinding = cached; stateLock.unlock()
+    }
+    if let command = withState({ searchCommand }),
+       searchCommandCurrent(commandPid: command.pid, commandAt: command.at, pid: app.processIdentifier, now: ProcessInfo.processInfo.systemUptime) {
+        result["searchOpenedBy"] = command.title
     }
     if let status = namedControl {
         result["controlStatus"] = status.status
@@ -1302,6 +1317,16 @@ func execute(_ action:[String:Any]) throws {
     guard b.width == g["width"] as? Double, b.height == g["height"] as? Double, b.origin.x == g["x"] as? Double, b.origin.y == g["y"] as? Double else { throw changedScreen("Display geometry changed.") }
     func point(_ x:String,_ y:String) throws -> CGPoint { guard let nx = action[x] as? Double, let ny = action[y] as? Double, nx.isFinite,ny.isFinite,nx >= 0,nx <= 1,ny >= 0,ny <= 1 else { throw ControlError("Invalid coordinates.") };return CGPoint(x:b.minX+min(b.width-1,floor(nx*b.width)),y:b.minY+min(b.height-1,floor(ny*b.height))) }
     func mouse(_ type:CGEventType,_ p:CGPoint,_ button:CGMouseButton = .left,_ count:Int64 = 1) throws { try ensureRunning();guard let e = CGEvent(mouseEventSource:nil, mouseType:type, mouseCursorPosition:p, mouseButton:button) else { throw ControlError("Input event failed.") };e.setIntegerValueField(.mouseEventClickState,value:count);postInput(e) }
+    switch action["type"] as? String {
+    case "type_text", "menu_item": break
+    case "key": if action["key"] as? String == "ESC" { withState { searchCommand = nil } }
+    case "hotkey":
+        if let names = action["keys"] as? [String], let app = inputApplication() {
+            let menus = menuMap(AXUIElementCreateApplication(app.processIdentifier), pid: app.processIdentifier)
+            noteCommand(menus.shortcuts[normalizeChord(names)], pid: app.processIdentifier)
+        }
+    default: withState { searchCommand = nil }
+    }
     switch action["type"] as? String {
     case "click", "double_click", "right_click":
         let p = try point("x","y"), right = action["button"] as? String == "right" || action["type"] as? String == "right_click"

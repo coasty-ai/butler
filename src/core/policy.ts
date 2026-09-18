@@ -239,6 +239,17 @@ function blindRefusal(surface: Surface): Decision | undefined {
     };
   return undefined;
 }
+// A focus that names nothing a person could type into: the window, the page,
+// an unnamed container, or no focused element at all.
+const unidentifiedFocusRoles = [
+  "",
+  "AXWindow",
+  "AXApplication",
+  "AXUnknown",
+  "AXGroup",
+  "AXWebArea",
+  "AXScrollArea",
+];
 const chord = (keys: readonly string[]) => [...keys].sort().join("+");
 const arrows = ["UP", "DOWN", "LEFT", "RIGHT"];
 const routineShortcuts = new Set(
@@ -1111,6 +1122,34 @@ export function evaluate(
         kind: "RETRY",
         reason:
           "No input was sent. This control has no accessible label, so its effect cannot be verified. Use a labelled control, a menu item or a keyboard shortcut instead.",
+      };
+  }
+  // The application's own search command (Spotify's Edit > Search, Slack's
+  // Jump to…) just ran here and nothing else has happened since, so the
+  // unexposed field that has focus is that search box: a single-line query,
+  // correcting it, and Enter to open the result are all a search, not a send.
+  // Native clears this on any pointer input, another command, Escape, a pause
+  // or an application switch; a focus that is identified keeps its own rules.
+  const searchFocus =
+    !surface.unknown &&
+    !surface.modal &&
+    !!surface.searchOpenedBy &&
+    !editable &&
+    unidentifiedFocusRoles.includes(surface.focusedRole ?? "");
+  if (searchFocus) {
+    const where = `${appLabel(surface)}’s ${quote(surface.searchOpenedBy!)}`;
+    if (action.type === "type_text" && !/[\r\n\t]/.test(action.text))
+      return { kind: "ALLOW", reason: `Type into ${where} field.` };
+    if (
+      action.type === "key" &&
+      ["ENTER", "BACKSPACE", "DELETE"].includes(action.key)
+    )
+      return {
+        kind: "ALLOW",
+        reason:
+          action.key === "ENTER"
+            ? `Open the result of ${where}.`
+            : `Correct the query in ${where} field.`,
       };
   }
   if (

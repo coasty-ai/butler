@@ -1915,3 +1915,58 @@ describe("named targets: menus and controls the agent can name", () => {
     ).toBe("USER_TAKEOVER");
   });
 });
+
+// Live run: Edit > Search opened Spotify's search box, then three attempts to
+// type "after hours" were refused because the box is not exposed, and the run
+// handed the task back to the user.
+describe("typing into the search the application just opened", () => {
+  const spotify = {
+    appId: "com.spotify.client",
+    appName: "Spotify",
+    accessibility: "partial" as const,
+  };
+  const opened = { ...spotify, searchOpenedBy: "Search" };
+  it("types the query and opens the result", () => {
+    expect(decide(type("after hours"), opened)).toEqual({
+      kind: "ALLOW",
+      reason: "Type into Spotify’s Search field.",
+    });
+    expect(decide(key("ENTER"), opened).kind).toBe("ALLOW");
+    expect(decide(key("BACKSPACE"), opened).kind).toBe("ALLOW");
+    expect(decide(key("DOWN"), opened).kind).toBe("ALLOW");
+  });
+  it("is exactly the old refusal without the app's own search command", () => {
+    expect(decide(type("after hours"), spotify).kind).toBe("RETRY");
+    expect(decide(key("ENTER"), spotify).kind).toBe("CONFIRM");
+  });
+  it("keeps every other rule for typing", () => {
+    // Credentials, line breaks, secure input and modals are not relaxed.
+    expect(decide(type("password=hunter2hunter2"), opened).kind).not.toBe(
+      "ALLOW",
+    );
+    expect(decide(type("line one\nline two"), opened).kind).not.toBe("ALLOW");
+    expect(
+      decide(type("after hours"), { ...opened, secureInput: true }).kind,
+    ).toBe("USER_TAKEOVER");
+    expect(decide(type("after hours"), { ...opened, modal: true }).kind).toBe(
+      "RETRY",
+    );
+  });
+  it("defers to an identified focus", () => {
+    // A known button has focus: its own rules decide, not the search context.
+    expect(
+      decide(key("ENTER"), {
+        ...opened,
+        focusedRole: "AXButton",
+        focusedLabel: "Send",
+      }).kind,
+    ).not.toBe("ALLOW");
+    // A known text field is typed into under the ordinary field rule.
+    expect(
+      decide(type("after hours"), { ...opened, focusedRole: "AXTextField" }),
+    ).toEqual({
+      kind: "ALLOW",
+      reason: "Type in a known non-secure text field.",
+    });
+  });
+});
