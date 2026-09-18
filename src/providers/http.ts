@@ -7,6 +7,7 @@ import type {
   Usage,
 } from "../core/schema";
 import { validateProviderEndpoint } from "../core/privacy";
+import { cachedInputShare } from "./catalog";
 import { playbookLines } from "./playbooks";
 import { cleanScreenContext } from "../core/context";
 import { redactSecrets } from "../core/sanitize";
@@ -494,11 +495,15 @@ export function parseUsage(
     };
   }
   let input: number, output: number;
+  // Tokens served from a prompt cache. Both vendors count them inside the
+  // input total, so they are a share of it, never an addition to it.
+  let cached = 0;
   if (kind === "ollama") {
     input = count(data?.prompt_eval_count);
     output = count(data?.eval_count);
   } else if (kind === "google") {
     input = count(data?.usageMetadata?.promptTokenCount);
+    cached = count(data?.usageMetadata?.cachedContentTokenCount);
     output =
       count(data?.usageMetadata?.candidatesTokenCount) +
       count(data?.usageMetadata?.thoughtsTokenCount);
@@ -507,12 +512,27 @@ export function parseUsage(
     output = count(data?.usage?.completion_tokens);
   } else {
     input = count(data?.usage?.input_tokens);
+    cached = count(data?.usage?.input_tokens_details?.cached_tokens);
     output = count(data?.usage?.output_tokens);
   }
+  // A cached count above the input total is malformed; it must not push the
+  // bill below the output cost.
+  cached = Math.min(cached, input);
+  // Charging cached tokens in full overstated OpenAI and Google against
+  // Anthropic, whose cache reads were already discounted. The discount is the
+  // one the vendor lists for this exact model: the Model ID field is free
+  // text, and cached rates differ by model (GPT-4o's is half its input rate),
+  // so an id the catalog has not checked, or a gateway's, is charged in full
+  // rather than risk an understated bill under the cost budget. Gemini's
+  // hourly cache storage is not in the response and is not counted.
+  const share = cachedInputShare(kind, settings.model) ?? 1;
   return {
     inputTokens: input,
     outputTokens: output,
-    cost: (input * settings.inputPrice + output * settings.outputPrice) / 1e6,
+    cost:
+      ((input - cached + cached * share) * settings.inputPrice +
+        output * settings.outputPrice) /
+      1e6,
   };
 }
 

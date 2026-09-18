@@ -172,12 +172,12 @@ if (!["openai", "anthropic", "google"].includes(values.provider)) {
   console.error("--provider must be openai, anthropic or google.");
   process.exit(2);
 }
-const selected = selectProvider(defaultSettings, values.provider);
-const baseSettings = {
-  ...selected,
-  model: values.model ?? selected.model,
-  memory: values.memory,
-};
+// The model goes to selectProvider so it is priced at its own catalog rates:
+// set afterwards, it would run at the provider default's rates, and every
+// cost cap would be checked against that estimate. A model the catalog does
+// not price gets zero rates, and the provider refuses it below.
+const selected = selectProvider(defaultSettings, values.provider, values.model);
+const baseSettings = { ...selected, memory: values.memory };
 const cell = `${baseSettings.provider}:${baseSettings.model}`;
 const keys = importEnvCredentials(resolve(root, ".env"), {});
 let client;

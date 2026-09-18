@@ -57,10 +57,11 @@ if (!existsSync(binary)) {
   console.error("Build the native controller with npm run build:native.");
   process.exit(2);
 }
-const selected = selectProvider(defaultSettings, provider);
+// Priced at the chosen model's own catalog rates, so --max-cost holds for it;
+// a model the catalog does not price gets zero rates and is refused below.
+const selected = selectProvider(defaultSettings, provider, values.model);
 const settings = settingsSchema.parse({
   ...selected,
-  model: values.model ?? selected.model,
   maxCost: Number(values["max-cost"]),
   maxActions: Number(values["max-actions"]),
   maxSeconds: Number(values["max-seconds"]),
