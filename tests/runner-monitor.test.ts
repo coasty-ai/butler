@@ -338,8 +338,9 @@ describe("monitor hands the window to the watch and completes the run", () => {
     expect(provider.observations[1].history.at(-1)!.result).toContain(
       "Another application came to the front",
     );
+    // The kind of change is recorded as its code, never the app's name.
     expect(m.of("ActionFailed").map((e) => e.data)).toEqual([
-      { code: "STATE_CHANGED" },
+      { code: "STATE_CHANGED", change: "APP_CHANGED" },
     ]);
     expect(runner.snapshot.run?.status).toBe("completed");
   });

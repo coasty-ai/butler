@@ -179,6 +179,59 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(turnConfidence(live) == 0, "an unfinalized live segment has no confidence")
     check(turnConfidence(TurnTranscript()) == 0, "an empty turn has no confidence")
 
+    // Wake-phrase restart. Live (2026-09-18, seg=2, transcript_recovered): the request,
+    // then the user said it again starting with "Assist", and both became one task.
+    let request = "open calendar and put an event where I have to go pick up my packages at 6 PM"
+    var doubled = TurnTranscript()
+    absorbFinalSegment(&doubled, text: request, confidence: 0.9)
+    absorbPartial(&doubled, update: "Assist open calendar and put an event wher", gap: 1.2)
+    check(doubled.text == "open calendar and put an event wher", "a later segment opening with the wake phrase starts the request over")
+    absorbFinalSegment(&doubled, text: "", confidence: nil)
+    check(doubled.text == "open calendar and put an event wher" && doubled.committed.count == 2 && doubled.segmentCount == 2,
+          "the recovered turn keeps only the restart and still counts both segments")
+    check(turnConfidence(doubled) == 0, "an unconfirmed restart can never approve")
+    var restartFinal = TurnTranscript()
+    absorbFinalSegment(&restartFinal, text: "open notes and write", confidence: nil)
+    absorbFinalSegment(&restartFinal, text: "Hey Assist, open Safari", confidence: 0.8)
+    check(restartFinal.text == "open Safari" && near(turnConfidence(restartFinal), 0.8),
+          "the confidence is the request's own: the dropped segment no longer counts")
+    // Ordinary speech in a later segment keeps the request whole (reviewed probes).
+    for (first, later) in [("Don't send the reply to Dr Park yet", "his assistant will send it"),
+                           ("Reply to John's email and say I'll be there", "his assistant can send the invite"),
+                           ("text mom I'm running late", "hey sis can you grab the door"),
+                           ("open notes and write", "Hi sis, come in"),
+                           ("stop", "hi sis continue"),
+                           ("write that", "A cyst was removed from my knee"),
+                           ("open the ticket and", "assist the customer with the refund")] {
+        var spoken = TurnTranscript()
+        absorbFinalSegment(&spoken, text: first, confidence: 0.9)
+        absorbFinalSegment(&spoken, text: later, confidence: 0.9)
+        check(spoken.text == first + " " + later, "not a restart: \(later)")
+    }
+    var twice = TurnTranscript()
+    for segment in ["open notes", "Assist open mail", "Assist. Open Safari"] { absorbFinalSegment(&twice, text: segment, confidence: 0.9) }
+    check(twice.text == "Open Safari", "only the words after the last wake phrase are kept")
+    var bare = TurnTranscript()
+    absorbFinalSegment(&bare, text: request, confidence: 0.9)
+    absorbFinalSegment(&bare, text: "Assist.", confidence: 0.9)
+    check(bare.text == request && near(turnConfidence(bare), 0.9), "a wake phrase with nothing after it keeps the previous text")
+    absorbPartial(&bare, update: "open mail", gap: 1.5)
+    check(bare.text == "open mail", "the segment after a lone wake phrase starts the request over")
+    absorbFinalSegment(&bare, text: "open mail", confidence: 0.6)
+    absorbFinalSegment(&bare, text: "and read it", confidence: 0.6)
+    check(bare.text == "open mail and read it" && bare.segmentCount == 4, "segments after the restart join as usual")
+    var mention = TurnTranscript()
+    absorbFinalSegment(&mention, text: "open notes and ask it to", confidence: 0.9)
+    absorbFinalSegment(&mention, text: "assist me with the list", confidence: 0.9)
+    check(mention.text == "open notes and ask it to assist me with the list", "\"assist me\" is a request, not a restart")
+    var product = TurnTranscript()
+    absorbFinalSegment(&product, text: "go to", confidence: 0.9)
+    absorbFinalSegment(&product, text: "Open Assist settings", confidence: 0.9)
+    check(product.text == "go to Open Assist settings", "the product's name inside a request is not a restart")
+    var first = TurnTranscript()
+    absorbFinalSegment(&first, text: "Assist open notes", confidence: 0.9)
+    check(first.text == "Assist open notes", "the first segment is left to the wake strip that already ran")
+
     // Wake echo
     check(stripWakeEcho("His cyst un PT can you check") == "un PT can you check", "a misheard wake phrase from the log is stripped")
     check(stripWakeEcho("Hi, sis. Open notes") == "Open notes", "greeting variant stripped")

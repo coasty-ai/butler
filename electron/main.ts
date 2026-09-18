@@ -126,6 +126,7 @@ import {
   APPROVAL_MIN_CONFIDENCE,
   isWakePhraseOnly,
   planVoiceTurn,
+  transcriptRequest,
   type TurnPlan,
   type TurnPlanKind,
 } from "../src/voice/turns";
@@ -1819,15 +1820,16 @@ async function receiveVoice(event: VoiceEvent) {
       const invocation = voiceInvocation;
       await voiceContext;
       if (invocation !== voiceInvocation) return;
-      const text = (event.text ?? "").trim();
-      if (!text) throw new Error("Didn’t catch that. Try again.");
-      await command(text, true, voiceCommandConfidence(event), {
-        segments: event.segments,
+      // A wake phrase said again mid-segment starts the request over.
+      const heard = transcriptRequest(event);
+      if (!heard.text) throw new Error("Didn’t catch that. Try again.");
+      await command(heard.text, true, voiceCommandConfidence(event), {
+        segments: heard.segments,
       });
     } else if (event.event === "transcript_unconfirmed") {
       if (!listening) return;
       listening = false;
-      const text = (event.text ?? "").trim();
+      const text = transcriptRequest(event).text;
       if (conversation.planContext(true).source === "ptt" && text) {
         // Never act on an unconfirmed hypothesis: offer it for a one-tap send.
         // Dismissing this pill must not resume a run the voice hold paused.

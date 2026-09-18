@@ -18,7 +18,9 @@ import {
   joinUtterances,
   planVoiceTurn,
   queueRequest,
+  restartedTurn,
   startsNewTask,
+  transcriptRequest,
   utteranceCompleteness,
   voiceIntent,
   type VoiceTurnInput,
@@ -99,6 +101,138 @@ describe("intent normalization", () => {
     }
     expect(isWakePhraseOnly("Hey Assist open Safari")).toBe(false);
     expect(isWakePhraseOnly("assistant manager contacts")).toBe(false);
+  });
+  // Live 2026-09-18: the request said twice, the second time starting with
+  // the wake phrase. Native handles a restart that opens a new segment; one
+  // said without a pause arrives inside a single segment.
+  it("keeps only the words after a wake phrase said again inside the turn", () => {
+    const request =
+      "open calendar and put an event where I have to go pick up my packages at 6 PM";
+    expect(
+      restartedTurn(`${request} hey assist open calendar and put an event`, 1),
+    ).toEqual({ text: "open calendar and put an event", segments: 2 });
+    expect(
+      restartedTurn(
+        "open notes, Hey, Open Assist: open mail. Hey assist, open Safari",
+      ),
+    ).toEqual({ text: "open Safari", segments: 2 });
+    // Nothing after it yet: the words before it stay the request.
+    expect(restartedTurn("open notes hey assist", 3)).toEqual({
+      text: "open notes",
+      segments: 3,
+    });
+    expect(restartedTurn("open notes hey assist um", 1).text).toBe(
+      "open notes",
+    );
+  });
+  // The incident's own form: the bare name, then the request again, without a
+  // pause long enough for a new recognizer segment.
+  it("restarts at a bare name when the request repeats after it", () => {
+    const request =
+      "open calendar and put an event where I have to go pick up my packages at 6 PM";
+    expect(
+      restartedTurn(
+        `${request} Assist open calendar and put an event wher…`,
+        1,
+      ),
+    ).toEqual({ text: "open calendar and put an event wher…", segments: 2 });
+    expect(restartedTurn("open Safari, Assist, open Safari")).toEqual({
+      text: "open Safari",
+      segments: 2,
+    });
+    expect(
+      restartedTurn("um open notes and write assist open notes and read", 1)
+        .text,
+    ).toBe("open notes and read");
+    // After a full wake phrase too, the last repeat wins.
+    expect(
+      restartedTurn(
+        "open notes hey assist open mail and reply Assist open mail and archive",
+      ).text,
+    ).toBe("open mail and archive");
+    // An activation phrase in front does not hide the repeat.
+    expect(
+      restartedTurn("Hey Assist open calendar at 6 Assist open calendar at 7"),
+    ).toEqual({ text: "open calendar at 7", segments: 2 });
+    // Without the repeat, "assist" is a word.
+    for (const text of [
+      "open the ticket and assist the customer with the refund",
+      "open notes and ask it to assist me",
+      "tell Maria I can assist with the move",
+      "go to Open Assist settings",
+      "open safari assist open mail",
+    ])
+      expect(restartedTurn(text, 1)).toEqual({ text, segments: 1 });
+  });
+  it("hands main the request, not the raw transcript", () => {
+    const text =
+      "open calendar and put an event where I have to go pick up my packages at 6 PM Assist open calendar and put an event wher…";
+    expect(transcriptRequest({ text: `  ${text} `, segments: 1 })).toEqual({
+      text: "open calendar and put an event wher…",
+      segments: 2,
+    });
+    expect(transcriptRequest({ text: " open notes ", segments: 1 })).toEqual({
+      text: "open notes",
+      segments: 1,
+    });
+    expect(transcriptRequest({})).toEqual({ text: "", segments: undefined });
+  });
+  // main.ts is not loaded in tests; its finished-transcript branches are pinned
+  // by reading them, so the raw doubled text can never reach a run again.
+  it("main reads finished transcripts only through transcriptRequest", () => {
+    const source = readFileSync(
+      new URL("../electron/main.ts", import.meta.url),
+      "utf8",
+    );
+    const receive = source.slice(
+      source.indexOf("async function receiveVoice("),
+    );
+    const branch = (event: string) => {
+      const start = receive.indexOf(`event.event === "${event}"`);
+      const end = receive.indexOf("} else if (", start);
+      expect([event, start > 0 && end > start]).toEqual([event, true]);
+      return receive.slice(start, end);
+    };
+    const final = branch("transcript_recovered");
+    expect(final).toContain("const heard = transcriptRequest(event);");
+    expect(final).toMatch(
+      /command\(heard\.text, true, voiceCommandConfidence\(event\), \{\s*segments: heard\.segments,/,
+    );
+    const unconfirmed = branch("transcript_unconfirmed");
+    expect(unconfirmed).toContain("transcriptRequest(event).text");
+    for (const part of [final, unconfirmed])
+      expect(part).not.toMatch(/event\.text|event\.segments/);
+  });
+  it("leaves a turn without a restart exactly as it was", () => {
+    for (const [text, segments] of [
+      ["Hey Assist open Safari", 1],
+      ["hey assist hey assist open Safari", 1],
+      ["open notes and ask it to assist me", 1],
+      ["go to Open Assist settings", 2],
+      ["tell her hey there", undefined],
+    ] as const)
+      expect(restartedTurn(text, segments)).toEqual({ text, segments });
+  });
+  it("never lets a restarted turn approve", () => {
+    const heard = restartedTurn("no wait hey assist yes", 1);
+    expect(heard).toEqual({ text: "yes", segments: 2 });
+    expect(
+      planVoiceTurn({
+        ...heard,
+        confidence: 0.95,
+        source: "wake",
+        gateMatches: true,
+        now: 0,
+        run: {
+          id: "r",
+          status: "confirming",
+          actions: 1,
+          held: true,
+          task: "t",
+          pendingReason: "Send this message?",
+        },
+      }).kind,
+    ).toBe("needClick");
   });
   it("stops a stuttered stop even in a continuation window or with a fragment", () => {
     for (const text of ["st st stop", "S-s-stop", "sto sto stop"])

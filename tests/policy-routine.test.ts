@@ -1911,6 +1911,71 @@ describe("named targets: menus and controls the agent can name", () => {
     expect(decision.kind).toBe("DENY");
     expect(decision.reason).toContain("left to the user");
   });
+  // Native presses a published chord as its menu item and refuses Quit, so an
+  // approval for CMD+Q could only ever end in that refusal.
+  it("refuses a shortcut whose menu item is refused before asking", () => {
+    const quit = decide(hotkey("CMD", "Q"), {
+      ...spotify,
+      shortcutLabel: "Quit Spotify",
+      shortcutStatus: "refused",
+    });
+    expect(quit).toEqual({
+      kind: "DENY",
+      reason: decide(menu("Spotify", "Quit Spotify"), { menuStatus: "refused" })
+        .reason,
+    });
+    // Refused before the delete rule would ask (Finder's Empty Trash chord).
+    expect(
+      decide(hotkey("CMD", "SHIFT", "BACKSPACE"), { shortcutStatus: "refused" })
+        .kind,
+    ).toBe("DENY");
+    // An application without that item still asks, as before.
+    expect(decide(hotkey("CMD", "Q"), spotify).kind).toBe("CONFIRM");
+  });
+  // The hotkey clipboard rules hold through the Edit menu too.
+  it("keeps the clipboard rules for Copy, Cut and Paste menu items", () => {
+    const resolved = (label: string) => ({
+      menuStatus: "resolved" as const,
+      menuLabel: label,
+      focusedRole: "AXTextField",
+    });
+    for (const [path, label] of [
+      [["Edit", "Copy"], "Copy"],
+      [["Edit", "Cut"], "Cut"],
+      [["Edit", "Paste"], "Paste"],
+      [["Edit", "Paste and Match Style"], "Paste and Match Style"],
+      [["Edit", "Copy Link"], "Copy Link"],
+      [["Edit", "Copy Special", "Copy as HTML"], "Copy as HTML"],
+    ] as const) {
+      const decision = decide(menu(...path), resolved(label));
+      expect(decision.kind).toBe("DENY");
+      expect(decision.reason).toContain("Clipboard access is disabled");
+    }
+    // Even the paste the user asked for goes as CMD+V, which native checks
+    // against the field it lands in; copying never goes either way.
+    const asked = (path: string[], label: string) =>
+      evaluate(
+        menu(...path),
+        { ...base, ...resolved(label) },
+        settings,
+        false,
+        { pasteRequested: true },
+      );
+    const paste = asked(["Edit", "Paste"], "Paste");
+    expect(paste.kind).toBe("RETRY");
+    expect(paste.reason).toContain("CMD+V");
+    expect(asked(["Edit", "Copy"], "Copy").kind).toBe("DENY");
+    expect(
+      asked(["Edit", "Paste and Match Style"], "Paste and Match Style").kind,
+    ).toBe("DENY");
+    // Other Edit items are unaffected.
+    expect(
+      decide(menu("Edit", "Select All"), resolved("Select All")).kind,
+    ).toBe("ALLOW");
+    expect(
+      decide(menu("File", "Pasteboard"), resolved("Pasteboard")).kind,
+    ).toBe("ALLOW");
+  });
   it("sends a missing or greyed-out item back with what to do instead", () => {
     const missing = decide(menu("Playback", "Play"), {
       ...spotify,

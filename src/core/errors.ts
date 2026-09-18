@@ -1,6 +1,31 @@
+/**
+ * What changed when a step was refused before input, as the native helper's
+ * fixed code (screenChangeCodes in native/macos/FrameSafety.swift; the list is
+ * pinned by tests/fixtures/screen-changes.json). Content-free by construction:
+ * any other value from the helper is dropped.
+ */
+export const screenChanges = [
+  "FOCUS_CHANGED",
+  "APP_CHANGED",
+  "WINDOW_CHANGED",
+  "DISPLAY_CHANGED",
+  "CONTROLS_CHANGED",
+  "TARGET_COVERED",
+  "PIXELS_CHANGED",
+  "STALE_FRAME",
+  "FRAME_EXPIRED",
+  "MENU_CHANGED",
+] as const;
+export type ScreenChange = (typeof screenChanges)[number];
+export function screenChange(value: unknown): ScreenChange | undefined {
+  return screenChanges.find((code) => code === value);
+}
 export class ScreenChangedError extends Error {
   readonly code = "STATE_CHANGED";
-  constructor(message = "The screen changed before input.") {
+  constructor(
+    message = "The screen changed before input.",
+    readonly change?: ScreenChange,
+  ) {
     super(message);
     this.name = "ScreenChangedError";
   }
@@ -40,7 +65,13 @@ export type NativeActionCode =
   | "APP_REFUSED"
   | "FILE_UNRESOLVED"
   | "FILE_REFUSED"
-  | "OPEN_FAILED";
+  | "OPEN_FAILED"
+  // A named menu item or control the helper resolved again at input time and
+  // did not press: gone, greyed out, refused, or no longer one control.
+  | "TARGET_MISSING"
+  | "TARGET_DISABLED"
+  | "TARGET_REFUSED"
+  | "TARGET_AMBIGUOUS";
 /**
  * A recoverable, rejected step reported by the native helper (for example an
  * application that could not be resolved or launched). No GUI input was sent.

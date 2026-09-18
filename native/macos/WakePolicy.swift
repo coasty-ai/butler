@@ -10,6 +10,27 @@ func commandAfterWakePhrase(_ text: String) -> String? {
     return String(text[end...]).trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
+// Inside a turn that is already listening, a later segment that opens by addressing
+// the assistant again is the user starting over: the wake phrase itself, or the bare
+// name, which is how the recognizer reports a repeated "Hey Assist" at a segment start
+// (live: "…at 6 PM" then "Assist open calendar and put an event…"). The bare name
+// counts only when it stands apart (punctuation or nothing after it) or a task verb
+// follows it, so "assist the customer" and "Assist Maria with the move" are words. The
+// misheard echoes ("his assistant", "hi sis", "a cyst") never restart: they are
+// ordinary speech too often, and only the first segment's echo strip, right after a
+// real activation, may drop them. Activation from standby is not widened.
+private let bareWakeName = try! NSRegularExpression(pattern: #"^\s*assist\b"#, options: .caseInsensitive)
+func commandAfterWakeRestart(_ text: String) -> String? {
+    if let rest = commandAfterWakePhrase(text) { return rest }
+    guard let match = bareWakeName.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+          let end = Range(match.range, in: text)?.upperBound else { return nil }
+    let after = text[end...].drop(while: { $0.isWhitespace })
+    let rest = String(after.drop(while: { $0.isWhitespace || ",.:;!?—-".contains($0) })).trimmingCharacters(in: .whitespacesAndNewlines)
+    let apart = rest.isEmpty || after.first.map { ",.:;!?—-".contains($0) } == true
+    let next = rest.split(whereSeparator: { $0.isWhitespace }).first.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) } ?? ""
+    return apart || actionVerbs.contains(next) ? rest : nil
+}
+
 // Once the wake phrase has opened a command window, the recognizer may report
 // a new speech segment without repeating that prefix. Keep that command.
 // Only call this inside an already activated hands-free session.

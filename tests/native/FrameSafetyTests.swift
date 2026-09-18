@@ -25,11 +25,13 @@ import CoreGraphics
         electronAccessibilityChecks(check)
         namedTargetChecks(check)
         mainWindowMenuChecks(check)
+        hotkeyWiringChecks(check)
         searchCommandChecks(check)
         ideSafetyChecks(check)
         queryFieldChecks(check)
         workspaceChecks(check)
         agendaRulesChecks(check)
+        screenChangeChecks(check)
         // Blind surfaces: Spotify (Chromium/CEF) publishes a real window and
         // nothing inside it; a loading window or an empty desktop must not be
         // reported blind, and a tree too large to finish is never blind.
@@ -117,4 +119,25 @@ import CoreGraphics
         check(framePixelsChanged(original, original, window: .null, points: []), "invalid or off-display window fails closed")
         check(original.changed(comparedTo: ScreenPixels(width: 10, height: 10, rgba: []), in: window, target: false), "changed display geometry fails closed")
     }
+}
+
+// Every refusal reason the helper can send carries a code the app allow-lists.
+func screenChangeChecks(_ check: (Bool, String) -> Void) {
+    check(screenChangeCode("The focused field changed.") == "FOCUS_CHANGED", "the live CMD+N refusal is a focus change")
+    check(screenChangeCode("The window's controls changed.") == "CONTROLS_CHANGED", "a controls refusal is its own kind")
+    check(screenChangeCode("Stale frame.") == "STALE_FRAME" && screenChangeCode("Frame expired.") == "FRAME_EXPIRED", "an old observation says which kind")
+    check(screenChangeCode("Budget report.xlsx changed.") == nil, "anything else has no code, so no text can pass as one")
+    let root = FileManager.default.currentDirectoryPath
+    guard let source = try? String(contentsOfFile: root + "/native/macos/Controller.swift", encoding: .utf8),
+          let bytes = FileManager.default.contents(atPath: root + "/tests/fixtures/screen-changes.json"),
+          let fixture = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any], let codes = fixture["codes"] as? [String] else {
+        check(false, "the helper source and the screen change fixture are readable from the repository root"); return
+    }
+    let expression = try! NSRegularExpression(pattern: #"changedScreen\("([^"]*)"\)"#)
+    let reasons = expression.matches(in: source, range: NSRange(source.startIndex..., in: source)).compactMap { match in
+        Range(match.range(at: 1), in: source).map { String(source[$0]) }
+    }
+    check(reasons.count >= 16, "the helper's refusal reasons are found in its source")
+    for reason in Set(reasons) { check(screenChangeCode(reason) != nil, "refusal reason has a code: \(reason)") }
+    check(Set(screenChangeCodes.values) == Set(codes), "the codes are exactly the ones the app accepts")
 }

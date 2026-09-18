@@ -137,6 +137,16 @@ func matchNamedControl(_ controls: [NamedControl], label: String, role: String?,
  learns an unfamiliar application instead of guessing pixels.
  */
 
+// Bound text by UTF-16 code units (what the TypeScript validator counts),
+// never splitting a grapheme cluster.
+func utf16Prefix(_ value: String, _ limit: Int) -> String {
+    var result = ""
+    for character in value {
+        if result.utf16.count + String(character).utf16.count > limit { break }
+        result.append(character)
+    }
+    return result
+}
 // Enough menus for the applications people drive and enough items to carry a
 // menu's real commands without flooding the model's context.
 let menuTitleLimit = 44
@@ -283,6 +293,111 @@ func normalizeChord(_ keys: [String]) -> String {
     let modifiers = order.filter { upper.contains($0) }
     let rest = upper.filter { !order.contains($0) }.sorted()
     return (modifiers + rest).joined(separator: "+")
+}
+
+// MARK: Shortcuts pressed through the menu
+
+/**
+ Chords whose target is the text in the focused field rather than the
+ application: select all, bold/italic/underline, undo, redo, every clipboard
+ chord, and a modifier with an arrow, Home, End, Page Up/Down or a delete key
+ (caret and selection moves, word and line deletes). They stay keys sent to the
+ verified focused element, because the clipboard rules (clipboardChordAllowed)
+ and the focused-field revalidation are what make them safe, and the menu item
+ an application binds the same chord to is a different command (Calendar's
+ CMD+RIGHT is View > Next, not "end of line").
+ */
+private let textMoveKeys: Set<String> = ["LEFT", "RIGHT", "UP", "DOWN", "HOME", "END", "PAGEUP", "PAGEDOWN", "BACKSPACE", "DELETE"]
+func focusedTextChord(_ keys: [String]) -> Bool {
+    let names = keys.map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
+    if !clipboardChordAllowed(names: names, paste: false) { return true }
+    let rest = names.filter { !["CMD", "CTRL", "ALT", "SHIFT"].contains($0) }
+    if !rest.isEmpty && rest.allSatisfy(textMoveKeys.contains) { return true }
+    // The chords policy allows as "select or format text in a known field", plus undo and redo.
+    return ["CMD+A", "CMD+B", "CMD+I", "CMD+U", "CMD+Z", "CMD+SHIFT+Z"].contains(normalizeChord(names))
+}
+/** The menu item the frontmost application publishes for a chord, as [menu, item title]. */
+func publishedShortcutItem(keys: [String], shortcuts: [String: [String]]) -> [String]? {
+    guard let path = shortcuts[normalizeChord(keys)], path.count >= 2 else { return nil }
+    return path
+}
+/** The item's title as surface reports it (shortcutLabel), bounded like the menu digest. */
+func shortcutMenuLabel(_ path: [String]) -> String { utf16Prefix(path.last ?? "", menuTitleLimit) }
+
+enum HotkeyRoute: Equatable {
+    case keys, menu([String]), refused, changed
+    var menuPath: [String]? { if case .menu(let path) = self { return path }; return nil }
+}
+/**
+ How a hotkey reaches the frontmost application, decided once per execute:
+ - refused: its chord is published for an item that is never pressed (Quit,
+   Log Out, Empty Trash). Refused whichever way it would go, text chords
+   included: its keys are never posted in its place.
+ - changed: the chord no longer names the item policy judged it by (label, the
+   shortcutLabel surface reported and the runner sends back; the item the user
+   approved, for an approved step). Bound whenever a label was judged, and always
+   once approved (a label of nil then means the chord named nothing at the time):
+   a menu that changed in between is never a way to press an item policy never
+   saw. Nothing is sent, and any approval is spent.
+ - menu: a published chord other than a text chord, pressed as that item
+   (AXPress, resolved again right before input with the chord it must still
+   carry). Live: right after Calendar launched its focus moved between
+   screenshot and input, and six CMD+N (File > New Event) were refused in a row.
+ - keys: text chords and chords no menu publishes, posted to the verified
+   focused element as before.
+ */
+func hotkeyRoute(keys: [String], shortcuts: [String: [String]], approved: Bool, label: String?) -> HotkeyRoute {
+    let item = publishedShortcutItem(keys: keys, shortcuts: shortcuts)
+    if let item, menuPathRefused(item) { return .refused }
+    if approved || label != nil, item.map(shortcutMenuLabel) != label { return .changed }
+    guard let item, !focusedTextChord(keys) else { return .keys }
+    return .menu(item)
+}
+/**
+ "refused" when native refuses the chord (hotkeyRoute), so policy refuses it
+ before asking the user to approve a step that could only end in that refusal.
+ */
+func shortcutStatus(keys: [String], shortcuts: [String: [String]]) -> String? {
+    hotkeyRoute(keys: keys, shortcuts: shortcuts, approved: false, label: nil) == .refused ? "refused" : nil
+}
+/**
+ Whether revalidation checks a step by its name alone (menu_item, click_control,
+ and a hotkey pressed through its menu item), leaving out the fresh capture after
+ a quick decision and the focused-field and controls checks. A menu-routed hotkey
+ counts only before an approval: the approval was given on the screen as it was,
+ and a menu command acts on whatever holds focus or selection (Edit > Delete,
+ Move to Trash), so once approved it gets the full keyboard check keys get, and a
+ change there expires the approval.
+ */
+func revalidatesByName(type: String, menuRoute: [String]?, approved: Bool) -> Bool {
+    ["menu_item", "click_control"].contains(type) || (type == "hotkey" && menuRoute != nil && !approved)
+}
+
+enum MenuItemState { case enabled, disabled, missing }
+let menuRefusal = "Menu items that quit an application or end the session are left to the user."
+/**
+ How a menu press names its item in an error. A hotkey pressed through its item
+ names only its chord: the title can carry a document's name (Finder's File >
+ Quick Look "<file>"), and the error sentence goes into the trace. The model
+ already sees the item in context.menus. A menu_item names the path it sent.
+ */
+func menuCommandName(path: [String], chord: String?) -> String {
+    chord.map { "The menu item for \($0)" } ?? path.joined(separator: " > ")
+}
+/**
+ Why a menu item is not pressed, or nil to press it. Refused items are refused
+ whatever their state, before anything is opened (item nil: not resolved yet).
+ Nothing here falls back to keys: a hotkey whose item is refused, gone or greyed
+ out reports that, and its chord is never posted in its place.
+ */
+func menuPressRefusal(path: [String], chord: String?, item: MenuItemState?) -> (message: String, code: String)? {
+    if menuPathRefused(path) { return (menuRefusal, "TARGET_REFUSED") }
+    let named = menuCommandName(path: path, chord: chord)
+    switch item {
+    case .missing?: return ("\(named) is not in this application's menus.", "TARGET_MISSING")
+    case .disabled?: return ("\(named) is greyed out right now.", "TARGET_DISABLED")
+    case .enabled?, nil: return nil
+    }
 }
 
 // MARK: Search opened by the application's own command

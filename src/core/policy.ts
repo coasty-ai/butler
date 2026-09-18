@@ -838,6 +838,12 @@ function terminalInput(action: Action): boolean {
     chord(action.keys) === chord(["SHIFT", "TAB"])
   );
 }
+const MENU_REFUSAL =
+  "Quitting an application, logging out and shutting down are left to the user. Finish the task another way.";
+const CLIPBOARD_REFUSAL =
+  "Clipboard access is disabled. Pasting is allowed only when the user asked for a paste and a text field is focused; copying and cutting never are.";
+/** Edit > Copy, Cut, Paste and their variants ("Copy Link", "Paste and Match Style"). */
+const clipboardMenuTitle = /^(?:copy|cut|paste)\b/i;
 /**
  * A menu item the frontmost application publishes, pressed by name. The native
  * helper resolved the path against the live menu bar and reported what it
@@ -845,15 +851,33 @@ function terminalInput(action: Action): boolean {
  * The item's own title still goes through the consequential check: "Send" in a
  * menu sends exactly as much as "Send" on a button.
  */
-function menuItemDecision(action: Action, surface: Surface): Decision {
+function menuItemDecision(
+  action: Action,
+  surface: Surface,
+  context: PolicyContext,
+): Decision {
   if (action.type !== "menu_item") return { kind: "ALLOW", reason: "" };
   const named = action.path.join(" > ");
   if (surface.menuStatus === "refused")
-    return {
-      kind: "DENY",
-      reason:
-        "Quitting an application, logging out and shutting down are left to the user. Finish the task another way.",
-    };
+    return { kind: "DENY", reason: MENU_REFUSAL };
+  // The clipboard rules hold whichever way the command is reached. A menu item
+  // is pressed without the focused-field check keys get, so even the paste the
+  // user asked for goes as CMD+V, which lands only in the field it was checked on.
+  const item = normalizeControlLabel(
+    surface.menuLabel ?? action.path[action.path.length - 1],
+  );
+  if (
+    [...action.path, item].some((t) =>
+      clipboardMenuTitle.test(normalizeControlLabel(t)),
+    )
+  )
+    return context.pasteRequested && item === "paste"
+      ? {
+          kind: "RETRY",
+          reason:
+            "No input was sent. Paste with CMD+V into the focused text field instead of the menu item.",
+        }
+      : { kind: "DENY", reason: CLIPBOARD_REFUSAL };
   // In VS Code and its forks these open the integrated terminal (or the panel
   // that holds it) or run a task, a build or the debugger: a shell reached
   // through the menus. Refused before the enabled checks, so a greyed-out one
@@ -1012,11 +1036,7 @@ export function evaluate(
       )
     )
       return { kind: "ALLOW", reason: PASTE_ALLOWED };
-    return {
-      kind: "DENY",
-      reason:
-        "Clipboard access is disabled. Pasting is allowed only when the user asked for a paste and a text field is focused; copying and cutting never are.",
-    };
+    return { kind: "DENY", reason: CLIPBOARD_REFUSAL };
   }
   if (["capture", "done", "fail", "wait"].includes(action.type))
     return { kind: "ALLOW", reason: "" };
@@ -1043,7 +1063,8 @@ export function evaluate(
       reason:
         "No input was sent. The target is disabled. Choose an enabled control or an application shortcut from the fresh screenshot.",
     };
-  if (action.type === "menu_item") return menuItemDecision(action, surface);
+  if (action.type === "menu_item")
+    return menuItemDecision(action, surface, context);
   const namedRefusal = namedControlRefusal(action, surface);
   if (namedRefusal) return namedRefusal;
   if (["move", "scroll"].includes(action.type))
@@ -1105,6 +1126,10 @@ export function evaluate(
   }
   if (action.type === "hotkey") {
     const keys = chord(action.keys);
+    // Native presses this chord as its menu item and never presses that one,
+    // so asking the user to approve it would only lead to a refusal.
+    if (surface.shortcutStatus === "refused")
+      return { kind: "DENY", reason: MENU_REFUSAL };
     if (action.keys.some((k) => ["ENTER", "BACKSPACE", "DELETE"].includes(k)))
       return {
         kind: "CONFIRM",

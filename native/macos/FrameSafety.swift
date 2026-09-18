@@ -67,3 +67,33 @@ func targetPixelsChanged(_ old: ScreenPixels, _ fresh: ScreenPixels, points: [CG
         old.changed(comparedTo: fresh, in: CGRect(x: point.x - 48, y: point.y - 32, width: 96, height: 64), target: true, ignoring: stableControls)
     }
 }
+
+// MARK: Why a step was refused
+
+/**
+ Every fixed reason revalidation refuses a step for (changedScreen in
+ Controller.swift), as a short content-free code. The app records which kind
+ of change it was and tells the model, so a step refused because focus moved
+ is not proposed six more times unchanged. Never a title, value or other text.
+ tests/fixtures/screen-changes.json lists the codes for the app's allow-list.
+ */
+let screenChangeCodes: [String: String] = [
+    "The focused field changed.": "FOCUS_CHANGED",
+    "The focused field changed while typing.": "FOCUS_CHANGED",
+    "Foreground application changed.": "APP_CHANGED",
+    "Foreground application changed while typing.": "APP_CHANGED",
+    "The active window changed before input.": "WINDOW_CHANGED",
+    "The active window changed during capture.": "WINDOW_CHANGED",
+    "The active window moved or changed.": "WINDOW_CHANGED",
+    "The display or window changed.": "WINDOW_CHANGED",
+    "Display geometry changed.": "DISPLAY_CHANGED",
+    "The window's controls changed.": "CONTROLS_CHANGED",
+    "Another control covers the input target.": "TARGET_COVERED",
+    "The input target changed.": "PIXELS_CHANGED",
+    "The window content changed.": "PIXELS_CHANGED",
+    "Stale frame.": "STALE_FRAME",
+    "The observation is no longer current.": "STALE_FRAME",
+    "Frame expired.": "FRAME_EXPIRED",
+    "The shortcut's menu item changed.": "MENU_CHANGED",
+]
+func screenChangeCode(_ reason: String) -> String? { screenChangeCodes[reason] }

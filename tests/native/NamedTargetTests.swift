@@ -73,6 +73,93 @@ func namedTargetChecks(_ check: (Bool, String) -> Void) {
     check(normalizeChord(["N", "CMD"]) == "CMD+N", "keys in any order normalize to one spelling")
     check(normalizeChord(["shift", "cmd", "n"]) == "CMD+SHIFT+N", "modifiers keep their fixed order")
 
+    // hotkeyRoute: the live Calendar map after launch.
+    let calendar: [String: [String]] = [
+        "CMD+N": ["File", "New Event"], "CMD+Q": ["Calendar", "Quit Calendar"], "CMD+RIGHT": ["View", "Next"],
+        "CMD+A": ["Edit", "Select All"], "CMD+C": ["Edit", "Copy"], "CMD+V": ["Edit", "Paste"], "CMD+X": ["Edit", "Cut"],
+        "CMD+Z": ["Edit", "Undo"], "CMD+SHIFT+Z": ["Edit", "Redo"], "CMD+ALT+SHIFT+V": ["Edit", "Paste and Match Style"],
+        "CMD+W": ["File"], "CTRL+TAB": ["Window", "Show Next Tab"], "CMD+BACKSPACE": ["Edit", "Delete"],
+        "CMD+SHIFT+UP": ["View", "Scroll Up"], "ALT+LEFT": ["View", "Back"], "CMD+END": ["View", "Go to End"],
+        "CMD+I": ["File", "Get Info"], "CMD+SHIFT+BACKSPACE": ["Finder", "Empty Trash"],
+    ]
+    let route = { (keys: [String]) in hotkeyRoute(keys: keys, shortcuts: calendar, approved: false, label: nil) }
+    check(route(["CMD", "N"]) == .menu(["File", "New Event"]), "a chord the application publishes is pressed through its menu item")
+    check(route(["N", "CMD"]) == .menu(["File", "New Event"]), "the chord is found whatever order its keys come in")
+    check(route(["CTRL", "TAB"]) == .menu(["Window", "Show Next Tab"]), "a named-key chord is routed like a letter")
+    check(route(["CMD", "T"]) == .keys, "a chord no menu publishes stays keys")
+    check(hotkeyRoute(keys: ["CMD", "N"], shortcuts: [:], approved: false, label: nil) == .keys, "an application with no readable menus keeps keys")
+    check(route(["CMD", "W"]) == .keys, "an entry without an item is never pressed")
+    for keys in [["CMD", "A"], ["CMD", "C"], ["CMD", "V"], ["CMD", "X"], ["CMD", "Z"], ["CMD", "SHIFT", "Z"], ["CMD", "ALT", "SHIFT", "V"], ["CMD", "I"]] {
+        check(route(keys) == .keys, "\(keys.joined(separator: "+")) edits the focused text and stays keys")
+    }
+    // Caret and selection moves and word or line deletes act on the focused field;
+    // Calendar's CMD+RIGHT pages the calendar forward instead of ending the line.
+    for keys in [["CMD", "RIGHT"], ["CMD", "BACKSPACE"], ["CMD", "SHIFT", "UP"], ["ALT", "LEFT"], ["CMD", "END"]] {
+        check(route(keys) == .keys, "\(keys.joined(separator: "+")) moves or deletes in the focused text and stays keys")
+    }
+    // A refused item is refused, never typed: a text chord (Finder's Empty Trash) included.
+    check(route(["CMD", "Q"]) == .refused && route(["CMD", "SHIFT", "BACKSPACE"]) == .refused, "a chord for a refused item is refused, never posted as keys")
+    check(hotkeyRoute(keys: ["CMD", "Q"], shortcuts: calendar, approved: true, label: "Quit Calendar") == .refused, "an approval never presses a refused item")
+    check(focusedTextChord(["ctrl", "c"]) && focusedTextChord(["cmd", "a"]) && focusedTextChord(["SHIFT", "ALT", "RIGHT"]) && focusedTextChord(["U", "CMD"])
+          && !focusedTextChord(["CMD", "N"]) && !focusedTextChord(["CMD", "SHIFT", "A"]) && !focusedTextChord(["CTRL", "TAB"]) && !focusedTextChord(["CMD", "SHIFT", "I"]),
+          "text chords are the clipboard, select all, formatting, undo, redo and caret moves only")
+
+    // After an approval the chord must still name the item the user approved.
+    let approved = { (keys: [String], label: String?) in hotkeyRoute(keys: keys, shortcuts: calendar, approved: true, label: label) }
+    check(approved(["CMD", "N"], "New Event") == .menu(["File", "New Event"]), "the approved item is the item pressed")
+    check(approved(["CMD", "N"], "New Calendar") == .changed, "a chord that now names another item spends the approval")
+    check(approved(["CMD", "N"], nil) == .changed, "a chord that named nothing when approved is not pressed as a menu item now")
+    check(approved(["CMD", "T"], "New Tab") == .changed, "a chord whose approved item is gone is not posted as keys instead")
+    check(approved(["CMD", "T"], nil) == .keys && approved(["CMD", "BACKSPACE"], "Delete") == .keys, "an unchanged unpublished or text chord keeps keys")
+    check(approved(["CMD", "BACKSPACE"], "Move to Trash") == .changed, "a text chord bound to another item since the approval is not sent either")
+    // Allowed without asking, the chord is still bound to the item policy judged:
+    // a menu that changed since surface cannot make it press an item policy never saw.
+    let judged = { (keys: [String], label: String?) in hotkeyRoute(keys: keys, shortcuts: calendar, approved: false, label: label) }
+    check(judged(["CMD", "N"], "New Event") == .menu(["File", "New Event"]), "the judged item is the item pressed")
+    check(judged(["CMD", "N"], "New Calendar") == .changed && judged(["CMD", "N"], "Send") == .changed, "an allowed chord that now names another item is not pressed")
+    check(judged(["CMD", "T"], "New Tab") == .changed && judged(["CMD", "BACKSPACE"], "Move to Trash") == .changed,
+          "an allowed chord whose judged item is gone or rebound is not posted as keys instead")
+    check(judged(["CMD", "N"], nil) == .menu(["File", "New Event"]) && judged(["CMD", "T"], nil) == .keys,
+          "with no label judged, an unapproved chord goes the way its menus say now")
+    let long = "Export “Quarterly planning notes for the whole team.pdf” as PDF"
+    check(shortcutMenuLabel(["File", long]).utf16.count <= menuTitleLimit && long.hasPrefix(shortcutMenuLabel(["File", long])), "the label is the bounded title")
+    check(hotkeyRoute(keys: ["CMD", "E"], shortcuts: ["CMD+E": ["File", long]], approved: true, label: shortcutMenuLabel(["File", long])) == .menu(["File", long]),
+          "a long title is compared as surface reported it")
+    check(publishedShortcutItem(keys: ["N", "CMD"], shortcuts: calendar) == ["File", "New Event"] && publishedShortcutItem(keys: ["CMD", "W"], shortcuts: calendar) == nil,
+          "the published item is found by chord and needs a title")
+
+    // shortcutStatus: policy refuses before asking what native would refuse.
+    check(shortcutStatus(keys: ["CMD", "Q"], shortcuts: calendar) == "refused", "a chord for Quit is refused before any approval")
+    check(shortcutStatus(keys: ["CMD", "SHIFT", "BACKSPACE"], shortcuts: calendar) == "refused", "a text chord for a refused item is refused before any approval")
+    check(shortcutStatus(keys: ["CMD", "SHIFT", "Q"], shortcuts: ["CMD+SHIFT+Q": ["Apple", "Log Out Nitish"]]) == "refused", "the system menu's chords are refused")
+    check(shortcutStatus(keys: ["CMD", "N"], shortcuts: calendar) == nil && shortcutStatus(keys: ["CMD", "T"], shortcuts: calendar) == nil,
+          "an ordinary or unpublished chord has no status")
+
+    // revalidatesByName: the live CMD+N goes by name while focus settles; once the
+    // user approved a step, it is checked like keys whichever way it is pressed.
+    check(revalidatesByName(type: "hotkey", menuRoute: ["File", "New Event"], approved: false), "an allowed menu-routed hotkey is checked by its item")
+    check(!revalidatesByName(type: "hotkey", menuRoute: ["Edit", "Delete"], approved: true), "an approved menu-routed hotkey gets the full keyboard check")
+    check(!revalidatesByName(type: "hotkey", menuRoute: nil, approved: false), "a hotkey sent as keys gets the focused-field check")
+    check(!revalidatesByName(type: "key", menuRoute: ["File", "New Event"], approved: false), "only a hotkey is pressed through a menu route")
+    check(revalidatesByName(type: "menu_item", menuRoute: nil, approved: true) && revalidatesByName(type: "click_control", menuRoute: nil, approved: false),
+          "named menu items and controls keep their by-name check")
+
+    // menuPressRefusal: nothing refused, missing or greyed out is pressed, and a
+    // hotkey's error names only its chord (menu titles can carry file names).
+    let quick = ["File", "Quick Look “Q3 salary review.xlsx”"]
+    check(menuPressRefusal(path: quick, chord: "CMD+Y", item: .missing)! == ("The menu item for CMD+Y is not in this application's menus.", "TARGET_MISSING"),
+          "a hotkey's missing item is named by its chord")
+    check(menuPressRefusal(path: quick, chord: "CMD+Y", item: .disabled)! == ("The menu item for CMD+Y is greyed out right now.", "TARGET_DISABLED"),
+          "a hotkey's greyed-out item is named by its chord")
+    check(!menuCommandName(path: quick, chord: "CMD+Y").contains("salary"), "no title reaches a hotkey's error")
+    check(menuPressRefusal(path: ["Edit", "Find"], chord: nil, item: .missing)?.message == "Edit > Find is not in this application's menus.",
+          "a menu_item names the path the model sent")
+    check(menuPressRefusal(path: quick, chord: "CMD+Y", item: .enabled) == nil && menuPressRefusal(path: quick, chord: "CMD+Y", item: nil) == nil,
+          "an enabled item is pressed")
+    for item: MenuItemState? in [nil, .enabled, .disabled, .missing] {
+        check(menuPressRefusal(path: ["Calendar", "Quit Calendar"], chord: "CMD+Q", item: item)?.code == "TARGET_REFUSED", "a refused item is refused in any state")
+    }
+
     // menuDigestLine
     let line = menuDigestLine(menu: "Edit", items: [
         MenuItemDigest(title: "Undo", shortcut: "CMD+Z", enabled: true, submenu: false),
@@ -157,4 +244,60 @@ func queryFieldChecks(_ check: (Bool, String) -> Void) {
     check(!replacesOnType(role: "AXTextArea", subrole: "", label: ""), "an unnamed editor keeps its text")
     check(!replacesOnType(role: "AXTextField", subrole: "AXSecureTextField", label: "Search"), "a secure field is never touched")
     check(!replacesOnType(role: "AXButton", subrole: "", label: "Search"), "a search button is not a field")
+}
+
+// Controller.swift is not compiled into these tests (it is the helper itself), so
+// the few lines that connect the pure rules above to input are pinned by reading
+// its source: a hotkey's route, the approval binding and the checks each route gets.
+func hotkeyWiringChecks(_ check: (Bool, String) -> Void) {
+    guard let source = try? String(contentsOfFile: FileManager.default.currentDirectoryPath + "/native/macos/Controller.swift", encoding: .utf8) else {
+        check(false, "the helper source is readable from the repository root"); return
+    }
+    let squeezed = { (text: Substring) in text.filter { !$0.isWhitespace } }
+    func section(_ from: String, _ to: String) -> Substring {
+        guard let start = source.range(of: from), let end = source.range(of: to, range: start.upperBound..<source.endIndex) else { return "" }
+        return source[start.lowerBound..<end.lowerBound]
+    }
+    func has(_ part: Substring, _ lines: [String]) -> Bool {
+        let body = squeezed(part)
+        var at = body.startIndex
+        for line in lines { // in this order
+            guard let found = body.range(of: squeezed(Substring(line)), range: at..<body.endIndex) else { return false }
+            at = found.upperBound
+        }
+        return true
+    }
+    check(has(section("case \"execute\":", "case \"revalidate\":"), [
+        "let route = currentHotkeyRoute(action), approved = action[\"approved\"] as? Bool == true",
+        "if route == .refused { throw ControlError(menuRefusal, code: \"TARGET_REFUSED\") }",
+        "menuRoute = route.menuPath",
+        "try await revalidate(action, menuRoute: menuRoute, approved: approved)",
+        "if route == .changed { throw changedScreen(",
+        "try execute(action, menuRoute: menuRoute)",
+    ]), "execute routes a hotkey once, refuses before input and checks an approved step in full")
+    check(has(section("case \"revalidate\":", "macOS 14 required."), ["revalidate(action, menuRoute: nil, approved: true)"]),
+          "the check after an approval never takes the by-name shortcut")
+    check(has(section("func currentHotkeyRoute(", "\n}"), [
+        "hotkeyRoute(keys: names, shortcuts: shortcuts, approved: action[\"approved\"] as? Bool == true, label: action[\"shortcutLabel\"] as? String)",
+    ]), "the live route is bound to the item policy judged and to the approval")
+    check(has(section("func revalidate(", "let keys: [String:CGKeyCode]"), [
+        "let named = revalidatesByName(type: action[\"type\"] as? String ?? \"\", menuRoute: menuRoute, approved: approved)",
+        "if named { try ensureRunning(); return fresh }",
+        "sameElement(",
+    ]), "only a by-name step skips the focused-field check")
+    check(has(section("func execute(", "final class LaunchOutcome"), [
+        "if action[\"type\"] as? String == \"hotkey\", let path = menuRoute { try pressMenuPath(path, chord: normalizeChord(names)); return \"menu\" }",
+        "CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:true)",
+    ]), "a menu-routed hotkey is pressed as its item and returns before any key is posted")
+    check(has(section("func pressMenuPath(", "\n}"), [
+        "menuPressRefusal(path: path, chord: chord, item: nil)",
+        "resolveMenuPath(element, path, chord: chord)",
+        "menuPressRefusal(path: path, chord: chord, item:",
+        "AXUIElementPerformAction(item.item, kAXPressAction as CFString)",
+    ]), "a menu press is refused before anything opens, must still carry its chord, and is refused unless enabled")
+    check(has(section("func surface(", "\n}"), [
+        "publishedShortcutItem(keys: names, shortcuts: shortcuts)", "shortcutMenuLabel(item)", "shortcutStatus(keys: names, shortcuts: shortcuts)",
+    ]), "surface reports the label and the refusal from the same rules execute uses")
+    check(has(section("func changedScreen(", "\n"), ["change: screenChangeCode(reason)"]) && source.contains("if let change = (error as? ControlError)?.change {result[\"change\"] = change}"),
+          "a refusal's kind of change reaches the app as its code")
 }

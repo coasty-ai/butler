@@ -149,6 +149,10 @@ const fields = new Set([
   "sentences",
   "dropped",
   "channel",
+  // A refused step's kind of screen change and a hotkey's route (menu or
+  // keys): fixed codes from the native helper, never its sentence.
+  "change",
+  "via",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -217,6 +221,8 @@ const codeFields = new Set([
   "device",
   "act",
   "channel",
+  "change",
+  "via",
 ]);
 const memoryEvents = new Set([
   "MemoryRecalled",
@@ -408,6 +414,10 @@ export class LocalDiagnostics {
         // the allow-list unless verbose debugging is on.
         data: e.data,
         code: e.data.code,
+        // ActionFailed for STATE_CHANGED: which kind of change, as a code.
+        change: e.data.change,
+        // ActionExecuted for a hotkey: pressed as its menu item or as keys.
+        via: e.data.via,
         reason: e.data.reason,
         usage: e.data.usage,
         frameId: e.data.frame_id,

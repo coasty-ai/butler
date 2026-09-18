@@ -59,8 +59,9 @@ func setCurrentFrame(_ value: [String:Any]) { stateLock.lock(); currentFrame = v
 func getCurrentFrame() -> [String:Any]? { stateLock.lock(); defer {stateLock.unlock()}; return currentFrame }
 func isStopped() -> Bool { stateLock.lock(); defer { stateLock.unlock() }; return stopped }
 func inputSettleRemaining() -> TimeInterval { stateLock.lock(); defer {stateLock.unlock()}; return lastInputTime + 0.25 - ProcessInfo.processInfo.systemUptime }
-struct ControlError: Error { let message: String; let code: String?; init(_ message: String, code: String? = nil) { self.message = message; self.code = code } }
-func changedScreen(_ reason: String) -> ControlError { ControlError(reason, code: "STATE_CHANGED") }
+struct ControlError: Error { let message: String; let code: String?; let change: String?; init(_ message: String, code: String? = nil, change: String? = nil) { self.message = message; self.code = code; self.change = change } }
+// The reason travels as its fixed code too (FrameSafety.swift), so the trace can say what moved.
+func changedScreen(_ reason: String) -> ControlError { ControlError(reason, code: "STATE_CHANGED", change: screenChangeCode(reason)) }
 func ensureRunning() throws { if isStopped() { throw ControlError("Native input stopped. Explicitly resume to continue.", code: "STOPPED") } }
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? { var value: CFTypeRef?; if AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success { return value }; return nil }
 func elementRect(_ element: AXUIElement) -> CGRect? {
@@ -105,16 +106,6 @@ func modelControlName(_ element:AXUIElement, role:String) -> String {
     let names = editable ? [kAXTitleAttribute,kAXDescriptionAttribute,"AXPlaceholderValue"] : [kAXTitleAttribute,kAXDescriptionAttribute,kAXValueAttribute]
     for name in names { if let value = attribute(element,name) as? String, !value.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { return utf16Prefix(value, 80) } }
     return ""
-}
-// Bound text by UTF-16 code units (what the TypeScript validator counts),
-// never splitting a grapheme cluster.
-func utf16Prefix(_ value: String, _ limit: Int) -> String {
-    var result = ""
-    for character in value {
-        if result.utf16.count + String(character).utf16.count > limit { break }
-        result.append(character)
-    }
-    return result
 }
 // Visible controls of the focused window with their centers as screenshot
 // fractions, so the model can click a listed control exactly instead of
@@ -582,9 +573,10 @@ struct MenuSnapshot {
     let pid: pid_t
     let at: TimeInterval
     let lines: [String]
-    // Chord ("CMD+L") to the item it invokes, so a shortcut the model presses
-    // is checked against the application's own declaration of what it does.
-    let shortcuts: [String: String]
+    // Chord ("CMD+L") to the path of the item it invokes, so a shortcut the
+    // model presses is judged by the application's own declaration of what it
+    // does, and pressed as that item (hotkeyRoute).
+    let shortcuts: [String: [String]]
     // The application's own enabled search command ("Edit" > "Search"), so a
     // refusal to type blind can name the route that makes typing possible.
     let searchPath: [String]?
@@ -613,13 +605,15 @@ func menuBarItem(_ app: AXUIElement, _ title: String) -> AXUIElement? {
         targetTitleMatches(request: title, title: attribute($0, kAXTitleAttribute) as? String ?? "")
     }
 }
+func menuItemShortcut(_ item: AXUIElement) -> String? {
+    menuShortcut(cmdChar: attribute(item, kAXMenuItemCmdCharAttribute) as? String ?? "",
+                 virtualKey: attribute(item, kAXMenuItemCmdVirtualKeyAttribute) as? Int,
+                 modifiers: attribute(item, kAXMenuItemCmdModifiersAttribute) as? Int ?? 0)
+}
 func menuEntryDigest(_ item: AXUIElement) -> MenuItemDigest? {
     let title = normalizeTargetTitle(attribute(item, kAXTitleAttribute) as? String ?? "")
     guard !title.isEmpty else { return nil } // separators carry no title
-    let shortcut = menuShortcut(cmdChar: attribute(item, kAXMenuItemCmdCharAttribute) as? String ?? "",
-                                virtualKey: attribute(item, kAXMenuItemCmdVirtualKeyAttribute) as? Int,
-                                modifiers: attribute(item, kAXMenuItemCmdModifiersAttribute) as? Int ?? 0)
-    return MenuItemDigest(title: utf16Prefix(title, menuTitleLimit), shortcut: shortcut,
+    return MenuItemDigest(title: utf16Prefix(title, menuTitleLimit), shortcut: menuItemShortcut(item),
                           enabled: attribute(item, kAXEnabledAttribute) as? Bool ?? true,
                           submenu: submenuOf(item) != nil)
 }
@@ -631,15 +625,20 @@ func menuEntryDigest(_ item: AXUIElement) -> MenuItemDigest? {
 func menuMap(_ app: AXUIElement, pid: pid_t) -> MenuSnapshot {
     if let cached = withState({ menuSnapshot }), cached.pid == pid,
        ProcessInfo.processInfo.systemUptime - cached.at < menuSnapshotSeconds { return cached }
-    var lines = [String](), shortcuts = [String: String](), searchPath: [String]? = nil
+    var lines = [String](), shortcuts = [String: [String]](), searchPath: [String]? = nil
     if let bar = attribute(app, kAXMenuBarAttribute) {
         for item in menuEntries(bar as! AXUIElement, limit: menuListLimit + 6) where lines.count < menuListLimit {
             let title = normalizeTargetTitle(attribute(item, kAXTitleAttribute) as? String ?? "")
             guard !title.isEmpty, !systemMenuTitles.contains(title.lowercased()) else { continue }
             guard let menu = submenuOf(item) else { lines.append(title); continue }
-            let entries = menuEntries(menu, limit: menuItemListLimit + 8).compactMap(menuEntryDigest)
-            for entry in entries {
-                if let shortcut = entry.shortcut, shortcuts[shortcut] == nil { shortcuts[shortcut] = entry.title }
+            var entries = [MenuItemDigest]()
+            for element in menuEntries(menu, limit: menuItemListLimit + 8) {
+                guard let entry = menuEntryDigest(element) else { continue }
+                entries.append(entry)
+                // The whole title, not the digest's bounded one: this path is resolved by name.
+                if let shortcut = entry.shortcut, shortcuts[shortcut] == nil {
+                    shortcuts[shortcut] = [title, normalizeTargetTitle(attribute(element, kAXTitleAttribute) as? String ?? "")]
+                }
                 if searchPath == nil, entry.enabled, !entry.submenu, searchCommandTitle(entry.title) { searchPath = [title, entry.title] }
             }
             lines.append(menuDigestLine(menu: title, items: entries))
@@ -652,14 +651,16 @@ func menuMap(_ app: AXUIElement, pid: pid_t) -> MenuSnapshot {
 /**
  Resolves a menu path ("Playback" > "Play") against the live menu bar. Returns
  nil when no menu item carries that name, which is a rejection the agent can
- act on: the menus it was shown are the truth.
+ act on: the menus it was shown are the truth. With a chord, the item must
+ also still carry that shortcut, so a hotkey presses exactly its own item.
  */
-func resolveMenuPath(_ app: AXUIElement, _ path: [String]) -> (item: AXUIElement, title: String, enabled: Bool)? {
+func resolveMenuPath(_ app: AXUIElement, _ path: [String], chord: String? = nil) -> (item: AXUIElement, title: String, enabled: Bool)? {
     guard path.count >= 2, let bar = attribute(app, kAXMenuBarAttribute) else { return nil }
     var container = bar as! AXUIElement, found: AXUIElement? = nil
     for (index, segment) in path.enumerated() {
         guard let match = menuEntries(container, limit: 200).first(where: {
             targetTitleMatches(request: segment, title: attribute($0, kAXTitleAttribute) as? String ?? "")
+                && (chord == nil || index < path.count - 1 || menuItemShortcut($0) == chord)
         }) else { return nil }
         found = match
         if index < path.count - 1 {
@@ -679,39 +680,44 @@ func pressEscape() {
  Presses a menu item by name. AppKit validates items and Chromium builds them
  only when a menu opens, so an item that reports itself disabled is retried
  once with its menu open — which is what a person does — and the menu is always
- closed again on failure.
+ closed again on failure. A hotkey pressed through its item names its chord,
+ which the item must still carry.
  */
-func pressMenuPath(_ path: [String]) throws {
-    guard !menuPathRefused(path) else {
-        throw ControlError("Menu items that quit an application or end the session are left to the user.", code: "TARGET_REFUSED")
-    }
+func pressMenuPath(_ path: [String], chord: String? = nil) throws {
+    if let refusal = menuPressRefusal(path: path, chord: chord, item: nil) { throw ControlError(refusal.message, code: refusal.code) }
     guard let app = inputApplication() else { throw changedScreen("Foreground application changed.") }
     let element = AXUIElementCreateApplication(app.processIdentifier)
     _ = AXUIElementSetMessagingTimeout(element, 2.0)
-    let named = path.joined(separator: " > ")
-    var resolved = resolveMenuPath(element, path)
+    var resolved = resolveMenuPath(element, path, chord: chord)
     if resolved == nil || resolved?.enabled == false {
         if let top = menuBarItem(element, path[0]) {
             try ensureRunning()
             _ = AXUIElementPerformAction(top, kAXPressAction as CFString)
             Thread.sleep(forTimeInterval: 0.2)
-            resolved = resolveMenuPath(element, path)
+            resolved = resolveMenuPath(element, path, chord: chord)
             if resolved == nil || resolved?.enabled == false { pressEscape() }
         }
     }
-    guard let item = resolved else {
-        throw ControlError("\(named) is not in this application's menus.", code: "TARGET_MISSING")
+    if let refusal = menuPressRefusal(path: path, chord: chord, item: resolved.map { $0.enabled ? .enabled : .disabled } ?? .missing) {
+        throw ControlError(refusal.message, code: refusal.code)
     }
-    guard item.enabled else {
-        throw ControlError("\(named) is greyed out right now.", code: "TARGET_DISABLED")
-    }
+    let item = resolved! // a missing item was refused just above
     try ensureRunning(); try guardSurface()
     guard AXUIElementPerformAction(item.item, kAXPressAction as CFString) == .success else {
         pressEscape()
-        throw ControlError("\(named) could not be chosen.", code: "INPUT_FAILED")
+        throw ControlError("\(menuCommandName(path: path, chord: chord)) could not be chosen.", code: "INPUT_FAILED")
     }
     withState { menuSnapshot = nil } // menus revalidate after their own command
     noteCommand(item.title, pid: app.processIdentifier, appId: app.bundleIdentifier ?? "")
+}
+// How a hotkey reaches the frontmost application now (hotkeyRoute). The step
+// carries the item policy judged it by (the runner sends surface's shortcutLabel
+// back) and whether the user approved it, so a chord that now names another
+// item is not pressed.
+func currentHotkeyRoute(_ action: [String:Any]) -> HotkeyRoute {
+    guard action["type"] as? String == "hotkey", let names = action["keys"] as? [String] else { return .keys }
+    let shortcuts = inputApplication().map { menuMap(AXUIElementCreateApplication($0.processIdentifier), pid: $0.processIdentifier).shortcuts } ?? [:]
+    return hotkeyRoute(keys: names, shortcuts: shortcuts, approved: action["approved"] as? Bool == true, label: action["shortcutLabel"] as? String)
 }
 /**
  Shows a frontmost, windowless application's main window by pressing the
@@ -970,9 +976,11 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     }
     // A chord that is one of this application's own menu shortcuts is not a
     // guess: the menu says what it does, so policy can judge it by that name.
-    if let a = action, a["type"] as? String == "hotkey", let names = a["keys"] as? [String],
-       let title = menuMap(element, pid: app.processIdentifier).shortcuts[normalizeChord(names)] {
-        result["shortcutLabel"] = utf16Prefix(title, 80)
+    // Bounded like the digest's titles: the label reaches the trace in policy reasons.
+    if let a = action, a["type"] as? String == "hotkey", let names = a["keys"] as? [String] {
+        let shortcuts = menuMap(element, pid: app.processIdentifier).shortcuts
+        if let item = publishedShortcutItem(keys: names, shortcuts: shortcuts) { result["shortcutLabel"] = shortcutMenuLabel(item) }
+        if let status = shortcutStatus(keys: names, shortcuts: shortcuts) { result["shortcutStatus"] = status }
     }
     // Computed last: the hit test above is the pointer evidence that this
     // application publishes something at the requested position.
@@ -1453,8 +1461,12 @@ func capture() async throws -> [String:Any] {
     setCurrentFrame(["frame":frame,"pid":before["pid"] ?? 0,"window":afterWindow,"pixels":pixels])
     return frame
 }
+// menuRoute: the item a hotkey will be pressed through (currentHotkeyRoute),
+// chosen once by the caller so the check and the input agree on the target.
+// approved: the runner's check after the user approved the step, which never
+// takes the by-name shortcut for a hotkey (revalidatesByName).
 @available(macOS 14.0, *)
-func revalidate(_ action: [String:Any]) async throws -> [String:Any] {
+func revalidate(_ action: [String:Any], menuRoute: [String]?, approved: Bool) async throws -> [String:Any] {
     try ensureRunning(); try guardSurface()
     guard let saved = getCurrentFrame(), let previous = saved["frame"] as? [String:Any],
           action["frame_id"] as? String == previous["id"] as? String,
@@ -1468,7 +1480,9 @@ func revalidate(_ action: [String:Any]) async throws -> [String:Any] {
     // input, so a second screenshot proves nothing about it and costs a third
     // of a second. Skipped while the observation is recent enough for
     // execute's own age check; a slow approval still gets a fresh capture.
-    if ["menu_item", "click_control"].contains(action["type"] as? String ?? ""),
+    // A hotkey pressed through its menu item is that menu item, until approved.
+    let named = revalidatesByName(type: action["type"] as? String ?? "", menuRoute: menuRoute, approved: approved)
+    if named,
        ProcessInfo.processInfo.systemUptime*1000 - (previous["capturedAt"] as? Double ?? 0) < 20000 {
         try ensureRunning(); return previous
     }
@@ -1487,7 +1501,10 @@ func revalidate(_ action: [String:Any]) async throws -> [String:Any] {
     // A named menu item or listed control is resolved again immediately before
     // the input, so a page that animated or a list that reflowed changes
     // nothing about what is pressed.
-    if ["menu_item", "click_control"].contains(action["type"] as? String ?? "") { try ensureRunning(); return fresh }
+    // The focused-field check below does not apply to an unapproved hotkey
+    // pressed through its menu item: the item is the target, not whichever
+    // element has focus.
+    if named { try ensureRunning(); return fresh }
     // open_file opens a natively verified document or folder; like open_app it
     // does not target pixels or controls.
     if action["type"] as? String == "open_file" {
@@ -1550,12 +1567,15 @@ func revalidate(_ action: [String:Any]) async throws -> [String:Any] {
     try ensureRunning(); return fresh
 }
 let keys: [String:CGKeyCode] = ["A":0,"S":1,"D":2,"F":3,"H":4,"G":5,"Z":6,"X":7,"C":8,"V":9,"B":11,"Q":12,"W":13,"E":14,"R":15,"Y":16,"T":17,"1":18,"2":19,"3":20,"4":21,"6":22,"5":23,"9":25,"7":26,"8":28,"0":29,"O":31,"U":32,"I":34,"P":35,"ENTER":36,"L":37,"J":38,"K":40,"N":45,"M":46,"TAB":48,"SPACE":49,"BACKSPACE":51,"ESC":53,"CMD":55,"SHIFT":56,"ALT":58,"CTRL":59,"HOME":115,"PAGEUP":116,"DELETE":117,"END":119,"PAGEDOWN":121,"LEFT":123,"RIGHT":124,"DOWN":125,"UP":126]
-func execute(_ action:[String:Any]) throws {
+// Returns how a hotkey went: "menu" when pressed through its menu item
+// (menuRoute, the path revalidate was given), "keys" when posted.
+@discardableResult
+func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> String? {
     try ensureRunning(); try guardSurface()
     // Waiting and observing send no input, so window transitions must not reject them.
     switch action["type"] as? String {
-    case "wait": guard let ms = action["milliseconds"] as? Int, ms>=0,ms<=5000 else {throw ControlError("Invalid wait.")};for _ in 0..<(ms/10){try ensureRunning();Thread.sleep(forTimeInterval:0.01)};return
-    case "capture": return
+    case "wait": guard let ms = action["milliseconds"] as? Int, ms>=0,ms<=5000 else {throw ControlError("Invalid wait.")};for _ in 0..<(ms/10){try ensureRunning();Thread.sleep(forTimeInterval:0.01)};return nil
+    case "capture": return nil
     default: break
     }
     guard AXIsProcessTrusted() else { throw ControlError("Accessibility permission is required.") }
@@ -1575,11 +1595,13 @@ func execute(_ action:[String:Any]) throws {
     // chord (CMD+ENTER runs a palette entry too) replaces it below with the
     // search its menu item opens, or with nothing.
     case "key": withState { searchCommand = nextSearchContext(searchCommand, .key(action["key"] as? String ?? "")) }
-    case "hotkey":
+    // Through the menu, pressMenuPath notes the command once it is pressed.
+    case "hotkey" where menuRoute == nil:
         if let names = action["keys"] as? [String], let app = inputApplication() {
             let menus = menuMap(AXUIElementCreateApplication(app.processIdentifier), pid: app.processIdentifier)
-            noteCommand(menus.shortcuts[normalizeChord(names)], pid: app.processIdentifier, appId: app.bundleIdentifier ?? "")
+            noteCommand(menus.shortcuts[normalizeChord(names)]?.last, pid: app.processIdentifier, appId: app.bundleIdentifier ?? "")
         }
+    case "hotkey": break
     default: withState { searchCommand = nil }
     }
     switch action["type"] as? String {
@@ -1680,11 +1702,16 @@ func execute(_ action:[String:Any]) throws {
         let names = action["keys"] as? [String] ?? [action["key"] as? String ?? ""]
         guard names.count<=4,names.allSatisfy({keys[$0] != nil}) else {throw ControlError("Unsupported key.")}
         guard clipboardChordAllowed(names: names, paste: action["paste"] as? Bool == true) else {throw ControlError("Clipboard disabled.")}
+        // Pressed by name like menu_item, resolved again now: a refused, missing or
+        // greyed-out item is reported, and its keys are never posted instead.
+        if action["type"] as? String == "hotkey", let path = menuRoute { try pressMenuPath(path, chord: normalizeChord(names)); return "menu" }
         var flags:CGEventFlags = [];for name in names {if name == "CMD"{flags.insert(.maskCommand)};if name == "CTRL"{flags.insert(.maskControl)};if name == "ALT"{flags.insert(.maskAlternate)};if name == "SHIFT"{flags.insert(.maskShift)}}
         var pressed:[CGKeyCode] = [];defer {for code in pressed.reversed(){postInput(CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:false))}}
         for name in names {try ensureRunning();let code = keys[name]!;let e = CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:true);e?.flags = flags;postInput(e);pressed.append(code)}
+        return action["type"] as? String == "hotkey" ? "keys" : nil
     default: throw ControlError("Unknown native action.")
     }
+    return nil
 }
 final class LaunchOutcome: @unchecked Sendable {
     let lock = NSLock(); var done = false; var failed = false
@@ -2188,16 +2215,28 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
         if ["wait", "capture"].contains(action["type"] as? String ?? "") {try execute(action);return ["executed":true]}
         try ensureRunning()
         guard let previous = getCurrentFrame()?["frame"] as? [String:Any], action["frame_id"] as? String == previous["id"] as? String else {throw changedScreen("The observation is no longer current.")}
+        // A hotkey's route is chosen once: one revalidated as a menu press is never posted as keys.
+        // An approved step (the runner marks it) gets the full check whichever way it goes.
+        var menuRoute: [String]? = nil
         if #available(macOS 14.0,*) {
             if action["type"] as? String == "open_app" {return try await openApplication(action)}
             if action["type"] as? String == "open_file" {return try await openFile(action)}
-            let fresh = try await revalidate(action)
+            let route = currentHotkeyRoute(action), approved = action["approved"] as? Bool == true
+            if route == .refused { throw ControlError(menuRefusal, code: "TARGET_REFUSED") }
+            menuRoute = route.menuPath
+            let fresh = try await revalidate(action, menuRoute: menuRoute, approved: approved)
+            // After the screen checks, so a changed application or window is reported as that.
+            if route == .changed { throw changedScreen("The shortcut's menu item changed.") }
             action["frame_id"] = fresh["id"]
         } else {throw ControlError("macOS 14 required.")}
-        try execute(action);return ["executed":true]
+        var result: [String:Any] = ["executed":true]
+        if let via = try execute(action, menuRoute: menuRoute) {result["via"] = via}
+        return result
     case "revalidate":
         guard let action = command["action"] as? [String:Any] else { throw ControlError("Missing action.") }
-        if #available(macOS 14.0,*) { return try await revalidate(action) }
+        // The runner sends this only after the user approved the step: an approved
+        // hotkey gets the full keyboard check, whichever way it is then pressed.
+        if #available(macOS 14.0,*) { return try await revalidate(action, menuRoute: nil, approved: true) }
         throw ControlError("macOS 14 required.")
     // Detached watches: read-only reads of one bound window, a flag for the
     // Escape rule, and one activation before a wake-up run. None sends input.
@@ -2256,7 +2295,7 @@ DispatchQueue.global().async {
         if command["method"] as? String == "presence" {emit(["id":command["id"] ?? "","result":presence()]);continue}
         commands.async {
             let semaphore = DispatchSemaphore(value:0)
-            Task { do {let result = try await handle(command);emit(["id":command["id"] ?? "","result":result])}catch {var result:[String:Any] = ["id":command["id"] ?? "","error":(error as? ControlError)?.message ?? "Native controller failed."];if let code = (error as? ControlError)?.code {result["code"] = code};emit(result)};semaphore.signal() };semaphore.wait()
+            Task { do {let result = try await handle(command);emit(["id":command["id"] ?? "","result":result])}catch {var result:[String:Any] = ["id":command["id"] ?? "","error":(error as? ControlError)?.message ?? "Native controller failed."];if let code = (error as? ControlError)?.code {result["code"] = code};if let change = (error as? ControlError)?.change {result["change"] = change};emit(result)};semaphore.signal() };semaphore.wait()
         }
     }
     latch(true)

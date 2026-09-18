@@ -7,6 +7,7 @@ import {
   NativeStoppedError,
   ScreenChangedError,
   SurfaceBlockedError,
+  screenChange,
   type NativeActionCode,
 } from "../src/core/errors";
 import {
@@ -304,13 +305,22 @@ const nativeActionCodes = new Set<NativeActionCode>([
   "FILE_UNRESOLVED",
   "FILE_REFUSED",
   "OPEN_FAILED",
+  "TARGET_MISSING",
+  "TARGET_DISABLED",
+  "TARGET_REFUSED",
+  "TARGET_AMBIGUOUS",
 ]);
-function nativeError(line: { error?: unknown; code?: unknown }): Error {
+function nativeError(line: {
+  error?: unknown;
+  code?: unknown;
+  change?: unknown;
+}): Error {
   const message =
     typeof line.error === "string" && line.error
       ? line.error
       : "Native controller failed.";
-  if (line.code === "STATE_CHANGED") return new ScreenChangedError(message);
+  if (line.code === "STATE_CHANGED")
+    return new ScreenChangedError(message, screenChange(line.change));
   if (line.code === "STOPPED") return new NativeStoppedError(message);
   if (line.code === "SURFACE_BLOCKED") return new SurfaceBlockedError(message);
   if (
@@ -692,9 +702,17 @@ export class NativeController implements Controller {
     try {
       const result = await this.request("execute", { action });
       const launched = launchedResult(result?.launched),
-        opened = openedResult(result?.opened);
-      return launched || opened
-        ? { ...(launched && { launched }), ...(opened && { opened }) }
+        opened = openedResult(result?.opened),
+        via =
+          result?.via === "menu" || result?.via === "keys"
+            ? (result.via as "menu" | "keys")
+            : undefined;
+      return launched || opened || via
+        ? {
+            ...(via && { via }),
+            ...(launched && { launched }),
+            ...(opened && { opened }),
+          }
         : undefined;
     } finally {
       signal.removeEventListener("abort", stop);

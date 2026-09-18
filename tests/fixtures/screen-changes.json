@@ -1,0 +1,14 @@
+{
+  "codes": [
+    "FOCUS_CHANGED",
+    "APP_CHANGED",
+    "WINDOW_CHANGED",
+    "DISPLAY_CHANGED",
+    "CONTROLS_CHANGED",
+    "TARGET_COVERED",
+    "PIXELS_CHANGED",
+    "STALE_FRAME",
+    "FRAME_EXPIRED",
+    "MENU_CHANGED"
+  ]
+}

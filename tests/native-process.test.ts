@@ -21,7 +21,9 @@ import {
   NativeStoppedError,
   ScreenChangedError,
   SurfaceBlockedError,
+  screenChanges,
 } from "../src/core/errors";
+import changeFixture from "./fixtures/screen-changes.json";
 import { previewBridge } from "../src/ui/preview";
 import { summarizeMemory } from "../src/ui/api";
 import type { MemoryData } from "../src/memory/types";
@@ -376,6 +378,73 @@ test("native error codes map to typed errors and execute returns the launch reco
         new AbortController().signal,
       ),
     ).toBeUndefined();
+  } finally {
+    controller.close();
+    cleanup();
+  }
+});
+
+test("the app accepts exactly the change codes native sends", () => {
+  expect([...screenChanges].sort()).toEqual([...changeFixture.codes].sort());
+});
+
+test("a refused step keeps its kind of change as a known code only", async () => {
+  const { binary, cleanup } = fakeHelper(`
+  const change = {focus: 'FOCUS_CHANGED', text: 'Budget.xlsx changed', none: undefined}[request.method];
+  if (request.method in {focus: 1, text: 1, none: 1}) return reply({id: request.id, error: 'The focused field changed.', code: 'STATE_CHANGED', change});
+  reply({id: request.id, result: {}});`);
+  const controller = new NativeController(binary, () => {});
+  try {
+    const focus = await controller.request("focus").catch((e) => e);
+    expect(focus).toBeInstanceOf(ScreenChangedError);
+    expect(focus.change).toBe("FOCUS_CHANGED");
+    expect(focus.message).toBe("The focused field changed.");
+    for (const method of ["text", "none"]) {
+      const error = await controller.request(method).catch((e) => e);
+      expect(error).toBeInstanceOf(ScreenChangedError);
+      expect(error.change).toBeUndefined();
+    }
+  } finally {
+    controller.close();
+    cleanup();
+  }
+});
+
+test("a named target the helper did not press is a rejected step, and a hotkey reports its route", async () => {
+  const { binary, cleanup } = fakeHelper(`
+  if (request.method === 'execute') {
+    const keys = request.action.keys.join('+');
+    if (keys === 'CMD+Q') return reply({id: request.id, error: 'Menu items that quit an application or end the session are left to the user.', code: 'TARGET_REFUSED'});
+    if (keys === 'CMD+E') return reply({id: request.id, error: 'The menu item for CMD+E is greyed out right now.', code: 'TARGET_DISABLED'});
+    if (keys === 'CMD+J') return reply({id: request.id, error: 'The menu item for CMD+J is not in this application\\'s menus.', code: 'TARGET_MISSING'});
+    if (keys === 'CMD+K') return reply({id: request.id, error: 'The menu item for CMD+K could not be chosen.', code: 'INPUT_FAILED'});
+    const via = {'CMD+N': 'menu', 'CMD+T': 'keys', 'CMD+W': 'mouse'}[keys];
+    return reply({id: request.id, result: {executed: true, via}});
+  }
+  reply({id: request.id, result: {}});`);
+  const controller = new NativeController(binary, () => {});
+  const hotkey = (...keys: string[]) =>
+    controller.execute(
+      { type: "hotkey", frame_id: "f", keys } as any,
+      {} as Frame,
+      new AbortController().signal,
+    );
+  try {
+    for (const [keys, code] of [
+      [["CMD", "Q"], "TARGET_REFUSED"],
+      [["CMD", "E"], "TARGET_DISABLED"],
+      [["CMD", "J"], "TARGET_MISSING"],
+    ] as const) {
+      const error = await hotkey(...keys).catch((e) => e);
+      expect(error).toBeInstanceOf(NativeActionError);
+      expect(error.code).toBe(code);
+    }
+    // A press that failed part-way is not a clean refusal.
+    const failed = await hotkey("CMD", "K").catch((e) => e);
+    expect(failed).not.toBeInstanceOf(NativeActionError);
+    expect(await hotkey("CMD", "N")).toEqual({ via: "menu" });
+    expect(await hotkey("CMD", "T")).toEqual({ via: "keys" });
+    expect(await hotkey("CMD", "W")).toBeUndefined();
   } finally {
     controller.close();
     cleanup();

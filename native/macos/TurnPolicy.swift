@@ -245,11 +245,33 @@ struct TurnTranscript: Equatable {
     var confidences: [Double?] = []
     var current = ""
     var boundaryPending = false
-    var text: String {
-        (committed + [current]).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }.joined(separator: " ")
-    }
+    var text: String { requestSegments(self).map(\.text).joined(separator: " ") }
+    // Every segment heard, a restart included: more than one never approves.
     var segmentCount: Int { committed.count + (current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1) }
+}
+
+/**
+ The segments the request is made of, oldest first, with their confidences (nil when
+ never finalized). A later segment that opens with the wake phrase is the user starting
+ over (live: the request, then "Assist open calendar and put an event…" merged into one
+ doubled task), so only the words after the last one count. A wake phrase with nothing
+ after it yet leaves the request as it was; the segment that follows it starts over.
+ */
+func requestSegments(_ transcript: TurnTranscript) -> [(text: String, confidence: Double?)] {
+    let heard: [(String, Double?)] = zip(transcript.committed, transcript.confidences).map { ($0, $1) } + [(transcript.current, nil)]
+    var kept = [(text: String, confidence: Double?)](), restarting = false
+    for (segment, confidence) in heard {
+        let clean = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { continue }
+        if !kept.isEmpty || restarting, let rest = commandAfterWakeRestart(clean) {
+            if rest.isEmpty { restarting = true } else { kept = [(rest, confidence)]; restarting = false }
+        } else if restarting {
+            kept = [(clean, confidence)]; restarting = false
+        } else {
+            kept.append((clean, confidence))
+        }
+    }
+    return kept
 }
 
 private func firstContentToken(_ text: String) -> String? { voiceTokens(text).first { !fillerWords.contains($0) } }
@@ -320,11 +342,12 @@ func absorbFinalSegment(_ transcript: inout TurnTranscript, text: String, confid
 }
 
 // 0 when any spoken segment was never finalized (merged or recovered speech can never
-// approve); otherwise the word-weighted mean of the segment confidences.
+// approve); otherwise the word-weighted mean of the segment confidences. Segments a
+// restart dropped are not part of the request, so they do not count either way.
 func turnConfidence(_ transcript: TurnTranscript) -> Double {
     guard transcript.current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return 0 }
     var words = 0.0, total = 0.0
-    for (segment, confidence) in zip(transcript.committed, transcript.confidences) {
+    for (segment, confidence) in requestSegments(transcript) {
         let count = Double(voiceTokens(segment).filter { !fillerWords.contains($0) }.count)
         if count == 0 { continue }
         guard let confidence = confidence, confidence.isFinite else { return 0 }

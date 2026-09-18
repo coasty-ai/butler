@@ -17,9 +17,12 @@ import {
 import {
   Runner,
   actionSignature,
+  nativeAction,
   repetitionPeriod,
+  screenChangedResult,
   searchRoute,
 } from "../src/core/runner";
+import { PASTE_ALLOWED } from "../src/core/policy";
 import type { MemoryAccess } from "../src/core/memory";
 import {
   HelperUnavailableError,
@@ -419,6 +422,266 @@ describe("runner recovery from native errors", () => {
       result: "No input was sent. The application could not be opened.",
     });
     expect(runner.snapshot.run?.actions).toBe(0);
+  });
+  // Live 2026-09-18: six CMD+N refused because Calendar's focus moved, and the
+  // trace said only STATE_CHANGED.
+  it("records which kind of change refused a step and tells a shortcut to wait for focus", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new ScreenChangedError("The focused field changed.", "FOCUS_CHANGED"),
+        ),
+    });
+    const p = scripted([act({ type: "hotkey", keys: ["CMD", "N"] })]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("ActionFailed").map((e) => e.data)).toEqual([
+      { code: "STATE_CHANGED", change: "FOCUS_CHANGED" },
+    ]);
+    const rejected = p.observations[1].history[0];
+    expect(rejected.type).toBe("rejected");
+    expect(rejected.result).toBe(
+      "No input was sent. The focused element changed between the screenshot and the input; choose an action from the new screenshot. Any earlier approval has expired. A shortcut goes to whichever element has focus: wait for the screen to settle and check where focus is in the new screenshot before pressing it again.",
+    );
+  });
+  // Published chords are pressed through their menu items natively, so the
+  // chords refused for focus are the ones kept as keys on purpose: a menu_item
+  // hint would skip the focus check (and the paste rule) they rely on.
+  it("never sends a shortcut refused for focus to its menu item", () => {
+    for (const keys of [
+      ["CMD", "V"],
+      ["CMD", "Z"],
+      ["CMD", "A"],
+      ["CMD", "SHIFT", "Z"],
+      ["CMD", "N"],
+    ]) {
+      const result = screenChangedResult("FOCUS_CHANGED", {
+        type: "hotkey",
+        keys,
+        frame_id: "f",
+      } as Action);
+      expect(result).not.toMatch(/menu_item|context\.menus/);
+      expect(result).toContain("wait for the screen to settle");
+    }
+  });
+  it("names the change without the shortcut hint for other steps", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new ScreenChangedError(
+            "The window's controls changed.",
+            "CONTROLS_CHANGED",
+          ),
+        ),
+    });
+    const p = scripted([act({ type: "type_text", text: "hello" })]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(m.of("ActionFailed")[0].data).toEqual({
+      code: "STATE_CHANGED",
+      change: "CONTROLS_CHANGED",
+    });
+    const result = p.observations[1].history[0].result;
+    expect(result).toContain(
+      "The window's controls changed (something opened, closed or updated); choose an action",
+    );
+    expect(result).not.toContain("menu_item");
+    // Without a code the step reads exactly as before.
+    expect(screenChangedResult(undefined)).toBe(
+      "No input was sent. The target or window changed; choose an action from the new screenshot. Any earlier approval has expired.",
+    );
+    expect(
+      screenChangedResult("FOCUS_CHANGED", {
+        type: "key",
+        key: "ENTER",
+        frame_id: "f",
+      }),
+    ).not.toContain("menu_item");
+  });
+  it("names another application coming forward while an approval was open", async () => {
+    policy.evaluate = (a) =>
+      a.type === "click"
+        ? { kind: "CONFIRM", reason: "Send this message?" }
+        : { kind: "ALLOW", reason: "" };
+    const m = memory();
+    const c = controller({
+      revalidate: vi.fn(async (_a: Action, f: Frame) => ({
+        ...f,
+        id: "fresh",
+        appId: "com.other.app",
+      })),
+    });
+    const p = scripted([act({ type: "click", x: 0.5, y: 0.5 })]);
+    let runner!: Runner;
+    runner = new Runner(c, p, m.recorder, settings, (s: Snapshot) => {
+      if (s.run?.status === "confirming" && s.pending)
+        setTimeout(() => runner.confirm(true), 0);
+    });
+    await runner.start("test");
+    expect(m.of("ActionFailed").map((e) => e.data)).toEqual([
+      { code: "STATE_CHANGED", change: "APP_CHANGED" },
+    ]);
+    expect(p.observations[1].history[0].result).toContain(
+      "Another application came to the front; choose an action",
+    );
+    expect(c.execute).not.toHaveBeenCalled();
+  });
+  it("records a hotkey pressed as its menu item and names that item", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      surface: async (a?: Action) =>
+        a?.type === "hotkey"
+          ? { ...surface, shortcutLabel: "New Event" }
+          : surface,
+      execute: vi
+        .fn()
+        .mockResolvedValueOnce({ via: "menu" })
+        .mockResolvedValueOnce({ via: "keys" })
+        .mockResolvedValueOnce({ via: "menu" }),
+    });
+    const p = scripted([
+      act({ type: "hotkey", keys: ["CMD", "N"] }),
+      act({ type: "hotkey", keys: ["CMD", "T"] }),
+      act({ type: "scroll", delta_x: 0, delta_y: 5 }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    const executed = m.of("ActionExecuted").map((e) => e.data.via);
+    // Only a hotkey carries its route; anything else from the helper is ignored.
+    expect(executed).toEqual(["menu", "keys", undefined]);
+    const history = p.observations[3].history;
+    expect(history[0].result).toBe(
+      "Executed CMD+N as “New Event” in the menus. Verify the next screenshot shows the intended result before done.",
+    );
+    // Posted as keys: named as before.
+    expect(history[1].result).toMatch(
+      /^Executed\. Verify the next screenshot shows the intended result before done\./,
+    );
+  });
+  // Review of the menu route: a menu command acts on whatever holds focus or
+  // selection, so native must know a step was approved (to check it as strictly
+  // as keys) and which item the user approved (to press no other).
+  it("marks an approved hotkey and binds it to the item the user approved", async () => {
+    policy.evaluate = (a) =>
+      a.type === "hotkey" && a.keys.includes("BACKSPACE")
+        ? {
+            kind: "CONFIRM",
+            reason: "This shortcut may send or delete content. Allow it?",
+          }
+        : { kind: "ALLOW", reason: "" };
+    const m = memory();
+    const execute = vi.fn(async () => ({ via: "menu" as const }));
+    const c = controller({
+      surface: async (a?: Action) =>
+        a?.type === "hotkey"
+          ? {
+              ...surface,
+              shortcutLabel: a.keys.includes("BACKSPACE")
+                ? "Move to Trash"
+                : "New Event",
+            }
+          : surface,
+      revalidate: vi.fn(async (_a: Action, f: Frame) => ({
+        ...f,
+        id: "fresh",
+      })),
+      execute,
+    });
+    const p = scripted([
+      act({ type: "hotkey", keys: ["CMD", "BACKSPACE"] }),
+      act({ type: "hotkey", keys: ["CMD", "N"] }),
+    ]);
+    let runner!: Runner;
+    runner = new Runner(c, p, m.recorder, settings, (s: Snapshot) => {
+      if (s.run?.status === "confirming" && s.pending)
+        setTimeout(() => runner.confirm(true), 0);
+    });
+    await runner.start("test");
+    const sent = execute.mock.calls.map((call) => (call as unknown[])[0]);
+    expect(sent[0]).toEqual({
+      type: "hotkey",
+      keys: ["CMD", "BACKSPACE"],
+      frame_id: "fresh",
+      approved: true,
+      shortcutLabel: "Move to Trash",
+    });
+    // Allowed without asking: not approved, but still bound to the item policy
+    // judged, so a menu that changed since cannot press another.
+    expect(sent[1]).toMatchObject({
+      type: "hotkey",
+      keys: ["CMD", "N"],
+      shortcutLabel: "New Event",
+    });
+    expect(sent[1]).not.toHaveProperty("approved");
+    // The journal keeps the model's own step.
+    expect(m.of("ActionExecuted")[0].data.action).toEqual({
+      type: "hotkey",
+      keys: ["CMD", "BACKSPACE"],
+      frame_id: "fresh",
+    });
+  });
+  it("sends native only what the decision and surface say", () => {
+    const hotkey = {
+      type: "hotkey",
+      keys: ["CMD", "N"],
+      frame_id: "f",
+    } as Action;
+    const confirm = { kind: "CONFIRM" as const, reason: "Delete it?" };
+    expect(nativeAction(hotkey, confirm, surface)).toEqual({
+      ...hotkey,
+      approved: true,
+    });
+    const click = {
+      type: "click",
+      x: 1,
+      y: 2,
+      button: "left",
+      frame_id: "f",
+    } as Action;
+    expect(
+      nativeAction(click, confirm, { ...surface, shortcutLabel: "Delete" }),
+    ).toEqual({ ...click, approved: true });
+    const paste = {
+      type: "hotkey",
+      keys: ["CMD", "V"],
+      frame_id: "f",
+    } as Action;
+    expect(
+      nativeAction(paste, { kind: "ALLOW", reason: PASTE_ALLOWED }, surface),
+    ).toEqual({ ...paste, paste: true });
+    // Allowed: bound to the item policy judged, and never marked approved.
+    expect(
+      nativeAction(
+        hotkey,
+        { kind: "ALLOW", reason: "Routine." },
+        {
+          ...surface,
+          shortcutLabel: "New Event",
+        },
+      ),
+    ).toEqual({ ...hotkey, shortcutLabel: "New Event" });
+    // Nothing judged and nothing approved: the step goes as the model sent it.
+    expect(
+      nativeAction(hotkey, { kind: "ALLOW", reason: "Routine." }, surface),
+    ).toBe(hotkey);
+    expect(
+      nativeAction(
+        click,
+        { kind: "ALLOW", reason: "" },
+        { ...surface, shortcutLabel: "New Event" },
+      ),
+    ).toBe(click);
+    expect(screenChangedResult("MENU_CHANGED", hotkey)).toBe(
+      "No input was sent. The application's menus no longer give this shortcut the command it was checked against; choose an action from the new screenshot. Any earlier approval has expired.",
+    );
   });
   it("pauses when the native stop latch was set without a pause event", async () => {
     allowAll();

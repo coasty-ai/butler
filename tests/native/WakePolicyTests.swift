@@ -9,6 +9,23 @@ func wakePolicyChecks(_ check: (Bool, String) -> Void) {
     check(commandAfterWakePhrase("Hey assistant open Notes") == nil, "partial word does not activate")
     check(commandAfterWakePhrase("Yes") == nil, "ambient approval cannot wake assistant")
     check(commandAfterWakePhrase("Stop") == nil, "ambient command cannot wake assistant")
+    check(commandAfterWakeRestart("Assist open calendar and put an event") == "open calendar and put an event", "the bare name restarts a turn already listening")
+    check(commandAfterWakeRestart("ASSIST, open Notes.") == "open Notes.", "restart ignores case and punctuation")
+    check(commandAfterWakeRestart("Hey, Open Assist! Stop.") == "Stop.", "the full wake phrase restarts")
+    check(commandAfterWakeRestart("Assist. Open Safari") == "Open Safari" && commandAfterWakeRestart("Assist — open, then close") == "open, then close", "the name set apart restarts")
+    check(commandAfterWakeRestart("Assist") == "" && commandAfterWakeRestart("Assist.") == "", "a lone wake phrase leaves nothing yet")
+    check(commandAfterWakeRestart("assist me with the list") == nil && commandAfterWakeRestart("Assist us, please") == nil, "assist with an object is a request")
+    check(commandAfterWakeRestart("assist the customer with the refund") == nil && commandAfterWakeRestart("Assist Maria with the move") == nil,
+          "the bare name followed by anything but a task verb is a word")
+    check(commandAfterWakeRestart("Assist's number is 555") == nil, "a possessive is a word")
+    // Live-log echoes of the wake phrase are ordinary speech inside a turn.
+    for speech in ["his assistant will send it", "Hi sis, come in", "A cyst was removed from my knee", "hey sis can you grab the door",
+                   "Hey assistant open Safari", "his assistant's number is 555"] {
+        check(commandAfterWakeRestart(speech) == nil, "a misheard echo does not restart: \(speech)")
+    }
+    check(commandAfterWakeRestart("assistant manager contacts") == nil && commandAfterWakeRestart("sis open notes") == nil, "longer words and echoes without a lead do not restart")
+    check(commandAfterWakeRestart("open Assist settings") == nil && commandAfterWakeRestart("ask it to assist") == nil, "the name inside a request does not restart")
+    check(commandAfterWakePhrase("Assist open Notes") == nil, "activation is not widened by restarts")
     check(activatedVoiceCommand("Hey Assist, open Notes") == "open Notes", "activated session strips repeated wake prefix")
     check(activatedVoiceCommand("Open Notes") == "Open Notes", "activated session retains a new command-only speech segment")
     check(activatedVoiceCommand("Yes") == "Yes", "activated approval remains available for final confidence gating")

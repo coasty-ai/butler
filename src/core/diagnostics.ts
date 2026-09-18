@@ -20,6 +20,7 @@ export function errorDetails(error: unknown): Record<string, unknown> {
     name?: unknown;
     message?: unknown;
     code?: unknown;
+    change?: unknown;
     cause?: unknown;
   };
   const result: Record<string, unknown> = {
@@ -27,6 +28,8 @@ export function errorDetails(error: unknown): Record<string, unknown> {
     error: typeof e.message === "string" ? e.message : "Unknown error",
   };
   if (typeof e.code === "string") result.code = e.code;
+  // What a refused step's screen change was (ScreenChangedError), as its code.
+  if (typeof e.change === "string") result.change = e.change;
   if (e.cause && typeof e.cause === "object" && e.cause !== error) {
     const cause = e.cause as { code?: unknown; message?: unknown };
     result.cause = { code: cause.code, error: cause.message };

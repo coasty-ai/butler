@@ -67,7 +67,10 @@ export {
   NativeActionError,
   HelperUnavailableError,
   SurfaceBlockedError,
+  screenChanges,
+  screenChange,
   type NativeActionCode,
+  type ScreenChange,
 } from "./errors";
 
 export type {

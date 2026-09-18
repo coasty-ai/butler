@@ -9,7 +9,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalDiagnostics } from "../electron/diagnostics";
-import { trace } from "../src/core/diagnostics";
+import { errorDetails, trace } from "../src/core/diagnostics";
+import { ScreenChangedError } from "../src/core/errors";
 import type { Snapshot } from "../src/core/schema";
 
 function fixture(
@@ -287,6 +288,85 @@ describe("local diagnostic stream", () => {
         synthetic: false,
         actionType: "click",
         period: 2,
+      });
+    }));
+  it("keeps a native refusal's kind of change on its NativeError line", () =>
+    fixture((log) => {
+      log.write(
+        "NativeError",
+        errorDetails(
+          new ScreenChangedError("The focused field changed.", "FOCUS_CHANGED"),
+        ),
+      );
+      const [line] = readFileSync(log.file, "utf8")
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(line.data).toMatchObject({
+        name: "ScreenChangedError",
+        code: "STATE_CHANGED",
+        change: "FOCUS_CHANGED",
+      });
+    }));
+  it("logs a refused step's kind of change and a hotkey's route as codes only", () =>
+    fixture((log) => {
+      const id = crypto.randomUUID();
+      const snapshot: Snapshot = {
+        run: {
+          id,
+          task: "put pick up packages in Calendar",
+          createdAt: new Date().toISOString(),
+          status: "executing",
+          privacy: "PRIVATE_LOCAL",
+          provider: "openai",
+          model: "fixture",
+          synthetic: false,
+          actions: 1,
+          frames: 2,
+          usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          summary: "",
+        },
+        frame: null,
+        message: "",
+        events: [],
+      };
+      const add = (type: string, data: Record<string, unknown>) =>
+        snapshot.events.push({
+          event_id: crypto.randomUUID(),
+          run_id: id,
+          sequence_number: snapshot.events.length + 1,
+          monotonic_timestamp: 0,
+          wall_clock_timestamp: new Date().toISOString(),
+          schema_version: 1,
+          type,
+          data,
+        });
+      add("ActionFailed", { code: "STATE_CHANGED", change: "FOCUS_CHANGED" });
+      add("ActionFailed", {
+        code: "STATE_CHANGED",
+        change: "Packages event changed",
+      });
+      add("ActionExecuted", {
+        action: { type: "hotkey", keys: ["CMD", "N"], frame_id: "f" },
+        frame_id: "f",
+        via: "menu",
+      });
+      log.snapshot(snapshot);
+      const raw = readFileSync(log.file, "utf8");
+      const events = raw
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(raw).not.toContain("ackages");
+      expect(events[0].data).toMatchObject({
+        code: "STATE_CHANGED",
+        change: "FOCUS_CHANGED",
+      });
+      expect(events[1].data.code).toBe("STATE_CHANGED");
+      expect(events[1].data.change).toBeUndefined();
+      expect(events[2].data).toMatchObject({
+        actionType: "hotkey",
+        via: "menu",
       });
     }));
   it("logs memory recall and replay plans as counts and codes, never task text or paths", () =>

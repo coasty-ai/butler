@@ -37,7 +37,12 @@ import {
   normalizeRole,
   utf16Prefix,
 } from "./labels";
-import { evaluate, surfacePolicy, PASTE_ALLOWED } from "./policy";
+import {
+  evaluate,
+  surfacePolicy,
+  PASTE_ALLOWED,
+  type Decision,
+} from "./policy";
 import { watchSpec, type WatchChain, type WatchSpec } from "./monitor";
 import { redactSecrets, scanText } from "./sanitize";
 import {
@@ -47,6 +52,7 @@ import {
   ProviderTransientError,
   ScreenChangedError,
   SurfaceBlockedError,
+  type ScreenChange,
 } from "./errors";
 export const terminal = (s: RunStatus) =>
   ["completed", "cancelled", "failed"].includes(s);
@@ -319,6 +325,69 @@ export function sameProbe(a: ProgressProbe, b: ProgressProbe): boolean {
  */
 export const noProgressWarning =
   " Note: this action produced no visible change (same application, window, screenshot and focus), and the one before it did not either. Repeating it will not work: take a different route now, such as a keyboard shortcut from context.playbook, the menu bar, or request_user to ask the user.";
+/**
+ * What moved when native refused a step, in the model's terms, so it changes
+ * approach instead of proposing the same step again (live: six identical
+ * CMD+N refused while Calendar's focus settled after launch).
+ */
+const screenChangeDetail: Record<ScreenChange, string> = {
+  FOCUS_CHANGED:
+    "The focused element changed between the screenshot and the input",
+  APP_CHANGED: "Another application came to the front",
+  WINDOW_CHANGED: "The window moved, resized or was replaced",
+  DISPLAY_CHANGED: "The display changed",
+  CONTROLS_CHANGED:
+    "The window's controls changed (something opened, closed or updated)",
+  TARGET_COVERED: "Another control now covers the target",
+  PIXELS_CHANGED:
+    "The content at the target changed (it may still be loading or animating)",
+  STALE_FRAME: "A newer screenshot replaced the one this step was chosen from",
+  FRAME_EXPIRED: "The screenshot this step was chosen from is too old",
+  MENU_CHANGED:
+    "The application's menus no longer give this shortcut the command it was checked against",
+};
+export function screenChangedResult(
+  change: ScreenChange | undefined,
+  action?: Action,
+): string {
+  const detail = change
+    ? screenChangeDetail[change]
+    : "The target or window changed";
+  // A shortcut the application lists in its menus is already pressed as that
+  // item, so one refused here went as keys: a text or clipboard chord, an
+  // unpublished one, or an approved one. Sending the model to menu_item would
+  // skip the focus check (and, for a paste, the paste rule) those keep.
+  const hint =
+    change === "FOCUS_CHANGED" && action?.type === "hotkey"
+      ? " A shortcut goes to whichever element has focus: wait for the screen to settle and check where focus is in the new screenshot before pressing it again."
+      : "";
+  return `No input was sent. ${detail}; choose an action from the new screenshot. Any earlier approval has expired.${hint}`;
+}
+/**
+ * The step as native executes it. Native refuses every clipboard chord unless
+ * policy marked this one as the paste the user asked for. A hotkey carries the
+ * menu item policy judged it by (surface's shortcutLabel, absent when the chord
+ * named none), so a chord that names another item by the time it is pressed is
+ * refused instead of pressing an item policy never saw. An approved step is
+ * marked so native checks it as strictly as keys after the approval (a menu
+ * command acts on whatever holds focus or selection).
+ */
+export function nativeAction(
+  action: Action,
+  decision: Decision,
+  surface: Surface,
+): Action {
+  if (decision.reason === PASTE_ALLOWED)
+    return { ...action, paste: true } as unknown as Action;
+  const label =
+    action.type === "hotkey" && surface.shortcutLabel
+      ? { shortcutLabel: surface.shortcutLabel }
+      : {};
+  const approved = decision.kind === "CONFIRM" ? { approved: true } : {};
+  if (!Object.keys(label).length && !Object.keys(approved).length)
+    return action;
+  return { ...action, ...approved, ...label } as unknown as Action;
+}
 const noInput = (reason: string) =>
   /^No input was (sent|executed)/.test(reason)
     ? reason
@@ -329,7 +398,11 @@ const noInput = (reason: string) =>
  * Without it, models treated their own earlier input as leftover state and
  * undid it. Uses accessibility names only (never field contents).
  */
-export function executedTarget(action: Action, surface: Surface): string {
+export function executedTarget(
+  action: Action,
+  surface: Surface,
+  via?: ExecutionResult["via"],
+): string {
   const bounded = (text: string) => {
     const clean = redactSecrets(text.replace(/\s+/g, " ").trim());
     return clean.length > 60 ? clean.slice(0, 59) + "…" : clean;
@@ -338,6 +411,9 @@ export function executedTarget(action: Action, surface: Surface): string {
   // the agent's own, and native resolved it to that exact item.
   if (action.type === "menu_item")
     return ` ${bounded(action.path.join(" > "))} in the menus`;
+  // A published chord is pressed as its menu item, so it is named like one.
+  if (action.type === "hotkey" && via === "menu" && surface.shortcutLabel)
+    return ` ${action.keys.join("+")} as “${bounded(surface.shortcutLabel)}” in the menus`;
   if (
     ["click", "double_click", "right_click", "click_control"].includes(
       action.type,
@@ -1102,12 +1178,15 @@ export class Runner {
   }
   private recoverStateChange(error: unknown, action?: Action) {
     if (!(error instanceof ScreenChangedError)) return false;
-    this.event("ActionFailed", { code: "STATE_CHANGED" });
+    // The kind of change as its fixed code; the helper's sentence is not kept.
+    this.event("ActionFailed", {
+      code: "STATE_CHANGED",
+      ...(error.change ? { change: error.change } : {}),
+    });
     this.reject({
       type: "rejected",
       ...(action ? { action: echoAction(action) } : {}),
-      result:
-        "No input was sent. The target or window changed; choose an action from the new screenshot. Any earlier approval has expired.",
+      result: screenChangedResult(error.change, action),
     });
     if (++this.stateChanges >= 3) {
       this.stateChanges = 0;
@@ -1481,7 +1560,10 @@ export class Runner {
     // to the front since the screenshot.
     if (frame.appId && binding.appId !== frame.appId) {
       release();
-      this.event("ActionFailed", { code: "STATE_CHANGED" });
+      this.event("ActionFailed", {
+        code: "STATE_CHANGED",
+        change: "APP_CHANGED",
+      });
       return reject(
         "No input was sent. Another application came to the front before the watch could start; look at the new screenshot and monitor again.",
       );
@@ -2029,13 +2111,20 @@ export class Runner {
             planFail("interrupted");
             continue;
           }
-          if (
-            (!this.controller.revalidate && fresh.sha256 !== frame.sha256) ||
-            !sameGeometry(fresh.geometry, frame.geometry) ||
+          const change: ScreenChange | undefined =
             fresh.appId !== frame.appId
-          ) {
+              ? "APP_CHANGED"
+              : !sameGeometry(fresh.geometry, frame.geometry)
+                ? "DISPLAY_CHANGED"
+                : !this.controller.revalidate && fresh.sha256 !== frame.sha256
+                  ? "PIXELS_CHANGED"
+                  : undefined;
+          if (change) {
             planFail("state_changed");
-            this.recoverStateChange(new ScreenChangedError(), action);
+            this.recoverStateChange(
+              new ScreenChangedError(undefined, change),
+              action,
+            );
             continue;
           }
           executionFrame = fresh;
@@ -2088,11 +2177,7 @@ export class Runner {
         this.attempted++;
         try {
           outcome = await this.controller.execute(
-            // Native refuses every clipboard chord unless policy marked this
-            // one as the paste the user asked for.
-            decision.reason === PASTE_ALLOWED
-              ? ({ ...action, paste: true } as unknown as Action)
-              : action,
+            nativeAction(action, decision, actionSurface),
             executionFrame,
             this.abort.signal,
           );
@@ -2180,6 +2265,12 @@ export class Runner {
               }
             : undefined;
         if (action.type === "open_file") this.lastOpened = !!opened;
+        const via =
+          action.type === "hotkey" &&
+          outcome &&
+          (outcome.via === "menu" || outcome.via === "keys")
+            ? outcome.via
+            : undefined;
         // Read before planPending is cleared: this step came from the plan.
         const fromPlan =
           this.planPending !== undefined ? this.plan?.source : undefined;
@@ -2204,6 +2295,8 @@ export class Runner {
         this.event("ActionExecuted", {
           action,
           frame_id: executionFrame.id,
+          // Whether a hotkey was pressed as its menu item or posted as keys.
+          ...(via ? { via } : {}),
           ...(opened ? { opened: { kind: opened.kind } } : {}),
           ...(launched
             ? {
@@ -2242,7 +2335,7 @@ export class Runner {
               : opened
                 ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`
                 : ["type_text", "key", "hotkey"].includes(action.type)
-                  ? `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot shows the intended result before done.`
+                  ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
                   : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
             (reaimed ? reaimNote : "") +
             (loop === "warn" ? loopWarning : "") +

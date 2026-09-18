@@ -697,6 +697,11 @@ export interface Surface {
   /** The menu item a proposed shortcut invokes in this application, if any. */
   shortcutLabel?: string;
   /**
+   * "refused" when that item is one native never presses (Quit, Log Out, Empty
+   * Trash): native refuses the chord whichever way it would go (hotkeyRoute).
+   */
+  shortcutStatus?: "refused";
+  /**
    * The application's own search command the agent just ran here ("Search",
    * "Jump to…"), while it is still the context for typing: text typed now
    * goes into that search field even when the field is not exposed.
@@ -775,6 +780,11 @@ export interface Provider {
   next(observation: Observation, signal: AbortSignal): Promise<ProviderResult>;
 }
 export interface ExecutionResult {
+  /**
+   * How a hotkey went: pressed as the menu item the application publishes for
+   * that chord, or posted as keys to the focused element.
+   */
+  via?: "menu" | "keys";
   launched?: {
     appId: string;
     name: string;

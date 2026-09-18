@@ -796,6 +796,76 @@ export function isWakePhraseOnly(text: string): boolean {
 }
 
 /**
+ * The activation phrase anywhere in spoken text, as native
+ * commandAfterWakePhrase (WakePolicy.swift) matches it at the start.
+ */
+const WAKE_PHRASE = /\bhey[\s,]+(?:open\s+)?assist\b[\s,.:;!?—-]*/iu;
+/** The name alone inside a sentence: a restart only when the request repeats after it. */
+const BARE_NAME = /\bassist\b[\s,.:;!?—-]*/giu;
+const spokenWords = (text: string) =>
+  tokenize(text).filter((w) => !FILLERS.has(w));
+/**
+ * A spoken turn in which the user started over by saying the wake phrase
+ * again. Native keeps only the restart when it opens a new recognizer segment
+ * (requestSegments in TurnPolicy.swift); said without a pause it arrives
+ * inside one segment ("…at 6 PM hey assist open calendar and…"), so here too
+ * only the words after the last wake phrase are the request, and a wake
+ * phrase with nothing after it leaves the words before it. The bare name
+ * counts inside a sentence only when the words after it repeat the request's
+ * own opening words (live: "open calendar and put an event … at 6 PM Assist
+ * open calendar and put an event…"); otherwise "assist" is a word ("ask it to
+ * assist me"). A turn changed this way counts as more than one segment, so it
+ * can never approve.
+ */
+export function restartedTurn(
+  text: string,
+  segments?: number,
+): { text: string; segments?: number } {
+  const parts = text.split(WAKE_PHRASE);
+  // A wake phrase before any words is the activation, not a restart; the
+  // request after it is where a repeat is looked for.
+  while (parts.length > 1 && !spokenWords(parts[0]).length) parts.shift();
+  const request =
+    parts.length < 2
+      ? parts[0]
+      : (parts
+          .slice(1)
+          .reverse()
+          .find((part) => spokenWords(part).length) ?? parts[0]);
+  const repeated = repeatedAfterName(request);
+  if (parts.length < 2 && repeated === undefined) return { text, segments };
+  return {
+    text: (repeated ?? request).trim(),
+    segments: Math.max(2, segments ?? 1),
+  };
+}
+/** The words after the last bare name that repeats the opening words before it. */
+function repeatedAfterName(text: string): string | undefined {
+  let kept: string | undefined;
+  for (const match of text.matchAll(BARE_NAME)) {
+    const at = match.index ?? 0;
+    // Two or three words are enough to tell a repeat from a sentence.
+    const opening = spokenWords(text.slice(0, at)).slice(0, 3);
+    const after = text.slice(at + match[0].length);
+    const next = spokenWords(after);
+    if (opening.length >= 2 && opening.every((word, i) => next[i] === word))
+      kept = after;
+  }
+  return kept;
+}
+/**
+ * What a finished voice transcript asks for, as main.ts hands it on: the words
+ * after any restart and the segment count that goes with them, never the raw
+ * transcript.
+ */
+export function transcriptRequest(event: {
+  text?: string;
+  segments?: number;
+}): { text: string; segments?: number } {
+  return restartedTurn((event.text ?? "").trim(), event.segments);
+}
+
+/**
  * Status questions, matched against intentKey(text): "how's it going?",
  * "status", "are you done yet?". Checked only after stop, pause, approval
  * answers, acknowledgements and resume, so a question never outranks a
