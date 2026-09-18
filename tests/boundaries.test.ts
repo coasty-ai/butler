@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, posix } from "node:path";
 
@@ -56,6 +56,7 @@ function target(file: string, specifier: string): string {
 }
 
 const srcFiles = walk("src");
+const electronFiles = walk("electron");
 const coreFiles = srcFiles.filter((f) => f.startsWith("src/core/"));
 const providerFiles = srcFiles.filter((f) => f.startsWith("src/providers/"));
 const voiceFiles = srcFiles.filter((f) => f.startsWith("src/voice/"));
@@ -83,6 +84,7 @@ describe("module boundaries", () => {
     expect(voiceFiles.length).toBeGreaterThan(2);
     expect(assistantFiles.length).toBeGreaterThan(2);
     expect(srcFiles.length).toBeGreaterThan(20);
+    expect(electronFiles.length).toBeGreaterThan(5);
   });
 
   it("keeps src/core free of the layers above it", () => {
@@ -136,6 +138,53 @@ describe("module boundaries", () => {
         return undefined;
       }),
     ).toEqual([]);
+  });
+
+  /**
+   * src/gym/jev.ts measures a third-party model (TypeSafe's Jev, through
+   * OpenRouter) for scripts/eval-jev.mjs only. The app must never reach it,
+   * directly or through another module: it would send screen text to two
+   * new third parties. Only src/gym may import it, and nothing the app
+   * imports from src/gym may lead to it.
+   */
+  it("keeps the Jev eval out of the app", () => {
+    const JEV = "src/gym/jev.ts";
+    const resolveFile = (resolved: string): string | undefined =>
+      [resolved, `${resolved}.ts`, `${resolved}.tsx`, `${resolved}/index.ts`]
+        .map((path) => path.replace(/\.js$/, ".ts"))
+        .find((path) => existsSync(join(root, path)) && /\.tsx?$/.test(path));
+    expect(
+      offenders(
+        [
+          ...electronFiles,
+          ...srcFiles.filter((f) => !f.startsWith("src/gym/")),
+        ],
+        (specifier, resolved) =>
+          specifier.startsWith(".") && resolveFile(resolved) === JEV
+            ? "the app must never import the Jev eval (src/gym/jev.ts)"
+            : undefined,
+      ),
+    ).toEqual([]);
+    // Transitively: everything the app's own modules reach.
+    const reached = new Map<string, string>();
+    const queue = [
+      ...electronFiles,
+      ...srcFiles.filter((f) => !f.startsWith("src/gym/")),
+    ];
+    for (const file of queue) reached.set(file, file);
+    while (queue.length) {
+      const file = queue.shift()!;
+      for (const specifier of specifiers(file)) {
+        if (!specifier.startsWith(".")) continue;
+        const next = resolveFile(target(file, specifier));
+        if (!next || reached.has(next)) continue;
+        reached.set(next, file);
+        queue.push(next);
+      }
+    }
+    expect(reached.has(JEV) ? `${reached.get(JEV)} leads to ${JEV}` : "").toBe(
+      "",
+    );
   });
 
   it("keeps Electron out of src/ entirely", () => {
