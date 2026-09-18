@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   KokoroError,
   type KokoroChunk,
-  type KokoroStatus,
   type KokoroVoice,
+  type KokoroVoiceStatus,
 } from "../electron/kokoro/client";
 import {
   createSpeechOutput,
@@ -85,12 +85,15 @@ const bytesOf = (pcm: Int16Array) =>
  */
 function fakeKokoro(scripts: Sentence[][] = [], installed = true) {
   const syntheses: Synthesis[] = [];
-  const status = vi.fn((): KokoroStatus => ({
+  const status = vi.fn((): KokoroVoiceStatus => ({
     installed,
     downloading: false,
     progress: installed ? 1 : 0,
     bytes: installed ? 100 : 0,
     totalBytes: 100,
+    voice: "af_heart",
+    voices: { af_heart: installed, bm_george: false, bm_fable: false },
+    missingBytes: installed ? 0 : 100,
   }));
   const synthesize = vi.fn((text: string, signal?: AbortSignal) => {
     const queue = [...(scripts[syntheses.length] ?? [])];

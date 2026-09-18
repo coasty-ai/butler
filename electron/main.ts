@@ -99,6 +99,7 @@ import { desktopTransport } from "./provider";
 import {
   createKokoroVoice,
   kokoroSupported,
+  pickKokoroStatus,
   type KokoroStatus,
   type KokoroVoice,
 } from "./kokoro/client";
@@ -241,7 +242,8 @@ function kokoroUiStatus(status?: KokoroStatus) {
     totalBytes: 0,
   };
   try {
-    return { ...(status ?? getKokoro().status()), supported };
+    // status() also carries the per-voice map; the renderer's key list is fixed.
+    return { ...pickKokoroStatus(status ?? getKokoro().status()), supported };
   } catch {
     return { ...empty, supported };
   }

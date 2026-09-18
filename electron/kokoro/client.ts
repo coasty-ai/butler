@@ -8,6 +8,14 @@
  * - Synthesizes in a lazily forked utilityProcess (./worker) that is killed
  *   after 5 minutes idle, forked again after a crash (pending work is
  *   rejected with a KokoroError), and never runs onnxruntime in main.
+ * - Voices: af_heart comes with the base install; the British pack (George,
+ *   Fable, misaki gb_gold and the GB fallback network) is downloaded with
+ *   `download(..., voice)`. Callers share one download at a time: a caller
+ *   whose signal aborts just leaves, and the download stops when the last
+ *   one has gone. A request names its voice and speed; the worker loads
+ *   packs on demand, so switching never restarts it. The voice for a request
+ *   without one comes from `settings()` (settings.kokoroVoice), and falls
+ *   back to af_heart when that pack is not installed yet.
  *
  * Traces are content-free: codes, counts and durations only, never the text.
  *
@@ -33,12 +41,18 @@ import {
 import { join } from "node:path";
 import * as electron from "electron";
 import { KOKORO_SAMPLE_RATE } from "../../src/voice/kokoro/tokens";
+import { isKokoroVoiceId, kokoroSpeed } from "../../src/voice/kokoro/voices";
 import {
-  KOKORO_FILES,
+  DEFAULT_KOKORO_VOICE,
+  KOKORO_ALL_FILES,
   KOKORO_STORED_NAME,
+  KOKORO_VOICES,
+  KOKORO_VOICE_IDS,
   kokoroFileName,
+  kokoroFilesFor,
   kokoroPaths,
   type KokoroFile,
+  type KokoroVoiceId,
 } from "./manifest";
 import type {
   KokoroErrorCode,
@@ -47,6 +61,7 @@ import type {
 } from "./protocol";
 
 export type { KokoroErrorCode } from "./protocol";
+export type { KokoroVoiceId } from "./manifest";
 
 export interface KokoroChunk {
   /** Mono s16 samples in platform (little-endian) order. */
@@ -54,14 +69,51 @@ export interface KokoroChunk {
   sampleRate: typeof KOKORO_SAMPLE_RATE;
 }
 
+/**
+ * One voice's install as Settings shows it. This exact key list is what the
+ * renderer sees (docs/MODULARITY.md §9, desktop-smoke checks it): main
+ * projects a {@link KokoroVoiceStatus} onto it with {@link pickKokoroStatus}.
+ */
 export interface KokoroStatus {
   installed: boolean;
   downloading: boolean;
-  /** 0-1 over all pinned files. */
+  /** 0-1 over the download in progress, else over the installed files. */
   progress: number;
   bytes: number;
   totalBytes: number;
   error?: KokoroErrorCode;
+}
+
+/** What `status(voice)` returns: the voice's files, plus which are ready. */
+export interface KokoroVoiceStatus extends KokoroStatus {
+  voice: KokoroVoiceId;
+  voices: Record<KokoroVoiceId, boolean>;
+  /** Bytes a `download(..., voice)` would still fetch. */
+  missingBytes: number;
+}
+
+/**
+ * The renderer's copy of a status: the {@link KokoroStatus} keys and nothing
+ * else, however much `status()` returns. `AppInfo.voice.kokoro` may not grow
+ * fields (docs/MODULARITY.md §9), so main goes through here.
+ */
+export function pickKokoroStatus(status: KokoroStatus): KokoroStatus {
+  const { installed, downloading, progress, bytes, totalBytes, error } = status;
+  return {
+    installed,
+    downloading,
+    progress,
+    bytes,
+    totalBytes,
+    ...(error ? { error } : {}),
+  };
+}
+
+export interface KokoroSynthesisOptions {
+  /** Defaults to `settings().kokoroVoice`, then af_heart. */
+  voice?: KokoroVoiceId;
+  /** Kokoro pace, clamped to 0.8-1.3; defaults to `settings().voiceRate`. */
+  speed?: number;
 }
 
 export interface KokoroWorkerHandle {
@@ -87,29 +139,65 @@ export interface KokoroVoiceOptions {
   trace?: (event: string, data: Record<string, unknown>) => void;
   /** Built worker; defaults to dist-electron/kokoro/worker.cjs. */
   workerPath?: string;
+  /** Every file any voice may need; defaults to {@link KOKORO_ALL_FILES}. */
   files?: readonly KokoroFile[];
+  /**
+   * The user's choice, read per request: settings.kokoroVoice picks the
+   * voice and voiceRate the pace, unless a request says otherwise.
+   */
+  settings?: () => { kokoroVoice?: KokoroVoiceId; voiceRate?: number };
   idleMs?: number;
   readyTimeoutMs?: number;
   stallMs?: number;
 }
 
 export interface KokoroVoice {
-  status(): KokoroStatus;
-  /** Joins a download already in progress; any caller's signal cancels it. */
+  /**
+   * One voice's install (default af_heart, the base install): `installed`
+   * and the byte counts for its files, `voices` (which packs are ready) and
+   * `missingBytes`. Throws for a voice the `files` option cannot serve. Only
+   * the {@link KokoroStatus} keys reach the renderer ({@link pickKokoroStatus}).
+   */
+  status(voice?: KokoroVoiceId): KokoroVoiceStatus;
+  /**
+   * Fetches what `voice` (default af_heart) still lacks. Joins a download
+   * already in progress, then continues with any remaining files. A caller
+   * whose signal aborts rejects with its reason and stops getting progress;
+   * the download itself is cancelled only once no caller is waiting for it.
+   */
   download(
-    onProgress?: (status: KokoroStatus) => void,
+    onProgress?: (status: KokoroVoiceStatus) => void,
     signal?: AbortSignal,
+    voice?: KokoroVoiceId,
   ): Promise<void>;
+  /** Deletes every pack and the model. */
   remove(): Promise<void>;
-  /** Starts the worker and runs one short synthesis. */
-  /** Loads the model, and caches any fixed phrases passed in. */
-  warm(phrases?: readonly string[]): Promise<void>;
+  /**
+   * Starts the worker with one short synthesis in the given (or settings)
+   * voice, and caches any fixed phrases passed in for that voice and speed.
+   */
+  warm(
+    phrases?: readonly string[],
+    options?: KokoroSynthesisOptions,
+  ): Promise<void>;
   /**
    * One PCM chunk per sentence, first sentence first. Nothing starts until
    * iteration begins. Aborting rejects with `signal.reason` and cancels the
-   * rest in the worker; failures reject with a {@link KokoroError}.
+   * rest in the worker; failures reject with a {@link KokoroError}. An
+   * explicit voice that is not installed rejects with `not_installed`; the
+   * settings voice falls back to af_heart instead (trace `voice_fallback`).
    */
-  synthesize(text: string, signal?: AbortSignal): AsyncIterable<KokoroChunk>;
+  synthesize(
+    text: string,
+    signal?: AbortSignal,
+    options?: KokoroSynthesisOptions,
+  ): AsyncIterable<KokoroChunk>;
+  /** The voice's sample sentence, for Settings; `not_installed` if it is not. */
+  preview(
+    voice: KokoroVoiceId,
+    signal?: AbortSignal,
+    options?: Pick<KokoroSynthesisOptions, "speed">,
+  ): AsyncIterable<KokoroChunk>;
   dispose(): void;
 }
 
@@ -281,9 +369,11 @@ async function hashInto(path: string, hash: Hash, signal: AbortSignal) {
 
 export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
   const modelDir = options.modelDir;
-  const files = options.files ?? KOKORO_FILES;
+  const files = options.files ?? KOKORO_ALL_FILES;
   const paths = kokoroPaths(modelDir, files, join);
-  const totalBytes = files.reduce((n, f) => n + f.size, 0);
+  const filesFor = (voice: KokoroVoiceId) => kokoroFilesFor(voice, files);
+  const bytesOf = (list: readonly KokoroFile[]) =>
+    list.reduce((n, f) => n + f.size, 0);
   const fork = options.fork ?? electronFork;
   const doFetch =
     options.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -313,7 +403,14 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     | {
         promise: Promise<void>;
         controller: AbortController;
-        listeners: Set<(status: KokoroStatus) => void>;
+        /** A list, not a set: two callers may pass the same function. */
+        listeners: ((status: KokoroVoiceStatus) => void)[];
+        /** Callers still waiting; the job is cancelled when this hits 0. */
+        waiting: number;
+        voice: KokoroVoiceId;
+        /** What this job fetches: the files missing when it started. */
+        files: readonly KokoroFile[];
+        totalBytes: number;
         bytes: number;
         lastEmit: number;
       }
@@ -325,21 +422,30 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     } catch {}
   };
 
-  function installed(): boolean {
-    return files.every((file) => {
-      try {
-        return (
-          statSync(join(modelDir, kokoroFileName(file))).size === file.size
-        );
-      } catch {
-        return false;
-      }
-    });
+  function present(file: KokoroFile): boolean {
+    try {
+      return statSync(join(modelDir, kokoroFileName(file))).size === file.size;
+    } catch {
+      return false;
+    }
   }
 
-  function status(): KokoroStatus {
-    const ready = installed();
+  /** A voice `files` cannot serve (no pack, no accent) is never installed. */
+  function installedFor(voice: KokoroVoiceId): boolean {
+    return paths.voices[voice] !== undefined && filesFor(voice).every(present);
+  }
+
+  function status(
+    voice: KokoroVoiceId = DEFAULT_KOKORO_VOICE,
+  ): KokoroVoiceStatus {
+    if (!isKokoroVoiceId(voice)) voice = DEFAULT_KOKORO_VOICE;
+    const own = filesFor(voice);
+    const ready = own.every(present);
+    // While a download runs the numbers describe it, whichever voice asked.
+    const totalBytes = job ? job.totalBytes : bytesOf(own);
     const bytes = job ? job.bytes : ready ? totalBytes : 0;
+    const voices = {} as Record<KokoroVoiceId, boolean>;
+    for (const id of KOKORO_VOICE_IDS) voices[id] = installedFor(id);
     return {
       installed: ready,
       downloading: Boolean(job),
@@ -347,6 +453,9 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
       bytes,
       totalBytes,
       ...(lastError ? { error: lastError } : {}),
+      voice,
+      voices,
+      missingBytes: bytesOf(own.filter((file) => !present(file))),
     };
   }
 
@@ -485,7 +594,7 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     }
   }
 
-  function ensureWorker(): Live {
+  function ensureWorker(voice: KokoroVoiceId): Live {
     if (live && !live.exited) return live;
     let settle!: (error?: KokoroError) => void;
     const ready = new Promise<void>((resolve, reject) => {
@@ -524,23 +633,77 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
       stop(target, new KokoroError("load_timeout"));
     }, readyTimeoutMs);
     trace({ phase: "spawned" });
-    post(target, { type: "init", paths, threads: kokoroDefaults.threads });
+    post(target, {
+      type: "init",
+      paths,
+      threads: kokoroDefaults.threads,
+      voice,
+    });
     return target;
+  }
+
+  /**
+   * The voice and pace for one request: an explicit option, else the user's
+   * settings, else af_heart at the trained pace. Only the settings voice may
+   * fall back to af_heart when its pack is missing; an explicit one fails.
+   */
+  let lastFallback: KokoroVoiceId | undefined;
+  function resolve(request?: KokoroSynthesisOptions): {
+    voice: KokoroVoiceId;
+    speed: number;
+  } {
+    let preferred: { kokoroVoice?: KokoroVoiceId; voiceRate?: number } = {};
+    try {
+      preferred = options.settings?.() ?? {};
+    } catch {}
+    const requested = request?.voice;
+    const explicit = isKokoroVoiceId(requested);
+    let voice: KokoroVoiceId = isKokoroVoiceId(requested)
+      ? requested
+      : isKokoroVoiceId(preferred.kokoroVoice)
+        ? preferred.kokoroVoice
+        : DEFAULT_KOKORO_VOICE;
+    if (
+      !explicit &&
+      voice !== DEFAULT_KOKORO_VOICE &&
+      !installedFor(voice) &&
+      installedFor(DEFAULT_KOKORO_VOICE)
+    ) {
+      if (lastFallback !== voice) trace({ phase: "voice_fallback", voice });
+      lastFallback = voice;
+      voice = DEFAULT_KOKORO_VOICE;
+    }
+    const speed = kokoroSpeed(request?.speed ?? preferred.voiceRate);
+    return { voice, speed };
   }
 
   /** Short fixed replies ("On it.") are synthesized once and replayed. */
   const phraseCache = new Map<string, KokoroChunk[]>();
   const CACHE_MAX_CHARS = 60;
-  const CACHE_MAX_ENTRIES = 48;
+  /** Room for two voices' worth of fixed phrases (~50 KB each). */
+  const CACHE_MAX_ENTRIES = 96;
   function cacheable(text: string) {
     return text.length <= CACHE_MAX_CHARS;
+  }
+  const cacheKey = (voice: KokoroVoiceId, speed: number, text: string) =>
+    `${voice}|${speed.toFixed(2)}|${text}`;
+  function remember(key: string, chunks: KokoroChunk[]) {
+    if (phraseCache.size >= CACHE_MAX_ENTRIES) {
+      // Oldest first, so a voice change does not pin the old voice's phrases.
+      const oldest = phraseCache.keys().next().value;
+      if (oldest !== undefined) phraseCache.delete(oldest);
+    }
+    phraseCache.set(key, chunks);
   }
   async function* run(
     text: string,
     signal?: AbortSignal,
+    options?: KokoroSynthesisOptions,
   ): AsyncGenerator<KokoroChunk, void, undefined> {
     signal?.throwIfAborted();
-    const cached = phraseCache.get(String(text ?? "").trim());
+    const clean = String(text ?? "").trim();
+    const { voice, speed } = resolve(options);
+    const cached = phraseCache.get(cacheKey(voice, speed, clean));
     if (cached) {
       for (const chunk of cached) {
         signal?.throwIfAborted();
@@ -549,9 +712,8 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
       return;
     }
     if (disposed) throw new KokoroError("disposed");
-    if (!installed()) throw new KokoroError("not_installed");
+    if (!installedFor(voice)) throw new KokoroError("not_installed");
     if (now() < cooldownUntil) throw new KokoroError("worker_unavailable");
-    const clean = String(text ?? "").trim();
     if (!clean) return;
     active++;
     clearIdle();
@@ -559,14 +721,14 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     let id = 0;
     let complete = false;
     try {
-      target = ensureWorker();
+      target = ensureWorker(voice);
       await untilAborted(target.ready, signal);
       if (target.exited || target !== live)
         throw target.stopped ?? new KokoroError("worker_crashed");
       id = ++sequence;
       const queue = new ChunkQueue();
       target.streams.set(id, queue);
-      post(target, { type: "synthesize", id, text: clean });
+      post(target, { type: "synthesize", id, text: clean, voice, speed });
       armStall(target);
       for (;;) {
         const chunk = await queue.next(signal);
@@ -595,8 +757,8 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     const at = now();
     if (!force && at - job.lastEmit < kokoroDefaults.progressIntervalMs) return;
     job.lastEmit = at;
-    const snapshot = status();
-    for (const listener of job.listeners) {
+    const snapshot = status(job.voice);
+    for (const listener of [...job.listeners]) {
       try {
         listener(snapshot);
       } catch {}
@@ -733,7 +895,7 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
       await mkdir(modelDir, { recursive: true });
       const pending: KokoroFile[] = [];
       let partialBytes = 0;
-      for (const file of files) {
+      for (const file of state.files) {
         const name = join(modelDir, kokoroFileName(file));
         if ((await sizeOf(name)) === file.size) state.bytes += file.size;
         else {
@@ -748,6 +910,7 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
         state.controller.signal.throwIfAborted();
         await fetchFile(file, state);
       }
+      // Every pinned file of every pack stays; only old revisions go.
       await removeStale(new Set(files.map(kokoroFileName)));
       lastError = undefined;
       trace({
@@ -769,38 +932,86 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
   }
 
   async function download(
-    onProgress?: (status: KokoroStatus) => void,
+    onProgress?: (status: KokoroVoiceStatus) => void,
     signal?: AbortSignal,
+    voice: KokoroVoiceId = DEFAULT_KOKORO_VOICE,
   ): Promise<void> {
-    if (disposed) throw new KokoroError("disposed");
-    signal?.throwIfAborted();
-    if (!job) {
-      lastError = undefined;
-      const state = {
-        controller: new AbortController(),
-        listeners: new Set<(status: KokoroStatus) => void>(),
-        bytes: 0,
-        lastEmit: -Infinity,
-        promise: Promise.resolve(),
-      };
-      job = state;
-      state.promise = runDownload(state).finally(() => {
-        if (job === state) job = undefined;
-        for (const listener of state.listeners) {
-          try {
-            listener(status());
-          } catch {}
+    if (!isKokoroVoiceId(voice)) throw new KokoroError("not_installed");
+    for (;;) {
+      if (disposed) throw new KokoroError("disposed");
+      signal?.throwIfAborted();
+      const wanted = filesFor(voice);
+      if (!job) {
+        lastError = undefined;
+        // Only the missing files, so a 6 MB pack shows its own progress bar
+        // rather than starting at 98% of the model it sits on.
+        const missing = wanted.filter((file) => !present(file));
+        const state = {
+          controller: new AbortController(),
+          listeners: [] as ((status: KokoroVoiceStatus) => void)[],
+          waiting: 0,
+          voice,
+          files: missing,
+          totalBytes: bytesOf(missing),
+          bytes: 0,
+          lastEmit: -Infinity,
+          promise: Promise.resolve(),
+        };
+        job = state;
+        state.promise = runDownload(state).finally(() => {
+          if (job === state) job = undefined;
+          // The last event still counts this job's bytes, not the base's.
+          const final: KokoroVoiceStatus = {
+            ...status(state.voice),
+            bytes: state.bytes,
+            totalBytes: state.totalBytes,
+            progress: state.totalBytes
+              ? Math.min(1, state.bytes / state.totalBytes)
+              : 1,
+          };
+          for (const listener of [...state.listeners]) {
+            try {
+              listener(final);
+            } catch {}
+          }
+        });
+      }
+      const current = job;
+      current.waiting++;
+      if (onProgress) current.listeners.push(onProgress);
+      let left = false;
+      const leave = () => {
+        if (left) return;
+        left = true;
+        current.waiting--;
+        if (onProgress) {
+          const at = current.listeners.indexOf(onProgress);
+          if (at >= 0) current.listeners.splice(at, 1);
         }
-      });
-    }
-    const current = job;
-    if (onProgress) current.listeners.add(onProgress);
-    const onAbort = () => current.controller.abort(signal?.reason);
-    signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-      await current.promise;
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
+      };
+      try {
+        await new Promise<void>((resolve, reject) => {
+          // An aborting caller only detaches itself: the base install the
+          // user started from Settings must survive the voice picker dropping
+          // a pack request that joined it. The last one to leave cancels the
+          // job and waits for it to wind down, so `downloading` is already
+          // false when its promise rejects.
+          const onAbort = () => {
+            leave();
+            if (current.waiting === 0) current.controller.abort(signal?.reason);
+            else reject(signal?.reason);
+          };
+          signal?.addEventListener("abort", onAbort, { once: true });
+          current.promise
+            .then(resolve, reject)
+            .finally(() => signal?.removeEventListener("abort", onAbort));
+        });
+      } finally {
+        leave();
+      }
+      // Joined another voice's download: go round for what is still missing.
+      if (wanted.every((file) => current.files.includes(file) || present(file)))
+        return;
     }
   }
 
@@ -826,23 +1037,42 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     status,
     download,
     remove,
-    async warm(phrases: readonly string[] = []) {
-      for await (const _chunk of run(kokoroDefaults.warmText));
-      // Pre-synthesize the fixed acknowledgements so they play instantly.
+    async warm(phrases: readonly string[] = [], options?) {
+      for await (const _chunk of run(
+        kokoroDefaults.warmText,
+        undefined,
+        options,
+      ));
+      // Pre-synthesize the fixed acknowledgements so they play instantly,
+      // in the voice and at the pace they will be asked for.
+      const { voice, speed } = resolve(options);
+      let budget = CACHE_MAX_ENTRIES;
       for (const phrase of phrases) {
         const clean = String(phrase ?? "").trim();
-        if (!clean || !cacheable(clean) || phraseCache.has(clean)) continue;
-        if (phraseCache.size >= CACHE_MAX_ENTRIES) break;
+        const key = cacheKey(voice, speed, clean);
+        if (!clean || !cacheable(clean) || phraseCache.has(key)) continue;
+        if (budget-- <= 0) break;
         const chunks: KokoroChunk[] = [];
         try {
-          for await (const chunk of run(clean)) chunks.push(chunk);
+          for await (const chunk of run(clean, undefined, { voice, speed }))
+            chunks.push(chunk);
         } catch {
           return;
         }
-        if (chunks.length) phraseCache.set(clean, chunks);
+        if (chunks.length) remember(key, chunks);
       }
     },
-    synthesize: (text, signal) => run(text, signal),
+    synthesize: (text, signal, options) => run(text, signal, options),
+    preview(voice, signal, options) {
+      if (!isKokoroVoiceId(voice))
+        return (async function* () {
+          throw new KokoroError("not_installed");
+        })();
+      return run(KOKORO_VOICES[voice].sample, signal, {
+        voice,
+        speed: options?.speed,
+      });
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

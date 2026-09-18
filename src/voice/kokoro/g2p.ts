@@ -7,9 +7,15 @@
  * homographs use the dictionary DEFAULT. Words the lexicon cannot read go to
  * an injected fallback (misaki's own BART network, see ./bart.ts).
  *
- * Only misaki's us_gold dictionary is used. us_silver was generated with
- * espeak-ng (misaki issue #51), a licensing gray area, and gold-only coverage
- * matched gold+silver on the spike's test sentences.
+ * Only misaki's gold dictionaries are used (us_gold, or gb_gold for the
+ * British voices). The silver sets were generated with espeak-ng (misaki
+ * issue #51), a licensing gray area, and gold-only coverage matched
+ * gold+silver on the spike's test sentences.
+ *
+ * British mode is misaki's `british=True`: gb_gold, the GB fallback network,
+ * -s/-ed/-ing endings without the American flap and with ɪ for ᵻ, and no
+ * -ing stemming after a non-rhotic ə or ː (misaki leaves that to the
+ * fallback). misaki has no other British branches in its lexicon half.
  *
  * Pure: the caller passes the parsed dictionary; no I/O happens here.
  */
@@ -22,11 +28,16 @@ export type G2PFallback = (word: string) => string | null | undefined;
 export type WordSource = "lexicon" | "fallback" | "spelled" | "unknown";
 
 export interface G2POptions {
-  /** misaki us_gold.json, parsed. */
+  /** misaki us_gold.json (or gb_gold.json when British), parsed. */
   gold: Lexicon;
-  /** Extra entries that win over the dictionary. Defaults to {@link OVERRIDES}. */
+  /**
+   * Extra entries that win over the dictionary. Defaults to
+   * {@link OVERRIDES}, or {@link GB_OVERRIDES} when British.
+   */
   overrides?: Readonly<Record<string, string>>;
   fallback?: G2PFallback;
+  /** misaki `british=True`: gb_gold phonemes and British endings. */
+  british?: boolean;
 }
 
 export interface G2PWord {
@@ -70,6 +81,35 @@ export const OVERRIDES: Readonly<Record<string, string>> = {
   close: "klˈOz",
 };
 
+/**
+ * The same names in misaki GB phonemes. Each value is what this port
+ * produces from gb_gold (the pinned misaki revision) and the GB BART, hand-
+ * corrected only where that mangled the name, the same way {@link OVERRIDES}
+ * were made for us_gold: no entry is a guess at a word gb_gold lacks. The
+ * fixture tests/fixtures/kokoro/gb_gold_subset.json holds the entries used.
+ */
+export const GB_OVERRIDES: Readonly<Record<string, string>> = {
+  YouTube: "jˈuːtjuːb",
+  Xcode: "ˈɛkskˌQd",
+  Safari: "səfˈɑːɹi",
+  Chrome: "kɹˈQm",
+  WhatsApp: "wˈɒtsˌap",
+  Spotify: "spˈɒtɪfˌI",
+  Slack: "slˈak",
+  Notion: "nˈQʃᵊn",
+  GitHub: "ɡˈɪthˌʌb",
+  ChatGPT: "ʧˈat ʤˌiːpˌiːtˈiː",
+  macOS: "mˌak ˌQˈɛs",
+  iPhone: "ˈIfˌQn",
+  iPad: "ˈIpˌad",
+  iCloud: "ˈIklˌWd",
+  FaceTime: "fˈAstˌIm",
+  Gmail: "ʤˈiːmˌAl",
+  Figma: "fˈɪɡmə",
+  Assist: "əsˈɪst",
+  close: "klˈQz",
+};
+
 const PRIMARY = "ˈ";
 const SECONDARY = "ˌ";
 const STRESSES = "ˌˈ";
@@ -88,6 +128,10 @@ const SYMBOLS: ReadonlyMap<string, string> = new Map([
 /** misaki's US phoneme inventory (plus ɐ); every override must stay inside it. */
 export const US_PHONEMES = new Set(
   "AIOWYbdfhijklmnpstuvwzæðŋɑɔəɛɜɡɪɹɾʃʊʌʒʤʧˈˌθᵊᵻʔɐ",
+);
+/** misaki's GB_VOCAB (plus ɐ): non-rhotic, with length marks and no flap. */
+export const GB_PHONEMES = new Set(
+  "AIQWYabdfhijklmnpstuvwzðŋɑɒɔəɛɜɡɪɹʃʊʌʒʤʧˈˌːθᵊɐ",
 );
 // misaki subtokenizer: WhatsApp -> Whats|App, ChatGPT -> Chat|GPT.
 const SUBTOKEN =
@@ -176,13 +220,20 @@ interface Token {
 export class KokoroG2P {
   private readonly gold: Map<string, LexiconEntry>;
   private readonly fallback?: G2PFallback;
+  private readonly british: boolean;
   private readonly cache = new Map<string, string | null>();
 
   constructor(options: G2POptions) {
+    this.british = options.british === true;
     this.gold = growDictionary(options.gold);
-    for (const [word, ps] of Object.entries(options.overrides ?? OVERRIDES)) {
+    const overrides =
+      options.overrides ?? (this.british ? GB_OVERRIDES : OVERRIDES);
+    for (const [word, ps] of Object.entries(overrides)) {
+      // Every casing, so a grown twin of a dictionary entry ("Close" from
+      // gb_gold's tagged "close") cannot outrank the override.
       this.gold.set(word, ps);
       this.gold.set(word.toLowerCase(), ps);
+      this.gold.set(capitalize(word), ps);
     }
     this.fallback = options.fallback;
   }
@@ -416,18 +467,27 @@ export class KokoroG2P {
   ): string | null {
     if (!stem) return null;
     const last = stem[stem.length - 1];
+    // gb_gold writes the reduced vowel of -es/-ed as ɪ where us_gold uses ᵻ.
+    const reduced = this.british ? "ɪ" : "ᵻ";
     if (suffix === "s") {
       if ("ptkfθ".includes(last)) return stem + "s";
-      if ("szʃʒʧʤ".includes(last)) return stem + "ᵻz";
+      if ("szʃʒʧʤ".includes(last)) return stem + reduced + "z";
       return stem + "z";
     }
     if (suffix === "ed") {
       if ("pkfθʃsʧ".includes(last)) return stem + "t";
-      if (last === "d") return stem + "ᵻd";
+      if (last === "d") return stem + reduced + "d";
       if (last !== "t") return stem + "d";
-      if (stem.length < 2) return stem + "ɪd";
+      // RP keeps the t: "wanted" is wɒntɪd, never the American flap.
+      if (this.british || stem.length < 2) return stem + "ɪd";
       if (US_TAUS.has(stem[stem.length - 2])) return stem.slice(0, -1) + "ɾᵻd";
       return stem + "ᵻd";
+    }
+    if (this.british) {
+      // A non-rhotic stem ("hire" hˈIə) would lose its linking r; misaki
+      // gives up here so the word goes to the fallback network instead.
+      if ("əː".includes(last)) return null;
+      return stem + "ɪŋ";
     }
     if (stem.length > 1 && last === "t" && US_TAUS.has(stem[stem.length - 2]))
       return stem.slice(0, -1) + "ɾɪŋ";

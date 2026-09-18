@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { trimSilence, toInt16 } from "../src/voice/kokoro/audio";
 import { BartG2P, parseSafetensors } from "../src/voice/kokoro/bart";
 import {
+  GB_OVERRIDES,
+  GB_PHONEMES,
   KokoroG2P,
   OVERRIDES,
   US_PHONEMES,
@@ -28,6 +30,12 @@ import {
   styleOffset,
   tokenize,
 } from "../src/voice/kokoro/tokens";
+import {
+  KOKORO_SPEED,
+  KOKORO_VOICES,
+  kokoroSpeed,
+} from "../src/voice/kokoro/voices";
+import { tinyBart } from "./kokoro-fakes";
 
 const fixtures = fileURLToPath(new URL("./fixtures/kokoro/", import.meta.url));
 /** The misaki us_gold entries these sentences touch (Apache-2.0, rev fba1236). */
@@ -264,6 +272,171 @@ describe("Kokoro G2P (misaki us_gold port)", () => {
   });
 });
 
+/**
+ * The misaki gb_gold entries the sentences below touch (Apache-2.0, rev
+ * fba1236). Expected phonemes were checked against misaki 0.9.4 with
+ * british=True on 2026-09-17; they differ only where this port has no POS
+ * tagger ("live") or normalizes numbers itself ("3:30").
+ */
+const gbGold: Lexicon = JSON.parse(
+  readFileSync(join(fixtures, "gb_gold_subset.json"), "utf8"),
+);
+/** What the GB BART (PeterReid/graphemes_to_phonemes_en_gb) says for these. */
+const gbNames: Record<string, string> = {
+  Nitish: "nˈɪtɪʃ",
+  Patel: "pˈatᵊl",
+  Kovuru: "kˈQvjʊɹuː",
+  monitoring: "mˈɒnɪtəɹɪŋ",
+};
+const gbStub = (word: string) => gbNames[word] ?? null;
+
+describe("Kokoro G2P (misaki gb_gold port, british)", () => {
+  const g2p = new KokoroG2P({ gold: gbGold, british: true, fallback: gbStub });
+
+  it.each([
+    ["Sure, opening Calculator.", "ʃˈʊə, ˈQpᵊnɪŋ kˈalkjʊlAtə."],
+    [
+      "I found three files named budget. Which one should I open?",
+      "ˌI fˈWnd θɹˈiː fˈIlz nˈAmd bˈʌʤɪt. wˌɪʧ wˈʌn ʃˌʊd ˌI ˈQpᵊn?",
+    ],
+    [
+      "Should I send the email to Alex Johnson at 3:30 PM?",
+      "ʃˌʊd ˌI sˈɛnd ði ˈiːmAl tʊ ˈalɪks ʤˈɒnsᵊn at θɹˈiː θˈɜːti pˌiːˈɛm?",
+    ],
+    [
+      "Done. Your YouTube video is playing on loop.",
+      "dˈʌn. jˌɔː jˈuːtjuːb vˈɪdɪQ ɪz plˈAɪŋ ˌɒn lˈuːp.",
+    ],
+    [
+      "Your meeting with Dr. Patel starts at 10:15 AM on March 3rd.",
+      "jˌɔː mˈiːtɪŋ wɪð dˈɒktə pˈatᵊl stˈɑːts at tˈɛn fˌɪftˈiːn ˌAˈɛm ˌɒn mˈɑːʧ θˈɜːd.",
+    ],
+    [
+      "I found 12 results, and 3 of them are PDFs.",
+      "ˌI fˈWnd twˈɛlv ɹɪzˈʌlts, and θɹˈiː ɒv ðˌɛm ɑː pˌiːdˌiːˈɛfs.",
+    ],
+    [
+      "I used to live in the city. The apple is on the table, an hour ago.",
+      "ˌI jˈuːst tə lˈIv ɪn ðə sˈɪti. ði ˈapᵊl ɪz ˌɒn ðə tˈAbᵊl, ɐn ˈWə əɡˈQ.",
+    ],
+    [
+      "The U.S. team won, and it's done.",
+      "ðə jˌuːˈɛs tˈiːm wˈʌn, and ɪts dˈʌn.",
+    ],
+  ])("matches misaki british=True: %s", (text, phonemes) => {
+    expect(g2p.phonemize(text).phonemes).toBe(phonemes);
+  });
+
+  it("uses British endings: ɪz and ɪd with no flap, and no -ing stem after ə or ː", () => {
+    expect(
+      g2p.phonemize(
+        "The watches loaded; I wanted the buses started and the hiring sorted.",
+      ).phonemes,
+    ).toBe(
+      "ðə wˈɒʧɪz lˈQdɪd; ˌI wˈɒntɪd ðə bˈʌsɪz stˈɑːtɪd and ðə hˈIəɹɪŋ sˈɔːtɪd.",
+    );
+    // "monitor" ends in ə: misaki declines to stem it and asks the fallback,
+    // which restores the linking r. The American rules would glue ɪŋ on.
+    const british = g2p.phonemize(
+      "I am monitoring the download for the tutor.",
+    );
+    expect(british.phonemes).toBe(
+      "ˌI ɐm mˈɒnɪtəɹɪŋ ðə dˈWnlQd fɔː ðə tjˈuːtə.",
+    );
+    expect(british.words.find((w) => w.text === "monitoring")?.source).toBe(
+      "fallback",
+    );
+    const american = new KokoroG2P({ gold: gbGold, fallback: gbStub });
+    expect(american.phonemize("monitoring wanted").words).toEqual([
+      { text: "monitoring", phonemes: "mˈɒnɪtəɪŋ", source: "lexicon" },
+      { text: "wanted", phonemes: "wˈɒntᵻd", source: "lexicon" },
+    ]);
+    expect(g2p.phonemize("monitoring wanted").words[1].phonemes).toBe(
+      "wˈɒntɪd",
+    );
+  });
+
+  it("reads app names from the GB override lexicon in GB phonemes only", () => {
+    expect(
+      g2p.phonemize(
+        "Open WhatsApp, Safari, Chrome, Slack, Notion, GitHub and ChatGPT on my iPhone running macOS.",
+      ).phonemes,
+    ).toBe(
+      "ˈQpᵊn wˈɒtsˌap, səfˈɑːɹi, kɹˈQm, slˈak, nˈQʃᵊn, ɡˈɪthˌʌb and ʧˈat ʤˌiːpˌiːtˈiː ˌɒn mI ˈIfˌQn ɹˈʌnɪŋ mˌak ˌQˈɛs.",
+    );
+    expect(
+      g2p.phonemize("Opening Spotify and Xcode for Nitish Kovuru.").phonemes,
+    ).toBe("ˈQpᵊnɪŋ spˈɒtɪfˌI and ˈɛkskˌQd fɔː nˈɪtɪʃ kˈQvjʊɹuː.");
+    expect(g2p.phonemize("Open Assist can assist you.").phonemes).toBe(
+      "ˈQpᵊn əsˈɪst kan əsˈɪst juː.",
+    );
+    expect(Object.keys(GB_OVERRIDES)).toEqual(Object.keys(OVERRIDES));
+    for (const [word, ps] of Object.entries(GB_OVERRIDES)) {
+      for (const c of ps.replaceAll(" ", ""))
+        expect(GB_PHONEMES.has(c), `${word}: ${c}`).toBe(true);
+      expect(tokenize(ps, vocab).dropped, word).toBe(0);
+      // No American flap, rhotic ɹ-coloured schwa or ᵻ leaks in.
+      expect(ps).not.toMatch(/[ɾʔᵻæO]/);
+    }
+  });
+
+  it("an override wins in every casing, even over a tagged gb_gold twin", () => {
+    // gb_gold has close {DEFAULT: klˈQs (adjective), VERB: klˈQz}; without a
+    // tagger the grown "Close" twin would read the adjective.
+    const plain = new KokoroG2P({ gold: gbGold, british: true, overrides: {} });
+    expect(plain.phonemize("Close it? I closed Safari.").phonemes).toBe(
+      "klˈQs ɪt? ˌI klˈQzd səfˈɑːɹi.",
+    );
+    expect(g2p.phonemize("Close it? I closed Safari.").phonemes).toBe(
+      "klˈQz ɪt? ˌI klˈQzd səfˈɑːɹi.",
+    );
+    expect(g2p.phonemize("CLOSE close Close").phonemes).toBe(
+      "klˈQz klˈQz klˈQz",
+    );
+  });
+
+  it("stays American unless asked: british defaults to false", () => {
+    expect(new KokoroG2P({ gold: gbGold }).phonemize("wanted").phonemes).toBe(
+      "wˈɒntᵻd",
+    );
+  });
+});
+
+describe("Kokoro voices", () => {
+  it("clamps the speed to the trained range and rounds it for cache keys", () => {
+    expect(KOKORO_SPEED).toEqual({ min: 0.8, max: 1.3, default: 1 });
+    expect(kokoroSpeed(undefined)).toBe(1);
+    expect(kokoroSpeed(Number.NaN)).toBe(1);
+    expect(kokoroSpeed("fast")).toBe(1);
+    expect(kokoroSpeed(0.5)).toBe(0.8);
+    expect(kokoroSpeed(1.4)).toBe(1.3);
+    expect(kokoroSpeed(Infinity)).toBe(1);
+    expect(kokoroSpeed(1.149)).toBe(1.15);
+    expect(kokoroSpeed(1.2)).toBe(1.2);
+  });
+
+  it("every preview sentence reads from its accent's lexicon alone", () => {
+    const british = new KokoroG2P({ gold: gbGold, british: true });
+    const american = new KokoroG2P({ gold });
+    for (const [id, voice] of Object.entries(KOKORO_VOICES)) {
+      const result = (voice.accent === "gb" ? british : american).phonemize(
+        voice.sample,
+      );
+      expect(
+        result.words.filter((w) => w.source !== "lexicon"),
+        `${id}: ${voice.sample}`,
+      ).toEqual([]);
+      expect(voice.label).toMatch(
+        voice.accent === "gb" ? /British/ : /American/,
+      );
+    }
+    expect(KOKORO_VOICES.bm_george.sample).toBe(KOKORO_VOICES.bm_fable.sample);
+    expect(british.phonemize(KOKORO_VOICES.bm_george.sample).phonemes).toBe(
+      "ɡˈʊd ˌɑːftənˈuːn. ʃˌal ˌI ˈQpᵊn jɔː kˈalɪndə, ɔː ɹˈiːd ðə njˈuːz fˈɜːst?",
+    );
+  });
+});
+
 describe("Kokoro tokens", () => {
   it("maps phonemes to the tokenizer.json ids and drops unknown symbols", () => {
     expect(tokenize("ʃˈʊɹ, ˈOpᵊnɪŋ kˈælkjəlˌATəɹ.", vocab)).toEqual({
@@ -376,70 +549,8 @@ describe("Kokoro audio", () => {
 describe("Kokoro BART fallback", () => {
   /** A zero-weight BART whose output is decided by final_logits_bias alone. */
   const tiny = (bias: number[]) => {
-    const d = 2;
-    const tensors = new Map<string, [number[], number[]]>();
-    const put = (name: string, shape: number[], values?: number[]) =>
-      tensors.set(name, [
-        shape,
-        values ?? new Array(shape.reduce((a, b) => a * b, 1)).fill(0),
-      ]);
-    put("model.shared.weight", [bias.length, d]);
-    put("final_logits_bias", [1, bias.length], bias);
-    for (const stack of ["encoder", "decoder"]) {
-      const layer = `model.${stack}.layers.0`;
-      const norms = [
-        `model.${stack}.layernorm_embedding`,
-        `${layer}.self_attn_layer_norm`,
-        `${layer}.final_layer_norm`,
-      ];
-      const attentions = [`${layer}.self_attn`];
-      if (stack === "decoder") {
-        norms.push(`${layer}.encoder_attn_layer_norm`);
-        attentions.push(`${layer}.encoder_attn`);
-      }
-      put(`model.${stack}.embed_positions.weight`, [10, d]);
-      for (const norm of norms) {
-        put(`${norm}.weight`, [d]);
-        put(`${norm}.bias`, [d]);
-      }
-      for (const attention of attentions)
-        for (const projection of ["q_proj", "k_proj", "v_proj", "out_proj"]) {
-          put(`${attention}.${projection}.weight`, [d, d]);
-          put(`${attention}.${projection}.bias`, [d]);
-        }
-      put(`${layer}.fc1.weight`, [4, d]);
-      put(`${layer}.fc1.bias`, [4]);
-      put(`${layer}.fc2.weight`, [d, 4]);
-      put(`${layer}.fc2.bias`, [d]);
-    }
-    const header: Record<string, unknown> = {};
-    let size = 0;
-    for (const [name, [shape, values]] of tensors) {
-      header[name] = {
-        dtype: "F32",
-        shape,
-        data_offsets: [size, size + values.length * 4],
-      };
-      size += values.length * 4;
-    }
-    const json = new TextEncoder().encode(JSON.stringify(header));
-    const bytes = new Uint8Array(8 + json.length + size);
-    new DataView(bytes.buffer).setBigUint64(0, BigInt(json.length), true);
-    bytes.set(json, 8);
-    let at = 8 + json.length;
-    for (const [, values] of tensors.values()) {
-      bytes.set(new Uint8Array(Float32Array.from(values).buffer), at);
-      at += values.length * 4;
-    }
-    return new BartG2P(
-      {
-        d_model: d,
-        max_position_embeddings: 10,
-        grapheme_chars: "____abcd",
-        phoneme_chars: "____xy",
-      },
-      parseSafetensors(bytes),
-    );
+    const files = tinyBart(bias);
+    return new BartG2P(files.configJson, parseSafetensors(files.safetensors));
   };
 
   it("parses safetensors and decodes greedily until EOS or the length cap", () => {
@@ -480,6 +591,37 @@ const storedFile = (suffix: string) => {
 describe.skipIf(!storedFile("-us_gold.json"))(
   "Kokoro G2P with real data",
   () => {
+    it.skipIf(!storedFile("-gb_gold.json"))(
+      "reads the British pack: gb_gold plus the GB BART for unknown names",
+      () => {
+        const bart = new BartG2P(
+          JSON.parse(
+            readFileSync(storedFile("-g2p-bart-gb-config.json"), "utf8"),
+          ),
+          parseSafetensors(
+            readFileSync(storedFile("-g2p-bart-gb.safetensors")),
+          ),
+        );
+        for (const [word, ps] of Object.entries(gbNames))
+          expect(bart.predict(word), word).toBe(ps);
+        const full = new KokoroG2P({
+          gold: JSON.parse(readFileSync(storedFile("-gb_gold.json"), "utf8")),
+          british: true,
+          fallback: (word) => bart.predict(word),
+        });
+        expect(
+          full.phonemize("Opening Spotify and Xcode for Nitish Kovuru.")
+            .phonemes,
+        ).toBe("ˈQpᵊnɪŋ spˈɒtɪfˌI and ˈɛkskˌQd fɔː nˈɪtɪʃ kˈQvjʊɹuː.");
+        expect(
+          full.phonemize(
+            "The watches loaded; I wanted the buses started and the hiring sorted.",
+          ).phonemes,
+        ).toBe(
+          "ðə wˈɒʧɪz lˈQdɪd; ˌI wˈɒntɪd ðə bˈʌsɪz stˈɑːtɪd and ðə hˈIəɹɪŋ sˈɔːtɪd.",
+        );
+      },
+    );
     it("matches the spike's BART outputs and full-lexicon phonemes", () => {
       const bart = new BartG2P(
         JSON.parse(readFileSync(storedFile("-g2p-bart-config.json"), "utf8")),

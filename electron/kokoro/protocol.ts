@@ -5,7 +5,7 @@
  * where the transport allows it (worker_threads), otherwise one structured
  * clone per sentence (Electron parentPort, child_process "advanced").
  */
-import type { KokoroPaths } from "./manifest";
+import type { KokoroPaths, KokoroVoiceId } from "./manifest";
 
 export type KokoroErrorCode =
   | "not_installed"
@@ -27,8 +27,21 @@ export type KokoroErrorCode =
   | `http_${number}`;
 
 export type KokoroWorkerRequest =
-  | { type: "init"; paths: KokoroPaths; threads: number }
-  | { type: "synthesize"; id: number; text: string }
+  | {
+      type: "init";
+      paths: KokoroPaths;
+      threads: number;
+      /** Loaded before `ready` so the first sentence is not slower. */
+      voice?: KokoroVoiceId;
+    }
+  | {
+      type: "synthesize";
+      id: number;
+      text: string;
+      voice: KokoroVoiceId;
+      /** Already clamped by the client; the worker clamps again. */
+      speed: number;
+    }
   | { type: "cancel"; id: number };
 
 export type KokoroWorkerResponse =
