@@ -62,12 +62,12 @@ export const playbooks: Record<string, string[]> = {
     "Reload with CMD+R and go back with CMD+LEFT instead of hunting for toolbar buttons.",
   ],
   "com.spotify.client": [
-    "Spotify publishes no accessibility tree: context.controls is empty, so work from the keyboard.",
-    "Search with CMD+K (CMD+L on older builds), type the query, then press ENTER.",
-    "Move through results with UP and DOWN and press ENTER to play the highlighted one.",
+    "Spotify publishes no accessibility tree: context.controls is empty, so work from its menus.",
+    "Its menus are in context.menus and they work: Edit > Search opens search, Playback > Play starts it.",
+    "A greyed-out Edit > Search means no window is open: choose Window > Spotify first, then search.",
+    "After search opens, type the query, then UP and DOWN and ENTER to play the highlighted result.",
     "SPACE plays or pauses; do not click the transport controls, they are invisible to you.",
     "Never call open_app for Spotify once appId is com.spotify.client; it is already frontmost.",
-    "Its menu bar still works: context.menuBar lists the titles, so use a menu item before guessing.",
   ],
   "com.tinyspeck.slackmacgap": [
     "Jump to a channel or person with CMD+K, type the name, then UP or DOWN and ENTER.",
@@ -225,10 +225,10 @@ export const categoryPlaybooks: Record<PlaybookCategory, string[]> = {
     "Turn pages with PAGEDOWN and PAGEUP, and never save over the user's file.",
   ],
   generic: [
-    "Try the app's own search or command palette first, usually CMD+K, then CMD+F.",
-    "Do not call open_app for the application that is already frontmost; use its shortcuts.",
-    "When context.accessibility is none, never click blindly: use shortcuts and the menu bar.",
-    "context.menuBar lists the top-level menus: open the one you need and choose by keyboard.",
+    "Read context.menus first: it is this application's own list of what it can do.",
+    "Press a command with menu_item, or the shortcut the menu shows next to it.",
+    "Do not call open_app for the application that is already frontmost; use its menus and shortcuts.",
+    "When context.accessibility is none, never click blindly: menu_item still works there.",
   ],
 };
 

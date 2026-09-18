@@ -175,6 +175,12 @@ export function describeStep(step: PlanStep): string {
     case "type_text":
       line = `Type "${bound(s(a.text), 80)}"`;
       break;
+    case "menu_item":
+      line = `Choose ${bound((Array.isArray(a.path) ? a.path : []).map(String).join(" > "), 80)}`;
+      break;
+    case "click_control":
+      line = `Click "${bound(s(a.label), 80)}"`;
+      break;
     case "scroll":
       line = "Scroll";
       break;

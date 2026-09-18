@@ -85,22 +85,21 @@ describe("bounded screen context", () => {
         cleanScreenContext({ appName: "A", windowTitle: "B", controls: bad }),
       ).toBeUndefined();
   });
-  it("reports a blind application and its bounded menu titles", () => {
+  it("reports a blind application and its bounded menus", () => {
     const result = cleanScreenContext({
       appName: "Spotify",
       windowTitle: "Spotify Premium",
       accessibility: "none",
-      menuBar: ["Spotify", "File", "Edit", "View", "Playback", "Window"],
+      menus: [
+        "Edit: Undo [CMD+Z], Search [CMD+L] (disabled)",
+        "Playback: Play, Next [CMD+RIGHT]",
+      ],
       controls: [],
     });
     expect(result?.accessibility).toBe("none");
-    expect(result?.menuBar).toEqual([
-      "Spotify",
-      "File",
-      "Edit",
-      "View",
-      "Playback",
-      "Window",
+    expect(result?.menus).toEqual([
+      "Edit: Undo [CMD+Z], Search [CMD+L] (disabled)",
+      "Playback: Play, Next [CMD+RIGHT]",
     ]);
     expect(
       cleanScreenContext({ appName: "A", windowTitle: "B" })?.accessibility,
@@ -109,14 +108,14 @@ describe("bounded screen context", () => {
       appName: "A",
       windowTitle: "B",
       accessibility: "partial",
-      menuBar: ["M".repeat(80), "token=sk-fixtureSECRET123456"],
+      menus: ["M".repeat(500), "token=sk-fixtureSECRET123456"],
     });
-    expect(long?.menuBar?.[0]).toHaveLength(40);
-    expect(long?.menuBar?.[1]).not.toContain("fixtureSECRET");
+    expect(long?.menus?.[0]).toHaveLength(400);
+    expect(long?.menus?.[1]).not.toContain("fixtureSECRET");
     for (const bad of [
       { accessibility: "unknown" },
-      { menuBar: Array.from({ length: 13 }, (_, i) => `M${i}`) },
-      { menuBar: [{ title: "File" }] },
+      { menus: Array.from({ length: 13 }, (_, i) => `M${i}`) },
+      { menus: [{ title: "File" }] },
     ])
       expect(
         cleanScreenContext({ appName: "A", windowTitle: "B", ...bad }),

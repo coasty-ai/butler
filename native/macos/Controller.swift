@@ -248,11 +248,12 @@ func sameElement(_ a: AXUIElement?, _ b: AXUIElement?) -> Bool {
 func sameWindow(_ a: WindowState, _ b: WindowState, ignoringBounds: Bool = false) -> Bool {
     a.pid == b.pid && sameElement(a.window, b.window) && (ignoringBounds || a.bounds == b.bounds) && a.document == b.document
 }
-// Spotlight's panel grows as results populate, and a keyboard step targets the
-// verified focused element rather than a screen position, so neither depends
-// on exact window bounds. Pointer input keeps the exact comparison.
+// Spotlight's panel grows as results populate, a keyboard step targets the
+// verified focused element rather than a screen position, and a named menu
+// item or control is resolved again at the moment of input, so none of them
+// depends on exact window bounds. Pointer input keeps the exact comparison.
 func boundsIndependent(_ action: [String:Any]?, _ a: WindowState, _ b: WindowState) -> Bool {
-    if let type = action?["type"] as? String { return ["key", "hotkey", "type_text"].contains(type) }
+    if let type = action?["type"] as? String { return ["key", "hotkey", "type_text", "menu_item", "click_control"].contains(type) }
     return a.appId == "com.apple.Spotlight" && b.appId == "com.apple.Spotlight"
 }
 func sameWindow(_ a: WindowState, _ b: WindowState, for action: [String:Any]?) -> Bool {
@@ -381,6 +382,159 @@ func menuBarTitles(_ app: AXUIElement, limit: Int = 12) -> [String] {
     }
     return titles
 }
+// MARK: Named targets
+
+// The frontmost application's menus, read once and reused for a few seconds.
+// Titles and shortcuts are stable while an application is in front, and a
+// fresh read costs about a tenth of a second of accessibility round trips.
+struct MenuSnapshot {
+    let pid: pid_t
+    let at: TimeInterval
+    let lines: [String]
+    // Chord ("CMD+L") to the item it invokes, so a shortcut the model presses
+    // is checked against the application's own declaration of what it does.
+    let shortcuts: [String: String]
+}
+var menuSnapshot: MenuSnapshot? = nil // guarded by stateLock
+let menuSnapshotSeconds = 4.0
+// The AXMenu holding a menu bar item's or a submenu item's entries.
+func submenuOf(_ item: AXUIElement) -> AXUIElement? {
+    for child in (attribute(item, kAXChildrenAttribute) as? [AXUIElement] ?? [])
+    where attribute(child, kAXRoleAttribute) as? String == kAXMenuRole { return child }
+    return nil
+}
+func menuEntries(_ menu: AXUIElement, limit: Int) -> [AXUIElement] {
+    Array((attribute(menu, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(limit))
+}
+func menuBarItem(_ app: AXUIElement, _ title: String) -> AXUIElement? {
+    guard let bar = attribute(app, kAXMenuBarAttribute) else { return nil }
+    return menuEntries(bar as! AXUIElement, limit: menuListLimit + 6).first {
+        targetTitleMatches(request: title, title: attribute($0, kAXTitleAttribute) as? String ?? "")
+    }
+}
+func menuEntryDigest(_ item: AXUIElement) -> MenuItemDigest? {
+    let title = normalizeTargetTitle(attribute(item, kAXTitleAttribute) as? String ?? "")
+    guard !title.isEmpty else { return nil } // separators carry no title
+    let shortcut = menuShortcut(cmdChar: attribute(item, kAXMenuItemCmdCharAttribute) as? String ?? "",
+                                virtualKey: attribute(item, kAXMenuItemCmdVirtualKeyAttribute) as? Int,
+                                modifiers: attribute(item, kAXMenuItemCmdModifiersAttribute) as? Int ?? 0)
+    return MenuItemDigest(title: utf16Prefix(title, menuTitleLimit), shortcut: shortcut,
+                          enabled: attribute(item, kAXEnabledAttribute) as? Bool ?? true,
+                          submenu: submenuOf(item) != nil)
+}
+/**
+ The frontmost application's menus as one line each, plus its shortcuts. Titles
+ only: menu items name commands, never document contents. The Apple menu is
+ skipped (it is the system's, not the application's).
+ */
+func menuMap(_ app: AXUIElement, pid: pid_t) -> MenuSnapshot {
+    if let cached = withState({ menuSnapshot }), cached.pid == pid,
+       ProcessInfo.processInfo.systemUptime - cached.at < menuSnapshotSeconds { return cached }
+    var lines = [String](), shortcuts = [String: String]()
+    if let bar = attribute(app, kAXMenuBarAttribute) {
+        for item in menuEntries(bar as! AXUIElement, limit: menuListLimit + 6) where lines.count < menuListLimit {
+            let title = normalizeTargetTitle(attribute(item, kAXTitleAttribute) as? String ?? "")
+            guard !title.isEmpty, !systemMenuTitles.contains(title.lowercased()) else { continue }
+            guard let menu = submenuOf(item) else { lines.append(title); continue }
+            let entries = menuEntries(menu, limit: menuItemListLimit + 8).compactMap(menuEntryDigest)
+            for entry in entries {
+                if let shortcut = entry.shortcut, shortcuts[shortcut] == nil { shortcuts[shortcut] = entry.title }
+            }
+            lines.append(menuDigestLine(menu: title, items: entries))
+        }
+    }
+    let snapshot = MenuSnapshot(pid: pid, at: ProcessInfo.processInfo.systemUptime, lines: lines, shortcuts: shortcuts)
+    withState { menuSnapshot = snapshot }
+    return snapshot
+}
+/**
+ Resolves a menu path ("Playback" > "Play") against the live menu bar. Returns
+ nil when no menu item carries that name, which is a rejection the agent can
+ act on: the menus it was shown are the truth.
+ */
+func resolveMenuPath(_ app: AXUIElement, _ path: [String]) -> (item: AXUIElement, title: String, enabled: Bool)? {
+    guard path.count >= 2, let bar = attribute(app, kAXMenuBarAttribute) else { return nil }
+    var container = bar as! AXUIElement, found: AXUIElement? = nil
+    for (index, segment) in path.enumerated() {
+        guard let match = menuEntries(container, limit: 200).first(where: {
+            targetTitleMatches(request: segment, title: attribute($0, kAXTitleAttribute) as? String ?? "")
+        }) else { return nil }
+        found = match
+        if index < path.count - 1 {
+            guard let next = submenuOf(match) else { return nil }
+            container = next
+        }
+    }
+    guard let item = found else { return nil }
+    return (item, normalizeTargetTitle(attribute(item, kAXTitleAttribute) as? String ?? ""),
+            attribute(item, kAXEnabledAttribute) as? Bool ?? true)
+}
+func pressEscape() {
+    postInput(CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true))
+    postInput(CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false))
+}
+/**
+ Presses a menu item by name. AppKit validates items and Chromium builds them
+ only when a menu opens, so an item that reports itself disabled is retried
+ once with its menu open — which is what a person does — and the menu is always
+ closed again on failure.
+ */
+func pressMenuPath(_ path: [String]) throws {
+    guard !menuPathRefused(path) else {
+        throw ControlError("Menu items that quit an application or end the session are left to the user.", code: "TARGET_REFUSED")
+    }
+    guard let app = inputApplication() else { throw changedScreen("Foreground application changed.") }
+    let element = AXUIElementCreateApplication(app.processIdentifier)
+    _ = AXUIElementSetMessagingTimeout(element, 2.0)
+    let named = path.joined(separator: " > ")
+    var resolved = resolveMenuPath(element, path)
+    if resolved == nil || resolved?.enabled == false {
+        if let top = menuBarItem(element, path[0]) {
+            try ensureRunning()
+            _ = AXUIElementPerformAction(top, kAXPressAction as CFString)
+            Thread.sleep(forTimeInterval: 0.2)
+            resolved = resolveMenuPath(element, path)
+            if resolved == nil || resolved?.enabled == false { pressEscape() }
+        }
+    }
+    guard let item = resolved else {
+        throw ControlError("\(named) is not in this application's menus.", code: "TARGET_MISSING")
+    }
+    guard item.enabled else {
+        throw ControlError("\(named) is greyed out right now.", code: "TARGET_DISABLED")
+    }
+    try ensureRunning(); try guardSurface()
+    guard AXUIElementPerformAction(item.item, kAXPressAction as CFString) == .success else {
+        pressEscape()
+        throw ControlError("\(named) could not be chosen.", code: "INPUT_FAILED")
+    }
+    withState { menuSnapshot = nil } // menus revalidate after their own command
+}
+/**
+ The controls the model was shown, read again now: the same walk capture uses,
+ so a name it quoted resolves to where that control is at this moment.
+ */
+func currentNamedControls() -> [NamedControl] {
+    let display = CGDisplayBounds(displayID)
+    let state = windowState()
+    var items = groundedControls(state, display: display)
+    if browserAppIDs.contains(state.appId), let window = state.window {
+        items = mergeControls(items, webControls(window, display: display), limit: 60)
+    }
+    return items.map {
+        NamedControl(label: $0["label"] as? String ?? "", role: $0["role"] as? String ?? "",
+                     x: $0["x"] as? Double ?? 0, y: $0["y"] as? Double ?? 0,
+                     enabled: $0["enabled"] as? Bool ?? true)
+    }
+}
+func resolveNamedControl(_ action: [String:Any]) -> (match: ControlMatch, control: NamedControl?) {
+    let controls = currentNamedControls()
+    let match = matchNamedControl(controls, label: action["label"] as? String ?? "",
+                                  role: action["role"] as? String,
+                                  hintX: action["x"] as? Double, hintY: action["y"] as? Double)
+    if case .matched(let index) = match, controls.indices.contains(index) { return (match, controls[index]) }
+    return (match, nil)
+}
 // The accessibility level of the frontmost application's own window, as
 // reported on the surface and in the screen context.
 func accessibilityLevel(_ element: AXUIElement, focusedRole: String, hitTarget: Bool) -> SurfaceAccessibility? {
@@ -390,10 +544,27 @@ func accessibilityLevel(_ element: AXUIElement, focusedRole: String, hitTarget: 
     return surfaceAccessibility(trusted: AXIsProcessTrusted(), windowWidth: Double(bounds.width), windowHeight: Double(bounds.height),
                                 focusedRole: focusedRole, actionable: walk.found, walkComplete: walk.complete, hitTarget: hitTarget)
 }
-func surface(_ action: [String:Any]? = nil) -> [String: Any] {
+func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     guard let app = inputApplication() else { return ["appId":"unknown", "pid":0, "secureInput":true, "unknown":true] }
     exposeAccessibilityTree(app)
     let element = AXUIElementCreateApplication(app.processIdentifier)
+    // A control the agent named is resolved to where it is now, so the hit test
+    // below describes the element it actually asked for rather than a position
+    // a moving page has since given to something else.
+    var action = requested
+    var namedControl: (status: String, label: String?)? = nil
+    if requested?["type"] as? String == "click_control", let request = requested {
+        let resolution = resolveNamedControl(request)
+        switch resolution.match {
+        case .matched:
+            if let control = resolution.control {
+                action?["x"] = control.x; action?["y"] = control.y
+                namedControl = (control.enabled ? "resolved" : "disabled", control.label)
+            }
+        case .ambiguous: namedControl = ("ambiguous", nil)
+        case .missing: namedControl = ("missing", nil)
+        }
+    }
     var secure = IsSecureEventInputEnabled()
     var focusedRole: String? = nil
     var addressBar = false
@@ -504,6 +675,23 @@ func surface(_ action: [String:Any]? = nil) -> [String: Any] {
         case .refused: result["fileStatus"] = "refused"
         }
         stateLock.lock(); fileBinding = cached; stateLock.unlock()
+    }
+    if let status = namedControl {
+        result["controlStatus"] = status.status
+        if let label = status.label { result["controlLabel"] = utf16Prefix(label, 120) }
+    }
+    if let a = action, a["type"] as? String == "menu_item", let path = a["path"] as? [String] {
+        if menuPathRefused(path) { result["menuStatus"] = "refused" }
+        else if let resolved = resolveMenuPath(element, path) {
+            result["menuStatus"] = resolved.enabled ? "resolved" : "disabled"
+            result["menuLabel"] = utf16Prefix(resolved.title, 80)
+        } else { result["menuStatus"] = "missing" }
+    }
+    // A chord that is one of this application's own menu shortcuts is not a
+    // guess: the menu says what it does, so policy can judge it by that name.
+    if let a = action, a["type"] as? String == "hotkey", let names = a["keys"] as? [String],
+       let title = menuMap(element, pid: app.processIdentifier).shortcuts[normalizeChord(names)] {
+        result["shortcutLabel"] = utf16Prefix(title, 80)
     }
     // Computed last: the hit test above is the pointer evidence that this
     // application publishes something at the requested position.
@@ -726,11 +914,9 @@ func screenContext() -> [String:Any] {
     let focusedRole=attribute(element,kAXFocusedUIElementAttribute).flatMap{attribute($0 as! AXUIElement,kAXRoleAttribute) as? String} ?? ""
     if let level=accessibilityLevel(element,focusedRole:focusedRole,hitTarget:false) {
         result["accessibility"]=level.rawValue
-        if level == SurfaceAccessibility.none {
-            let titles=menuBarTitles(element)
-            if !titles.isEmpty {result["menuBar"]=titles}
-        }
     }
+    let menus=menuMap(element, pid: app.processIdentifier).lines
+    if !menus.isEmpty {result["menus"]=menus}
     return result
 }
 let pointerEventTypes:[CGEventType] = [.mouseMoved,.leftMouseDragged,.rightMouseDragged,.leftMouseDown,.rightMouseDown,.otherMouseDown,.leftMouseUp,.rightMouseUp]
@@ -936,6 +1122,10 @@ func revalidate(_ action: [String:Any]) async throws -> [String:Any] {
         }
         try ensureRunning();return fresh
     }
+    // A named menu item or listed control is resolved again immediately before
+    // the input, so a page that animated or a list that reflowed changes
+    // nothing about what is pressed.
+    if ["menu_item", "click_control"].contains(action["type"] as? String ?? "") { try ensureRunning(); return fresh }
     // open_file opens a natively verified document or folder; like open_app it
     // does not target pixels or controls.
     if action["type"] as? String == "open_file" {
@@ -1050,6 +1240,26 @@ func execute(_ action:[String:Any]) throws {
             }
             sinceGuard += 1
             let utf16 = Array(String(character).utf16);let e = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:true);e?.keyboardSetUnicodeString(stringLength:utf16.count,unicodeString:utf16);postInput(e);let up = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:false);postInput(up)}
+    case "menu_item":
+        guard let path = action["path"] as? [String], path.count >= 2, path.count <= 3,
+              path.allSatisfy({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { throw ControlError("Invalid menu path.") }
+        try pressMenuPath(path)
+    case "click_control":
+        // Resolved again here, against the tree as it is at this instant: the
+        // name is the intent, the position is only where it happens to be.
+        let (match, resolved) = resolveNamedControl(action)
+        guard case .matched = match, let control = resolved else {
+            switch match {
+            case .ambiguous(let count):
+                throw ControlError("\(count) controls are named that. Name a different control, or add the x and y from the context list.", code: "TARGET_AMBIGUOUS")
+            default:
+                throw ControlError("No control named that is on screen now. Choose one from the context list.", code: "TARGET_MISSING")
+            }
+        }
+        guard control.enabled else { throw ControlError("That control is disabled.", code: "TARGET_DISABLED") }
+        let target = CGPoint(x: b.minX+min(b.width-1, floor(control.x*b.width)), y: b.minY+min(b.height-1, floor(control.y*b.height)))
+        try mouse(.leftMouseDown, target)
+        postInput(CGEvent(mouseEventSource:nil, mouseType:.leftMouseUp, mouseCursorPosition:target, mouseButton:.left))
     case "key", "hotkey":
         let names = action["keys"] as? [String] ?? [action["key"] as? String ?? ""]
         guard names.count<=4,names.allSatisfy({keys[$0] != nil}) else {throw ControlError("Unsupported key.")}

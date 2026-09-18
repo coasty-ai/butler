@@ -79,6 +79,40 @@ export const actionSchema = z.discriminatedUnion("type", [
       keys: z.array(key).min(1).max(4),
     })
     .strict(),
+  /**
+   * Presses a menu item the frontmost application publishes, by name
+   * ("Playback" > "Play"). The menu bar is every application's own list of what
+   * it can do, it stays readable when the window publishes nothing, and the
+   * path is resolved again at the moment of input, so nothing here depends on
+   * pixels. See docs/ARCHITECTURE.md.
+   */
+  z
+    .object({
+      ...base,
+      type: z.literal("menu_item"),
+      path: z.array(z.string().trim().min(1).max(60)).min(2).max(3),
+    })
+    .strict(),
+  /**
+   * Clicks a control from context.controls by its name instead of its
+   * position. The name is the intent; x and y, when given, only tell identical
+   * names apart. Resolved again at the moment of input, so a page that
+   * animated or a list that reflowed cannot redirect the click.
+   */
+  z
+    .object({
+      ...base,
+      type: z.literal("click_control"),
+      label: z.string().trim().min(1).max(120),
+      role: z
+        .string()
+        .trim()
+        .max(20)
+        .regex(/^[a-z]+$/, "Use a role name from context.controls.")
+        .optional(),
+      ...{ x: unit.optional(), y: unit.optional() },
+    })
+    .strict(),
   // Launch-only primitive. A plain application display name, never a path,
   // bundle identifier, URL or document. The native helper resolves it against
   // allow-listed application folders; see docs/ARCHITECTURE.md.
@@ -309,8 +343,13 @@ export interface ScreenContext {
    * as Spotify): controls is empty and no focused field is reported.
    */
   accessibility?: "none" | "partial" | "full";
-  /** Top-level menu titles of a blind application (titles only, at most 12). */
-  menuBar?: string[];
+  /**
+   * The frontmost application's menus, one line each ("Playback: Play, Next
+   * [CMD+RIGHT], …"): its own declaration of what it can do, and the only
+   * route in an application that publishes no controls. Titles and shortcuts
+   * only, never document contents.
+   */
+  menus?: string[];
 }
 export interface Surface {
   appId: string;
@@ -356,6 +395,15 @@ export interface Surface {
    * there is no verdict (accessibility untrusted, no window yet).
    */
   accessibility?: "none" | "partial" | "full";
+  /** menu_item resolution produced natively by surface(action). */
+  menuStatus?: "resolved" | "disabled" | "missing" | "refused";
+  /** The resolved menu item's own title, for the approval question. */
+  menuLabel?: string;
+  /** click_control resolution produced natively by surface(action). */
+  controlStatus?: "resolved" | "disabled" | "ambiguous" | "missing";
+  controlLabel?: string;
+  /** The menu item a proposed shortcut invokes in this application, if any. */
+  shortcutLabel?: string;
 }
 export interface Usage {
   inputTokens: number;

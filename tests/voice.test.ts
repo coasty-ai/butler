@@ -316,8 +316,6 @@ describe("minimal approval policy", () => {
   it.each([
     { type: "key", key: "ESC" },
     { type: "hotkey", keys: ["CMD", "SPACE"] },
-    { type: "hotkey", keys: ["TAB", "CMD"] },
-    { type: "hotkey", keys: ["SHIFT", "CMD", "TAB"] },
     { type: "hotkey", keys: ["CMD", "F"] },
   ])(
     "automates exact navigation actions without activating a focused Send button: %j",

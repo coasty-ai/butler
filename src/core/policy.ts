@@ -526,6 +526,82 @@ function openFileDecision(surface: Surface, synthetic: boolean): Decision {
       "No input was sent. That path is not in the local index. Use a path listed in context.memory.files or folders, or request_user.",
   };
 }
+/**
+ * A menu item the frontmost application publishes, pressed by name. The native
+ * helper resolved the path against the live menu bar and reported what it
+ * found, so these rules judge a real item rather than the model's spelling.
+ * The item's own title still goes through the consequential check: "Send" in a
+ * menu sends exactly as much as "Send" on a button.
+ */
+function menuItemDecision(action: Action, surface: Surface): Decision {
+  if (action.type !== "menu_item") return { kind: "ALLOW", reason: "" };
+  const named = action.path.join(" > ");
+  if (surface.menuStatus === "refused")
+    return {
+      kind: "DENY",
+      reason:
+        "Quitting an application, logging out and shutting down are left to the user. Finish the task another way.",
+    };
+  if (surface.menuStatus === "missing")
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. ${quote(named)} is not in this application's menus. Choose an item from context.menus, or take another route.`,
+    };
+  if (surface.menuStatus === "disabled")
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. ${quote(named)} is greyed out right now. Do the step that enables it first (open a window, select something), or take another route.`,
+    };
+  if (surface.menuStatus !== "resolved")
+    return {
+      kind: "RETRY",
+      reason:
+        "No input was sent. This application's menus could not be read. Use a shortcut from context.menus or a visible control.",
+    };
+  const title = normalizeControlLabel(
+    surface.menuLabel ?? action.path[action.path.length - 1],
+  );
+  if (consequential.test(title))
+    return { kind: "CONFIRM", reason: consequentialReason(title) };
+  return {
+    kind: "ALLOW",
+    reason: "Choose a menu item this application publishes.",
+  };
+}
+/**
+ * A control named from context.controls. Resolution happened natively against
+ * the tree as it is now, and the resolved position went through the same
+ * pointer hit test as a click, so every rule below this point sees the same
+ * evidence it would for a click on that control.
+ */
+function namedControlRefusal(
+  action: Action,
+  surface: Surface,
+): Decision | undefined {
+  if (action.type !== "click_control") return undefined;
+  if (surface.controlStatus === "missing")
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. Nothing on screen is named ${quote(action.label)} now. Take a fresh look and name a control from context.controls.`,
+    };
+  if (surface.controlStatus === "ambiguous")
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. Several controls are named ${quote(action.label)}. Add the x and y of the one you mean from context.controls, or name a different control.`,
+    };
+  if (surface.controlStatus === "disabled")
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. ${quote(action.label)} is disabled. Choose an enabled control.`,
+    };
+  if (surface.controlStatus !== "resolved")
+    return {
+      kind: "RETRY",
+      reason:
+        "No input was sent. That control could not be resolved. Name a control from context.controls.",
+    };
+  return undefined;
+}
 export function evaluate(
   action: Action,
   surface: Surface,
@@ -577,6 +653,9 @@ export function evaluate(
       reason:
         "No input was sent. The target is disabled. Choose an enabled control or an application shortcut from the fresh screenshot.",
     };
+  if (action.type === "menu_item") return menuItemDecision(action, surface);
+  const namedRefusal = namedControlRefusal(action, surface);
+  if (namedRefusal) return namedRefusal;
   if (["move", "scroll"].includes(action.type))
     return { kind: "ALLOW", reason: "Pointer navigation." };
   const editable = ["AXTextField", "AXTextArea", "AXComboBox"].includes(
@@ -627,10 +706,16 @@ export function evaluate(
         reason:
           "No input was sent. The focused application could not be identified, so shortcuts are paused. Capture a fresh screenshot and switch to the requested application first.",
       };
-    if (["CMD+SPACE", "CMD+TAB", "CMD+SHIFT+TAB"].includes(keys))
+    if (keys === "CMD+SPACE")
+      return { kind: "ALLOW", reason: "Open Spotlight." };
+    // Command-Tab lands on whichever application the switcher was last on, not
+    // on the one the task needs, and a run that keeps pressing it walks out of
+    // the application it was working in.
+    if (["CMD+TAB", "CMD+SHIFT+TAB"].includes(keys))
       return {
-        kind: "ALLOW",
-        reason: "Open Spotlight or switch applications.",
+        kind: "RETRY",
+        reason:
+          "No input was sent. Command-Tab switches to whichever application came last, not the one you want. Use open_app with the application's name.",
       };
     if (keys === "CMD+F")
       return { kind: "ALLOW", reason: "Find within the current application." };
@@ -667,6 +752,18 @@ export function evaluate(
         : { kind: "CONFIRM", reason: "Run or reload in this application?" };
     if (routineShortcuts.has(keys))
       return { kind: "ALLOW", reason: "Routine application shortcut." };
+    // The application's own menus name this chord, so it is a published
+    // command of the frontmost application rather than a guess, and the menu's
+    // own title decides whether it needs approval.
+    if (surface.shortcutLabel) {
+      const title = normalizeControlLabel(surface.shortcutLabel);
+      if (consequential.test(title))
+        return { kind: "CONFIRM", reason: consequentialReason(title) };
+      return {
+        kind: "ALLOW",
+        reason: `This application's own shortcut for ${quote(surface.shortcutLabel)}.`,
+      };
+    }
     if (editable && ["A+CMD", "B+CMD", "CMD+I", "CMD+U"].includes(keys))
       return {
         kind: "ALLOW",
@@ -678,8 +775,9 @@ export function evaluate(
     };
   }
   const leftClick =
-    (action.type === "click" || action.type === "double_click") &&
-    action.button === "left";
+    action.type === "click_control" ||
+    ((action.type === "click" || action.type === "double_click") &&
+      action.button === "left");
   const rightClick =
     action.type === "right_click" ||
     ((action.type === "click" || action.type === "double_click") &&
@@ -720,8 +818,8 @@ export function evaluate(
   // A double-click is not a focus click (Finder names are AXTextFields).
   if (
     !surface.unknown &&
-    action.type === "click" &&
-    action.button === "left" &&
+    ((action.type === "click" && action.button === "left") ||
+      action.type === "click_control") &&
     ["AXTextField", "AXTextArea", "AXComboBox", "AXScrollBar"].includes(
       surface.targetRole ?? "",
     )

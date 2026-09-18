@@ -249,16 +249,15 @@ describe("provider-neutral adapters", () => {
     ])
       expect(instruction).toContain(phrase);
   });
-  it("teaches the keyboard and menu-bar route for blind applications", () => {
+  it("teaches the menu route for blind applications", () => {
     const instruction = buildRequest(s("openai"), "K", o).body.instructions;
     for (const phrase of [
       'context.accessibility is "none"',
       "publishes no accessibility information",
       "Do not call open_app for an application that is already frontmost",
       "never repeat a blind click",
-      "CMD+K or CMD+L for Spotify's search",
+      "Its menus still work, and they are the reliable route there",
       "arrow keys and ENTER",
-      "context.menuBar lists the top-level menu titles",
       "at most one click to place the cursor in a text field",
       "say in the done summary what you did in that application",
     ])
@@ -268,21 +267,25 @@ describe("provider-neutral adapters", () => {
       buildRequest(s("openai"), "K", { ...o, task: "other" }).body.instructions,
     );
   });
-  it("serializes the blind surface and its menu titles as screen context", () => {
+  it("serializes the blind surface and its menus as screen context", () => {
+    const menus = [
+      "Edit: Undo [CMD+Z], Search [CMD+L] (disabled)",
+      "Playback: Play, Next [CMD+RIGHT]",
+    ];
     const frame = {
       ...o.frame,
       context: {
         appName: "Spotify",
         windowTitle: "Spotify Premium",
         accessibility: "none" as const,
-        menuBar: ["Spotify", "File", "Edit", "Playback"],
+        menus,
         controls: [],
       },
     };
     const request = buildRequest(s("openai"), "K", { ...o, frame });
     const context = JSON.parse(request.body.input[0].content[0].text).context;
     expect(context.accessibility).toBe("none");
-    expect(context.menuBar).toEqual(["Spotify", "File", "Edit", "Playback"]);
+    expect(context.menus).toEqual(menus);
     expect(context.appName).toBe("Spotify");
     // An unknown level is dropped with the rest of an unbounded context.
     const bad = buildRequest(s("openai"), "K", {
@@ -322,14 +325,14 @@ describe("provider-neutral adapters", () => {
         appName: "Spotify",
         windowTitle: "Spotify Premium",
         accessibility: "none" as const,
-        menuBar: ["Spotify", "File"],
+        menus: ["Edit: Search [CMD+L] (disabled)"],
         controls: [],
       },
     };
     const request = buildRequest(s("openai"), "K", { ...o, frame: spotify });
     const context = JSON.parse(request.body.input[0].content[0].text).context;
     expect(context.playbook).toEqual(playbookFor("com.spotify.client"));
-    expect(context.playbook.join(" ")).toContain("CMD+K");
+    expect(context.playbook.join(" ")).toContain("Edit > Search");
     expect(context.playbook.length).toBeLessThanOrEqual(PLAYBOOK_MAX_LINES);
     for (const line of context.playbook)
       expect(line.length).toBeLessThanOrEqual(PLAYBOOK_MAX_CHARS);

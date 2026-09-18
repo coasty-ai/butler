@@ -32,9 +32,14 @@ const POINTER = new Set([
   "move",
   "drag",
 ]);
+// Steps a skill can replay as they were recorded. Named targets belong here
+// for the same reason they exist: a menu path and a control name resolve again
+// on a screen that has moved on, where a coordinate would not.
 const KEPT = new Set([
   "open_app",
   "open_file",
+  "menu_item",
+  "click_control",
   "hotkey",
   "key",
   "type_text",

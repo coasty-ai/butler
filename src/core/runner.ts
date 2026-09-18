@@ -58,6 +58,8 @@ const actionTypes = new Set([
   "hotkey",
   "open_app",
   "open_file",
+  "menu_item",
+  "click_control",
   "wait",
   "request_user",
   "done",
@@ -97,6 +99,12 @@ export function echoAction(input: unknown): Record<string, unknown> {
     echo.keys = a.keys.slice(0, 4).map((k) => keyName(k) ?? "?");
   if (a.type === "open_app" && typeof a.name === "string")
     echo.name = bound(a.name, 100);
+  if (a.type === "menu_item" && Array.isArray(a.path))
+    echo.path = a.path
+      .slice(0, 3)
+      .map((part) => (typeof part === "string" ? bound(part, 60) : "?"));
+  if (a.type === "click_control" && typeof a.label === "string")
+    echo.label = bound(a.label, 120);
   return echo;
 }
 const knownType = (input: unknown) => {
@@ -275,7 +283,15 @@ export function executedTarget(action: Action, surface: Surface): string {
     const clean = redactSecrets(text.replace(/\s+/g, " ").trim());
     return clean.length > 60 ? clean.slice(0, 59) + "…" : clean;
   };
-  if (["click", "double_click", "right_click"].includes(action.type)) {
+  // Named targets say what was pressed without reading the screen: the name is
+  // the agent's own, and native resolved it to that exact item.
+  if (action.type === "menu_item")
+    return ` ${bounded(action.path.join(" > "))} in the menus`;
+  if (
+    ["click", "double_click", "right_click", "click_control"].includes(
+      action.type,
+    )
+  ) {
     // Native targetLabel can fall back to AXValue; for editable fields use
     // only the field label that native puts in targetText.
     const editableTarget = ["AXTextField", "AXTextArea", "AXComboBox"].includes(
@@ -290,7 +306,10 @@ export function executedTarget(action: Action, surface: Surface): string {
       .replace(/^AX/, "")
       .replace(/([a-z])([A-Z])/g, "$1 $2")
       .toLowerCase();
-    const verb = ` ${action.type.replace("_", " ")}`;
+    const verb =
+      action.type === "click_control"
+        ? " click"
+        : ` ${action.type.replace("_", " ")}`;
     if (!label) return role ? `${verb} on a ${role}` : "";
     return `${verb} on ${role || "control"} “${label}”`;
   }
@@ -1665,7 +1684,11 @@ export class Runner {
             ? `Opening ${bound(action.name, 100)}.`
             : action.type === "open_file"
               ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}.`
-              : `Executing ${action.type.replaceAll("_", " ")}.`,
+              : action.type === "menu_item"
+                ? `Choosing ${bound(action.path.join(" › "), 100)}.`
+                : action.type === "click_control"
+                  ? `Clicking ${bound(action.label, 100)}.`
+                  : `Executing ${action.type.replaceAll("_", " ")}.`,
         );
         const { frame_id: _frameId, ...executedAction } = action;
         const interrupted = () => {

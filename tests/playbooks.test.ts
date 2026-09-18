@@ -65,16 +65,18 @@ describe("app playbook table", () => {
       expect(lines.length, appId).toBeGreaterThan(0);
     }
   });
-  it("gives Spotify the keyboard route its blind surface needs", () => {
+  it("gives Spotify the menu route its blind surface needs", () => {
     const lines = playbookFor("com.spotify.client", "Spotify");
     const text = lines.join(" ");
-    expect(text).toContain("CMD+K");
+    expect(text).toContain("Edit > Search");
     expect(text).toContain("ENTER");
     expect(text).toContain("UP and DOWN");
     expect(text).toContain("no accessibility tree");
     // The Spotify loop seen in live runs: open_app repeated on a frontmost app.
     expect(text).toContain("Never call open_app for Spotify");
-    expect(text).toContain("context.menuBar");
+    expect(text).toContain("context.menus");
+    // The live failure behind the loop: shortcuts are no-ops with no window.
+    expect(text).toContain("Window > Spotify");
   });
   it("routes Chrome through the address bar instead of the pointer", () => {
     const text = playbookFor("com.google.Chrome", "Google Chrome").join(" ");

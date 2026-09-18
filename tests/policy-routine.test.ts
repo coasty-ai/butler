@@ -1769,3 +1769,149 @@ describe("applications that publish no accessibility", () => {
     ).toBe("RETRY");
   });
 });
+
+// The live failure this replaces: in an application that publishes no controls
+// the agent guessed shortcuts, could not tell whether they worked, pressed
+// CMD+TAB, landed in another application and reopened the first one, twenty
+// actions long, until the loop detector stopped the run.
+describe("named targets: menus and controls the agent can name", () => {
+  const menu = (...path: string[]) => act({ type: "menu_item", path });
+  const named = (label: string, extra: Record<string, unknown> = {}) =>
+    act({ type: "click_control", label, ...extra });
+  const spotify = {
+    appId: "com.spotify.client",
+    accessibility: "none" as const,
+  };
+  it("presses a menu item the application publishes", () => {
+    expect(
+      decide(menu("Playback", "Play"), {
+        ...spotify,
+        menuStatus: "resolved",
+        menuLabel: "Play",
+      }),
+    ).toEqual({
+      kind: "ALLOW",
+      reason: "Choose a menu item this application publishes.",
+    });
+  });
+  it("still asks before a menu item that sends or deletes", () => {
+    const decision = decide(menu("File", "Send"), {
+      menuStatus: "resolved",
+      menuLabel: "Send",
+    });
+    expect(decision.kind).toBe("CONFIRM");
+    expect(decision.reason).toBe("Send this message?");
+    expect(
+      decide(menu("Edit", "Delete"), {
+        menuStatus: "resolved",
+        menuLabel: "Delete",
+      }).kind,
+    ).toBe("CONFIRM");
+  });
+  it("refuses to quit an application or end the session", () => {
+    const decision = decide(menu("Spotify", "Quit Spotify"), {
+      ...spotify,
+      menuStatus: "refused",
+    });
+    expect(decision.kind).toBe("DENY");
+    expect(decision.reason).toContain("left to the user");
+  });
+  it("sends a missing or greyed-out item back with what to do instead", () => {
+    const missing = decide(menu("Playback", "Play"), {
+      ...spotify,
+      menuStatus: "missing",
+    });
+    expect(missing.kind).toBe("RETRY");
+    expect(missing.reason).toContain("context.menus");
+    // Spotify greys out Search while no window is open: the state, not the name.
+    const disabled = decide(menu("Edit", "Search"), {
+      ...spotify,
+      menuStatus: "disabled",
+    });
+    expect(disabled.kind).toBe("RETRY");
+    expect(disabled.reason).toContain("greyed out");
+    expect(disabled.reason).toContain("open a window");
+  });
+  it("clicks a control by name under the same rules as a click", () => {
+    expect(
+      decide(named("After Hours"), {
+        ...chrome,
+        controlStatus: "resolved",
+        controlLabel: "After Hours",
+        targetRole: "AXLink",
+        targetLabel: "After Hours",
+        targetURL: "https://www.youtube.com/watch?v=x",
+      }),
+    ).toEqual({ kind: "ALLOW", reason: "Follow a web link." });
+    // The label rules do not care how the control was addressed.
+    expect(
+      decide(named("Send"), {
+        controlStatus: "resolved",
+        targetRole: "AXButton",
+        targetLabel: "Send",
+      }).kind,
+    ).toBe("CONFIRM");
+    expect(
+      decide(named("Search"), {
+        controlStatus: "resolved",
+        targetRole: "AXTextField",
+        targetLabel: "Search",
+      }),
+    ).toEqual({ kind: "ALLOW", reason: "Focus a known input control." });
+  });
+  it("explains a name that is gone or shared by several controls", () => {
+    const missing = decide(named("After Hours"), { controlStatus: "missing" });
+    expect(missing.kind).toBe("RETRY");
+    expect(missing.reason).toContain("context.controls");
+    const ambiguous = decide(named("Play"), { controlStatus: "ambiguous" });
+    expect(ambiguous.kind).toBe("RETRY");
+    expect(ambiguous.reason).toContain("x and y");
+    expect(decide(named("Play"), { controlStatus: "disabled" }).kind).toBe(
+      "RETRY",
+    );
+  });
+  it("allows a chord the application's own menus publish", () => {
+    // CMD+J is in no allow-list; VS Code's View menu says what it does.
+    const decision = decide(hotkey("CMD", "J"), {
+      appId: "com.microsoft.VSCode",
+      shortcutLabel: "Toggle Panel",
+    });
+    expect(decision.kind).toBe("ALLOW");
+    expect(decision.reason).toContain("Toggle Panel");
+    expect(
+      decide(hotkey("CMD", "J"), { appId: "com.microsoft.VSCode" }).kind,
+    ).toBe("RETRY");
+  });
+  it("asks about a published shortcut whose menu item is consequential", () => {
+    const decision = decide(hotkey("CMD", "E"), {
+      appId: "com.apple.mail",
+      shortcutLabel: "Send Message",
+    });
+    expect(decision.kind).toBe("CONFIRM");
+    expect(decision.reason).toBe("Send this message?");
+  });
+  it("turns Command-Tab into open_app instead of walking out of the app", () => {
+    for (const chord of [hotkey("CMD", "TAB"), hotkey("CMD", "SHIFT", "TAB")]) {
+      const decision = decide(chord, spotify);
+      expect(decision.kind).toBe("RETRY");
+      expect(decision.reason).toContain("open_app");
+    }
+    expect(decide(hotkey("CMD", "SPACE"), spotify).kind).toBe("ALLOW");
+  });
+  it("keeps every protected surface rule above named targets", () => {
+    expect(
+      decide(menu("Playback", "Play"), {
+        ...spotify,
+        secureInput: true,
+        menuStatus: "resolved",
+      }).kind,
+    ).toBe("USER_TAKEOVER");
+    // A protected application is handed to the user, whatever the action.
+    expect(
+      decide(named("Unlock"), {
+        appId: "com.1password.1password",
+        controlStatus: "resolved",
+      }).kind,
+    ).toBe("USER_TAKEOVER");
+  });
+});

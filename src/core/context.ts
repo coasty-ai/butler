@@ -41,11 +41,11 @@ const contextSchema = z
       )
       .max(60)
       .optional(),
-    // Blind-surface reporting: how much of its interface the frontmost
-    // application publishes, and its top-level menu titles when it publishes
-    // nothing else (docs/THREAT_MODEL.md).
+    // How much of its interface the frontmost application publishes, and its
+    // menus: the application's own list of what it can do, and the only route
+    // left when it publishes nothing else (docs/THREAT_MODEL.md).
     accessibility: z.enum(["none", "partial", "full"]).optional(),
-    menuBar: z.array(bounded(40)).max(12).optional(),
+    menus: z.array(bounded(400)).max(12).optional(),
   })
   .strict();
 // Context can contain useful names/addresses. Remove only the detected
@@ -95,8 +95,8 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
       })),
     }),
     ...(c.accessibility !== undefined && { accessibility: c.accessibility }),
-    ...(c.menuBar && {
-      menuBar: c.menuBar.map((title) => clean(title).slice(0, 40)),
+    ...(c.menus && {
+      menus: c.menus.map((line) => clean(line).slice(0, 400)),
     }),
   };
 }
