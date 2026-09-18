@@ -50,9 +50,15 @@ const redirect = new Set([
   "ERR_FAILED_REDIRECT",
 ]);
 
+/**
+ * The allow-listed failure for a transport error: a fixed message, and the
+ * transport code it matched (absent for an unrecognised error), which is safe
+ * to log where the raw error's message is not.
+ */
 export function networkFailure(error: unknown): {
   retryable: boolean;
   message: string;
+  code?: string;
 } {
   let current = error;
   for (
@@ -74,36 +80,43 @@ export function networkFailure(error: unknown): {
     if (code) {
       if (transient.has(code))
         return {
+          code,
           retryable: true,
           message: `Connection to the provider was interrupted (${code}). Try again.`,
         };
       if (dns.has(code))
         return {
+          code,
           retryable: false,
           message: `Cannot resolve the provider address (${code}). Check your network or DNS settings.`,
         };
       if (offline.has(code))
         return {
+          code,
           retryable: false,
           message: `The network is unavailable (${code}). Reconnect and try again.`,
         };
       if (refused.has(code))
         return {
+          code,
           retryable: false,
           message: `The provider refused the connection (${code}). Check that its endpoint is running.`,
         };
       if (certificate.has(code))
         return {
+          code,
           retryable: false,
           message: `The provider's secure connection could not be verified (${code}). Check your system clock or network certificate settings.`,
         };
       if (proxy.has(code))
         return {
+          code,
           retryable: false,
           message: `Could not connect through the network proxy (${code}). Check your proxy or VPN settings.`,
         };
       if (redirect.has(code))
         return {
+          code,
           retryable: false,
           message:
             "The provider tried to redirect the request. Check the configured endpoint.",

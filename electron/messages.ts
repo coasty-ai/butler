@@ -23,6 +23,7 @@ import {
   speakableText,
 } from "../src/voice/speakable";
 import { momentKey } from "./conversation";
+import type { ProgressReport } from "../src/assistant/types";
 import { HelperProcess, type HelperHooks } from "./controller";
 import {
   errorDetails,
@@ -257,10 +258,13 @@ export function validateMessageSettings(s: MessageSettings): void {
   );
 }
 /** The live view of the settings, or undefined when the channel is off. */
-export function messageTarget(
-  s: MessageSettings,
-):
-  { handle: string; commands: boolean; updates: "texted" | "all" } | undefined {
+export function messageTarget(s: MessageSettings):
+  | {
+      handle: string;
+      commands: boolean;
+      updates: Settings["messagesUpdates"];
+    }
+  | undefined {
   if (!s.messages) return undefined;
   const handle = normalizeHandle(s.messagesHandle);
   if (!handle) return undefined;
@@ -437,7 +441,7 @@ export interface MessagesStatus {
   configured: boolean;
   /** Reading replies is allowed by the user's settings. */
   commands: boolean;
-  updates: "texted" | "all";
+  updates: Settings["messagesUpdates"];
   automation: MessagesAutomation;
   database: MessagesDatabaseState;
   /** The poller is running. */
@@ -595,6 +599,12 @@ export class MessagesChannel {
     return { ...this.state };
   }
   /**
+   * Progress updates from the shared reporter (increment 4B). Until the
+   * texting rules for them land in 4A, nothing is sent: run moments still
+   * come from onSnapshot.
+   */
+  onProgress(_report: ProgressReport): void {}
+  /**
    * Applies the saved settings: configures the helper, rebaselines the row
    * cursor and starts or stops polling. Rejects with a readable message; the
    * settings are still saved, the channel simply reports why it is not live.
@@ -656,7 +666,9 @@ export class MessagesChannel {
     }
     const target = messageTarget(this.options.settings());
     if (!target) return;
-    if (target.updates === "texted" && !this.textedRuns.has(run.id)) return;
+    // "away" adds updates once the user has left the Mac; until the presence
+    // gate lands (increment 4A) it texts the same runs as "texted".
+    if (target.updates !== "all" && !this.textedRuns.has(run.id)) return;
     const first = !this.announced.has(run.id);
     if (first) this.announced.add(run.id);
     if (first && terminal) return; // A run loaded from history, not a new one.

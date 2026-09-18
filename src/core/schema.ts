@@ -192,7 +192,25 @@ export const cloudVoices = [
   "coral",
   "sage",
   "verse",
+  "ballad",
+  "fable",
+  "ash",
+  "echo",
+  "onyx",
 ] as const;
+/** Kokoro voice packs: the base American voice and the British male pair. */
+export const kokoroVoices = ["af_heart", "bm_george", "bm_fable"] as const;
+export type KokoroVoiceId = (typeof kokoroVoices)[number];
+/** How a run was started: what asked for it, not who approved its steps. */
+export type RunOrigin =
+  "voice" | "typed" | "message" | "queue" | "watch" | "remote";
+/**
+ * Whose words the task text is. Only "user_words" counts as the user's own
+ * request for provenance checks: typed, texted, or speech heard with at least
+ * APPROVAL_MIN_CONFIDENCE. A model rewrite or an accepted proposal never does.
+ */
+export type TaskSource =
+  "user_words" | "user_words_unsure" | "model_rewrite" | "proposal";
 export const settingsSchema = z
   .object({
     privacy: privacySchema,
@@ -237,12 +255,49 @@ export const settingsSchema = z
     /** System engine voice identifier; "" picks the best installed voice. */
     voiceId: z.string().max(200).default(""),
     cloudVoice: z.enum(cloudVoices).default("marin"),
+    /** Kokoro voice pack; the British packs are separate downloads. */
+    kokoroVoice: z.enum(kokoroVoices).default("af_heart"),
     voiceRate: z.number().min(0.8).max(1.4).default(1),
     /** How long hands-free listening waits through a pause. */
     listeningPatience: z.enum(["quick", "normal", "relaxed"]).default("normal"),
     /** Hands-free only: listen briefly for a reply without the wake phrase. */
     followUpListening: z.boolean().default(true),
     voiceSounds: z.boolean().default(true),
+    /**
+     * Free-form turns ("how's it going?", small talk) go to a text-only call
+     * on the configured model; "off" keeps the deterministic routing only.
+     */
+    conversation: z.enum(["model", "off"]).default("model"),
+    /** Text model for dialog and summaries; "" means the run model. */
+    dialogModel: z.string().max(100).default(""),
+    /** Hourly ceiling for dialog and summary calls, in estimated dollars. */
+    dialogHourlyCost: z.number().min(0.05).max(10).default(0.5),
+    persona: z.enum(["jarvis", "friendly"]).default("jarvis"),
+    /** How the assistant addresses the user; letters, spaces and ' . - only. */
+    addressAs: z
+      .string()
+      .trim()
+      .max(40)
+      .regex(/^[\p{L} .'-]*$/u)
+      .default(""),
+    /** Short spoken progress lines during a long run started by voice. */
+    spokenProgress: z.boolean().default(true),
+    /** Minutes between progress updates on long runs; 0 turns them off. */
+    progressEveryMinutes: z
+      .union([
+        z.literal(0),
+        z.literal(5),
+        z.literal(10),
+        z.literal(15),
+        z.literal(30),
+      ])
+      .default(10),
+    /** Longest a detached watch of a coding agent may run. */
+    watchMaxMinutes: z.number().int().min(5).max(240).default(120),
+    /** Minutes without visible change before a watch reports a stall. */
+    stallMinutes: z.number().int().min(3).max(60).default(8),
+    /** Hold a power assertion during runs and watches (opt-in). */
+    keepAwake: z.boolean().default(false),
     /**
      * Text updates and texted commands over iMessage (docs/MESSAGING.md).
      * Off until the user turns it on; the handle lives in the encrypted
@@ -253,8 +308,15 @@ export const settingsSchema = z
     messagesHandle: z.string().trim().max(100).default(""),
     /** Read replies from that handle as commands (status/stop/do …). */
     messagesCommands: z.boolean().default(true),
-    /** "texted": only runs started by message. "all": every run. */
-    messagesUpdates: z.enum(["texted", "all"]).default("texted"),
+    /**
+     * "texted": only runs started by message. "away": those, plus every run
+     * once the user has left the Mac. "all": every run.
+     */
+    messagesUpdates: z.enum(["texted", "away", "all"]).default("texted"),
+    /** Free-form texts steer and ask; off keeps the fixed command words. */
+    messagesConversation: z.boolean().default(true),
+    /** "detailed" lets progress texts quote window titles and screen text. */
+    messagesDetail: z.enum(["brief", "detailed"]).default("brief"),
     /**
      * First-run setup was finished or dismissed. False opens the setup view on
      * launch, so quitting to apply a Screen Recording grant comes back to it.
@@ -300,14 +362,27 @@ export const defaultSettings: Settings = {
   voiceEngine: "system",
   voiceId: "",
   cloudVoice: "marin",
+  kokoroVoice: "af_heart",
   voiceRate: 1,
   listeningPatience: "normal",
   followUpListening: true,
   voiceSounds: true,
+  conversation: "model",
+  dialogModel: "",
+  dialogHourlyCost: 0.5,
+  persona: "jarvis",
+  addressAs: "",
+  spokenProgress: true,
+  progressEveryMinutes: 10,
+  watchMaxMinutes: 120,
+  stallMinutes: 8,
+  keepAwake: false,
   messages: false,
   messagesHandle: "",
   messagesCommands: true,
   messagesUpdates: "texted",
+  messagesConversation: true,
+  messagesDetail: "brief",
   setupComplete: false,
 };
 export interface Geometry {
@@ -578,6 +653,9 @@ export interface Run {
   outcome?: boolean;
   contribution?: string;
   corrections?: { text: string; after_action: number; timestamp: string }[];
+  /** Absent on runs recorded before origins existed: treat as "typed". */
+  origin?: RunOrigin;
+  taskSource?: TaskSource;
 }
 export interface Snapshot {
   run: Run | null;

@@ -6,6 +6,7 @@
  * tests/fixtures/voice-phrases.json pins both sides.
  */
 import type { FollowUpKind } from "./router";
+import type { TaskSource } from "../core/schema";
 import { PHRASES, clarificationTemplate } from "./phrases";
 
 const FILLERS = new Set([
@@ -670,8 +671,14 @@ export function joinUtterances(
   return cap(bTokens.length ? `${a} ${bTokens.join(" ")}` : a);
 }
 
-export type VoiceSource = "ptt" | "wake" | "followup" | "text";
-export type NeedClickReason = "confidence" | "gate" | "restricted";
+/**
+ * Where a turn came from. "text" is typed on the Mac; "message" is a text
+ * from the owner's phone and "remote" a phone remote over the tailnet. Those
+ * two never approve anything: an approval needs the person at the Mac.
+ */
+export type VoiceSource =
+  "ptt" | "wake" | "followup" | "text" | "message" | "remote";
+export type NeedClickReason = "confidence" | "gate" | "restricted" | "channel";
 export type TurnPlan =
   | { kind: "stop" }
   | { kind: "pause" }
@@ -687,10 +694,23 @@ export type TurnPlan =
   | { kind: "clarify"; question: string; fragment: string }
   | { kind: "amendTask"; text: string }
   | { kind: "revise"; text: string }
-  | { kind: "start"; text: string }
+  | { kind: "start"; text: string; taskSource?: TaskSource }
   // A new, unrelated request while the current run is stalled or paused: stop
   // that run and start this one instead of treating it as a correction.
-  | { kind: "replace"; text: string };
+  | { kind: "replace"; text: string }
+  // "How's it going?": answered from the run view, never a correction.
+  | { kind: "status" }
+  // "After that, …": runs once the current run ends. An accepted proposal
+  // queues with the assistant's provenance, like a start would carry it.
+  | { kind: "queue"; text: string; taskSource?: TaskSource }
+  // A spoken or texted line decided by the dialog model (increment 3); the
+  // deterministic router never produces one.
+  | {
+      kind: "reply";
+      act: "answer" | "status" | "none";
+      resume: boolean;
+      repeatApproval?: boolean;
+    };
 export type TurnPlanKind = TurnPlan["kind"];
 
 export interface VoiceTurnRun {
@@ -701,6 +721,11 @@ export interface VoiceTurnRun {
   held: boolean;
   /** The policy question while an approval is pending. */
   pendingReason?: string;
+  /**
+   * What the pending approval is: a run action, or a coding agent's request
+   * relayed from a watch (a command needs a click; the rest may be spoken).
+   */
+  pendingKind?: "action" | "relay_command" | "relay_other";
   task: string;
   /**
    * Held because it stalled or was paused (stuck, handed back, paused by the
@@ -735,6 +760,12 @@ export interface VoiceTurnInput {
   run?: VoiceTurnRun;
   fragment?: VoiceFragment;
   lastTurn?: VoiceLastTurn;
+  /**
+   * A task the assistant offered ("Want me to …?") that a "yes" accepts while
+   * no approval is pending. Its text is the assistant's, so the run it starts
+   * is marked taskSource "proposal", never the user's own words.
+   */
+  proposal?: { id: string; text: string; until: number };
 }
 
 export const APPROVAL_MIN_CONFIDENCE = 0.65;
@@ -754,11 +785,101 @@ export function isWakePhraseOnly(text: string): boolean {
   );
 }
 
+/**
+ * Status questions, matched against intentKey(text): "how's it going?",
+ * "status", "are you done yet?". Checked only after stop, pause, approval
+ * answers, acknowledgements and resume, so a question never outranks a
+ * control or an answer, and before fragments and corrections, so it is never
+ * mistaken for a hint to the run.
+ */
+const STATUS_QUESTION = new RegExp(
+  `^(?:${[
+    "status(?: update)?|update|progress|any (?:news|update)",
+    "hows? (?:it|that|things) (?:going|coming(?: along)?)",
+    "how (?:is|are) (?:it|that|things) (?:going|coming(?: along)?)",
+    "how are we doing|how far along are you|how much longer",
+    "whats? (?:the )?status|what is the status",
+    "where are (?:you|we)(?: at)?",
+    "what are you (?:doing|up to|working on|stuck on)",
+    "whats? (?:happening|going on)|what is (?:happening|going on)",
+    "are you (?:done|finished|stuck|nearly done|almost done)(?: yet)?",
+    "done yet|(?:are )?you still working(?: on it)?|still working",
+  ].join("|")})$`,
+);
+export function isStatusQuestion(text: string): boolean {
+  return STATUS_QUESTION.test(intentKey(text));
+}
+
+/**
+ * "After that, check my email" / "check my email when you're done": the words
+ * that ask for a task to wait for the current run, in front or at the end.
+ */
+const DONE =
+  "(?:you(?:'re|’re| are) (?:done|finished)|that(?:'s|’s| is) (?:done|finished)|this is done)(?: with (?:that|this one|this|it))?";
+const QUEUE_LEAD = new RegExp(
+  `^(?:and\\s+|then\\s+)?(?:after (?:that|this one|this|${DONE})|when ${DONE}|once ${DONE})(\\s*[,:]\\s*|\\s+)(.+)$`,
+  "iu",
+);
+const QUEUE_TAIL =
+  /^(.+?)[,\s]+(?:after (?:that|this one|this)|when (?:you(?:'re|’re| are) (?:done|finished)|that(?:'s|’s| is) (?:done|finished))|once (?:you(?:'re|’re| are) (?:done|finished)|that(?:'s|’s| is) (?:done|finished)))[.!?]*$/iu;
+/**
+ * The task a queue request asks for, or undefined when the text is not one.
+ * The returned text is the utterance minus the queueing words, otherwise
+ * untouched, so speech still goes through cleanTaskText afterwards.
+ *
+ * "After this call, text Dana" and "after that meeting, send the notes" are
+ * times, not queue requests: without a pause after the lead, the request must
+ * begin right away with a request verb, and a short phrase before the first
+ * comma belongs to the lead. A control word ("after that, stop") is never a
+ * task to queue either.
+ */
+export function queueRequest(text: string): string | undefined {
+  const trimmed = text.trim();
+  const lead = QUEUE_LEAD.exec(trimmed);
+  let rest = lead?.[2].trim();
+  if (lead && !/[,:]/.test(lead[1])) {
+    const clause = rest!.split(/[,:]/, 1)[0];
+    const words = tokenize(rest!);
+    const first = words.find((w) => !LEADING.has(w) && !FILLERS.has(w));
+    if (
+      (clause !== rest && tokenize(clause).length <= 3) ||
+      !first ||
+      !TASK_VERBS.has(first)
+    )
+      rest = undefined;
+  }
+  rest ??= QUEUE_TAIL.exec(trimmed)?.[1]?.trim();
+  if (!rest || !tokenize(rest).some((w) => !FILLERS.has(w))) return undefined;
+  return voiceIntent(rest).kind === "command" ? rest : undefined;
+}
+
+/**
+ * Whether speech was heard clearly enough to answer for the user: one
+ * segment, and confidence at or above the approval floor (higher in a
+ * follow-up window, where ambient speech is more likely).
+ */
+function heardClearly(input: VoiceTurnInput): boolean {
+  const confidence = (input.segments ?? 1) > 1 ? 0 : input.confidence;
+  const minimum =
+    input.source === "followup"
+      ? FOLLOW_UP_APPROVAL_MIN_CONFIDENCE
+      : APPROVAL_MIN_CONFIDENCE;
+  return Number.isFinite(confidence) && confidence > 0 && confidence >= minimum;
+}
+
+/** A source with no one at the Mac: texted or relayed from a phone. */
+export function isRemoteSource(source: VoiceSource): boolean {
+  return source === "message" || source === "remote";
+}
+
 export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
   const { text, source, now } = input;
+  // Typed or texted words: never cleaned as speech, never fragments.
+  const typed =
+    source === "text" || source === "message" || source === "remote";
+  const remote = isRemoteSource(source);
   // "Hey Assist" alone never becomes a task, correction or answer.
-  if (source !== "text" && isWakePhraseOnly(text))
-    return { kind: "acknowledge" };
+  if (!typed && isWakePhraseOnly(text)) return { kind: "acknowledge" };
   const intent = voiceIntent(text);
   const run =
     input.run && !TERMINAL.has(input.run.status) ? input.run : undefined;
@@ -769,15 +890,34 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
   if (intent.kind === "pause") return { kind: "pause" };
   // 2. Answers to an approval.
   if (intent.kind === "approve" || intent.kind === "decline") {
-    if (!run || !pending) return { kind: "nothingToApprove" };
+    if (!run || !pending) {
+      // A "yes" to the assistant's own offer starts that task; the task is
+      // the assistant's wording, so the run never counts as the user's words.
+      const proposal = input.proposal;
+      if (proposal && now < proposal.until && proposal.text.trim()) {
+        if (intent.kind === "decline") return { kind: "acknowledge" };
+        // The offer may repeat words the user never said (a notification, a
+        // page), so accepting it needs the same clear hearing as an approval.
+        if (!typed && !heardClearly(input)) return { kind: "confirmAgain" };
+        // With a run under way the offer waits its turn: applied to the run
+        // it would become a correction in the user's name.
+        return run
+          ? { kind: "queue", text: proposal.text, taskSource: "proposal" }
+          : { kind: "start", text: proposal.text, taskSource: "proposal" };
+      }
+      return { kind: "nothingToApprove" };
+    }
+    // Nobody is at the Mac to see what a texted "yes" would approve. A "no"
+    // only pauses, and only when it answers the question that was relayed.
+    if (remote)
+      return intent.kind === "approve"
+        ? { kind: "needClick", reason: "channel" }
+        : input.gateMatches
+          ? { kind: "decline" }
+          : { kind: "confirmAgain" };
     if (source === "text") return { kind: intent.kind };
     const confidence = (input.segments ?? 1) > 1 ? 0 : input.confidence;
-    const minimum =
-      source === "followup"
-        ? FOLLOW_UP_APPROVAL_MIN_CONFIDENCE
-        : APPROVAL_MIN_CONFIDENCE;
-    const confident =
-      Number.isFinite(confidence) && confidence > 0 && confidence >= minimum;
+    const confident = heardClearly(input);
     // Declining only pauses, so it needs no gate; an uncertain "no" is asked
     // again rather than sent to the Yes button.
     if (intent.kind === "decline")
@@ -801,26 +941,62 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
     if (!run.held) return { kind: "stillWorking" };
     return { kind: "resume" };
   }
-  // 5. The spoken answer to a clarification question. Typed text is never
+  // 5. "How's it going?" is answered, with or without a run, and never
+  // becomes a correction to the run.
+  if (isStatusQuestion(text)) return { kind: "status" };
+  // The user's own words carry their provenance: typed and texted words are
+  // theirs; speech counts only when it was heard clearly enough to approve.
+  const taskSource: TaskSource =
+    typed || input.confidence >= APPROVAL_MIN_CONFIDENCE
+      ? "user_words"
+      : "user_words_unsure";
+  // 6. "After that, …" waits for the current run. A queue request that is
+  // only a fragment ("after that, open") is asked about like any fragment;
+  // its answer is joined and routed below. Without a run it is a request
+  // like any other, minus the queueing words (see route).
+  const queue = (task: string): TurnPlan | undefined => {
+    const queued = queueRequest(task);
+    if (!queued || !run) return undefined;
+    const question = !typed && clarifyFragment(queued);
+    if (question) return { kind: "clarify", question, fragment: task.trim() };
+    return { kind: "queue", text: typed ? queued : cleanTaskText(queued) };
+  };
+  const route = (task: string): TurnPlan => {
+    const later = queue(task);
+    if (later) return later;
+    task = typed ? task.trim() : cleanTaskText(queueRequest(task) ?? task);
+    // 8–9. A correction or a new task. Fillers alone ("um uh") do nothing.
+    if (!task || tokenize(task).every((w) => FILLERS.has(w)))
+      return { kind: "acknowledge" };
+    // A run that stalled is waiting for a hint; a request about something
+    // else entirely is the user moving on, not a hint. One waiting on an
+    // approval is waiting for yes or no, which were handled above; a request
+    // about something else is the user moving on.
+    if (run?.stalled && startsNewTask(task, run.task))
+      return { kind: "replace", text: task };
+    return run
+      ? { kind: "revise", text: task }
+      : { kind: "start", text: task, taskSource };
+  };
+  const later = queue(text);
+  if (later) return later;
+  // 7a. The spoken answer to a clarification question. Typed text is never
   // joined: text that repeats the fragment ("open Safari" after "Open")
   // already carries it, and anything else ("check my email") is its own
   // request, so both run exactly as typed below.
   const fragment = input.fragment;
-  if (fragment && now < fragment.until && source !== "text") {
+  if (fragment && now < fragment.until && !typed) {
     const joined = joinUtterances(fragment.text, text);
     const question = clarifyFragment(joined);
     if (question) return { kind: "clarify", question, fragment: joined };
-    if (joined)
-      return run
-        ? { kind: "revise", text: joined }
-        : { kind: "start", text: joined };
+    if (joined) return route(joined);
   }
-  // 6. A fragment gets a question instead of a run or correction.
-  if (source !== "text") {
+  // 7b. A fragment gets a question instead of a run or correction.
+  if (!typed) {
     const question = clarifyFragment(text);
     if (question) return { kind: "clarify", question, fragment: text.trim() };
   }
-  // 7. "…and check the weather" before the run acted extends the task.
+  // 7c. "…and check the weather" before the run acted extends the task.
   const last = input.lastTurn;
   if (
     source === "followup" &&
@@ -837,18 +1013,7 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
       kind: "amendTask",
       text: joinUtterances(run.task, text, { keepFirst: true }),
     };
-  // 8–9. A correction or a new task. Typed text runs exactly as typed; only
-  // speech is cleaned. Fillers alone ("um uh") do nothing.
-  const task = source === "text" ? text.trim() : cleanTaskText(text);
-  if (!task || tokenize(task).every((w) => FILLERS.has(w)))
-    return { kind: "acknowledge" };
-  // A run that stalled is waiting for a hint; a request about something else
-  // entirely is the user moving on, not a hint.
-  // One waiting on an approval is waiting for yes or no, which were handled
-  // above; a request about something else is the user moving on.
-  if (run?.stalled && startsNewTask(task, run.task))
-    return { kind: "replace", text: task };
-  return run ? { kind: "revise", text: task } : { kind: "start", text: task };
+  return route(text);
 }
 
 // Words that begin a request, and words that carry no subject of their own.

@@ -108,6 +108,49 @@ struct ManualInputEpisode {
     }
 }
 
+// MARK: presence
+
+// What the helper knows about whether someone is at the Mac, read by main to
+// decide who hears progress and whether a texted task may take the screen.
+// Counters and flags only: no coordinates, no key codes, no window titles.
+struct PresenceReport: Equatable {
+    let hidIdleSeconds: Double
+    // Age of the last unmarked input the emergency-stop tap saw, or nil while
+    // no tap is installed (main then falls back to hidIdleSeconds).
+    let tapIdleSeconds: Double?
+    let locked: Bool
+    let displayAsleep: Bool
+    // Something is holding the display awake: a call sharing the screen, a
+    // video, a presentation. Idle input then does not mean the user has left,
+    // and a texted task must not take a screen an audience may be watching.
+    let displayHeldAwake: Bool
+    var dictionary: [String: Any] {
+        ["hidIdleSeconds": hidIdleSeconds, "tapIdleSeconds": tapIdleSeconds.map { $0 as Any } ?? NSNull(),
+         "locked": locked, "displayAsleep": displayAsleep, "displayHeldAwake": displayHeldAwake]
+    }
+}
+
+// Builds the report from raw readings. The tap's idle age counts from its
+// installation until the first manual input, so a fresh tap never reports the
+// user as present on data it never saw, and a clock that ran backwards reads
+// as zero rather than negative. An unreadable HID counter reads as zero (just
+// active): that is the side on which a texted task never takes the screen.
+// The lock flags are best effort: an absent session dictionary reads as
+// unlocked and on console, because unknown must never count as away. The
+// display flags pass through as read.
+func presenceReport(hidIdleSeconds: Double, tapInstalledAt: TimeInterval?, lastManualInputAt: TimeInterval?,
+                    now: TimeInterval, screenLocked: Bool?, onConsole: Bool?, displayAsleep: Bool,
+                    displayHeldAwake: Bool) -> PresenceReport {
+    let hid = hidIdleSeconds.isFinite ? max(0, hidIdleSeconds) : 0
+    var tapIdle: Double? = nil
+    if let installed = tapInstalledAt {
+        tapIdle = max(0, now - max(installed, lastManualInputAt ?? installed))
+    }
+    let locked = (screenLocked ?? false) || !(onConsole ?? true)
+    return PresenceReport(hidIdleSeconds: hid, tapIdleSeconds: tapIdle, locked: locked, displayAsleep: displayAsleep,
+                          displayHeldAwake: displayHeldAwake)
+}
+
 // MARK: Electron accessibility
 
 // Editors that take an enabled accessibility tree for a screen reader: VS Code

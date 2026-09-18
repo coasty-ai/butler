@@ -101,7 +101,7 @@ export interface MessagesInfo {
   enabled: boolean;
   configured: boolean;
   commands: boolean;
-  updates: "texted" | "all";
+  updates: "texted" | "away" | "all";
   automation:
     | "granted"
     | "denied"

@@ -97,3 +97,35 @@ func electronAccessibilityChecks(_ check: (Bool, String) -> Void) {
     for pid in 1000..<1400 { _ = attempts.claim(pid:pid_t(pid), launchedAt:nil) }
     check(attempts.seen.count <= ManualAccessibilityAttempts.limit, "attempted processes are bounded")
 }
+
+// Pure presence report checks (InputSafety.swift): the counters main's
+// presence rules read, and the wire shape they are sent in.
+func presenceChecks(_ check: (Bool, String) -> Void) {
+    func report(hid: Double = 5, installed: TimeInterval? = nil, manual: TimeInterval? = nil, now: TimeInterval = 100,
+                screenLocked: Bool? = nil, onConsole: Bool? = nil, asleep: Bool = false, held: Bool = false) -> PresenceReport {
+        presenceReport(hidIdleSeconds: hid, tapInstalledAt: installed, lastManualInputAt: manual, now: now,
+                       screenLocked: screenLocked, onConsole: onConsole, displayAsleep: asleep, displayHeldAwake: held)
+    }
+    check(report().tapIdleSeconds == nil, "without a tap the tap idle age is unknown")
+    check(report(installed: 40).tapIdleSeconds == 60, "a tap that saw no input yet counts idle from its installation")
+    check(report(installed: 40, manual: 90).tapIdleSeconds == 10, "the tap idle age counts from the last manual input")
+    check(report(installed: 40, manual: 30).tapIdleSeconds == 60, "manual input recorded before the tap was installed does not count")
+    check(report(installed: 40, manual: 130).tapIdleSeconds == 0, "a clock that ran backwards reads as zero, never negative")
+    check(report(hid: 3.5).hidIdleSeconds == 3.5, "the HID idle seconds pass through")
+    check(report(hid: -2).hidIdleSeconds == 0 && report(hid: .nan).hidIdleSeconds == 0 && report(hid: .infinity).hidIdleSeconds == 0, "an unreadable HID counter reads as just active")
+    check(!report().locked && !report(screenLocked: false, onConsole: true).locked, "an absent or clear session reads as unlocked and on console")
+    check(report(screenLocked: true).locked, "a locked screen is locked")
+    check(report(onConsole: false).locked, "a session off the console (fast user switching) counts as locked")
+    check(report(screenLocked: true, onConsole: true).locked && report(screenLocked: false, onConsole: false).locked, "either flag alone locks")
+    check(!report(asleep: false).displayAsleep && report(asleep: true).displayAsleep, "display sleep passes through")
+    check(!report(held: false).displayHeldAwake && report(held: true).displayHeldAwake, "a display held awake passes through")
+    check(report(hid: 500, held: true).hidIdleSeconds == 500 && report(hid: 500, held: true).displayHeldAwake, "a held display does not touch the idle counters: main decides what it means")
+
+    let dictionary = report(hid: 3.5, installed: 40, manual: 90, screenLocked: true, held: true).dictionary
+    check(Set(dictionary.keys) == ["hidIdleSeconds", "tapIdleSeconds", "locked", "displayAsleep", "displayHeldAwake"], "the report has exactly the five contract fields")
+    check(dictionary["tapIdleSeconds"] as? Double == 10 && dictionary["hidIdleSeconds"] as? Double == 3.5 && dictionary["locked"] as? Bool == true && dictionary["displayAsleep"] as? Bool == false && dictionary["displayHeldAwake"] as? Bool == true, "the report fields carry their values")
+    check(report().dictionary["tapIdleSeconds"] is NSNull, "an unknown tap idle age is sent as null, not omitted")
+    if let data = try? JSONSerialization.data(withJSONObject: report(hid: 3.5).dictionary, options: [.sortedKeys]) {
+        check(String(decoding: data, as: UTF8.self) == #"{"displayAsleep":false,"displayHeldAwake":false,"hidIdleSeconds":3.5,"locked":false,"tapIdleSeconds":null}"#, "the report serializes to the contract shape with no other data")
+    } else { check(false, "the report serializes") }
+}

@@ -345,6 +345,59 @@ function openedResult(value: unknown): ExecutionResult["opened"] {
       : {}),
   };
 }
+/**
+ * What the helper knows about whether someone is at the Mac (§5 of the build
+ * plan): seconds since the last HID input as the system counts it, the age of
+ * the last unmarked input the emergency-stop tap saw (null while no tap is
+ * installed), whether the session is locked or the display asleep, and
+ * whether something holds the display awake (a call sharing the screen, a
+ * video, a presentation: idle input then does not mean the user has left).
+ * Read only: it sends no input and changes no focus. This is the one
+ * declaration of the wire shape; electron/presence.ts imports it rather than
+ * redeclaring it, so a field added here without a check in presenceReport
+ * fails to compile instead of being dropped at the wire.
+ */
+export interface PresenceReport {
+  hidIdleSeconds: number;
+  tapIdleSeconds: number | null;
+  locked: boolean;
+  displayAsleep: boolean;
+  displayHeldAwake: boolean;
+}
+const finiteSeconds = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+const flag = (value: unknown): boolean | undefined =>
+  typeof value === "boolean" ? value : undefined;
+/** The helper's presence reply, or undefined when its shape is not trusted. */
+export function presenceReport(value: unknown): PresenceReport | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  const hidIdleSeconds = finiteSeconds(v.hidIdleSeconds);
+  const tapIdleSeconds =
+    v.tapIdleSeconds === null ? null : finiteSeconds(v.tapIdleSeconds);
+  const locked = flag(v.locked);
+  const displayAsleep = flag(v.displayAsleep);
+  const displayHeldAwake = flag(v.displayHeldAwake);
+  if (
+    hidIdleSeconds === undefined ||
+    tapIdleSeconds === undefined ||
+    locked === undefined ||
+    displayAsleep === undefined ||
+    displayHeldAwake === undefined
+  )
+    return undefined;
+  // An object literal of exactly the contract's keys: tsc rejects a missing
+  // or unknown one, which ties this validator to the interface above.
+  return {
+    hidIdleSeconds,
+    tapIdleSeconds,
+    locked,
+    displayAsleep,
+    displayHeldAwake,
+  } satisfies Record<keyof PresenceReport, unknown>;
+}
 /** Per-request deadlines. Typing is paced natively, so it scales with length. */
 export function nativeTimeout(
   method: string,
@@ -353,6 +406,10 @@ export function nativeTimeout(
   if (method === "capture" || method === "revalidate") return 25000;
   // Spotlight metadata lookups are fast; memory recall never waits long.
   if (method === "index") return 3000;
+  // The helper answers presence on its reader thread, ahead of its command
+  // queue, so it never waits behind a capture or paced typing and answers in
+  // milliseconds; a slow answer means a wedged helper, not a long request.
+  if (method === "presence") return 2000;
   if (method === "execute") {
     const action = data.action as Partial<Action> | undefined;
     if (action?.type === "type_text" && typeof action.text === "string")
@@ -443,14 +500,18 @@ export class NativeController implements Controller {
         method,
         data,
         this.timeout(method, data),
-        // A slow Spotlight lookup only loses memory context for this run; it
-        // must not restart the helper (and pause the run) like a stuck input.
+        // A slow Spotlight lookup only loses memory context for this run, and
+        // a slow presence read only delays a status decision; neither may
+        // restart the helper (and pause the run) like a stuck input.
         method === "index"
           ? { message: "The system index did not answer in time.", kill: false }
-          : {
-              message: "Desktop control stopped responding and is restarting.",
-              kill: true,
-            },
+          : method === "presence"
+            ? { message: "Presence did not answer in time.", kill: false }
+            : {
+                message:
+                  "Desktop control stopped responding and is restarting.",
+                kill: true,
+              },
       )
       .then(
         (result) => {
@@ -526,6 +587,15 @@ export class NativeController implements Controller {
   }
   stop() {
     this.helper.signal("SIGUSR1");
+  }
+  /**
+   * Whether someone seems to be at the Mac, from the helper's counters. A
+   * malformed reply is reported as an error rather than trusted as a report.
+   */
+  async presence(): Promise<PresenceReport> {
+    const report = presenceReport(await this.request("presence"));
+    if (!report) throw new Error("Native controller returned no presence.");
+    return report;
   }
   async resume() {
     await this.request("resume");

@@ -7,6 +7,7 @@ import type {
   ProviderResult,
   Recorder,
   Run,
+  RunOrigin,
   RunStatus,
   Settings,
   Snapshot,
@@ -14,6 +15,8 @@ import type {
   Observation,
   Surface,
   MemoryContext,
+  TaskSource,
+  Usage,
 } from "./schema";
 import type {
   MemoryAccess,
@@ -463,6 +466,19 @@ export function planSummary(plan: Pick<ReplayPlan, "outline">): string {
     .join(", ");
   return redactSecrets(bound(text, 300)) + ".";
 }
+/**
+ * Who answered a pending approval; journaled on UserConfirmed/UserDenied. A
+ * "yes" typed in the command bar is "typed", not a click on the pill; a phone
+ * ("message", "remote") can only ever decline.
+ */
+export type ApprovalSource = "voice" | "pill" | "typed" | "message" | "remote";
+/**
+ * Why the run handed control to the user. "manual_input" is the user acting
+ * on their own; the rest are the runner asking: a model question, a policy
+ * hand-off, a surface the helper refused, or a target it could not find.
+ */
+export type TakeoverSource =
+  "manual_input" | "request_user" | "policy" | "surface" | "handoff";
 export class Runner {
   settled = true;
   snapshot: Snapshot = {
@@ -497,6 +513,8 @@ export class Runner {
   private attempted = 0;
   private interrupts = 0;
   private voiceApproval = false;
+  /** Set by confirm()/approveFromVoice(); read once by the approval loop. */
+  private approvalSource?: ApprovalSource;
   private signatures: string[] = [];
   private switches: (string | null)[] = [];
   private switchWarned = false;
@@ -814,7 +832,8 @@ export class Runner {
     this.wake?.();
     return true;
   }
-  confirm(yes: boolean) {
+  confirm(yes: boolean, source: ApprovalSource = "pill") {
+    this.approvalSource = source;
     this.approval?.(yes);
     this.approval = undefined;
   }
@@ -828,14 +847,14 @@ export class Runner {
     }
     this.pause();
   }
-  async approveFromVoice(yes: boolean) {
+  async approveFromVoice(yes: boolean, source: ApprovalSource = "voice") {
     const pending = this.snapshot.pending;
     if (!pending || this.snapshot.run?.status !== "confirming")
       throw new Error("Nothing to approve.");
     if (!yes) {
       this.voiceApproval = false;
       if (this.planPending !== undefined) this.abandonPlan("declined");
-      this.recordDecline(pending.action);
+      this.recordDecline(pending.action, source);
       this.pause();
       return;
     }
@@ -854,7 +873,22 @@ export class Runner {
       }
       this.voiceApproval = false;
     }
-    this.confirm(yes);
+    this.confirm(yes, source);
+  }
+  /**
+   * Counts model usage made on the run's behalf outside the run loop (progress
+   * summaries, dialog about it) toward maxCost. Nothing stops here: the loop's
+   * next check() sees the total and ends the run if the budget is spent.
+   */
+  addUsage(usage: Usage) {
+    const run = this.snapshot.run;
+    if (!run || terminal(run.status)) return;
+    const keys = ["inputTokens", "outputTokens", "cost"] as const;
+    // All or nothing: a broken figure must not half-apply.
+    if (keys.some((k) => !Number.isFinite(usage[k]) || usage[k] < 0)) return;
+    for (const k of keys) run.usage[k] += usage[k];
+    this.event("UsageAdded", { usage });
+    this.recorder.save(run);
   }
   async revise(text: string) {
     if (!this.active()) throw new Error("No active run.");
@@ -925,14 +959,17 @@ export class Runner {
     this.planResult = undefined;
   }
   /** Policy, surface and request_user hand-offs: the user acts next. */
-  private takeover(reason: string) {
+  private takeover(
+    reason: string,
+    source: Exclude<TakeoverSource, "manual_input">,
+  ) {
     this.held = true;
     this.handsOn = true;
     this.markHeld();
     this.controller.stop();
     this.abandonPlan("takeover");
     this.snapshot.frame = null;
-    this.event("UserTakeoverStarted");
+    this.event("UserTakeoverStarted", { source });
     this.status("takeover", reason);
   }
   private reject(entry: History[number]) {
@@ -947,8 +984,8 @@ export class Runner {
     );
     return false;
   }
-  private recordDecline(action: Action) {
-    this.event("UserDenied", { source: "approval" });
+  private recordDecline(action: Action, source: ApprovalSource) {
+    this.event("UserDenied", { source });
     this.reject({
       type: action.type,
       action: echoAction(action),
@@ -1046,7 +1083,7 @@ export class Runner {
   private async recoverNative(error: unknown, epoch: number, action?: Action) {
     if (error instanceof SurfaceBlockedError) {
       // The helper refused before sending input; hand control to the user.
-      this.takeover(error.message);
+      this.takeover(error.message, "surface");
       return true;
     }
     if (this.recoverStateChange(error, action)) return true;
@@ -1293,7 +1330,7 @@ export class Runner {
     this.lastSurface = surface;
     const decision = surfacePolicy(surface, this.settings);
     if (decision.kind !== "ALLOW") {
-      this.takeover(decision.reason);
+      this.takeover(decision.reason, "surface");
       return null;
     }
     const frame = await this.controller.capture();
@@ -1314,7 +1351,10 @@ export class Runner {
     });
     return frame;
   }
-  async start(task: string) {
+  async start(
+    task: string,
+    options: { origin?: RunOrigin; taskSource?: TaskSource } = {},
+  ) {
     if (this.active()) throw new Error("A run is already active.");
     this.settled = false;
     this.started = Date.now();
@@ -1346,6 +1386,8 @@ export class Runner {
       frames: 0,
       usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
       summary: "",
+      origin: options.origin ?? "typed",
+      ...(options.taskSource ? { taskSource: options.taskSource } : {}),
     };
     this.snapshot = {
       run,
@@ -1357,6 +1399,7 @@ export class Runner {
     this.event("RunStarted", {
       privacy: run.privacy,
       synthetic: run.synthetic,
+      origin: run.origin,
     });
     this.schedule();
     const history = this.history;
@@ -1617,6 +1660,7 @@ export class Runner {
                 )
                 ? "I couldn’t find that app. Open it yourself, then say continue."
                 : TARGET_HANDOFF_MESSAGE,
+              "handoff",
             );
           }
           continue;
@@ -1649,7 +1693,10 @@ export class Runner {
               result:
                 "You asked the user this and the run paused. It resumed only when the user said to continue. Any new details appear as a correction; without one, do not ask the same thing again: act on the most reasonable reading of the objective, or use fail if nothing sensible can be done.",
             });
-          this.takeover(decision.reason);
+          this.takeover(
+            decision.reason,
+            action.type === "request_user" ? "request_user" : "policy",
+          );
           continue;
         }
         // The summary is shown to the local user, so keep URLs and identifiers
@@ -1687,9 +1734,13 @@ export class Runner {
             continue;
           }
           this.markActive();
+          // Whoever answered set this; a pause resolving the wait never gets
+          // here (held wins above), so a missing source is the pill's click.
+          const answered = this.approvalSource ?? "pill";
+          this.approvalSource = undefined;
           if (!allowed) {
             planFail("declined");
-            if (this.recordDecline(action) >= 3) {
+            if (this.recordDecline(action, answered) >= 3) {
               this.declines = 0;
               this.pause(
                 "You declined several actions. Say continue with a hint when ready.",
@@ -1697,7 +1748,7 @@ export class Runner {
             }
             continue;
           }
-          this.event("UserConfirmed");
+          this.event("UserConfirmed", { source: answered });
           // Replace the approval card before the slower restore/revalidate.
           this.status("capturing", "Checking the screen before acting.");
           let fresh: Frame | null;

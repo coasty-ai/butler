@@ -515,7 +515,7 @@ export function parseUsage(
   };
 }
 
-function truncated(kind: Settings["provider"], data: Json) {
+export function truncated(kind: Settings["provider"], data: Json) {
   if (kind === "openai")
     return data?.status === "incomplete" || !!data?.incomplete_details;
   if (kind === "anthropic") return data?.stop_reason === "max_tokens";
@@ -537,7 +537,7 @@ const googleRefusals = new Set([
   "RECITATION",
 ]);
 /** The model or provider declined; asking again with the same input won't help. */
-function refused(kind: Settings["provider"], data: Json) {
+export function refused(kind: Settings["provider"], data: Json) {
   if (kind === "anthropic") return data?.stop_reason === "refusal";
   if (kind === "google")
     return (
@@ -702,7 +702,7 @@ export function retryAfter(
 const quotaMessage =
   "Provider quota or billing limit reached. Check your plan and credits.";
 /** Reads at most limit bytes of a body (under the request's signal). */
-async function readPrefix(response: Response, limit: number) {
+export async function readPrefix(response: Response, limit: number) {
   const reader = response.body?.getReader();
   if (!reader) return "";
   const parts: Uint8Array[] = [];

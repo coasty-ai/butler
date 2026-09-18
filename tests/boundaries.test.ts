@@ -58,6 +58,8 @@ function target(file: string, specifier: string): string {
 const srcFiles = walk("src");
 const coreFiles = srcFiles.filter((f) => f.startsWith("src/core/"));
 const providerFiles = srcFiles.filter((f) => f.startsWith("src/providers/"));
+const voiceFiles = srcFiles.filter((f) => f.startsWith("src/voice/"));
+const assistantFiles = srcFiles.filter((f) => f.startsWith("src/assistant/"));
 
 /** Collect every violation so one run names them all. */
 function offenders(
@@ -78,6 +80,8 @@ describe("module boundaries", () => {
     // A rename must fail this test, not quietly empty it.
     expect(coreFiles.length).toBeGreaterThan(5);
     expect(providerFiles.length).toBeGreaterThan(2);
+    expect(voiceFiles.length).toBeGreaterThan(2);
+    expect(assistantFiles.length).toBeGreaterThan(2);
     expect(srcFiles.length).toBeGreaterThan(20);
   });
 
@@ -103,6 +107,34 @@ describe("module boundaries", () => {
           ? "src/providers must not depend on src/memory (playbooks live in src/providers)"
           : undefined,
       ),
+    ).toEqual([]);
+  });
+
+  /**
+   * src/assistant is the conversational layer above voice and providers:
+   * pure like core, so the same view of a run answers voice, texts and the
+   * phone remote, and so nothing below it (voice) can reach back up into it.
+   */
+  it("keeps src/assistant pure and above src/voice", () => {
+    expect(
+      offenders(assistantFiles, (specifier, resolved) => {
+        if (specifier.startsWith("node:"))
+          return "src/assistant runs anywhere and imports no Node builtin";
+        if (!specifier.startsWith(".")) return undefined;
+        if (!/^src\/(?:assistant|core|voice|providers)\//.test(resolved))
+          return `src/assistant may import only src/core, src/voice and src/providers, not ${resolved}`;
+        return undefined;
+      }),
+    ).toEqual([]);
+    expect(
+      offenders(voiceFiles, (specifier, resolved) => {
+        if (specifier.startsWith("node:"))
+          return "src/voice imports no Node builtin";
+        if (!specifier.startsWith(".")) return undefined;
+        if (!/^src\/(?:voice|core)\//.test(resolved))
+          return `src/voice may import only src/core, not ${resolved}`;
+        return undefined;
+      }),
     ).toEqual([]);
   });
 

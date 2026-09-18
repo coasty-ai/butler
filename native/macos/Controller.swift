@@ -6,6 +6,7 @@ import CryptoKit
 import Carbon
 import UniformTypeIdentifiers
 import CoreServices
+import IOKit.pwr_mgt
 
 let outputLock = NSLock()
 let stateLock = NSLock()
@@ -30,6 +31,10 @@ var heldInput = HeldInput()
 let idleLock = NSLock()
 var manualInputEpisode = ManualInputEpisode()
 var idleTimer: DispatchSourceTimer?
+// When the emergency-stop tap was installed and when it last saw the user's
+// own input, for the presence probe (guarded by idleLock, monotonic seconds).
+var tapInstalledAt: TimeInterval?
+var lastManualInputAt: TimeInterval?
 // Processes AXManualAccessibility was already set on (guarded by stateLock).
 var manualAccessibilityAttempts = ManualAccessibilityAttempts()
 func emit(_ obj: [String: Any]) {
@@ -1168,7 +1173,38 @@ func releaseHeldInputAndExit(signal terminating: Int32? = nil) -> Never {
 // the event tap path.
 func recordManualInput(_ kind: ManualInputKind?) {
     guard let kind = kind else { return }
-    idleLock.lock(); manualInputEpisode.observe(kind: kind, at: ProcessInfo.processInfo.systemUptime); idleLock.unlock()
+    let now = ProcessInfo.processInfo.systemUptime
+    idleLock.lock(); manualInputEpisode.observe(kind: kind, at: now); lastManualInputAt = now; idleLock.unlock()
+}
+// Whether something holds the display awake (conferencing apps sharing the
+// screen, video players, browsers playing media, Keynote, caffeinate). Idle
+// input then does not mean the user has left. A failed read counts as held:
+// that only delays a texted task, the side on which it never takes a screen
+// someone may be watching.
+func displayHeldAwake() -> Bool {
+    var assertions: Unmanaged<CFDictionary>?
+    guard IOPMCopyAssertionsStatus(&assertions) == kIOReturnSuccess,
+          let status = assertions?.takeRetainedValue() as? [String: Any] else { return true }
+    let level = status[kIOPMAssertionTypePreventUserIdleDisplaySleep as String] as? NSNumber
+    return (level?.intValue ?? 0) != 0
+}
+// Whether someone seems to be at the Mac, for main's presence rules. Reads a
+// few system counters and returns in well under a millisecond: no input is
+// sent, no window is touched and no permission is needed. Safe off the main
+// thread and outside the command queue: it takes only idleLock.
+func presence() -> [String: Any] {
+    let now = ProcessInfo.processInfo.systemUptime
+    idleLock.lock(); let installed = tapInstalledAt, lastManual = lastManualInputAt; idleLock.unlock()
+    // kCGAnyInputEventType is ~0; an unreadable counter reads as just active.
+    let hidIdle = CGEventType(rawValue: ~0).map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) } ?? 0
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    // CGSSessionScreenIsLocked is undocumented; kCGSessionOnConsoleKey is
+    // false during fast user switching. Both are best effort.
+    return presenceReport(hidIdleSeconds: hidIdle, tapInstalledAt: installed, lastManualInputAt: lastManual, now: now,
+                          screenLocked: session?["CGSSessionScreenIsLocked"] as? Bool,
+                          onConsole: session?[kCGSessionOnConsoleKey as String] as? Bool,
+                          displayAsleep: CGDisplayIsAsleep(CGMainDisplayID()) != 0,
+                          displayHeldAwake: displayHeldAwake()).dictionary
 }
 // Tells main when the user's manual input has gone quiet (idleMs 1000, then
 // 3000), so it can decide whether a paused run continues. Informational only:
@@ -1249,6 +1285,7 @@ func installTap() -> Bool {
     guard let tap = tap else { return false }
     let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
     CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes); CGEvent.tapEnable(tap:tap, enable:true)
+    idleLock.lock(); tapInstalledAt = ProcessInfo.processInfo.systemUptime; idleLock.unlock()
     startIdleReporting()
     return true
 }
@@ -1904,6 +1941,11 @@ let commands = DispatchQueue(label:"ai.coarena.controller.commands")
 DispatchQueue.global().async {
     while let line = readLine() {
         guard let data = line.data(using:.utf8), let command = try? JSONSerialization.jsonObject(with:data) as? [String:Any] else {continue}
+        // Presence is polled during runs and has a short deadline in main. It
+        // is read-only and answers in microseconds, so it is answered here,
+        // ahead of the queue: a capture or paced typing in flight would
+        // otherwise hold it past that deadline and leave main a stale report.
+        if command["method"] as? String == "presence" {emit(["id":command["id"] ?? "","result":presence()]);continue}
         commands.async {
             let semaphore = DispatchSemaphore(value:0)
             Task { do {let result = try await handle(command);emit(["id":command["id"] ?? "","result":result])}catch {var result:[String:Any] = ["id":command["id"] ?? "","error":(error as? ControlError)?.message ?? "Native controller failed."];if let code = (error as? ControlError)?.code {result["code"] = code};emit(result)};semaphore.signal() };semaphore.wait()

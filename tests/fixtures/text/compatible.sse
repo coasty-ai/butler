@@ -1,0 +1,14 @@
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"fixture-model","choices":[{"index":0,"delta":{"content":"ACT answer"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"fixture-model","choices":[{"index":0,"delta":{"content":"\nSAY Spotify"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"fixture-model","choices":[{"index":0,"delta":{"content":" is open. Anything else?"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":412,"completion_tokens":14,"total_tokens":426}}
+
+data: [DONE]
+

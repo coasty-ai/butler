@@ -26,14 +26,18 @@ import { z } from "zod";
 import {
   defaultSettings,
   settingsSchema,
+  type Run,
+  type RunOrigin,
   type Settings,
   type Snapshot,
+  type TaskSource,
 } from "../src/core/schema";
 import {
   MANUAL_PAUSE_MESSAGE,
   Runner,
   TARGET_HANDOFF_MESSAGE,
   terminal,
+  type ApprovalSource,
 } from "../src/core/runner";
 import { shouldAutoResume, type InputIdleReport } from "../src/core/resume";
 import { TutorialController, TutorialProvider } from "../src/core/tutorial";
@@ -99,7 +103,19 @@ import {
   type KokoroVoice,
 } from "./kokoro/client";
 import { credentialScope, providerDefaults } from "../src/providers/catalog";
-import { planVoiceTurn, type TurnPlan } from "../src/voice/turns";
+import {
+  APPROVAL_MIN_CONFIDENCE,
+  planVoiceTurn,
+  type TurnPlan,
+} from "../src/voice/turns";
+import { runView, statusLine } from "../src/assistant/run-view";
+import type {
+  Channel,
+  ProgressReport,
+  ProgressSink,
+} from "../src/assistant/types";
+import { PRESENCE_REFRESH_MS, createPresenceService } from "./presence";
+import { TASK_QUEUE_MAX, TaskQueue } from "./task-queue";
 import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
 import {
@@ -162,6 +178,23 @@ let voiceHeld = false;
 let voiceHeldSequence = 0;
 // A short acknowledgement shown under the working pill.
 let notice = { text: "", until: 0 };
+/** How long a status or queue answer stays on the working pill. */
+const NOTICE_MS = 4000;
+/**
+ * Tasks waiting for the current run: "after that, …" by voice, a texted task
+ * while something runs. Drained two seconds after a run ends; a user's stop
+ * empties it.
+ */
+const taskQueue = new TaskQueue();
+/** The most recent run that ended, for "how's it going?" while idle. */
+let lastFinished: Run | undefined;
+let drainTimer: ReturnType<typeof setTimeout> | undefined;
+const QUEUE_DRAIN_MS = 2000;
+const QUEUE_DRAIN_ATTEMPTS = 15;
+// True while a plan stops one run to start another itself: the stop's end
+// must not drain the queue into the gap, or the plan's own start would fail.
+let queueHeld = false;
+let presenceTimer: ReturnType<typeof setInterval> | undefined;
 // Renderer crash reloads per window within the last minute, plus at most one
 // deferred reload per window once that budget is exhausted.
 const rendererReloads = new Map<BrowserWindow, number[]>();
@@ -422,7 +455,12 @@ const messages = new MessagesChannel({
     try {
       await getNative().request("rememberForeground");
     } catch {}
-    await dispatch("start", [task, false]);
+    // Texted words are the owner's own; the run remembers it came by text.
+    await dispatch("start", [
+      task,
+      false,
+      { origin: "message", taskSource: "user_words" },
+    ]);
   },
   control: {
     pause: () => {
@@ -433,6 +471,7 @@ const messages = new MessagesChannel({
       cancelVoiceCapture();
       void conversation.stopSpeaking();
       voiceHeld = false;
+      taskQueue.clear();
       runner?.stop();
     },
     resume: () => {
@@ -450,6 +489,59 @@ const conversation = new Conversation({
   trace: debug,
   onChange: () => refreshSpeechPill(),
 });
+/**
+ * Who is at the Mac. Asks the helper only while one exists (a run needed it
+ * already), and treats a helper without the method as "unknown".
+ */
+const presence = createPresenceService({
+  request: (method) =>
+    native ? native.request(method) : Promise.reject(new Error("No helper.")),
+  agentInputAt: lastAgentInputAt,
+});
+/** When the run last posted input itself, which resets the Mac's idle time. */
+function lastAgentInputAt(): number | undefined {
+  if (!runActive()) return undefined;
+  for (let i = snapshot.events.length - 1; i >= 0; i--)
+    if (snapshot.events[i].type === "ActionExecuted") {
+      const at = Date.parse(snapshot.events[i].wall_clock_timestamp);
+      return Number.isFinite(at) ? at : undefined;
+    }
+  return undefined;
+}
+/**
+ * Every channel that delivers progress updates. The reporter that produces
+ * them lands in increment 4B; until then nothing calls this.
+ */
+const progressSinks: ProgressSink[] = [conversation, messages];
+function onProgress(report: ProgressReport) {
+  for (const sink of progressSinks) sink.onProgress(report);
+}
+void onProgress;
+/** The fixed status line every channel answers "how's it going?" with. */
+function statusText() {
+  const now = Date.now();
+  return statusLine(
+    runView(snapshot, {
+      queued: taskQueue.list(now),
+      watches: [],
+      lastFinished,
+      now,
+      // The activation that asked paused the run to listen; it goes on once
+      // answered, so the answer must not call it paused.
+      heldByVoice: voiceHoldResumable(),
+    }),
+  );
+}
+/** How an approval answered through a channel is journaled. */
+function approvalSource(channel: Channel): ApprovalSource {
+  return channel === "voice"
+    ? "voice"
+    : channel === "app"
+      ? "typed"
+      : channel === "message"
+        ? "message"
+        : "remote";
+}
 /** Mirrors speaking and follow-up state onto the pill without re-layout. */
 function refreshSpeechPill() {
   const speaking = conversation.speaking,
@@ -501,6 +593,7 @@ function getNative() {
         cancelVoiceCapture();
         void conversation.stopSpeaking();
         voiceHeld = false;
+        taskQueue.clear();
         runner?.stop("Native emergency stop activated.");
         setPill({
           phase: "done",
@@ -1159,6 +1252,7 @@ async function receiveVoice(event: VoiceEvent) {
       listening = false;
       voiceInvocation += 1;
       voiceHeld = false;
+      taskQueue.clear();
       runner?.stop("Stopped.");
       setPill({
         phase: "done",
@@ -1288,14 +1382,53 @@ async function command(
   // Typed text keeps the pill visible until a run actually starts or resumes,
   // so a rejected command stays readable.
   if (!fromVoice) cancelVoiceCapture();
-  await executePlan(plan, fromVoice);
+  const ctx: PlanCtx = {
+    origin: fromVoice ? "voice" : "typed",
+    channel: fromVoice ? "voice" : "app",
+    // Typed words are the user's; speech counts only when heard clearly.
+    taskSource:
+      fromVoice && confidence < APPROVAL_MIN_CONFIDENCE
+        ? "user_words_unsure"
+        : "user_words",
+    // Built before the plan runs: answering may resume the run.
+    ...(plan.kind === "status" ? { replyText: statusText() } : {}),
+  };
+  const outcome = await executePlan(plan, ctx);
+  if (!outcome.ok) throw new Error(outcome.error);
   conversation.acknowledge(plan, {
     source: context.source,
     handsFree: settings.handsFree,
     activationAt: context.activationAt,
+    text: ctx.replyText,
   });
 }
-async function executePlan(plan: TurnPlan, fromVoice: boolean) {
+/** What a turn plan runs as: where it came from and whose words it carries. */
+type PlanCtx = {
+  origin: RunOrigin;
+  channel: Channel;
+  taskSource?: TaskSource;
+  /** The line to show or speak for a status or reply plan. */
+  replyText?: string;
+};
+/**
+ * Runs a turn plan. Never throws: callers that show failures (the voice
+ * path, IPC) rethrow the message; others (texts, the queue) report it.
+ */
+async function executePlan(
+  plan: TurnPlan,
+  ctx: PlanCtx,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await runPlan(plan, ctx);
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Something went wrong.",
+    };
+  }
+}
+async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
   // A newer voice turn that started while this plan runs owns the pill.
   const show = (update: Partial<PillState>, focus = false) => {
     if (!listening) setPill(update, focus);
@@ -1320,6 +1453,8 @@ async function executePlan(plan: TurnPlan, fromVoice: boolean) {
   switch (plan.kind) {
     case "stop":
       voiceHeld = false;
+      // A stop is for everything the user asked for, queued tasks included.
+      taskQueue.clear();
       runner?.stop("Stopped.");
       idleCard("Stopped.");
       return;
@@ -1336,12 +1471,25 @@ async function executePlan(plan: TurnPlan, fromVoice: boolean) {
       return;
     case "approve":
     case "decline":
+      // The router never approves from a phone; a plan that says so anyway
+      // is answered the way it should have been. A texted "no" only pauses,
+      // and the router already matched it to the gate that was relayed.
+      if (
+        plan.kind === "approve" &&
+        (ctx.channel === "message" || ctx.channel === "remote")
+      ) {
+        fail("Approve this one on the Mac.");
+        return;
+      }
       // A gate that vanished since planning is a stale answer.
       if (!currentGate()) {
         fail("Nothing to approve.");
         return;
       }
-      await runner!.approveFromVoice(plan.kind === "approve");
+      await runner!.approveFromVoice(
+        plan.kind === "approve",
+        approvalSource(ctx.channel),
+      );
       // A newer turn's gate belongs to that turn.
       if (!listening) voiceGate = undefined;
       if (plan.kind === "decline") return;
@@ -1357,7 +1505,9 @@ async function executePlan(plan: TurnPlan, fromVoice: boolean) {
       fail(
         plan.reason === "restricted"
           ? "Click Yes to confirm this one."
-          : "Tap once to approve.",
+          : plan.reason === "channel"
+            ? "Approve this one on the Mac."
+            : "Tap once to approve.",
       );
       return;
     case "confirmAgain":
@@ -1407,9 +1557,81 @@ async function executePlan(plan: TurnPlan, fromVoice: boolean) {
           canApprove: false,
           closing: false,
         },
-        !fromVoice,
+        ctx.channel !== "voice",
       );
       return;
+    case "status": {
+      const text = ctx.replyText ?? statusText();
+      if (snapshot.run?.status === "confirming" && snapshot.pending) {
+        voiceHeld = false;
+        show(approvalPill(snapshot, text));
+        return;
+      }
+      if (!runActive()) {
+        voiceHeld = false;
+        idleCard(text);
+        return;
+      }
+      notice = { text, until: Date.now() + NOTICE_MS };
+      // The activation paused the run to listen; an answered question is no
+      // reason to keep it waiting. The working pill then carries the answer.
+      if (!(await resumeVoiceHold())) render();
+      return;
+    }
+    case "queue": {
+      const added = taskQueue.add(
+        plan.text,
+        ctx.origin,
+        Date.now(),
+        // An accepted proposal is the assistant's wording, not the user's.
+        plan.taskSource ?? ctx.taskSource,
+      );
+      if ("refused" in added) {
+        voiceHeld = false;
+        throw new Error(
+          "Remove credentials from the task. Enter passwords manually during takeover.",
+        );
+      }
+      if ("full" in added) {
+        voiceHeld = false;
+        throw new Error(
+          `I can hold ${TASK_QUEUE_MAX} tasks for later, and they’re all taken.`,
+        );
+      }
+      notice = {
+        text:
+          added.position === 1
+            ? "Queued for after this one."
+            : `Queued, number ${added.position}.`,
+        until: Date.now() + NOTICE_MS,
+      };
+      if (!runActive()) {
+        // The router queues only with a run; one that ended meanwhile is
+        // drained like any other end.
+        voiceHeld = false;
+        idleCard(notice.text);
+        scheduleQueueDrain();
+        return;
+      }
+      if (!(await resumeVoiceHold())) render();
+      return;
+    }
+    case "reply": {
+      if (!runActive()) {
+        voiceHeld = false;
+        idleCard(ctx.replyText ?? "Okay.");
+        return;
+      }
+      if (ctx.replyText)
+        notice = { text: ctx.replyText, until: Date.now() + NOTICE_MS };
+      if (!plan.resume) {
+        voiceHeld = false;
+        render();
+        return;
+      }
+      if (!(await resumeVoiceHold())) render();
+      return;
+    }
     case "amendTask":
       voiceHeld = false;
       if (!snapshot.run?.synthetic) {
@@ -1427,22 +1649,49 @@ async function executePlan(plan: TurnPlan, fromVoice: boolean) {
       return;
     case "replace": {
       // The user moved on from a stalled run: end it without cutting off the
-      // spoken acknowledgement, wait for its loop to settle, then start.
+      // spoken acknowledgement, wait for its loop to settle, then start. The
+      // queue waits too: the stopped run's end would otherwise drain it into
+      // the gap and the replacement would find that task running instead.
       voiceHeld = false;
-      runner?.stop("Replaced by a new request.");
-      for (
-        let waited = 0;
-        runner && !runner.settled && waited < 3000;
-        waited += 50
-      )
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      await dispatch("start", [plan.text, false]);
+      queueHeld = true;
+      clearTimeout(drainTimer);
+      drainTimer = undefined;
+      try {
+        runner?.stop("Replaced by a new request.");
+        for (
+          let waited = 0;
+          runner && !runner.settled && waited < 3000;
+          waited += 50
+        )
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        await dispatch("start", [
+          plan.text,
+          false,
+          { origin: ctx.origin, taskSource: ctx.taskSource },
+        ]);
+      } finally {
+        queueHeld = false;
+        // Nothing starts while the replacement runs; if it never did, the
+        // queue goes on as after any other end.
+        scheduleQueueDrain();
+      }
       return;
     }
     case "revise":
     case "start": {
       voiceHeld = false;
       const active = runActive();
+      // The router starts only when nothing runs, so a start that finds a
+      // run under way (an accepted proposal, a queued task that began
+      // meanwhile) waits its turn: applied as a correction it would carry
+      // words the user never said, in the user's name.
+      if (plan.kind === "start" && active) {
+        await runPlan(
+          { kind: "queue", text: plan.text, taskSource: plan.taskSource },
+          ctx,
+        );
+        return;
+      }
       if (!(snapshot.run?.synthetic && active)) {
         hide();
         await native?.request("restoreRemembered");
@@ -1455,15 +1704,97 @@ async function executePlan(plan: TurnPlan, fromVoice: boolean) {
         closing: false,
       });
       if (active) await runner!.revise(plan.text);
-      else await dispatch("start", [plan.text, false]);
+      else
+        await dispatch("start", [
+          plan.text,
+          false,
+          // An accepted proposal is the assistant's wording, not the user's.
+          {
+            origin: ctx.origin,
+            taskSource:
+              (plan.kind === "start" && plan.taskSource) || ctx.taskSource,
+          },
+        ]);
       return;
     }
+  }
+}
+/**
+ * Bookkeeping that follows the run's life: presence is refreshed while it is
+ * active, and its end remembers it for status answers and lets the next
+ * queued task start.
+ */
+function trackRun(s: Snapshot) {
+  const run = s.run;
+  if (!run) return;
+  if (!terminal(run.status)) {
+    startPresenceRefresh();
+    return;
+  }
+  const ended = lastFinished?.id !== run.id;
+  lastFinished = run;
+  if (!ended) return;
+  stopPresenceRefresh();
+  scheduleQueueDrain();
+}
+function startPresenceRefresh() {
+  if (presenceTimer) return;
+  void presence.refresh();
+  presenceTimer = setInterval(
+    () => void presence.refresh(),
+    PRESENCE_REFRESH_MS,
+  );
+}
+function stopPresenceRefresh() {
+  clearInterval(presenceTimer);
+  presenceTimer = undefined;
+}
+/**
+ * Starts the next queued task once the run that ended has settled. Waits
+ * while the user is talking or something else already started, and gives up
+ * after half a minute; the next run's end tries again.
+ */
+function scheduleQueueDrain(attempt = 0) {
+  clearTimeout(drainTimer);
+  drainTimer = undefined;
+  if (shuttingDown || queueHeld || !taskQueue.list(Date.now()).length) return;
+  if (attempt >= QUEUE_DRAIN_ATTEMPTS) return;
+  drainTimer = setTimeout(() => void drainQueue(attempt), QUEUE_DRAIN_MS);
+}
+async function drainQueue(attempt: number) {
+  drainTimer = undefined;
+  if (shuttingDown) return;
+  if (runActive()) return;
+  if (listening || (runner && !runner.settled)) {
+    scheduleQueueDrain(attempt + 1);
+    return;
+  }
+  const next = taskQueue.next(Date.now());
+  if (!next) return;
+  debug("QueuedTaskStarted", {
+    source: next.origin,
+    textLength: next.text.length,
+  });
+  try {
+    await dispatch("start", [
+      next.text,
+      false,
+      { origin: "queue", taskSource: next.taskSource },
+    ]);
+  } catch (error) {
+    debug("QueuedTaskFailed", errorDetails(error));
+    showFailure(
+      error instanceof Error
+        ? error.message
+        : "The queued task could not start.",
+    );
   }
 }
 function emit(s: Snapshot) {
   snapshot = s;
   diagnostics?.snapshot(s);
   messages.onSnapshot(s);
+  trackRun(s);
   if (window && !window.isDestroyed()) window.webContents.send("snapshot", s);
   // Decides what to say about this moment; it never speaks while listening.
   conversation.onSnapshot(s, { listening, handsFree: settings.handsFree });
@@ -1490,12 +1821,16 @@ function renderPill(s: Snapshot) {
         status === "takeover" || (s.message && s.message !== defaultPause)
           ? s.message
           : "Paused.",
+      // A status or reply answered while held shows its line here, since
+      // nothing speaks a typed one; the continue hint returns after it.
       transcript:
-        s.message === MANUAL_PAUSE_MESSAGE
-          ? "I’ll continue when you let go."
-          : s.message === TARGET_HANDOFF_MESSAGE
-            ? "I’ll continue a moment after you click it."
-            : continueHint(settings.handsFree),
+        notice.until > Date.now()
+          ? notice.text
+          : s.message === MANUAL_PAUSE_MESSAGE
+            ? "I’ll continue when you let go."
+            : s.message === TARGET_HANDOFF_MESSAGE
+              ? "I’ll continue a moment after you click it."
+              : continueHint(settings.handsFree),
       canApprove: false,
     });
   else if (status === "completed")
@@ -1769,6 +2104,25 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       ensureIdle();
       const task = z.string().trim().min(1).max(8000).parse(args[0]),
         tutorial = z.boolean().parse(args[1]);
+      // Only internal callers say where a task came from; the renderer's
+      // starts are always "typed" (the IPC handler drops a third argument).
+      const from = z
+        .object({
+          origin: z
+            .enum(["voice", "typed", "message", "queue", "watch", "remote"])
+            .optional(),
+          taskSource: z
+            .enum([
+              "user_words",
+              "user_words_unsure",
+              "model_rewrite",
+              "proposal",
+            ])
+            .optional(),
+        })
+        .optional()
+        .parse(args[2]);
+      const origin: RunOrigin = from?.origin ?? "typed";
       if (scanText(task).some((f) => f.action === "BLOCK_UPLOAD"))
         throw new Error(
           "Remove credentials from the task. Enter passwords manually during takeover.",
@@ -1809,18 +2163,24 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       );
       voiceHeld = false;
       window.hide();
-      void runner.start(task).catch((error) => {
-        debug("RunStartFailed", errorDetails(error));
-        setPill({
-          phase: "error",
-          label:
-            error instanceof Error && error.message
-              ? error.message
-              : "The local run could not be saved.",
-          transcript: "",
-          canApprove: false,
+      void runner
+        .start(task, {
+          origin,
+          taskSource:
+            from?.taskSource ?? (origin === "typed" ? "user_words" : undefined),
+        })
+        .catch((error) => {
+          debug("RunStartFailed", errorDetails(error));
+          setPill({
+            phase: "error",
+            label:
+              error instanceof Error && error.message
+                ? error.message
+                : "The local run could not be saved.",
+            transcript: "",
+            canApprove: false,
+          });
         });
-      });
       return;
     }
     case "pause":
@@ -1841,6 +2201,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       cancelVoiceCapture();
       void conversation.stopSpeaking();
       voiceHeld = false;
+      taskQueue.clear();
       runner?.stop();
       return;
     case "confirm": {
@@ -1857,7 +2218,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         return;
       }
       if (yes) indicator.hide();
-      await runner?.approveFromVoice(yes);
+      await runner?.approveFromVoice(yes, "pill");
       return;
     }
     case "voices": {
@@ -2521,7 +2882,11 @@ app
       if (typeof method !== "string" || !Array.isArray(args))
         throw new Error("Invalid command.");
       try {
-        return await dispatch(method, args);
+        // A start from the renderer is always typed: it never names an origin.
+        return await dispatch(
+          method,
+          method === "start" ? args.slice(0, 2) : args,
+        );
       } catch (error) {
         debug("CommandFailed", { method, ...errorDetails(error) });
         // The overlay cannot resize itself; main owns every visible pill error.
@@ -2624,6 +2989,8 @@ app.on("before-quit", () => {
   messages.close();
   debug("AppStopping");
   clearInterval(diagnosticHeartbeat);
+  stopPresenceRefresh();
+  clearTimeout(drainTimer);
   for (const timer of deferredReloads.values()) clearTimeout(timer);
   deferredReloads.clear();
   runner?.stop();

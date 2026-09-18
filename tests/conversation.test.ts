@@ -671,7 +671,11 @@ describe("conversation: push-to-talk and hands-free", () => {
       now: t.now(),
       ...context,
     });
-    expect(plan).toEqual({ kind: "start", text: "can you open Safari" });
+    expect(plan).toEqual({
+      kind: "start",
+      text: "can you open Safari",
+      taskSource: "user_words",
+    });
   });
 
   it("asks anyway if the helper never reports the grace window", async () => {
@@ -1073,7 +1077,7 @@ describe("conversation: interruptions, windows and fragments", () => {
         now: u.now(),
         ...context,
       }),
-    ).toEqual({ kind: "start", text: "Open Safari" });
+    ).toEqual({ kind: "start", text: "Open Safari", taskSource: "user_words" });
   });
 
   it("never extends a fragment past 20 s by asking its question", () => {
@@ -1237,5 +1241,175 @@ describe("conversation: interruptions, windows and fragments", () => {
     expect(u.conversation.planContext().source).toBe("wake");
     u.advance(10000);
     expect(u.spoken).toHaveLength(0);
+  });
+});
+
+describe("conversation: status, queue and reply acknowledgements", () => {
+  it("speaks the status line main built, and asks the pending approval after it", () => {
+    const t = setup();
+    t.voiceStart();
+    t.play();
+    // The approval arrived while the user was talking, so it was held back.
+    t.render(approval(), true);
+    t.conversation.acknowledge(
+      { kind: "status" },
+      { source: "ptt", text: "I’m waiting for your okay on the next step." },
+    );
+    expect(t.texts()).toEqual([
+      "On it.",
+      "I’m waiting for your okay on the next step.",
+      "Send this message?",
+    ]);
+    expect(t.spoken[1]).toMatchObject({ priority: "result" });
+  });
+
+  it("asks the approval again after a status question, even once it was said", () => {
+    // Hands-free: the approval was asked and its window opened; instead of
+    // answering, the user asked how it was going. The answer ends with the
+    // question again, gate and window included, so a "yes" can land.
+    const t = setup({ handsFree: true });
+    t.voiceStart("wake");
+    t.play();
+    t.render(approval());
+    expect(t.texts()).toHaveLength(2);
+    expect(t.spoken[1]).toMatchObject({ listen: { kind: "approval" } });
+    t.play();
+    t.event({ event: "wake_detected" });
+    t.conversation.acknowledge(
+      { kind: "status" },
+      { source: "wake", text: "I’m waiting for your okay on the next step." },
+    );
+    expect(t.texts()).toHaveLength(4);
+    expect(t.texts()[2]).toBe("I’m waiting for your okay on the next step.");
+    expect(t.texts()[3]).toMatch(/^Send this message\?/);
+    expect(t.spoken[3]).toMatchObject({
+      priority: "urgent",
+      listen: { kind: "approval" },
+    });
+    // The window the helper opens after it carries the approval's gate.
+    t.event({ event: "followup_open", kind: "approval", seconds: 8 });
+    expect(t.conversation.windowGate).toBe(gateOf(approval()));
+    // Rendering again says nothing more: the moment is remembered afresh.
+    t.render(approval());
+    expect(t.texts()).toHaveLength(4);
+
+    // A reply that asks for the repeat does the same; one that does not,
+    // does not.
+    const u = setup({ handsFree: true });
+    u.voiceStart("wake");
+    u.play();
+    u.render(approval());
+    u.play();
+    u.event({ event: "wake_detected" });
+    u.conversation.acknowledge(
+      { kind: "reply", act: "answer", resume: false },
+      { source: "wake", text: "It’s Tuesday." },
+    );
+    expect(u.texts()).toEqual(["On it.", u.texts()[1], "It’s Tuesday."]);
+    u.event({ event: "wake_detected" });
+    u.conversation.acknowledge(
+      { kind: "reply", act: "answer", resume: false, repeatApproval: true },
+      { source: "wake", text: "It’s still Tuesday." },
+    );
+    expect(u.texts()).toHaveLength(5);
+    expect(u.texts()[4]).toMatch(/^Send this message\?/);
+  });
+
+  it("falls back to a short answer without a line, by run presence", () => {
+    const t = setup();
+    t.voiceStart();
+    t.render(snapshot("executing"));
+    t.conversation.acknowledge({ kind: "status" }, { source: "ptt" });
+    expect(t.texts().at(-1)).toBe("Still on it.");
+    const u = setup();
+    u.event({ event: "shortcut_down" });
+    u.conversation.acknowledge({ kind: "status" }, { source: "ptt" });
+    expect(u.texts()).toEqual(["Nothing’s running right now."]);
+  });
+
+  it("answers typed status and reply turns on the pill only", () => {
+    const t = setup();
+    t.typedStart();
+    t.render(snapshot("executing"));
+    t.conversation.acknowledge(
+      { kind: "status" },
+      { source: "text", text: "Still on it. 3 steps so far." },
+    );
+    t.conversation.acknowledge(
+      { kind: "reply", act: "answer", resume: true },
+      { source: "text", text: "It’s Tuesday." },
+    );
+    t.conversation.acknowledge(
+      { kind: "queue", text: "x" },
+      { source: "text" },
+    );
+    expect(t.texts()).toEqual([]);
+  });
+
+  it("acknowledges a queued task with the queued phrase and a continuation window", () => {
+    const t = setup({ handsFree: true });
+    t.voiceStart("wake");
+    t.play();
+    t.render(snapshot("executing"));
+    t.conversation.acknowledge(
+      { kind: "queue", text: "check my email" },
+      { source: "wake" },
+    );
+    expect(PHRASES.queued).toContain(t.texts().at(-1));
+    expect(t.spoken.at(-1)).toMatchObject({
+      priority: "ack",
+      listen: { kind: "continuation" },
+    });
+  });
+
+  it("a queued task consumes the fragment it completed", () => {
+    const t = setup();
+    t.event({ event: "shortcut_down" });
+    t.conversation.acknowledge(
+      { kind: "clarify", question: "Open what?", fragment: "after that, open" },
+      { source: "ptt" },
+    );
+    expect(t.conversation.planContext(true).fragment?.text).toBe(
+      "after that, open",
+    );
+    t.event({ event: "shortcut_down" });
+    t.conversation.acknowledge(
+      { kind: "queue", text: "open Safari" },
+      { source: "ptt" },
+    );
+    expect(t.conversation.planContext(true).fragment).toBeUndefined();
+  });
+
+  it("speaks a reply line as a result and nothing without one", () => {
+    const t = setup();
+    t.event({ event: "shortcut_down" });
+    t.conversation.acknowledge(
+      { kind: "reply", act: "answer", resume: false },
+      { source: "ptt", text: "It’s Tuesday." },
+    );
+    expect(t.texts()).toEqual(["It’s Tuesday."]);
+    expect(t.spoken[0]).toMatchObject({ priority: "result" });
+    t.event({ event: "shortcut_down" });
+    t.conversation.acknowledge(
+      { kind: "reply", act: "none", resume: true },
+      { source: "ptt" },
+    );
+    expect(t.texts()).toEqual(["It’s Tuesday."]);
+  });
+
+  it("progress reports are accepted and, for now, silent", () => {
+    const t = setup();
+    t.voiceStart();
+    t.conversation.onProgress({
+      runId: "run-1",
+      seq: 1,
+      kind: "checkin",
+      text: "Still in Mail.",
+      at: t.now(),
+      speak: true,
+      send: false,
+      fallback: true,
+    });
+    expect(t.texts()).toEqual(["On it."]);
   });
 });

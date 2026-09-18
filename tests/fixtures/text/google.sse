@@ -1,0 +1,6 @@
+data: {"candidates":[{"content":{"parts":[{"text":"ACT answer"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":412,"totalTokenCount":412},"modelVersion":"gemini-2.5-flash","responseId":"fixture"}
+
+data: {"candidates":[{"content":{"parts":[{"text":"\nSAY Spotify"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":412,"candidatesTokenCount":6,"totalTokenCount":418},"modelVersion":"gemini-2.5-flash","responseId":"fixture"}
+
+data: {"candidates":[{"content":{"parts":[{"text":" is open. Anything else?"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":412,"candidatesTokenCount":14,"thoughtsTokenCount":0,"totalTokenCount":426},"modelVersion":"gemini-2.5-flash","responseId":"fixture"}
+

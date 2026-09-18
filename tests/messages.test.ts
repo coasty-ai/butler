@@ -561,6 +561,17 @@ describe("run updates", () => {
       "Done. Filed four receipts.",
     ]);
   });
+  it("treats away updates like texted ones until presence can tell", async () => {
+    const { messages, helper } = channel({ messagesUpdates: "away" });
+    await messages.configure();
+    expect(messages.status().updates).toBe("away");
+    messages.onSnapshot(snapshot("executing", { run: { id: "typed-run" } }));
+    messages.onSnapshot(
+      snapshot("completed", { run: { id: "typed-run", summary: "Done." } }),
+    );
+    await messages.settled();
+    expect(helper.sent).toEqual([]);
+  });
   it("stops texting after the hourly budget", async () => {
     const { messages, helper } = channel();
     await messages.configure();

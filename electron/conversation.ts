@@ -28,6 +28,7 @@ import {
   type VoiceLastTurn,
   type VoiceSource,
 } from "../src/voice/turns";
+import type { ProgressReport } from "../src/assistant/types";
 import type { SpeakPriority, SpeechOutput } from "./speech-output";
 import type { VoiceEvent } from "./voice";
 
@@ -81,6 +82,12 @@ export interface AcknowledgeContext {
    * still executing this plan keeps its own source and window.
    */
   activationAt?: number;
+  /**
+   * The line main chose for a status or reply plan (a fixed template from the
+   * run view, or a model reply later). Spoken as it is for voice turns; typed
+   * turns read it on the pill.
+   */
+  text?: string;
 }
 export interface PlanContext {
   source: VoiceSource;
@@ -160,6 +167,9 @@ const PASSIVE_PLANS: ReadonlySet<TurnPlan["kind"]> = new Set([
   "nothingToApprove",
   "nothingRunning",
   "stillWorking",
+  "status",
+  "reply",
+  "queue",
 ]);
 
 /** main.ts currentGate(): the identity of a pending approval. */
@@ -381,9 +391,15 @@ export class Conversation {
     if (plan.kind === "clarify")
       this.setFragment({ text: plan.fragment, until: now + FRAGMENT_TTL_MS });
     else if (
-      ["start", "revise", "amendTask", "stop", "pause", "resume"].includes(
-        plan.kind,
-      )
+      [
+        "start",
+        "revise",
+        "amendTask",
+        "stop",
+        "pause",
+        "resume",
+        "queue",
+      ].includes(plan.kind)
     )
       this.setFragment(undefined);
     if (own) this.activation = undefined;
@@ -464,6 +480,28 @@ export class Conversation {
         case "clarify":
           this.clarify(plan.question, undefined, { source, handsFree });
           break;
+        case "queue":
+          reply("queued", "ack", true, CONTINUATION_WINDOW);
+          break;
+        case "status":
+          // The truthful line main built from the run view; without one, the
+          // short answer the run's presence allows.
+          if (ctx.text?.trim())
+            this.say(
+              { text: ctx.text },
+              { priority: "result", voiceTurn: true },
+            );
+          else reply(run ? "stillWorking" : "nothingRunning", "result", true);
+          this.repeatApproval(s);
+          break;
+        case "reply":
+          if (ctx.text?.trim())
+            this.say(
+              { text: ctx.text },
+              { priority: "result", voiceTurn: true },
+            );
+          if (plan.repeatApproval) this.repeatApproval(s);
+          break;
         case "amendTask":
         case "acknowledge":
           break;
@@ -472,6 +510,17 @@ export class Conversation {
     // Listening has ended: a prompt held back while capturing may speak now,
     // unless a newer turn is already capturing (its end re-evaluates).
     if (s && !newerTurn) this.onSnapshot(s, { listening: false });
+  }
+
+  /**
+   * A status answer while an approval is pending ends with the question again,
+   * gate and window included: the user asked instead of answering, and a "yes"
+   * after the answer must have somewhere to land. Forgetting the moment lets
+   * the re-evaluation at the end of acknowledge() say it once more.
+   */
+  private repeatApproval(s: Snapshot | undefined) {
+    const key = approvalKey(s);
+    if (key) this.said.delete(key);
   }
 
   /**
@@ -558,6 +607,13 @@ export class Conversation {
     this.remember(key);
     this.deliver(moment, this.runs.get(run.id)?.voice === true, handsFree);
   }
+
+  /**
+   * Progress updates from the shared reporter (increment 4B). Spoken progress
+   * lands with the streamed replies in increment 3A; until then nothing is
+   * said, and run moments still come from onSnapshot.
+   */
+  onProgress(_report: ProgressReport): void {}
 
   /** Speech and follow-up events from the voice helper. */
   onVoiceEvent(e: VoiceEvent) {

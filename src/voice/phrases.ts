@@ -27,6 +27,7 @@ export type PhraseKind =
   | "needHelp"
   | "approvalGeneric"
   | "budgetStop"
+  | "queued"
   | "previewSample";
 
 export const PHRASES: Record<PhraseKind, readonly string[]> = {
@@ -69,6 +70,13 @@ export const PHRASES: Record<PhraseKind, readonly string[]> = {
   ],
   approvalGeneric: ["I need your okay for the next step."],
   budgetStop: ["I stopped because it was taking too long."],
+  // "After that, …": the task waits for the current run. Never "next" alone,
+  // which could be heard as a control word.
+  queued: [
+    "I’ll do that next.",
+    "Queued for after this one.",
+    "Got it, that’s next.",
+  ],
   previewSample: ["Hi. I’ll speak up when I need you."],
 };
 

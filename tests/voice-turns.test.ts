@@ -14,8 +14,10 @@ import {
   followUpApprovalAllowed,
   intentKey,
   isControlPhrase,
+  isStatusQuestion,
   joinUtterances,
   planVoiceTurn,
+  queueRequest,
   startsNewTask,
   utteranceCompleteness,
   voiceIntent,
@@ -720,6 +722,7 @@ describe("turn planning", () => {
     expect(plan({ text: "Open", source: "text" })).toEqual({
       kind: "start",
       text: "Open",
+      taskSource: "user_words",
     });
   });
 
@@ -728,10 +731,12 @@ describe("turn planning", () => {
     expect(plan({ text: "Safari", fragment })).toEqual({
       kind: "start",
       text: "Open Safari",
+      taskSource: "user_words",
     });
     expect(plan({ text: "open Safari", fragment })).toEqual({
       kind: "start",
       text: "open Safari",
+      taskSource: "user_words",
     });
     expect(plan({ text: "Safari", fragment, run: run() })).toEqual({
       kind: "revise",
@@ -750,6 +755,7 @@ describe("turn planning", () => {
     ).toEqual({
       kind: "start",
       text: "Safari",
+      taskSource: "user_words",
     });
   });
 
@@ -758,6 +764,7 @@ describe("turn planning", () => {
     expect(plan({ text: "check my email", source: "text", fragment })).toEqual({
       kind: "start",
       text: "check my email",
+      taskSource: "user_words",
     });
     expect(
       plan({ text: "check my email", source: "text", fragment, run: run() }),
@@ -766,15 +773,18 @@ describe("turn planning", () => {
     expect(plan({ text: " open Safari ", source: "text", fragment })).toEqual({
       kind: "start",
       text: "open Safari",
+      taskSource: "user_words",
     });
     expect(plan({ text: "Safari", source: "text", fragment })).toEqual({
       kind: "start",
       text: "Safari",
+      taskSource: "user_words",
     });
     // Speech still completes the fragment.
     expect(plan({ text: "check my email", fragment })).toEqual({
       kind: "start",
       text: "Open check my email",
+      taskSource: "user_words",
     });
   });
 
@@ -790,6 +800,7 @@ describe("turn planning", () => {
     expect(plan({ text: `  ${text} `, source: "text" })).toEqual({
       kind: "start",
       text,
+      taskSource: "user_words",
     });
     expect(plan({ text, source: "text", run: run() })).toEqual({
       kind: "revise",
@@ -804,7 +815,11 @@ describe("turn planning", () => {
     "Rename the file to ab abc.txt",
     "Type 'um, I think so' in the reply",
   ])("keeps protected words in spoken text: %j", (text) => {
-    expect(plan({ text })).toEqual({ kind: "start", text });
+    expect(plan({ text })).toEqual({
+      kind: "start",
+      text,
+      taskSource: "user_words",
+    });
     expect(plan({ text, source: "wake", run: run() })).toEqual({
       kind: "revise",
       text,
@@ -882,6 +897,7 @@ describe("turn planning", () => {
     expect(plan({ text: "open the open the notes app" })).toEqual({
       kind: "start",
       text: "open the notes app",
+      taskSource: "user_words",
     });
     expect(plan({ text: "um uh", source: "text" })).toEqual({
       kind: "acknowledge",
@@ -962,5 +978,587 @@ describe("a new request while a run is stalled", () => {
     expect(startsNewTask("open it", stuck.task)).toBe(false);
     expect(startsNewTask("no, open Notes", stuck.task)).toBe(false);
     expect(startsNewTask("can you check my email", stuck.task)).toBe(true);
+  });
+});
+
+describe("status questions", () => {
+  const now = 100000;
+  const run = (over: Partial<VoiceTurnRun> = {}): VoiceTurnRun => ({
+    id: "run-1",
+    status: "executing",
+    actions: 3,
+    held: false,
+    task: "Email Dana the deck",
+    ...over,
+  });
+  const plan = (over: Partial<VoiceTurnInput>) =>
+    planVoiceTurn({
+      text: "",
+      confidence: 0.9,
+      source: "wake",
+      gateMatches: true,
+      now,
+      ...over,
+    });
+
+  it.each([
+    "how's it going?",
+    "How is it going",
+    "hows it coming along",
+    "how's that going?",
+    "How far along are you?",
+    "what's the status?",
+    "status update",
+    "Status",
+    "update?",
+    "any news?",
+    "progress",
+    "where are you at?",
+    "where are we at",
+    "what are you doing?",
+    "What are you up to?",
+    "what are you working on",
+    "what's happening?",
+    "what's going on",
+    "are you done yet?",
+    "Are you finished?",
+    "are you stuck?",
+    "done yet?",
+    "what are you stuck on?",
+    "how much longer?",
+    "you still working?",
+    "are you still working on it",
+    "Okay, how's it going, please?",
+    "how are we doing",
+  ])("isStatusQuestion matches %j", (text) => {
+    expect(isStatusQuestion(text)).toBe(true);
+  });
+
+  it.each([
+    "status of my order please check",
+    "check the status of my order",
+    "update the spreadsheet",
+    "what are you doing tonight",
+    "open Safari",
+    "how's it going with the report? send it",
+    "yes",
+    "stop",
+    "continue",
+  ])("isStatusQuestion rejects %j", (text) => {
+    expect(isStatusQuestion(text)).toBe(false);
+  });
+
+  it("answers a status question with or without a run, from every source", () => {
+    for (const source of [
+      "ptt",
+      "wake",
+      "followup",
+      "text",
+      "message",
+      "remote",
+    ] as const) {
+      expect(plan({ text: "how's it going?", source, run: run() })).toEqual({
+        kind: "status",
+      });
+      expect(plan({ text: "status", source })).toEqual({ kind: "status" });
+      // Live: "how's it going?" used to become a correction to the run.
+      expect(
+        plan({ text: "how's it going?", source, run: run() }).kind,
+      ).not.toBe("revise");
+    }
+    // Even while an approval is pending: the question is answered, and the
+    // approval re-asked by the conversation layer.
+    expect(
+      plan({
+        text: "how's it going?",
+        run: run({ status: "confirming", pendingReason: "Send this?" }),
+      }),
+    ).toEqual({ kind: "status" });
+    expect(
+      plan({
+        text: "how's it going",
+        run: run({ status: "paused", held: true, stalled: true }),
+      }),
+    ).toEqual({ kind: "status" });
+  });
+
+  it("never outranks a control or an approval answer", () => {
+    const pending = run({ status: "confirming", pendingReason: "Send this?" });
+    expect(plan({ text: "stop", run: pending })).toEqual({ kind: "stop" });
+    expect(plan({ text: "wait", run: pending })).toEqual({ kind: "pause" });
+    expect(plan({ text: "yes", run: pending })).toEqual({ kind: "approve" });
+    expect(plan({ text: "no", run: pending })).toEqual({ kind: "decline" });
+    expect(plan({ text: "continue", run: run({ held: true }) })).toEqual({
+      kind: "resume",
+    });
+    expect(plan({ text: "okay", run: run() })).toEqual({ kind: "acknowledge" });
+  });
+});
+
+describe("queue requests", () => {
+  const now = 100000;
+  const run = (over: Partial<VoiceTurnRun> = {}): VoiceTurnRun => ({
+    id: "run-1",
+    status: "executing",
+    actions: 3,
+    held: false,
+    task: "Email Dana the deck",
+    ...over,
+  });
+  const plan = (over: Partial<VoiceTurnInput>) =>
+    planVoiceTurn({
+      text: "",
+      confidence: 0.9,
+      source: "wake",
+      gateMatches: true,
+      now,
+      ...over,
+    });
+
+  it.each([
+    ["after that, check my email", "check my email"],
+    ["After that check my email", "check my email"],
+    ["and after that, open Notes", "open Notes"],
+    ["then after this one, open Notes", "open Notes"],
+    ["after you're done, text Dana", "text Dana"],
+    ["when you’re done, text Dana", "text Dana"],
+    ["once that's done open Notes", "open Notes"],
+    ["check my email when you're done", "check my email"],
+    ["open Notes after that.", "open Notes"],
+    ["open Notes, after this", "open Notes"],
+    ["when you're done with that, open Notes", "open Notes"],
+    ["after you're done with this, text Dana", "text Dana"],
+    // Minus the queueing words only; speech is cleaned afterwards.
+    ["after that please open Notes", "please open Notes"],
+    ["after that, let me know", "let me know"],
+  ])("queueRequest(%j) = %j", (text, rest) => {
+    expect(queueRequest(text)).toBe(rest);
+  });
+
+  it.each([
+    "after that",
+    "after that, um",
+    "open the notes app",
+    "check my email after lunch",
+    "when you're done",
+    "",
+    // Times, not queue requests: the words after the lead are the user's
+    // whole request and must reach the run untouched.
+    "after this call, text Dana I'm running late",
+    "after that meeting, send Dana the notes",
+    "After this song, play some jazz",
+    "after that meeting send Dana the notes",
+    // Control words are never tasks to queue.
+    "after that, stop",
+    "after that, yes",
+    "stop after that",
+  ])("queueRequest(%j) is not a queue request", (text) => {
+    expect(queueRequest(text)).toBeUndefined();
+  });
+
+  it("keeps a time phrase whole, with or without a run", () => {
+    expect(
+      plan({ text: "after this call, text Dana I'm running late" }),
+    ).toEqual({
+      kind: "start",
+      text: "after this call, text Dana I'm running late",
+      taskSource: "user_words",
+    });
+    expect(
+      plan({ text: "after this call, text Dana I'm running late", run: run() }),
+    ).toEqual({
+      kind: "revise",
+      text: "after this call, text Dana I'm running late",
+    });
+  });
+
+  it("is checked before a continuation is merged into the task", () => {
+    // Right after "open Notes", still in the continuation window and before
+    // the run acted: a queue request queues instead of amending the task.
+    expect(
+      plan({
+        text: "after that, check my email",
+        source: "followup",
+        window: "continuation",
+        turnMs: 1500,
+        lastTurn: {
+          plan: "start",
+          runId: "run-1",
+          actionsAtEnd: 0,
+          endedAt: now - 1000,
+        },
+        run: run({ status: "thinking", actions: 0, task: "open Notes" }),
+      }),
+    ).toEqual({ kind: "queue", text: "check my email" });
+  });
+
+  it("queues behind an active run and starts right away without one", () => {
+    expect(plan({ text: "after that, check my email", run: run() })).toEqual({
+      kind: "queue",
+      text: "check my email",
+    });
+    // Spoken text is cleaned; typed and texted text is kept as written.
+    expect(
+      plan({ text: "after that, um, check the the weather", run: run() }),
+    ).toEqual({ kind: "queue", text: "check the weather" });
+    expect(
+      plan({
+        text: "After that, check my email ",
+        source: "message",
+        run: run(),
+      }),
+    ).toEqual({ kind: "queue", text: "check my email" });
+    // A paused or stalled run is still the current one.
+    expect(
+      plan({
+        text: "after that, open Notes",
+        run: run({ status: "paused", held: true, stalled: true }),
+      }),
+    ).toEqual({ kind: "queue", text: "open Notes" });
+    expect(plan({ text: "after that, check my email" })).toEqual({
+      kind: "start",
+      text: "check my email",
+      taskSource: "user_words",
+    });
+  });
+
+  it("asks about a queue request that is only a fragment, then queues the answer", () => {
+    expect(plan({ text: "after that, open", run: run() })).toEqual({
+      kind: "clarify",
+      question: "Open what?",
+      fragment: "after that, open",
+    });
+    expect(
+      plan({
+        text: "Safari",
+        run: run(),
+        fragment: { text: "after that, open", until: now + 1000 },
+      }),
+    ).toEqual({ kind: "queue", text: "open Safari" });
+    // Typed fragments are never second-guessed.
+    expect(
+      plan({ text: "after that, open", source: "text", run: run() }),
+    ).toEqual({ kind: "queue", text: "open" });
+  });
+
+  it("marks speech heard unclearly as unsure words", () => {
+    expect(plan({ text: "open Safari", confidence: 0.5 })).toEqual({
+      kind: "start",
+      text: "open Safari",
+      taskSource: "user_words_unsure",
+    });
+    expect(plan({ text: "open Safari", confidence: 0.65 })).toEqual({
+      kind: "start",
+      text: "open Safari",
+      taskSource: "user_words",
+    });
+    expect(
+      plan({ text: "open Safari", source: "text", confidence: 0 }),
+    ).toEqual({ kind: "start", text: "open Safari", taskSource: "user_words" });
+  });
+});
+
+describe("texted and remote sources", () => {
+  const now = 100000;
+  const approval = (reason = "Open Safari?"): VoiceTurnRun => ({
+    id: "run-1",
+    status: "confirming",
+    actions: 2,
+    held: false,
+    pendingReason: reason,
+    task: "Open Google",
+  });
+  const plan = (over: Partial<VoiceTurnInput>) =>
+    planVoiceTurn({
+      text: "",
+      confidence: 1,
+      source: "message",
+      gateMatches: true,
+      now,
+      ...over,
+    });
+
+  it("never approves: a yes needs the Mac", () => {
+    for (const source of ["message", "remote"] as const)
+      for (const text of ["yes", "Yes, go ahead", "approve", "do it", "sure"])
+        for (const gateMatches of [true, false])
+          expect(plan({ text, source, gateMatches, run: approval() })).toEqual({
+            kind: "needClick",
+            reason: "channel",
+          });
+    // The same words typed at the Mac still approve.
+    expect(plan({ text: "yes", source: "text", run: approval() })).toEqual({
+      kind: "approve",
+    });
+  });
+
+  it("declines only the gate that was relayed", () => {
+    for (const source of ["message", "remote"] as const) {
+      expect(plan({ text: "no", source, run: approval() })).toEqual({
+        kind: "decline",
+      });
+      expect(
+        plan({ text: "no", source, gateMatches: false, run: approval() }),
+      ).toEqual({ kind: "confirmAgain" });
+      expect(plan({ text: "no", source })).toEqual({
+        kind: "nothingToApprove",
+      });
+    }
+  });
+
+  it("stop and pause win, and status is answered", () => {
+    for (const source of ["message", "remote"] as const) {
+      expect(plan({ text: "please stop", source, run: approval() })).toEqual({
+        kind: "stop",
+      });
+      expect(plan({ text: "hold on", source, run: approval() })).toEqual({
+        kind: "pause",
+      });
+      expect(plan({ text: "status", source, run: approval() })).toEqual({
+        kind: "status",
+      });
+    }
+  });
+
+  it("never clarifies or joins fragments; the text runs as written", () => {
+    for (const source of ["message", "remote"] as const) {
+      expect(plan({ text: " open ", source })).toEqual({
+        kind: "start",
+        text: "open",
+        taskSource: "user_words",
+      });
+      expect(
+        plan({
+          text: "check my email",
+          source,
+          fragment: { text: "Open", until: now + 1000 },
+        }),
+      ).toEqual({
+        kind: "start",
+        text: "check my email",
+        taskSource: "user_words",
+      });
+      // "Hey assist" is only stripped from speech.
+      expect(plan({ text: "hey assist", source }).kind).toBe("start");
+    }
+  });
+});
+
+describe("proposals", () => {
+  const now = 100000;
+  const proposal = { id: "p1", text: "Send Dana the Q3 deck", until: now + 1 };
+  const approval = (): VoiceTurnRun => ({
+    id: "run-1",
+    status: "confirming",
+    actions: 2,
+    held: false,
+    pendingReason: "Open Safari?",
+    task: "Open Google",
+  });
+  const plan = (over: Partial<VoiceTurnInput>) =>
+    planVoiceTurn({
+      text: "yes",
+      confidence: 0.9,
+      source: "wake",
+      gateMatches: true,
+      now,
+      ...over,
+    });
+
+  it("a yes accepts a live proposal as the assistant's wording", () => {
+    for (const source of ["ptt", "wake", "text", "message", "remote"] as const)
+      expect(plan({ source, proposal })).toEqual({
+        kind: "start",
+        text: proposal.text,
+        taskSource: "proposal",
+      });
+    expect(plan({ text: "go ahead", proposal })).toEqual({
+      kind: "start",
+      text: proposal.text,
+      taskSource: "proposal",
+    });
+  });
+
+  it("needs to be heard as clearly as an approval", () => {
+    // The offer may repeat words the user never said, so a doubtful "yes"
+    // is asked again rather than starting the task.
+    for (const confidence of [0, 0.3, 0.64])
+      expect(plan({ proposal, confidence })).toEqual({ kind: "confirmAgain" });
+    expect(plan({ proposal, confidence: 0.65 })).toMatchObject({
+      kind: "start",
+    });
+    expect(plan({ proposal, confidence: 0.9, segments: 2 })).toEqual({
+      kind: "confirmAgain",
+    });
+    expect(plan({ proposal, source: "followup", confidence: 0.74 })).toEqual({
+      kind: "confirmAgain",
+    });
+    expect(
+      plan({ proposal, source: "followup", confidence: 0.75 }),
+    ).toMatchObject({ kind: "start" });
+    // Typed and texted words carry no hearing doubt.
+    for (const source of ["text", "message", "remote"] as const)
+      expect(plan({ proposal, source, confidence: 0 })).toMatchObject({
+        kind: "start",
+      });
+    // A "no" needs no confidence: it starts nothing either way.
+    expect(plan({ text: "no", proposal, confidence: 0 })).toEqual({
+      kind: "acknowledge",
+    });
+  });
+
+  it("waits its turn behind a live run, never correcting it", () => {
+    // Executing, paused by the user, or in takeover: the offer is queued
+    // with the assistant's provenance, and the run is left as it was.
+    const runs: VoiceTurnRun[] = [
+      { id: "run-1", status: "executing", actions: 3, held: false, task: "T" },
+      { id: "run-1", status: "paused", actions: 3, held: true, task: "T" },
+      { id: "run-1", status: "takeover", actions: 3, held: true, task: "T" },
+    ];
+    for (const run of runs) {
+      for (const source of ["ptt", "wake", "text", "message"] as const)
+        expect(plan({ proposal, run, source })).toEqual({
+          kind: "queue",
+          text: proposal.text,
+          taskSource: "proposal",
+        });
+      expect(plan({ text: "no", proposal, run })).toEqual({
+        kind: "acknowledge",
+      });
+      expect(plan({ proposal, run, confidence: 0.3 })).toEqual({
+        kind: "confirmAgain",
+      });
+    }
+    // A finished run is no run.
+    expect(
+      plan({ proposal, run: { ...runs[0], status: "completed" } }),
+    ).toMatchObject({ kind: "start" });
+  });
+
+  it("lapses: an expired or empty proposal is nothing to approve", () => {
+    expect(plan({ proposal: { ...proposal, until: now } })).toEqual({
+      kind: "nothingToApprove",
+    });
+    expect(plan({ proposal: { ...proposal, text: "  " } })).toEqual({
+      kind: "nothingToApprove",
+    });
+    expect(plan({ text: "no", proposal })).toEqual({ kind: "acknowledge" });
+  });
+
+  it("is never accepted while an approval is pending", () => {
+    expect(plan({ proposal, run: approval() })).toEqual({ kind: "approve" });
+    expect(plan({ proposal, run: approval(), source: "message" })).toEqual({
+      kind: "needClick",
+      reason: "channel",
+    });
+    expect(plan({ text: "no", proposal, run: approval() })).toEqual({
+      kind: "decline",
+    });
+  });
+});
+
+describe("routing order property", () => {
+  const now = 100000;
+  const texts = [
+    ...fixture.approve,
+    ...fixture.decline,
+    ...fixture.resume,
+    ...fixture.acknowledge,
+    ...fixture.unclear,
+    "yes",
+    "yes yes",
+    "approve it",
+    "confirm",
+    "go ahead and send it",
+    "yes send it",
+    "click yes",
+    "how's it going?",
+    "after that, approve it",
+    "open Safari",
+    "yes, open Safari",
+    "hey assist yes",
+    "um yes",
+    "y-y-yes",
+  ];
+  const reasons = [
+    "Open Safari?",
+    "Send this message?",
+    "Quit this application?",
+    "Click “Learn more”?",
+    "Delete this item?",
+  ];
+  const runs: (VoiceTurnRun | undefined)[] = [
+    undefined,
+    { id: "r", status: "executing", actions: 1, held: false, task: "Open X" },
+    { id: "r", status: "paused", actions: 1, held: true, task: "Open X" },
+    { id: "r", status: "takeover", actions: 1, held: true, task: "Open X" },
+    ...reasons.map((pendingReason) => ({
+      id: "r",
+      status: "confirming",
+      actions: 1,
+      held: false,
+      pendingReason,
+      task: "Open X",
+    })),
+    ...reasons.map((pendingReason) => ({
+      id: "r",
+      status: "confirming",
+      actions: 1,
+      held: false,
+      pendingReason,
+      pendingKind: "relay_other" as const,
+      task: "Open X",
+    })),
+  ];
+  const proposals = [
+    undefined,
+    { id: "p", text: "Send the deck", until: now + 1000 },
+  ];
+  const fragments = [undefined, { text: "Open", until: now + 1000 }];
+
+  it("no message or remote input ever yields approve", () => {
+    let cases = 0;
+    for (const source of ["message", "remote"] as const)
+      for (const text of texts)
+        for (const run of runs)
+          for (const gateMatches of [true, false])
+            for (const confidence of [0, 0.5, 1])
+              for (const proposal of proposals)
+                for (const fragment of fragments)
+                  for (const segments of [1, 2]) {
+                    const plan = planVoiceTurn({
+                      text,
+                      source,
+                      run,
+                      gateMatches,
+                      confidence,
+                      proposal,
+                      fragment,
+                      segments,
+                      now,
+                    });
+                    cases++;
+                    expect([source, text, plan.kind]).not.toEqual([
+                      source,
+                      text,
+                      "approve",
+                    ]);
+                    // Nor anything the Mac would treat as an approval click.
+                    if (plan.kind === "needClick")
+                      expect(plan.reason).toBe("channel");
+                  }
+    expect(cases).toBeGreaterThan(10000);
+    // The property is about the channel: the same words spoken at the Mac,
+    // with confidence and a matching gate, do approve.
+    expect(
+      planVoiceTurn({
+        text: "yes",
+        source: "ptt",
+        run: runs[4],
+        gateMatches: true,
+        confidence: 1,
+        now,
+      }),
+    ).toEqual({ kind: "approve" });
   });
 });

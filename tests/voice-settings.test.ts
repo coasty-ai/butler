@@ -73,6 +73,57 @@ describe("voice settings", () => {
       ).toBe(voiceEngine);
   });
 
+  it("parses a config saved before the conversational layer with its defaults", () => {
+    const inc2 = {
+      conversation: "model",
+      dialogModel: "",
+      dialogHourlyCost: 0.5,
+      persona: "jarvis",
+      addressAs: "",
+      spokenProgress: true,
+      kokoroVoice: "af_heart",
+      progressEveryMinutes: 10,
+      watchMaxMinutes: 120,
+      stallMinutes: 8,
+      keepAwake: false,
+      messagesUpdates: "texted",
+      messagesConversation: true,
+      messagesDetail: "brief",
+      // Reading notifications stays a choice, never a surprise.
+      notifications: false,
+    } satisfies Partial<Settings>;
+    const older: Record<string, unknown> = structuredClone(defaultSettings);
+    for (const key of Object.keys(inc2)) delete older[key];
+    expect(settingsSchema.parse(older)).toMatchObject(inc2);
+    expect(defaultSettings).toMatchObject(inc2);
+    // The new keys accept their whole range and nothing beside it.
+    expect(parses({ messagesUpdates: "away" })).toBe(true);
+    expect(parses({ messagesUpdates: "sometimes" })).toBe(false);
+    for (const progressEveryMinutes of [0, 5, 10, 15, 30])
+      expect(parses({ progressEveryMinutes })).toBe(true);
+    expect(parses({ progressEveryMinutes: 7 })).toBe(false);
+    for (const kokoroVoice of ["af_heart", "bm_george", "bm_fable"])
+      expect(parses({ kokoroVoice })).toBe(true);
+    expect(parses({ kokoroVoice: "af_bella" })).toBe(false);
+    for (const persona of ["jarvis", "friendly"])
+      expect(parses({ persona })).toBe(true);
+    expect(parses({ persona: "pirate" })).toBe(false);
+    expect(parses({ conversation: "off" })).toBe(true);
+    expect(parses({ conversation: "sometimes" })).toBe(false);
+    expect(parses({ addressAs: "Dr. O'Neil-Smith" })).toBe(true);
+    expect(parses({ addressAs: "x".repeat(41) })).toBe(false);
+    expect(parses({ addressAs: "Bob <script>" })).toBe(false);
+    expect(parses({ dialogHourlyCost: 0.05 })).toBe(true);
+    expect(parses({ dialogHourlyCost: 0.01 })).toBe(false);
+    expect(parses({ dialogHourlyCost: 11 })).toBe(false);
+    expect(parses({ watchMaxMinutes: 4 })).toBe(false);
+    expect(parses({ watchMaxMinutes: 240 })).toBe(true);
+    expect(parses({ stallMinutes: 2 })).toBe(false);
+    expect(parses({ stallMinutes: 60 })).toBe(true);
+    expect(parses({ messagesDetail: "detailed" })).toBe(true);
+    expect(parses({ messagesDetail: "verbose" })).toBe(false);
+  });
+
   it("keeps defaultSettings in step with the schema defaults", () => {
     expect(settingsSchema.parse(defaultSettings)).toEqual(defaultSettings);
     for (const key of voiceKeys)
@@ -128,10 +179,15 @@ describe("voice settings", () => {
       "coral",
       "sage",
       "verse",
+      "ballad",
+      "fable",
+      "ash",
+      "echo",
+      "onyx",
     ]);
     for (const cloudVoice of cloudVoices)
       expect(parses({ cloudVoice })).toBe(true);
-    for (const cloudVoice of ["nova", "onyx", "Marin", ""])
+    for (const cloudVoice of ["nova", "shimmer", "Marin", ""])
       expect(parses({ cloudVoice })).toBe(false);
 
     for (const listeningPatience of ["quick", "normal", "relaxed"])

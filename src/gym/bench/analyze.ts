@@ -141,9 +141,10 @@ export function frictionCodes(line: DiagnosticLine): string[] {
     case "PolicyConfirmationRequested":
       return ["APPROVAL_REQUESTED"];
     case "UserDenied":
-      return code(d.source) === "approval"
-        ? ["APPROVAL_DECLINED"]
-        : ["POLICY_DENIED"];
+      // A declined approval names who answered ("approval" in older journals,
+      // now voice, pill, typed, message or remote); a policy denial carries
+      // only the reason.
+      return code(d.source) ? ["APPROVAL_DECLINED"] : ["POLICY_DENIED"];
     case "UserCorrectionRecorded":
       return ["USER_CORRECTION"];
     case "UserTakeoverStarted": {
