@@ -140,6 +140,77 @@ func webControls(_ window: AXUIElement, display: CGRect, limit: Int = 45) -> [[S
     }
     return result
 }
+/**
+ The text a person can read in a browser page right now, in reading order.
+ Web pages nest their text far deeper than the generic window walk goes, so a
+ research task used to see only the title and had to guess from pixels. Depth
+ first so the order is the page's own, pruned to the visible part of the
+ window, bounded in nodes, characters and time, and never reading a secure
+ field.
+ */
+func webVisibleText(_ window: AXUIElement, display: CGRect, limit: Int = 4200) -> String {
+    let started = ProcessInfo.processInfo.systemUptime
+    let visible = (elementRect(window) ?? display).intersection(display)
+    var parts = [String](), characters = 0, nodes = 0
+    func visit(_ node: AXUIElement, _ depth: Int) {
+        guard depth < 60, nodes < 4000, characters < limit,
+              ProcessInfo.processInfo.systemUptime - started < 0.3 else { return }
+        nodes += 1
+        if attribute(node, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole { return }
+        if depth > 2, let rect = elementRect(node), rect.width > 0, rect.height > 0, !rect.intersects(visible) { return }
+        if attribute(node, kAXRoleAttribute) as? String == "AXStaticText",
+           let value = attribute(node, kAXValueAttribute) as? String {
+            let text = value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            if !text.isEmpty {
+                let bounded = String(text.prefix(min(600, limit - characters)))
+                parts.append(bounded); characters += bounded.count + 1
+            }
+            return
+        }
+        let children = (attribute(node, "AXVisibleChildren") ?? attribute(node, kAXChildrenAttribute)) as? [AXUIElement] ?? []
+        for child in children.prefix(200) { visit(child, depth + 1) }
+    }
+    visit(window, 0)
+    return parts.joined(separator: "\n")
+}
+/**
+ Text read from the screenshot itself, inside the frontmost window, top to
+ bottom. Applications that publish no text to accessibility (Spotify, canvas
+ apps, Chrome while its page tree is switched off) still show it on screen, and
+ a model reads text far more reliably than it reads pixels. On-device (Vision,
+ about a quarter of a second on Apple silicon once warm), so it only runs when
+ accessibility produced little text; nothing leaves the Mac that the
+ screenshot itself did not already carry.
+ */
+func recognizeScreenText(_ image: CGImage, window: CGRect?, display: CGRect, limit: Int = 3000) -> String {
+    let request = VNRecognizeTextRequest()
+    // Accurate without language correction: clean text at about a quarter of
+    // a second once warm; fast mode garbles small UI text at 1x.
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = false
+    request.minimumTextHeight = 0.01
+    if let window, display.width > 0, display.height > 0 {
+        let area = window.intersection(display)
+        if area.width > 40, area.height > 40 {
+            // Vision's region is normalized with the origin at the bottom left.
+            request.regionOfInterest = CGRect(x: (area.minX - display.minX) / display.width,
+                                              y: 1 - (area.maxY - display.minY) / display.height,
+                                              width: area.width / display.width,
+                                              height: area.height / display.height)
+        }
+    }
+    guard (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil else { return "" }
+    let observations = (request.results ?? []).sorted {
+        abs($0.boundingBox.midY - $1.boundingBox.midY) > 0.008 ? $0.boundingBox.midY > $1.boundingBox.midY : $0.boundingBox.minX < $1.boundingBox.minX
+    }
+    var lines = [String](), characters = 0
+    for observation in observations {
+        guard let text = observation.topCandidates(1).first?.string.trimmingCharacters(in: .whitespaces), !text.isEmpty else { continue }
+        if characters + text.count > limit { break }
+        lines.append(text); characters += text.count + 1
+    }
+    return lines.joined(separator: "\n")
+}
 func mergeControls(_ first: [[String:Any]], _ second: [[String:Any]], limit: Int) -> [[String:Any]] {
     var seen = Set<String>(), merged = [[String:Any]]()
     for item in first + second where merged.count < limit {
@@ -1013,6 +1084,13 @@ func screenContext() -> [String:Any] {
         }
         visit(window,0);result["visibleText"]=String(text.joined(separator:"\n").prefix(4200))
     }
+    // In a browser the page is the content, whatever has focus: the find bar,
+    // a menu or the address bar are separate windows or chrome around it.
+    if browserAppIDs.contains(app.bundleIdentifier ?? ""),
+       let main=attribute(element,kAXMainWindowAttribute) ?? attribute(element,kAXFocusedWindowAttribute) {
+        let page=webVisibleText(main as! AXUIElement, display: CGDisplayBounds(displayID))
+        if page.count > (result["visibleText"] as? String ?? "").count {result["visibleText"]=String(page.prefix(4200))}
+    }
     if let raw=attribute(element,kAXFocusedUIElementAttribute) {
         let focused=raw as! AXUIElement
         if browserAddressField(focused,appId:app.bundleIdentifier ?? "") {result["browserAddress"] = String((attribute(focused,kAXValueAttribute) as? String ?? "").prefix(2000))}
@@ -1214,6 +1292,12 @@ func capture() async throws -> [String:Any] {
     let bitmap = NSBitmapImageRep(cgImage:image)
     guard let png = bitmap.representation(using:.png, properties:[:]) else { throw ControlError("Screenshot encoding failed.") }
     var context=screenContext();try ensureRunning()
+    // Little or no text from accessibility: read it from the screenshot.
+    if !context.isEmpty, (context["visibleText"] as? String ?? "").count < 600 {
+        let text = recognizeScreenText(image, window: afterWindow.bounds, display: CGDisplayBounds(displayID))
+        if text.count > 40 { context["screenText"] = text }
+        try ensureRunning()
+    }
     if !context.isEmpty {
         var controls = groundedControls(afterWindow, display: bounds)
         // Web pages nest their controls deeper than the safety walk reaches.

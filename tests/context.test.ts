@@ -158,3 +158,23 @@ describe("workspace context", () => {
       ).toBeUndefined();
   });
 });
+
+describe("screen text", () => {
+  it("carries text recognized from the screenshot, redacted and bounded", () => {
+    const result = cleanScreenContext({
+      appName: "Google Chrome",
+      windowTitle: "Introducing System One Models & Jev",
+      screenText:
+        "Introducing System One Models & Jev\nDiogo Almeida, founder, TypeSafe\napi key token=sk-fixtureSECRET123456",
+    });
+    expect(result?.screenText).toContain("Diogo Almeida, founder, TypeSafe");
+    expect(result?.screenText).not.toContain("fixtureSECRET");
+    expect(
+      cleanScreenContext({
+        appName: "A",
+        windowTitle: "B",
+        screenText: "x".repeat(4000),
+      })?.screenText,
+    ).toHaveLength(3200);
+  });
+});

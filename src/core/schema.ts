@@ -363,6 +363,12 @@ export interface ScreenContext {
    */
   menus?: string[];
   /**
+   * Text recognized on-device from the screenshot inside the frontmost window,
+   * top to bottom, when accessibility provided little text (Spotify, canvas
+   * apps, a browser whose page tree is switched off).
+   */
+  screenText?: string;
+  /**
    * Every application the user has open, most recently used first, with the
    * titles of its windows ("Slack: Prateek J (DM)"), so work already in
    * progress is picked up rather than started again.

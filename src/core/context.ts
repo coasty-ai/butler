@@ -46,6 +46,7 @@ const contextSchema = z
     // left when it publishes nothing else (docs/THREAT_MODEL.md).
     accessibility: z.enum(["none", "partial", "full"]).optional(),
     menus: z.array(bounded(400)).max(12).optional(),
+    screenText: bounded(3200).optional(),
     // The rest of the workspace: what else is open, and what has arrived.
     openApps: z.array(bounded(300)).max(14).optional(),
     notifications: z.array(bounded(300)).max(12).optional(),
@@ -101,6 +102,7 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
     ...(c.menus && {
       menus: c.menus.map((line) => clean(line).slice(0, 400)),
     }),
+    ...(c.screenText && { screenText: clean(c.screenText).slice(0, 3200) }),
     ...(c.openApps && {
       openApps: c.openApps.map((line) => clean(line).slice(0, 300)),
     }),
