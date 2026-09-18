@@ -44,6 +44,19 @@ const terminal = [
   "Say what needs running with request_user, or reach the goal through an ordinary app.",
 ];
 
+// VS Code, VSCodium, Cursor and Windsurf share one interface and one policy
+// (src/core/ide.ts): their palette asks before running a command and refuses
+// terminal, task, run and debug commands, and typing needs a box the editor's
+// own command just opened.
+const codeEditor = [
+  "Open a file by name with CMD+P, type part of the name, then UP or DOWN and ENTER.",
+  "Find in the file with CMD+F and across the project with CMD+SHIFT+F; ESC closes the box.",
+  "Palette commands (CMD+SHIFT+P): type the whole command name, not a prefix picked with arrows; the user approves it.",
+  "Never open a terminal, run a task or start debugging: terminals run whatever is typed and are refused.",
+  "Type only into a box the editor's own command just opened, such as CMD+P or CMD+F.",
+  "Save with CMD+S only when the objective asks you to change the file.",
+];
+
 /** Reliable routes per application, keyed by bundle id (lowercased at lookup). */
 export const playbooks: Record<string, string[]> = {
   "com.google.chrome": [
@@ -123,13 +136,11 @@ export const playbooks: Record<string, string[]> = {
   "org.alacritty": terminal,
   "co.zeit.hyper": terminal,
   "com.github.wez.wezterm": terminal,
-  "com.microsoft.vscode": [
-    "Open the command palette with CMD+SHIFT+P, type the command, then press ENTER to run it.",
-    "Open a file by name with CMD+P, type part of the name, then UP or DOWN and ENTER.",
-    "Find in the file with CMD+F and across the project with CMD+SHIFT+F; ESC closes the box.",
-    "Save with CMD+S only when the objective asks you to change the file.",
-    "Never open a terminal or run a task from the palette: the shell is not allowed.",
-  ],
+  "com.microsoft.vscode": codeEditor,
+  "com.microsoft.vscodeinsiders": codeEditor,
+  "com.vscodium": codeEditor,
+  "com.todesktop.230313mzl4w4u92": codeEditor,
+  "com.exafunction.windsurf": codeEditor,
   "com.apple.preview": [
     "Open the document with open_file and a ~/ path from context.memory.files instead of browsing.",
     "Search the open document with CMD+F, type the words, then ENTER to step through the matches.",
@@ -170,6 +181,11 @@ const names: Record<string, string> = {
   iterm2: "com.googlecode.iterm2",
   "visual studio code": "com.microsoft.vscode",
   code: "com.microsoft.vscode",
+  "visual studio code - insiders": "com.microsoft.vscodeinsiders",
+  "code - insiders": "com.microsoft.vscodeinsiders",
+  vscodium: "com.vscodium",
+  cursor: "com.todesktop.230313mzl4w4u92",
+  windsurf: "com.exafunction.windsurf",
   preview: "com.apple.preview",
   music: "com.apple.music",
   photos: "com.apple.photos",
@@ -215,8 +231,9 @@ export const categoryPlaybooks: Record<PlaybookCategory, string[]> = {
   ],
   terminal,
   editor: [
-    "Open the command palette with CMD+SHIFT+P and a file by name with CMD+P, then press ENTER.",
+    "Open a file by name with the Go to File or Open Quickly command in context.menus, then press ENTER.",
     "Find in the file with CMD+F and across the project with CMD+SHIFT+F; ESC closes the box.",
+    "Commands run from a command palette need the user's approval, and terminal or task commands are refused.",
     "Never open a terminal or run a task from the editor: you have no shell.",
   ],
   viewer: [

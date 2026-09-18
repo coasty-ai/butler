@@ -1,5 +1,17 @@
 import type { Action, Settings, Surface } from "./schema";
 import { scanText } from "./sanitize";
+import {
+  ideCommandTitleRefused,
+  ideDiscardLabel,
+  ideFamily,
+  ideMenuRefused,
+  ideQuickInputField,
+  isTerminalApp,
+  paletteClass,
+  paletteTitle,
+  quickOpenRunsCommand,
+  quickOpenTitle,
+} from "./ide";
 export type Decision = {
   kind: "ALLOW" | "CONFIRM" | "DENY" | "RETRY" | "USER_TAKEOVER";
   reason: string;
@@ -40,10 +52,9 @@ const documentApps = [
 // Built-in surface floor that settings.protectedApps cannot remove. Mirrors
 // launchFloorDenied (and its applet prefixes) in native/macos/LaunchSafety.swift;
 // change both together. These apps run arbitrary code or change disks,
-// credentials or the system, however they were brought to the front.
+// credentials or the system, however they were brought to the front. Every
+// terminal application (terminalAppIds in ide.ts) is part of it.
 const floorProtectedApps = new Set([
-  "com.apple.terminal",
-  "com.googlecode.iterm2",
   "com.apple.scripteditor2",
   "com.apple.automator",
   "com.apple.diskutility",
@@ -59,6 +70,7 @@ const floorProtectedPrefixes = [
 function floorProtected(appId: string | undefined): boolean {
   const id = (appId ?? "").toLowerCase();
   return (
+    isTerminalApp(id) ||
     floorProtectedApps.has(id) ||
     floorProtectedPrefixes.some((prefix) => id.startsWith(prefix))
   );
@@ -537,6 +549,172 @@ function openFileDecision(surface: Surface, synthetic: boolean): Decision {
       "No input was sent. That path is not in the local index. Use a path listed in context.memory.files or folders, or request_user.",
   };
 }
+const IDE_TERMINAL_REFUSAL =
+  "Terminals, tasks, builds and run or debug commands are left to the user: a terminal runs whatever is typed next. Finish the task another way, or ask the user with request_user.";
+/**
+ * ENTER in the application's own command palette runs whichever command the
+ * palette selected, and in VS Code and its forks every quick-open box turns
+ * into that palette with ">" or a "task "/"term " prefix. VS Code runs the
+ * selected entry on CMD+, ALT+ and CTRL+ENTER as well. What the agent typed
+ * since the command (Surface.searchQuery, recorded natively) decides:
+ * terminal, task, run and debug commands are refused, even after an arrow key
+ * or an edit since, and opening a coding agent's own input is routine in those
+ * editors. Anything else is the user's call, but only while the palette's
+ * choice can be named: with nothing typed, the selection moved off the top
+ * match or the text edited since, ENTER is retried instead of asking the user
+ * to approve a command nobody can name. Plain find and search boxes, and a
+ * file or symbol name, keep the search rules.
+ */
+function paletteEnterDecision(
+  action: Action,
+  surface: Surface,
+): Decision | undefined {
+  const chordEnter = action.type === "hotkey" && action.keys.includes("ENTER");
+  if (
+    surface.unknown ||
+    !surface.searchOpenedBy ||
+    !(chordEnter || (action.type === "key" && action.key === "ENTER"))
+  )
+    return undefined;
+  const opener = surface.searchOpenedBy;
+  const ide = !!ideFamily(surface.appId);
+  const palette = paletteTitle(opener);
+  // A helper that recorded no text leaves nothing exact to go on.
+  const query = surface.searchQuery ?? "";
+  const edited =
+    surface.searchQueryState === "edited" || surface.searchQuery === undefined;
+  const runsCommand =
+    palette ||
+    (ide &&
+      quickOpenTitle(opener) &&
+      // An edit could have added or removed the box's ">" or "task " prefix.
+      (edited || quickOpenRunsCommand(query)));
+  if (!runsCommand) return undefined;
+  const kind = paletteClass(query);
+  if (kind === "refused") return { kind: "DENY", reason: IDE_TERMINAL_REFUSAL };
+  const where = `${appLabel(surface)}’s ${palette ? "command palette" : quote(opener)}`;
+  const shown = quote(query.replace(/^[>\s]+/, ""));
+  if (edited)
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. The text in ${where} was edited after it was typed, so what ENTER would open or run there cannot be named. Press ESC, open it again and type the whole ${palette ? "command" : "query"}, then press ENTER.`,
+    };
+  if (!shown)
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. Nothing is typed in ${where}, so ENTER would run whichever command it lists first (often the one used last). Type the command's name first.`,
+    };
+  if (surface.searchQueryState === "moved")
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. An arrow key moved the selection in ${where} off the top match for “${shown}”, so what ENTER would run cannot be named. Type more of the command's name so it comes first, then press ENTER.`,
+    };
+  if (kind === "agent_focus" && ide && !surface.modal && !chordEnter)
+    return {
+      kind: "ALLOW",
+      reason: "Open the coding agent's input from the command palette.",
+    };
+  // The palette matches loosely and runs its top match, which the policy
+  // cannot read: the question says so rather than promising the typed text.
+  return {
+    kind: "CONFIRM",
+    reason: `Run the top match for “${shown}” in ${where}? It may not be exactly that command.`,
+  };
+}
+// Controls that run what they name when clicked or pressed.
+const ideCommandControlRoles = [
+  "AXButton",
+  "AXMenuItem",
+  "AXMenuButton",
+  "AXPopUpButton",
+  "AXLink",
+];
+/**
+ * A control in VS Code or a fork that opens its terminal or the panel holding
+ * it, or runs a file, a task, a build or the debugger: the editor's Run and
+ * Debug buttons, a CodeLens "Run Test", a context menu's "Open in Integrated
+ * Terminal", a chat's "Run in Terminal". The same titles its menus and
+ * shortcuts are refused for. Only the control's own label counts, so a file
+ * or tab named build.gradle is not one.
+ */
+function ideRunControl(
+  appId: string | undefined,
+  role: string | undefined,
+  label: string | undefined,
+): boolean {
+  return (
+    !!ideFamily(appId) &&
+    ideCommandControlRoles.includes(role ?? "") &&
+    ideCommandTitleRefused(normalizeControlLabel(label ?? ""))
+  );
+}
+/**
+ * ENTER (or an editing key) in VS Code or a fork when no command the agent
+ * just ran says what has focus. The editors keep their tree hidden, so an
+ * unidentified focus may be the integrated terminal, where UP has recalled the
+ * last shell line, or a palette whose context lapsed (after 45 s, a pointer
+ * action or an unrelated shortcut such as CMD+A) or that the user opened. With
+ * the tree exposed the palette is an identified search field instead. ENTER
+ * there runs whatever line or command is selected, so it is retried rather
+ * than approved blind; reopening the box with the editor's own command makes
+ * it known again.
+ */
+function ideUnverifiedKey(
+  action: Action,
+  surface: Surface,
+  editable: boolean,
+): Decision | undefined {
+  if (surface.unknown || surface.searchOpenedBy || !ideFamily(surface.appId))
+    return undefined;
+  const enter =
+    (action.type === "key" && action.key === "ENTER") ||
+    (action.type === "hotkey" && action.keys.includes("ENTER"));
+  const editKey =
+    action.type === "key" &&
+    ["SPACE", "BACKSPACE", "DELETE"].includes(action.key);
+  const app = appLabel(surface);
+  if (
+    (enter || editKey) &&
+    !editable &&
+    unidentifiedFocusRoles.includes(surface.focusedRole ?? "")
+  )
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. Nothing identifies what has focus in ${app}, where this key could run a line in its terminal or a command left selected in its palette. Open the box you need with the app's own command first (CMD+P for a file, CMD+F to find), or ask the user with request_user.`,
+    };
+  if (
+    enter &&
+    editable &&
+    ideQuickInputField(
+      surface.focusedRole,
+      surface.focusedSubrole,
+      surface.focusedLabel,
+    )
+  )
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. This box in ${app} can run commands, and what was typed there is not known. Open it again with the app's own command (CMD+P for a file, CMD+F to find), type the query, then press ENTER.`,
+    };
+  return undefined;
+}
+/**
+ * The integrated terminal (xterm.js) is a text area like any other, but every
+ * line typed there and every ENTER runs as a shell command. Native reports it
+ * from the focused element itself (Surface.terminalFocus). Escape, arrows and
+ * Tab only move around the command line and stay allowed.
+ */
+function terminalInput(action: Action): boolean {
+  if (action.type === "type_text") return true;
+  if (action.type === "key")
+    return ["ENTER", "BACKSPACE", "DELETE", "SPACE"].includes(action.key);
+  if (action.type !== "hotkey") return false;
+  // Control chords edit, interrupt or end the shell; Shift-Tab changes a
+  // coding agent's permission mode in its terminal interface.
+  return (
+    action.keys.some((k) => ["ENTER", "CTRL"].includes(k)) ||
+    chord(action.keys) === chord(["SHIFT", "TAB"])
+  );
+}
 /**
  * A menu item the frontmost application publishes, pressed by name. The native
  * helper resolved the path against the live menu bar and reported what it
@@ -553,6 +731,17 @@ function menuItemDecision(action: Action, surface: Surface): Decision {
       reason:
         "Quitting an application, logging out and shutting down are left to the user. Finish the task another way.",
     };
+  // In VS Code and its forks these open the integrated terminal (or the panel
+  // that holds it) or run a task, a build or the debugger: a shell reached
+  // through the menus. Refused before the enabled checks, so a greyed-out one
+  // is never a reason to go and enable it. The resolved title is checked too:
+  // a path may name only the start of an item ("Toggle" for "Toggle Terminal").
+  if (
+    ideFamily(surface.appId) &&
+    (ideMenuRefused(action.path) ||
+      ideCommandTitleRefused(surface.menuLabel ?? ""))
+  )
+    return { kind: "DENY", reason: IDE_TERMINAL_REFUSAL };
   if (surface.menuStatus === "missing")
     return {
       kind: "RETRY",
@@ -709,6 +898,26 @@ export function evaluate(
     navigationKeys.includes(action.key)
   )
     return { kind: "ALLOW", reason: "Navigate with the keyboard." };
+  if (!surface.unknown && surface.terminalFocus && terminalInput(action))
+    return {
+      kind: "DENY",
+      reason:
+        "The focus is in a terminal, where typed text and ENTER run shell commands. Terminals are left to the user: finish the task another way, or ask the user with request_user.",
+    };
+  // A focused Run or Debug button pressed from the keyboard is the same click.
+  if (
+    !surface.unknown &&
+    action.type === "key" &&
+    ["ENTER", "SPACE"].includes(action.key) &&
+    ideRunControl(surface.appId, surface.focusedRole, surface.focusedLabel)
+  )
+    return { kind: "DENY", reason: IDE_TERMINAL_REFUSAL };
+  // Before the field rules below: a palette's input can be an identified,
+  // searchable field when the editor exposes its tree.
+  const palette = paletteEnterDecision(action, surface);
+  if (palette) return palette;
+  const ideKey = ideUnverifiedKey(action, surface, editable);
+  if (ideKey) return ideKey;
   // Calculator accepts keypad input without a focused text field. Digits,
   // operators, Enter (=) and Backspace only change the displayed calculation.
   if (
@@ -744,6 +953,14 @@ export function evaluate(
         reason:
           "No input was sent. The focused application could not be identified, so shortcuts are paused. Capture a fresh screenshot and switch to the requested application first.",
       };
+    // A chord an editor's own menus bind to its terminal, the panel holding it,
+    // a task or the debugger (Run Build Task, Toggle Panel) is that command.
+    if (
+      ideFamily(surface.appId) &&
+      surface.shortcutLabel &&
+      ideCommandTitleRefused(surface.shortcutLabel)
+    )
+      return { kind: "DENY", reason: IDE_TERMINAL_REFUSAL };
     if (keys === "CMD+SPACE")
       return { kind: "ALLOW", reason: "Open Spotlight." };
     // Command-Tab lands on whichever application the switcher was last on, not
@@ -911,6 +1128,31 @@ export function evaluate(
     /\bpost\b/.test(normalizeControlLabel(surface.targetLabel ?? ""))
   )
     return { kind: "CONFIRM", reason: "Publish this post?" };
+  if (
+    leftClick &&
+    ideRunControl(
+      surface.targetAppId || surface.appId,
+      surface.targetRole,
+      surface.targetLabel,
+    )
+  )
+    return { kind: "DENY", reason: IDE_TERMINAL_REFUSAL };
+  // In a coding agent's panel Undo, Reject and Discard throw its edits away
+  // (Copilot's Undo All Edits, Claude Code's Reject). Elsewhere "undo" stays
+  // on the harmless list. Only a control whose whole name is that: a file
+  // named undo.ts, a tab or a link about undoing a commit is not one.
+  if (
+    leftClick &&
+    ideFamily(surface.targetAppId || surface.appId) &&
+    ideCommandControlRoles.includes(surface.targetRole ?? "") &&
+    ideDiscardLabel(
+      normalizeControlLabel(surface.targetLabel || surface.targetText || ""),
+    )
+  )
+    return {
+      kind: "CONFIRM",
+      reason: "Discard the coding agent's changes?",
+    };
   if (consequential.test(words))
     return { kind: "CONFIRM", reason: consequentialReason(words) };
   // Calculator keypad buttons only edit the displayed calculation. Sheets
@@ -1188,6 +1430,15 @@ export function evaluate(
       reason: "Activate this control? It may submit or change content.",
     };
   if (action.type === "type_text") {
+    // VS Code and its forks keep their tree hidden, and a focus nothing
+    // identifies there may be the integrated terminal, where a typed line runs.
+    // Typing there needs a box the editor's own command just opened, never a
+    // blind approval.
+    if (!surface.unknown && ideFamily(surface.appId))
+      return {
+        kind: "RETRY",
+        reason: `No input was sent. No text field is identified in ${appLabel(surface)}, and typing blind there can reach its terminal. Open the box you need with the app's own command first (CMD+P for a file, CMD+F to find), or ask the user with request_user.`,
+      };
     // A blind application reports no focused field even when the cursor is in
     // one, so retrying only burns steps. Ask the user instead. The text itself
     // is never quoted; credentials and secure input were refused above.

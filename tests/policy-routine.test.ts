@@ -1906,15 +1906,16 @@ describe("named targets: menus and controls the agent can name", () => {
     );
   });
   it("allows a chord the application's own menus publish", () => {
-    // CMD+J is in no allow-list; VS Code's View menu says what it does.
+    // CMD+J is in no allow-list; Sublime Text's View menu says what it does.
+    // (VS Code's own Toggle Panel opens its terminal: tests/policy-ide.test.ts.)
     const decision = decide(hotkey("CMD", "J"), {
-      appId: "com.microsoft.VSCode",
-      shortcutLabel: "Toggle Panel",
+      appId: "com.sublimetext.4",
+      shortcutLabel: "Toggle Minimap",
     });
     expect(decision.kind).toBe("ALLOW");
-    expect(decision.reason).toContain("Toggle Panel");
+    expect(decision.reason).toContain("Toggle Minimap");
     expect(
-      decide(hotkey("CMD", "J"), { appId: "com.microsoft.VSCode" }).kind,
+      decide(hotkey("CMD", "J"), { appId: "com.sublimetext.4" }).kind,
     ).toBe("RETRY");
   });
   it("asks about a published shortcut whose menu item is consequential", () => {

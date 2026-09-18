@@ -249,11 +249,23 @@ func normalizeChord(_ keys: [String]) -> String {
 func searchCommandTitle(_ title: String) -> Bool {
     let words = normalizeTargetTitle(title).lowercased()
     guard !words.isEmpty, !words.contains("replace") else { return false }
-    // Not a command palette or Quick Open: text entered there runs editor
-    // commands (VS Code's "Terminal: Create New Terminal"), not a search.
-    let openers = ["search", "find", "filter", "go to symbol",
-                   "jump to", "quick switcher", "quick search", "switch to"]
+    let openers = ["search", "find", "filter", "quick open", "go to file", "go to symbol",
+                   "jump to", "command palette", "show all commands", "quick switcher", "quick search", "open quickly", "switch to"]
     return openers.contains { opener in
+        words == opener || words.hasPrefix(opener + " ") || words.hasSuffix(" " + opener)
+            || words.contains(" " + opener + " ")
+    }
+}
+/**
+ Whether a search-opening command is a command palette (VS Code's View >
+ Command Palette and Help > Show All Commands, Sublime Text's Tools > Command
+ Palette): ENTER there runs whichever command is selected rather than opening
+ a search result, so what was typed is recorded for policy (IdeSafety.swift).
+ Same rule as paletteTitle in src/core/ide.ts.
+ */
+func paletteCommandTitle(_ title: String) -> Bool {
+    let words = normalizeTargetTitle(title).lowercased()
+    return ["command palette", "show all commands"].contains { opener in
         words == opener || words.hasPrefix(opener + " ") || words.hasSuffix(" " + opener)
             || words.contains(" " + opener + " ")
     }

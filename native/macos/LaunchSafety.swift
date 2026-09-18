@@ -19,11 +19,22 @@ enum LaunchResolution: Equatable {
     case refused
 }
 
+// Terminal applications, lowercased: every character and ENTER sent to one runs
+// as a shell command. Identical to terminalAppIds and terminalAppPrefixes in
+// src/core/ide.ts (the policy floor); tests/fixtures/ide-agents.json holds both.
+let terminalAppIds: [String] = ["com.apple.terminal", "com.googlecode.iterm2", "dev.warp.warp", "dev.warp.warp-stable", "dev.warp.warp-preview", "com.mitchellh.ghostty", "net.kovidgoyal.kitty", "org.alacritty", "io.alacritty", "co.zeit.hyper", "com.github.wez.wezterm"]
+// Warp ships each channel under its own id (Warp-Stable, Warp-Preview, …).
+let terminalAppPrefixes = ["dev.warp.warp-"]
+func terminalApp(_ bundleId: String?) -> Bool {
+    let id = (bundleId ?? "").lowercased()
+    return !id.isEmpty && (terminalAppIds.contains(id) || terminalAppPrefixes.contains { id.hasPrefix($0) })
+}
 // Shell-equivalent, scripting, disk, credential and system-flow applications
 // stay manual even when a user removes them from the protected list.
-let launchFloorDenied: Set<String> = ["com.apple.terminal", "com.googlecode.iterm2", "com.apple.scripteditor2", "com.apple.automator", "com.apple.diskutility", "com.apple.keychainaccess", "com.apple.migrateassistant", "com.apple.bootcampassistant", "com.apple.installer", "com.apple.spotlight", "com.apple.siri", "ai.coarena.openassist", "com.github.electron"]
-// Automator/AppleScript applets and web-app wrappers are scripts, not products.
-let launchRefusedPrefixes = ["com.apple.automator.", "com.apple.scripteditor.id.", "com.apple.safari.webapp.", "com.google.chrome.app."]
+let launchFloorDenied: Set<String> = Set(terminalAppIds).union(["com.apple.scripteditor2", "com.apple.automator", "com.apple.diskutility", "com.apple.keychainaccess", "com.apple.migrateassistant", "com.apple.bootcampassistant", "com.apple.installer", "com.apple.spotlight", "com.apple.siri", "ai.coarena.openassist", "com.github.electron"])
+// Automator/AppleScript applets and web-app wrappers are scripts, not products;
+// every Warp channel is a terminal.
+let launchRefusedPrefixes = ["com.apple.automator.", "com.apple.scripteditor.id.", "com.apple.safari.webapp.", "com.google.chrome.app."] + terminalAppPrefixes
 // Identical to INSTALLER_PATTERN in src/core/policy.ts; keep the two in step.
 let launchNamePattern = try! NSRegularExpression(pattern: "\\b(?:install\\w*|uninstall\\w*|setup\\w*|updater?|migrat\\w*|boot ?camp\\w*|recovery)\\b", options: [.caseInsensitive])
 let launchBundlePattern = try! NSRegularExpression(pattern: "(installer|uninstall|setup|updater)", options: [.caseInsensitive])

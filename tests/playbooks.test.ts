@@ -99,6 +99,39 @@ describe("app playbook table", () => {
   });
 });
 
+describe("coding editors", () => {
+  const editors = [
+    ["com.microsoft.VSCode", "Code"],
+    ["com.microsoft.VSCodeInsiders", "Code - Insiders"],
+    ["com.vscodium", "VSCodium"],
+    ["com.todesktop.230313mzl4w4u92", "Cursor"],
+    ["com.exafunction.windsurf", "Windsurf"],
+  ];
+  it("gives VS Code and its forks one playbook, by id and by name", () => {
+    const vscode = playbookFor("com.microsoft.VSCode");
+    for (const [id, name] of editors) {
+      expect(playbookFor(id), id).toEqual(vscode);
+      expect(playbookFor(undefined, name), name).toEqual(vscode);
+    }
+  });
+  it("never tells the model a palette command runs on ENTER", () => {
+    // Policy asks before a palette command runs and refuses terminal, task,
+    // run and debug commands (src/core/ide.ts), so the old "type the command,
+    // then press ENTER to run it" line sent the model into refusals.
+    for (const [name, lines] of entries)
+      for (const line of lines)
+        expect(line, name).not.toMatch(/palette[^.]*\bENTER\b/i);
+    for (const lines of [
+      playbookFor("com.microsoft.VSCode"),
+      categoryPlaybooks.editor,
+    ]) {
+      const text = lines.join(" ");
+      expect(text).toMatch(/approv/);
+      expect(text).toMatch(/Never open a terminal/);
+    }
+  });
+});
+
 describe("playbook lookup", () => {
   it("finds an entry by display name when the bundle id is missing", () => {
     expect(playbookFor(undefined, "Google Chrome")).toEqual(
@@ -127,7 +160,7 @@ describe("playbook lookup", () => {
     expect(playbookFor("com.microsoft.Outlook", "Outlook")).toEqual(
       categoryPlaybooks.mail,
     );
-    expect(playbookFor("com.todesktop.230313mzl4w4u92", "Cursor")).toEqual(
+    expect(playbookFor("com.sublimetext.4", "Sublime Text")).toEqual(
       categoryPlaybooks.editor,
     );
     expect(playbookCategory("com.acme.Widget", "Widget")).toBe("generic");

@@ -354,6 +354,12 @@ describe("follow-up approvals", () => {
       ["Click “Continue”?", click, button("Continue"), false],
       ["Click “Allow”?", click, button("Allow"), false],
       ["Click “Log in”?", click, button("Log in"), false],
+      [
+        "Discard the coding agent's changes?",
+        click,
+        { appId: "com.microsoft.VSCode", ...button("Undo") },
+        false,
+      ],
       ["Click “Learn more”?", click, button("Learn more"), true],
       ["Click “Next page”?", click, button("Next page"), true],
       [

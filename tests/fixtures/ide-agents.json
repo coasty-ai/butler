@@ -1,0 +1,187 @@
+{
+  "comment": "Shared coding-editor fixture. TypeScript src/core/ide.ts and policy.ts, and native IdeSafety.swift, NamedTargets.swift and LaunchSafety.swift, must give these verdicts. Palette strings are command titles as typed into VS Code's palette; terminal focus cases are the focused element's AXRoleDescription, label and AXDOMClassList.",
+  "ideApps": {
+    "com.microsoft.VSCode": "vscode",
+    "com.microsoft.VSCodeInsiders": "vscode",
+    "com.vscodium": "vscode",
+    "com.vscodium.VSCodiumInsiders": "vscode",
+    "com.todesktop.230313mzl4w4u92": "cursor",
+    "com.exafunction.windsurf": "windsurf"
+  },
+  "notIdeApps": [
+    "",
+    "com.apple.dt.Xcode",
+    "com.sublimetext.4",
+    "dev.zed.Zed",
+    "com.jetbrains.intellij",
+    "com.google.Chrome",
+    "com.microsoft.Word"
+  ],
+  "terminalAppIds": [
+    "com.apple.terminal",
+    "com.googlecode.iterm2",
+    "dev.warp.warp",
+    "dev.warp.warp-stable",
+    "dev.warp.warp-preview",
+    "com.mitchellh.ghostty",
+    "net.kovidgoyal.kitty",
+    "org.alacritty",
+    "io.alacritty",
+    "co.zeit.hyper",
+    "com.github.wez.wezterm"
+  ],
+  "terminalAppPrefixes": ["dev.warp.warp-"],
+  "terminalApps": [
+    "com.apple.Terminal",
+    "com.googlecode.iterm2",
+    "dev.warp.Warp-Stable",
+    "dev.warp.Warp-Preview",
+    "dev.warp.Warp-Dev",
+    "com.mitchellh.ghostty",
+    "net.kovidgoyal.kitty",
+    "org.alacritty",
+    "io.alacritty",
+    "co.zeit.hyper",
+    "com.github.wez.wezterm"
+  ],
+  "notTerminalApps": [
+    "com.microsoft.VSCode",
+    "com.apple.Notes",
+    "dev.warp.warpdrive",
+    "com.mitchellh.ghosttyfan"
+  ],
+  "paletteTitles": ["Command Palette…", "Command Palette", "Show All Commands"],
+  "notPaletteTitles": [
+    "Go to File…",
+    "Quick Open",
+    "Search",
+    "Find",
+    "Find in Files",
+    "Jump to…"
+  ],
+  "palette": {
+    "agent_focus": [
+      "Claude Code: Focus input",
+      "claude code: open in side bar",
+      ">Claude Code: Open in New Tab",
+      "Claude Code: New Conversation",
+      "  Claude   Code: Focus input…",
+      "Chat: Focus on Chat View",
+      "Chat: Open Chat"
+    ],
+    "refused": [
+      "Terminal: Create New Terminal",
+      ">Terminal: Create New Terminal",
+      "Create New Terminal",
+      "Terminal: Focus Terminal",
+      "View: Toggle Terminal",
+      "Run Task",
+      "Tasks: Run Task",
+      "Tasks: Run Build Task",
+      "Debug: Start Debugging",
+      "Run and Debug",
+      "Python: Run Python File",
+      "Python: Run Python File in Terminal",
+      "Python: Start REPL",
+      "Run Code",
+      "Notebook: Execute Cell",
+      "Shell Command: Install 'code' command in PATH",
+      "Extensions: Install Extensions",
+      "Developer: Toggle Developer Tools",
+      "Claude Code: Focus input and open a terminal",
+      "task build",
+      "debug Launch Program",
+      "term 1",
+      "ext install ms-python.python",
+      "new term",
+      "toggle term",
+      "tog ter",
+      "crea new ter",
+      "View: Toggle Panel",
+      "deb start",
+      "Show Running Tasks",
+      "open cons"
+    ],
+    "other": [
+      "",
+      ">",
+      "Git: Push",
+      "Toggle Word Wrap",
+      "Format Document",
+      "Preferences: Open Settings (UI)",
+      "Claude Code: Focus",
+      "Claude Code: Focus input now",
+      "Claude Code: Accept Proposed Changes",
+      "Git: Commit",
+      "Preferences: Color Theme",
+      "Snippets: Insert Snippet",
+      "Toggle Minimap",
+      "Claude Code: Open Walkthrough"
+    ]
+  },
+  "terminalFocus": [
+    {
+      "roleDescription": "text entry area",
+      "label": "Terminal 1, zsh",
+      "domClasses": [],
+      "ide": true,
+      "terminal": true
+    },
+    {
+      "roleDescription": "text entry area",
+      "label": "Terminal input",
+      "domClasses": [],
+      "ide": true,
+      "terminal": true
+    },
+    {
+      "roleDescription": "text entry area",
+      "label": "Terminal 3, Claude Code",
+      "domClasses": [],
+      "ide": true,
+      "terminal": true
+    },
+    {
+      "roleDescription": "text entry area",
+      "label": "",
+      "domClasses": ["xterm-helper-textarea"],
+      "ide": false,
+      "terminal": true
+    },
+    {
+      "roleDescription": "terminal",
+      "label": "",
+      "domClasses": [],
+      "ide": false,
+      "terminal": true
+    },
+    {
+      "roleDescription": "text entry area",
+      "label": "Chat Input",
+      "domClasses": ["inputarea"],
+      "ide": true,
+      "terminal": false
+    },
+    {
+      "roleDescription": "text entry area",
+      "label": "Editor content;Press Alt+F1 for Accessibility Options.",
+      "domClasses": ["inputarea", "monaco-mouse-cursor-text"],
+      "ide": true,
+      "terminal": false
+    },
+    {
+      "roleDescription": "text field",
+      "label": "Terminal",
+      "domClasses": [],
+      "ide": false,
+      "terminal": false
+    },
+    {
+      "roleDescription": "text entry area",
+      "label": "Terminals",
+      "domClasses": [],
+      "ide": true,
+      "terminal": false
+    }
+  ]
+}

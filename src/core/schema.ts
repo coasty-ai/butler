@@ -447,6 +447,24 @@ export interface Surface {
    * text is proposed with nothing identified to type into.
    */
   searchCommand?: string[];
+  /**
+   * What the agent has typed since searchOpenedBy ran, when that command opened
+   * a command palette (or any quick-open box in VS Code and its forks). Set
+   * natively only while that command is current. It is the field's exact text
+   * unless searchQueryState says otherwise, and is then the text last known.
+   */
+  searchQuery?: string;
+  /**
+   * Why searchQuery may not describe what ENTER selects: "moved" after an
+   * arrow or page key moved the selection off the top match (the text is
+   * unchanged), "edited" after a deletion, a caret key or typing cut short.
+   */
+  searchQueryState?: "moved" | "edited";
+  /**
+   * The focused element is a terminal's input (VS Code's integrated xterm.js
+   * terminal and the like), where typed text and ENTER run shell commands.
+   */
+  terminalFocus?: boolean;
 }
 export interface Usage {
   inputTokens: number;

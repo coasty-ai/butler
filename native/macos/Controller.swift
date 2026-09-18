@@ -567,14 +567,11 @@ struct MenuSnapshot {
 }
 var menuSnapshot: MenuSnapshot? = nil // guarded by stateLock
 // The application's own search command the agent ran last, if any, so text
-// typed next is known to go into that search field (guarded by stateLock).
-var searchCommand: (pid: pid_t, at: TimeInterval, title: String)? = nil
-func noteCommand(_ title: String?, pid: pid_t) {
-    withState {
-        if let title, searchCommandTitle(title) {
-            searchCommand = (pid, ProcessInfo.processInfo.systemUptime, utf16Prefix(normalizeTargetTitle(title), 60))
-        } else { searchCommand = nil }
-    }
+// typed next is known to go into that search field, and what was typed into a
+// palette since (guarded by stateLock; transitions in IdeSafety.swift).
+var searchCommand: SearchContext? = nil
+func noteCommand(_ title: String?, pid: pid_t, appId: String) {
+    withState { searchCommand = openedSearchContext(title: title, pid: pid, at: ProcessInfo.processInfo.systemUptime, appId: appId) }
 }
 let menuSnapshotSeconds = 4.0
 // The AXMenu holding a menu bar item's or a submenu item's entries.
@@ -690,7 +687,7 @@ func pressMenuPath(_ path: [String]) throws {
         throw ControlError("\(named) could not be chosen.", code: "INPUT_FAILED")
     }
     withState { menuSnapshot = nil } // menus revalidate after their own command
-    noteCommand(item.title, pid: app.processIdentifier)
+    noteCommand(item.title, pid: app.processIdentifier, appId: app.bundleIdentifier ?? "")
 }
 /**
  The controls the model was shown, read again now: the same walk capture uses,
@@ -753,6 +750,7 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     var focusedValue = ""
     var focusedSubrole: String? = nil
     var focusedLabel = ""
+    var terminalFocus = false
     if let focused = attribute(element, kAXFocusedUIElementAttribute) {
         let el = focused as! AXUIElement
         focusedRole = attribute(el, kAXRoleAttribute) as? String
@@ -763,6 +761,10 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
         secure = secure || secureField
         // Describes the field (e.g. "Search"), never its contents.
         if !secureField {focusedLabel = fieldLabel(el)}
+        // An xterm.js terminal is an ordinary text area to accessibility; its
+        // DOM class, role description or editor label tell it apart.
+        terminalFocus = terminalFocusEvidence(roleDescription: attribute(el, kAXRoleDescriptionAttribute) as? String ?? "", label: fieldLabel(el),
+                                              domClasses: attribute(el, "AXDOMClassList") as? [String] ?? [], ide: ideFamily(app.bundleIdentifier ?? "") != nil)
     }
     var domain: String? = nil
     if let window = attribute(element, kAXFocusedWindowAttribute) {
@@ -783,6 +785,7 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     if let role = focusedRole {result["focusedRole"] = role}
     if let subrole = focusedSubrole, !subrole.isEmpty {result["focusedSubrole"] = subrole}
     if !focusedLabel.isEmpty {result["focusedLabel"] = focusedLabel}
+    if terminalFocus {result["terminalFocus"] = true}
     result["addressBar"] = addressBar
     if addressBar {result["focusedValue"] = focusedValue}
     if app.bundleIdentifier == "com.apple.Spotlight" {result["launcher"] = spotlightState(element)}
@@ -861,6 +864,11 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     if let command = withState({ searchCommand }),
        searchCommandCurrent(commandPid: command.pid, commandAt: command.at, pid: app.processIdentifier, now: ProcessInfo.processInfo.systemUptime) {
         result["searchOpenedBy"] = command.title
+        // The agent's own typing, never the field's value: ENTER in a palette
+        // runs whichever command that text selected. The state says when an
+        // arrow key or an edit means the text is only the last known one.
+        if let query = command.query { result["searchQuery"] = query }
+        if let state = command.state { result["searchQueryState"] = state.rawValue }
     } else if let type = action?["type"] as? String, ["type_text", "key"].contains(type),
               let path = menuMap(element, pid: app.processIdentifier).searchPath {
         // Typing with nothing identified to type into: name the application's
@@ -1260,7 +1268,9 @@ func capture() async throws -> [String:Any] {
     guard CGPreflightScreenCaptureAccess() else { throw ControlError("Grant Screen Recording permission and restart the app.") }
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly:true)
     guard let display = content.displays.first(where:{$0.displayID == displayID}) else { throw ControlError("Selected display is no longer connected.") }
-    let excluded = content.applications.filter { app in protectedApps.contains(where: { app.bundleIdentifier.lowercased().contains($0.lowercased()) }) || app.processID == getppid() || app.bundleIdentifier == "ai.coarena.openassist" }
+    // Terminals are on the protected floor whatever the settings say, and their
+    // windows can show secrets, so they are never in a screenshot either.
+    let excluded = content.applications.filter { app in protectedApps.contains(where: { app.bundleIdentifier.lowercased().contains($0.lowercased()) }) || terminalApp(app.bundleIdentifier) || app.processID == getppid() || app.bundleIdentifier == "ai.coarena.openassist" }
     let filter = SCContentFilter(display:display, excludingApplications:excluded, exceptingWindows:[])
     let bounds = CGDisplayBounds(displayID), ratio = min(1, 1440 / bounds.width)
     let config = SCStreamConfiguration();config.width = Int(bounds.width*ratio);config.height = Int(bounds.height*ratio);config.showsCursor = false
@@ -1428,14 +1438,15 @@ func execute(_ action:[String:Any]) throws {
     func mouse(_ type:CGEventType,_ p:CGPoint,_ button:CGMouseButton = .left,_ count:Int64 = 1) throws { try ensureRunning();guard let e = CGEvent(mouseEventSource:nil, mouseType:type, mouseCursorPosition:p, mouseButton:button) else { throw ControlError("Input event failed.") };e.setIntegerValueField(.mouseEventClickState,value:count);postInput(e) }
     switch action["type"] as? String {
     case "type_text", "menu_item": break
-    // Enter submits and Tab leaves the field: after either, focus may be
-    // somewhere else entirely (a palette command can open a terminal), so the
-    // search allowance ends with them, as it does with Escape.
-    case "key": if ["ESC", "ENTER", "TAB"].contains(action["key"] as? String ?? "") { withState { searchCommand = nil } }
+    // ENTER and TAB end a search or palette context like ESC; arrows mark its
+    // selection moved and other keys its text edited (IdeSafety.swift). A
+    // chord (CMD+ENTER runs a palette entry too) replaces it below with the
+    // search its menu item opens, or with nothing.
+    case "key": withState { searchCommand = nextSearchContext(searchCommand, .key(action["key"] as? String ?? "")) }
     case "hotkey":
         if let names = action["keys"] as? [String], let app = inputApplication() {
             let menus = menuMap(AXUIElementCreateApplication(app.processIdentifier), pid: app.processIdentifier)
-            noteCommand(menus.shortcuts[normalizeChord(names)], pid: app.processIdentifier)
+            noteCommand(menus.shortcuts[normalizeChord(names)], pid: app.processIdentifier, appId: app.bundleIdentifier ?? "")
         }
     default: withState { searchCommand = nil }
     }
@@ -1465,6 +1476,7 @@ func execute(_ action:[String:Any]) throws {
             return (value as! AXUIElement)
         }
         let typingTarget = focusedElement()
+        var replaced = false
         // A query field that already holds text is replaced, not appended to:
         // select its contents first (by accessibility, falling back to the
         // field's own Select All) so the typed text becomes the whole query.
@@ -1486,6 +1498,12 @@ func execute(_ action:[String:Any]) throws {
                 let up = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:false); up?.flags = .maskCommand; postInput(up)
                 Thread.sleep(forTimeInterval: 0.05)
             }
+            replaced = true
+        }
+        // A palette's text is not exact until every character is in: typing
+        // that stops part-way leaves a prefix, which selects a different command.
+        let typedInto = withState { () -> SearchContext? in
+            let before = searchCommand; searchCommand = nextSearchContext(searchCommand, .interrupted(text, replaced: replaced)); return before
         }
         var sinceGuard = 0, lastGuard = ProcessInfo.processInfo.systemUptime
         for character in text {
@@ -1503,6 +1521,9 @@ func execute(_ action:[String:Any]) throws {
             }
             sinceGuard += 1
             let utf16 = Array(String(character).utf16);let e = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:true);e?.keyboardSetUnicodeString(stringLength:utf16.count,unicodeString:utf16);postInput(e);let up = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:false);postInput(up)}
+        // Only the same context (not one a pause or another command replaced)
+        // learns the finished text.
+        withState { if let before = typedInto, searchCommand?.pid == before.pid, searchCommand?.at == before.at { searchCommand = nextSearchContext(before, .typed(text, replaced: replaced)) } }
     case "menu_item":
         guard let path = action["path"] as? [String], path.count >= 2, path.count <= 3,
               path.allSatisfy({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { throw ControlError("Invalid menu path.") }
