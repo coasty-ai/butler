@@ -121,4 +121,71 @@ func ideSafetyChecks(_ check: (Bool, String) -> Void) {
                                     domClasses: item["domClasses"] as? [String] ?? [], ide: item["ide"] as? Bool ?? false) == expected,
               "fixture terminal focus \(label.isEmpty ? (item["domClasses"] as? [String] ?? []).joined(separator: " ") : label): \(expected)")
     }
+
+    // Watching a coding agent's panel: OCR normalization and the anchor tables
+    // read the fixture's panels the same way src/core/monitor.ts does.
+    let normalization = fixture["ocrNormalization"] as? [[String: String]] ?? []
+    check(normalization.count >= 6, "fixture has OCR normalization cases")
+    for item in normalization {
+        check(normalizeOcrText(item["in"] ?? "") == item["out"], "normalizes \(item["in"] ?? "") to \(item["out"] ?? "")")
+    }
+    let panels = fixture["agentStates"] as? [[String: Any]] ?? []
+    check(panels.count >= 12, "fixture has panel state cases")
+    for item in panels {
+        let agent = item["agent"] as? String ?? ""
+        let expected = item["state"] as? String ?? ""
+        let lines = (item["lines"] as? [[String: Any]] ?? []).map { (text: normalizeOcrText($0["t"] as? String ?? ""), y: $0["y"] as? Double ?? 0, h: $0["h"] as? Double ?? 0) }
+        check(agentPanelState(agent: agent, lines: lines) == expected, "\(agent) panel reads \(expected): \(lines.map { $0.text }.joined(separator: " | "))")
+    }
+    check(agentPanelState(agent: "nobody", lines: [(text: "do you want to proceed", y: 0.9, h: 0.02)]) == "unknown", "an unknown agent has no anchors")
+    check(agentAnchor(agent: "claude-code", line: "esc to interrupt") && !agentAnchor(agent: "claude-code", line: "export function foo() {}"), "anchors are matched per agent")
+    // The bottom of the panel decides before the transcript above it.
+    check(agentPanelState(agent: "claude-code", lines: [(text: "interrupted", y: 0.1, h: 0.02), (text: "queue another message...", y: 0.95, h: 0.02)]) == "working",
+          "an old interrupted line in the transcript does not outrank the spinner")
+    check(agentPanelState(agent: "claude-code", lines: [(text: "interrupted", y: 0.9, h: 0.02), (text: "queue another message...", y: 0.95, h: 0.02)]) == "error",
+          "interrupted at the bottom is a failure even beside the spinner")
+    for label in strings("forbiddenAllowLabels") { check(forbiddenAllowLabel(label), "\(label) never allows once") }
+    for label in strings("allowedAllowLabels") { check(!forbiddenAllowLabel(label), "\(label) allows once") }
+    for (agent, kinds) in agentAllowLabels { for (kind, label) in kinds { check(!forbiddenAllowLabel(label), "\(agent) \(kind) allow label \(label) grants one use") } }
+
+    // Double Escape while watching; single Escape otherwise.
+    check(emergencyEscape(now: 10, lastEscapeAt: nil, watching: false), "without a watch one Escape stops")
+    check(emergencyEscape(now: 10, lastEscapeAt: 5, watching: false), "without a watch the previous Escape does not matter")
+    check(!emergencyEscape(now: 10, lastEscapeAt: nil, watching: true), "while watching a first Escape is the user's own key")
+    check(!emergencyEscape(now: 10, lastEscapeAt: 9.1, watching: true), "while watching an Escape 0.9 s after another is still one key")
+    check(emergencyEscape(now: 10, lastEscapeAt: 9.3, watching: true), "while watching two Escapes within 0.8 s stop")
+    check(emergencyEscape(now: 1.8, lastEscapeAt: 1.0, watching: true), "exactly 0.8 s apart still counts")
+    check(!emergencyEscape(now: 10, lastEscapeAt: 11, watching: true), "a clock that went backwards is not a double press")
+    // Probes accept the bound token and nothing else.
+    check(watchProbeAllowed(token: "abc", bound: "abc"), "the bound token probes")
+    check(!watchProbeAllowed(token: "abd", bound: "abc"), "another token does not")
+    check(!watchProbeAllowed(token: "abc", bound: nil), "nothing probes with no binding")
+    check(!watchProbeAllowed(token: "", bound: ""), "an empty token never matches an empty binding")
+    check(watchBindingsMax >= 2 && watchBindingsMax <= 8, "a few windows may be bound at once, not many")
+    // A browser window is refused by the page it shows, as a capture is.
+    let banks = ["chase.com", "Login.gov"]
+    check(watchDomainRefused(domain: "chase.com", browser: true, protectedDomains: banks), "a protected domain is refused")
+    check(watchDomainRefused(domain: "secure.CHASE.com", browser: true, protectedDomains: banks), "so is a subdomain, whatever the case")
+    check(watchDomainRefused(domain: "login.gov", browser: true, protectedDomains: banks), "the list's case does not matter either")
+    check(!watchDomainRefused(domain: "notchase.com", browser: true, protectedDomains: banks), "a domain that merely ends the same way is not")
+    check(!watchDomainRefused(domain: "github.com", browser: true, protectedDomains: banks), "an ordinary page is watched")
+    check(!watchDomainRefused(domain: "chase.com", browser: false, protectedDomains: []), "nothing is protected when nothing is listed")
+    check(watchDomainRefused(domain: nil, browser: true, protectedDomains: banks), "a browser page that cannot be told is refused while any domain is protected")
+    check(watchDomainRefused(domain: "", browser: true, protectedDomains: banks), "an empty host is no better")
+    check(!watchDomainRefused(domain: nil, browser: true, protectedDomains: []), "unless nothing is protected")
+    check(!watchDomainRefused(domain: nil, browser: false, protectedDomains: banks), "a window that is not a browser's has no page to tell")
+
+    // A folder in a named application: an editor may take it (the policy asks
+    // first), a terminal, a system tool or a protected app never.
+    let app = { (id: String, name: String) in LaunchCandidate(path: "/Applications/\(name).app", bundleId: id, names: [name], displayName: name, running: false, rootIndex: 0) }
+    let code = app("com.microsoft.VSCode", "Visual Studio Code"), cursor = app("com.todesktop.230313mzl4w4u92", "Cursor")
+    check(!namedFileHandlerRefused(code, protectedApps: []) && !namedFileHandlerRefused(cursor, protectedApps: []), "an editor named for a folder passes the native floor")
+    check(fileHandlerRefused(kind: .folder, handler: code, protectedApps: []), "the default route still opens folders in Finder alone")
+    check(!namedFileHandlerRefused(app("com.apple.finder", "Finder"), protectedApps: []), "Finder may be named")
+    for (id, name) in [("com.apple.Terminal", "Terminal"), ("com.googlecode.iterm2", "iTerm"), ("dev.warp.Warp-Stable", "Warp"), ("com.mitchellh.ghostty", "Ghostty"),
+                       ("com.apple.systempreferences", "System Settings"), ("com.apple.shortcuts", "Shortcuts"), ("com.apple.ScriptEditor2", "Script Editor")] {
+        check(namedFileHandlerRefused(app(id, name), protectedApps: []), "\(name) never opens a named folder or file")
+    }
+    check(namedFileHandlerRefused(app("com.1password.1password", "1Password"), protectedApps: ["com.1password"]), "a protected app never opens one")
+    check(!namedFileHandlerRefused(code, protectedApps: ["com.1password"]), "an unrelated protected entry leaves the editor alone")
 }

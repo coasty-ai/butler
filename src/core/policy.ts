@@ -520,7 +520,51 @@ function openAppDecision(
     reason: `No input was sent. No installed application matches "${quote(action.name)}" exactly.${candidates ? ` Candidates: ${candidates}.` : ""} Use one of them, or request_user if it is not installed.`,
   };
 }
-function openFileDecision(surface: Surface, synthetic: boolean): Decision {
+/** Lowercase words, so a name can be found as a whole-word run in a sentence. */
+function words(text: string): string {
+  return ` ${text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()} `;
+}
+/** Spoken names for applications whose Applications-folder name nobody says. */
+const appAliases: Record<string, string[]> = {
+  "visual studio code": ["vs code", "vscode"],
+};
+/**
+ * Whether the user's own words name both this folder and this application,
+ * as whole words: "open rlenvforHUD1 in VS Code".
+ */
+function namesFolderAndApp(
+  userWords: string | undefined,
+  folder: string,
+  apps: (string | undefined)[],
+): boolean {
+  if (!userWords) return false;
+  const said = words(userWords);
+  const has = (name: string) => {
+    const w = words(name);
+    return w.trim().length >= 2 && said.includes(w);
+  };
+  return (
+    has(folder) &&
+    apps.some(
+      (app) =>
+        !!app &&
+        (has(app) ||
+          (appAliases[app.trim().toLowerCase()] ?? []).some((alias) =>
+            has(alias),
+          )),
+    )
+  );
+}
+function openFileDecision(
+  action: Extract<Action, { type: "open_file" }>,
+  surface: Surface,
+  settings: Settings,
+  synthetic: boolean,
+  context: PolicyContext,
+): Decision {
   if (synthetic)
     return { kind: "RETRY", reason: "The tutorial has no files to open." };
   if (surface.unknown)
@@ -537,19 +581,88 @@ function openFileDecision(surface: Surface, synthetic: boolean): Decision {
     };
   // Only a native resolution of a document or folder is allowed; a missing or
   // unexpected status or kind is treated as unresolved.
-  if (
+  const resolvedFile =
     surface.fileStatus === "resolved" &&
-    (surface.fileKind === "document" || surface.fileKind === "folder")
-  )
-    return {
-      kind: "ALLOW",
-      reason: "Open a document or folder from the local index.",
-    };
-  return {
+    (surface.fileKind === "document" || surface.fileKind === "folder");
+  const unresolvedFile: Decision = {
     kind: "RETRY",
     reason:
       "No input was sent. That path is not in the local index. Use a path listed in context.memory.files or folders, or request_user.",
   };
+  if (action.app !== undefined) {
+    // The application is resolved natively through the open_app allow-list
+    // and reported in the same launcher fields, so it is judged like a
+    // launch: DENY when refused, an installer or a protected app, RETRY until
+    // exactly one permitted application matches. Without `app` those fields
+    // are not consulted at all.
+    const status = surface.launcherStatus;
+    if (
+      status === "refused" ||
+      isInstallerName(action.app) ||
+      isInstallerName(surface.launcherName) ||
+      isInstallerName(surface.launcherAppId)
+    )
+      return {
+        kind: "DENY",
+        reason:
+          "That application cannot open it: terminals, installers, system utilities and protected apps stay manual. Open the item with open_file alone, or ask the user with request_user.",
+      };
+    if (status === "resolved" && surface.launcherAppId) {
+      if (
+        surfacePolicy({ ...surface, appId: surface.launcherAppId }, settings)
+          .kind !== "ALLOW"
+      )
+        return {
+          kind: "DENY",
+          reason:
+            "That application is protected. Open the item with open_file alone, or ask the user with request_user.",
+        };
+      if (!resolvedFile) return unresolvedFile;
+      // A folder opens in Finder unless the user asked for more. In any other
+      // application it opens as a project, and a code editor may run the
+      // project's own tasks as it opens (a tasks.json task set to run on
+      // folderOpen; Cursor trusts every workspace by default): screen text
+      // saying "open this folder in Cursor" would be one step from running a
+      // stranger's code. So the user names both, or approves it.
+      const folder =
+        surface.fileName ?? action.path.replace(/\/+$/, "").split("/").pop();
+      const app = surface.launcherName ?? action.app;
+      if (
+        surface.fileKind === "folder" &&
+        surface.launcherAppId.toLowerCase() !== "com.apple.finder" &&
+        !namesFolderAndApp(context.userWords, folder ?? "", [
+          action.app,
+          surface.launcherName,
+        ])
+      )
+        return {
+          kind: "CONFIRM",
+          reason: `Open the folder “${quote(folder ?? "")}” in ${quote(app)}? An editor can run a project's own tasks when it opens its folder.`,
+        };
+      return {
+        kind: "ALLOW",
+        reason: `Open a document or folder from the local index in "${quote(app)}".`,
+      };
+    }
+    const candidates = (surface.launcherCandidates ?? [])
+      .slice(0, 5)
+      .map(quote)
+      .filter(Boolean)
+      .join(", ");
+    return {
+      kind: "RETRY",
+      reason:
+        status === "ambiguous"
+          ? `More than one installed application matches.${candidates ? ` Candidates: ${candidates}.` : ""} Use the exact name.`
+          : `No input was sent. No installed application matches "${quote(action.app)}" exactly.${candidates ? ` Candidates: ${candidates}.` : ""} Use one of them, or open the item with open_file alone.`,
+    };
+  }
+  if (resolvedFile)
+    return {
+      kind: "ALLOW",
+      reason: "Open a document or folder from the local index.",
+    };
+  return unresolvedFile;
 }
 const IDE_TERMINAL_REFUSAL =
   "Terminals, tasks, builds and run or debug commands are left to the user: a terminal runs whatever is typed next. Finish the task another way, or ask the user with request_user.";
@@ -835,6 +948,11 @@ function namedTargetUnderPointer(surface: Surface): boolean {
 export interface PolicyContext {
   /** The user's own words (task or corrections) asked for a paste. */
   pasteRequested?: boolean;
+  /**
+   * The run's objective when it is the user's own words (Run.taskSource
+   * "user_words"); unset for a rewrite, a proposal or a wake-up run.
+   */
+  userWords?: string;
 }
 /** The decision reason that marks the one clipboard press native may send. */
 export const PASTE_ALLOWED = "Paste what the user copied, as asked.";
@@ -894,10 +1012,18 @@ export function evaluate(
   }
   if (["capture", "done", "fail", "wait"].includes(action.type))
     return { kind: "ALLOW", reason: "" };
+  // Watching reads the frontmost window and sends nothing; the protected
+  // checks above already refused a window that must not be read.
+  if (action.type === "monitor")
+    return {
+      kind: "ALLOW",
+      reason: "Watch the frontmost window without sending input.",
+    };
   // Before the synthetic ALLOW: the tutorial must never launch real apps.
   if (action.type === "open_app")
     return openAppDecision(action, surface, settings, synthetic);
-  if (action.type === "open_file") return openFileDecision(surface, synthetic);
+  if (action.type === "open_file")
+    return openFileDecision(action, surface, settings, synthetic, context);
   if (synthetic)
     return { kind: "ALLOW", reason: "CoArena-owned tutorial surface." };
   // Only consulted where an identified target or field is missing; it never

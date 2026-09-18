@@ -24,6 +24,16 @@ export const supportedKeys = [
 ] as const;
 const key = z.enum(supportedKeys);
 const base = { frame_id: z.string().min(1).max(100) };
+// A plain application display name, never a path, bundle identifier, URL or
+// document: what open_app launches and what open_file may open an item in.
+// Both resolve it natively against the same allow-listed application folders.
+const applicationName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .regex(/^[^/\\:\u0000-\u001f\u007f]+$/, "Use a plain application name.")
+  .refine((name) => !name.startsWith("."), "Use a plain application name.");
 const point = { x: unit, y: unit };
 /** Roles context.controls reports (native role names, lowercased, no "AX"). */
 export const CONTROL_ROLES: ReadonlySet<string> = new Set([
@@ -161,21 +171,15 @@ export const actionSchema = z.discriminatedUnion("type", [
     .object({
       ...base,
       type: z.literal("open_app"),
-      name: z
-        .string()
-        .trim()
-        .min(1)
-        .max(100)
-        .regex(/^[^/\\:\u0000-\u001f\u007f]+$/, "Use a plain application name.")
-        .refine(
-          (name) => !name.startsWith("."),
-          "Use a plain application name.",
-        ),
+      name: applicationName,
     })
     .strict(),
   // Open-only primitive for a document or folder the local system index
   // reported (home-relative "~/..." path). Never executables, apps, scripts or
-  // installers; see docs/MEMORY.md.
+  // installers; see docs/MEMORY.md. With `app`, the item opens in that
+  // application instead of its default one ("open the project folder in
+  // Visual Studio Code" is then one step): the name goes through the open_app
+  // allow-list natively, so a terminal or a protected app never opens it.
   z
     .object({
       ...base,
@@ -191,6 +195,24 @@ export const actionSchema = z.discriminatedUnion("type", [
             !path.split("/").some((part) => part === ".." || part === "."),
           "Use a ~/ path from context.",
         ),
+      app: applicationName.optional(),
+    })
+    .strict(),
+  /**
+   * Hands the frontmost window to a detached watch (electron/watch.ts) and
+   * ends the run: the window's text is then read every every_s seconds with
+   * no model call, and a new run wakes the model with context.watch when the
+   * agent in it finishes, needs input or the window changes, or when the
+   * watch stalls, fails or runs past max_min.
+   */
+  z
+    .object({
+      ...base,
+      type: z.literal("monitor"),
+      reason: z.string().trim().min(1).max(200),
+      every_s: z.number().int().min(5).max(60).default(10),
+      max_min: z.number().int().min(1).max(180).default(30),
+      until: z.enum(["done", "input", "change"]).default("done"),
     })
     .strict(),
   z
@@ -548,7 +570,68 @@ export interface ScreenContext {
    * has them switched on, never from a protected application (docs/PRIVACY.md).
    */
   notifications?: string[];
+  /**
+   * Why this run started, when a detached watch woke the model: the cause,
+   * the agent's state and how long it was watched, and the text last read
+   * from its panel (bounded, redacted; untrusted screen text like the rest).
+   */
+  watch?: WatchContext;
 }
+export interface WatchContext {
+  cause: string;
+  agent?: string;
+  state: string;
+  minutes: number;
+  lastChangeMinutes: number;
+  /** What the watched run did before it handed the window over, one line per step, never typed text. */
+  steps?: string[];
+  /** At most 1500 characters. */
+  panelText?: string;
+}
+/** One line read from a watched window; the box is in fractions of that window, origin top left. */
+export interface OcrLine {
+  t: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+/** A part of a watched window, in fractions of it, origin top left. */
+export interface Region {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+/**
+ * A window the helper agreed to watch. Probes name it by the token alone,
+ * which the helper minted, so nothing in TypeScript can point a probe at any
+ * other window.
+ */
+export interface WatchBinding {
+  token: string;
+  appId: string;
+  pid: number;
+  windowId: number;
+  title: string;
+}
+export type ProbeFailure =
+  | "window_gone"
+  | "not_visible"
+  | "protected"
+  | "secure_input"
+  | "screen_locked"
+  | "failed";
+/** What one read of the watched window found; lines never enter a Snapshot. */
+export type ProbeResult =
+  | {
+      ok: true;
+      frontmost: boolean;
+      title: string;
+      lines: OcrLine[];
+      idleMs: number;
+    }
+  | { ok: false; code: ProbeFailure };
 export interface Surface {
   appId: string;
   pid: number;
@@ -706,6 +789,15 @@ export interface Controller {
   resume(): Promise<void>;
   restore?(frame: Frame): Promise<void>;
   revalidate?(action: Action, frame: Frame): Promise<Frame>;
+  /** Binds the frontmost window for a detached watch (increment 5A). */
+  bindWatch?(): Promise<WatchBinding>;
+  /** Reads the bound window's text; no input, no focus change, no screenshot kept. */
+  probe?(token: string, region?: Region): Promise<ProbeResult>;
+  unbindWatch?(token: string): Promise<void>;
+  /** While on, one Escape is the user's own key; two within 0.8 s stop the watch. */
+  setWatchMode?(on: boolean): Promise<void>;
+  /** Brings the bound window to the front before a wake-up run captures it. */
+  focusWatch?(token: string): Promise<void>;
 }
 export type RunStatus =
   | "idle"

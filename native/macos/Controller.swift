@@ -37,6 +37,13 @@ var tapInstalledAt: TimeInterval?
 var lastManualInputAt: TimeInterval?
 // Processes AXManualAccessibility was already set on (guarded by stateLock).
 var manualAccessibilityAttempts = ManualAccessibilityAttempts()
+// The windows bound for detached watches, by token (guarded by stateLock):
+// probes name a window by its token alone, and each watch releases only its
+// own. While `watching`, one Escape is the user's own key and two within
+// 0.8 s are the emergency stop (emergencyEscape in IdeSafety.swift).
+var watchBindings = [String: WatchBinding]()
+var watching = false
+var lastEscapeAt: TimeInterval?
 func emit(_ obj: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
     outputLock.lock(); FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data([10])); outputLock.unlock()
@@ -857,10 +864,28 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     if let a = action, a["type"] as? String == "open_file" {
         let requested = a["path"] as? String ?? ""
         var cached: FileBinding? = nil
-        switch checkOpenFile(requested) {
+        // A named application goes through the open_app resolution and is
+        // reported in its fields; the item is then checked against that
+        // application instead of its default one, and bound only when both
+        // resolved.
+        let appName = a["app"] as? String
+        var handler: LaunchCandidate? = nil, appReady = appName == nil
+        if let appName {
+            switch resolveLaunch(query: appName, candidates: applicationCandidates(), protectedApps: protectedApps) {
+            case .resolved(let appId, let display, let path):
+                result["launcherStatus"] = "resolved"; result["launcherAppId"] = appId; result["launcherName"] = display
+                handler = applicationCandidate(at: path, rootIndex: 0, allowedRoots: allowedApplicationRealRoots())
+                appReady = handler?.bundleId == appId
+                if !appReady { result["launcherStatus"] = "unresolved"; handler = nil }
+            case .ambiguous(let names): result["launcherStatus"] = "ambiguous"; result["launcherCandidates"] = names
+            case .unresolved(let names): result["launcherStatus"] = "unresolved"; result["launcherCandidates"] = names
+            case .refused: result["launcherStatus"] = "refused"
+            }
+        }
+        switch checkOpenFile(requested, in: handler) {
         case .resolved(let plan):
             result["fileStatus"] = "resolved"; result["fileKind"] = plan.kind.rawValue; result["fileName"] = openFileDisplayName(plan.path)
-            if let frameId = a["frame_id"] as? String { cached = FileBinding(frameId: frameId, requested: requested, plan: plan) }
+            if appReady, let frameId = a["frame_id"] as? String { cached = FileBinding(frameId: frameId, requested: requested, app: appName.map(normalizeAppName), plan: plan) }
         case .unresolved: result["fileStatus"] = "unresolved"
         case .refused: result["fileStatus"] = "refused"
         }
@@ -909,7 +934,7 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
 // and the default application checked for it.
 struct FileOpenPlan: Equatable { let path: String; let realPath: String; let kind: FileKind; let opens: String; let handlerPath: String; let handlerId: String }
 enum FileOpenCheck { case resolved(FileOpenPlan), unresolved, refused }
-struct FileBinding { var frameId: String; let requested: String; let plan: FileOpenPlan }
+struct FileBinding { var frameId: String; let requested: String; let app: String?; let plan: FileOpenPlan }
 var fileBinding: FileBinding?
 // Filesystem facts for FileSafety: resource values only, never file contents.
 func inspectFile(_ real: String) -> FileFacts? {
@@ -941,14 +966,24 @@ func defaultFileHandler(opens: String, kind: FileKind) -> LaunchCandidate? {
     guard parent != "/" else { return nil }
     return applicationCandidate(at: real, rootIndex: 0, allowedRoots: [parent])
 }
-// Path rules first, then the default application under the open_app rules.
-func checkOpenFile(_ requested: String) -> FileOpenCheck {
+// Path rules first, then the application under the open_app rules: the one
+// named for this open, or else the item's default one. A named application
+// may open a folder (an editor opening a project), which the default route
+// leaves to Finder; it still must not be one a document may never reach.
+func checkOpenFile(_ requested: String, in named: LaunchCandidate? = nil) -> FileOpenCheck {
     switch resolveOpenFile(requested) {
     case .unresolved: return .unresolved
     case .refused: return .refused
     case .resolved(let path, let real, let kind, let opens):
-        let handler = defaultFileHandler(opens: opens, kind: kind)
-        guard let app = handler, !fileHandlerRefused(kind: kind, handler: handler, protectedApps: protectedApps) else { return .refused }
+        let app: LaunchCandidate
+        if let named {
+            guard !namedFileHandlerRefused(named, protectedApps: protectedApps) else { return .refused }
+            app = named
+        } else {
+            let handler = defaultFileHandler(opens: opens, kind: kind)
+            guard let candidate = handler, !fileHandlerRefused(kind: kind, handler: handler, protectedApps: protectedApps) else { return .refused }
+            app = candidate
+        }
         return .resolved(FileOpenPlan(path: path, realPath: real, kind: kind, opens: opens, handlerPath: app.path, handlerId: app.bundleId))
     }
 }
@@ -1263,7 +1298,11 @@ func installTap() -> Bool {
         // Already stopped: no takeover to report, so skip per-event app lookups,
         // but note the input so main learns when the user lets go.
         if isStopped() {
-            if escape {emit(["event":"emergency_stop"])}
+            if escape {
+                let now = ProcessInfo.processInfo.systemUptime
+                let stop = withState { () -> Bool in let fire = emergencyEscape(now: now, lastEscapeAt: lastEscapeAt, watching: watching); lastEscapeAt = now; return fire }
+                if stop {emit(["event":"emergency_stop"])}
+            }
             // Our own Command-Space re-posted by Siri is not the user's input;
             // checked by its deadline alone, without the app lookup.
             let echoed = type == .keyDown && withState { forwardedSpotlightEvent(type:type,keyCode:event.getIntegerValueField(.keyboardEventKeycode),flags:event.flags,systemSiri:true,now:ProcessInfo.processInfo.systemUptime,deadline:forwardedSpotlightDeadline) }
@@ -1693,9 +1732,19 @@ func openFile(_ action:[String:Any]) async throws -> [String:Any] {
     let b = CGDisplayBounds(displayID)
     guard b.width == g["width"] as? Double, b.height == g["height"] as? Double, b.origin.x == g["x"] as? Double, b.origin.y == g["y"] as? Double else { throw changedScreen("Display geometry changed.") }
     let requested = action["path"] as? String ?? ""
-    guard let bound = withState({ fileBinding }), bound.frameId == frameId, bound.requested == requested else { throw ControlError("The file was not verified for this observation.", code: "FILE_UNRESOLVED") }
+    let appName = action["app"] as? String
+    guard let bound = withState({ fileBinding }), bound.frameId == frameId, bound.requested == requested, bound.app == appName.map(normalizeAppName) else { throw ControlError("The file was not verified for this observation.", code: "FILE_UNRESOLVED") }
+    // A named application is resolved again under the rules as they are now,
+    // like open_app does, and must be the one the policy saw.
+    var named: LaunchCandidate? = nil
+    if let appName {
+        guard case .resolved(let appId, _, let path) = resolveLaunch(query: appName, candidates: applicationCandidates(), protectedApps: protectedApps) else { throw ControlError("That application must be opened manually.", code: "APP_REFUSED") }
+        guard let candidate = applicationCandidate(at: path, rootIndex: 0, allowedRoots: allowedApplicationRealRoots()), candidate.bundleId == appId,
+              !launchCandidateDenied(candidate, protectedApps: protectedApps) else { throw ControlError("That application must be opened manually.", code: "APP_REFUSED") }
+        named = candidate
+    }
     let plan: FileOpenPlan
-    switch checkOpenFile(requested) {
+    switch checkOpenFile(requested, in: named) {
     case .refused: throw ControlError("That item must be opened manually.", code: "FILE_REFUSED")
     case .unresolved: throw ControlError("The file no longer resolves to one verified item.", code: "FILE_UNRESOLVED")
     case .resolved(let current): plan = current
@@ -1729,6 +1778,169 @@ func openFile(_ action:[String:Any]) async throws -> [String:Any] {
     var opened: [String:Any] = ["path": path, "kind": kind.rawValue]
     if let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier { opened["appId"] = front }
     return ["executed": true, "opened": opened]
+}
+// MARK: watch
+// A window bound for a detached watch: the frontmost application's focused
+// window at the time, found on screen by its owner and bounds. The token is
+// the only name a probe may use for it.
+struct WatchBinding { let token: String; let pid: pid_t; let windowID: CGWindowID; let appId: String; let title: String }
+struct OcrLine { let t: String; let x: Double; let y: Double; let w: Double; let h: Double }
+// Applications a watch never reads or brings forward: the protected floor,
+// terminals, launchers and this app itself.
+func watchRefused(_ appId: String) -> Bool {
+    let id = appId.lowercased()
+    return id.isEmpty || protectedApps.contains { id.contains($0.lowercased()) } || terminalApp(id) || launchFloorDenied.contains(id)
+        || launchRefusedPrefixes.contains { id.hasPrefix($0) } || id == "com.apple.spotlight"
+}
+// When the tap last saw the user's own input; a plain function so the async
+// probe never holds the lock across a suspension point.
+func lastManualInput() -> TimeInterval? { idleLock.lock(); defer { idleLock.unlock() }; return lastManualInputAt }
+func screenLocked() -> Bool {
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    return session?["CGSSessionScreenIsLocked"] as? Bool == true
+}
+private func nearly(_ a: CGRect, _ b: CGRect) -> Bool {
+    abs(a.minX - b.minX) <= 2 && abs(a.minY - b.minY) <= 2 && abs(a.width - b.width) <= 2 && abs(a.height - b.height) <= 2
+}
+private func round3(_ value: Double) -> Double { (value * 1000).rounded() / 1000 }
+// The bound window's accessibility element, found by its current bounds; nil
+// once it is gone or cannot be told apart.
+func watchWindowElement(pid: pid_t, windowID: CGWindowID) -> AXUIElement? {
+    guard let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID) as? [[String:Any]])?.first,
+          let rawBounds = info[kCGWindowBounds as String] as? [String:Any], let rect = CGRect(dictionaryRepresentation: rawBounds as CFDictionary) else { return nil }
+    let element = AXUIElementCreateApplication(pid)
+    return (attribute(element, kAXWindowsAttribute) as? [AXUIElement] ?? []).first { elementRect($0).map { nearly($0, rect) } == true }
+}
+// The domain of the page a window shows, read the way surface() reads it for
+// the focused window (its document, its URL, else its web area).
+func windowDomain(_ window: AXUIElement) -> String? {
+    if let url = attribute(window, "AXDocument") as? String, let host = URL(string: url)?.host?.lowercased(), !host.isEmpty { return host }
+    if let url = attribute(window, "AXURL") as? URL, let host = url.host?.lowercased(), !host.isEmpty { return host }
+    return webAreaHost(window)
+}
+// Whether the window shows a page a watch may not read; nil for a window that
+// cannot be found, which is the caller's window_gone.
+func watchWindowProtected(appId: String, window: AXUIElement?) -> Bool {
+    let browser = browserAppIDs.contains(appId)
+    guard browser else { return false }
+    return watchDomainRefused(domain: window.flatMap(windowDomain), browser: true, protectedDomains: protectedDomains)
+}
+// Binds the frontmost application's focused window. Refuses what a capture
+// would exclude, so a watch is never a way to read a protected window.
+func bindWatch() throws -> [String:Any] {
+    guard CGPreflightScreenCaptureAccess() else { throw ControlError("Grant Screen Recording permission and restart the app.") }
+    guard AXIsProcessTrusted() else { throw ControlError("Accessibility permission is required.") }
+    guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getppid() else { throw ControlError("No application is in front.") }
+    let appId = app.bundleIdentifier ?? ""
+    guard !watchRefused(appId) else { throw ControlError("That application cannot be watched.", code: "SURFACE_BLOCKED") }
+    guard withState({ watchBindings.count }) < watchBindingsMax else { throw ControlError("Too many windows are being watched.") }
+    let element = AXUIElementCreateApplication(app.processIdentifier)
+    guard let raw = attribute(element, kAXFocusedWindowAttribute) else { throw ControlError("No window is focused.") }
+    let window = raw as! AXUIElement
+    guard !watchWindowProtected(appId: appId, window: window) else { throw ControlError("That page cannot be watched.", code: "SURFACE_BLOCKED") }
+    guard let bounds = elementRect(window), bounds.width > 40, bounds.height > 40 else { throw ControlError("The focused window has no usable bounds.") }
+    let title = String((attribute(window, kAXTitleAttribute) as? String ?? "").prefix(300))
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] else { throw ControlError("Windows could not be listed.") }
+    var match: CGWindowID? = nil
+    for info in list {
+        guard (info[kCGWindowOwnerPID as String] as? Int) == Int(app.processIdentifier), (info[kCGWindowLayer as String] as? Int) == 0,
+              let rawBounds = info[kCGWindowBounds as String] as? [String:Any], let rect = CGRect(dictionaryRepresentation: rawBounds as CFDictionary),
+              let number = info[kCGWindowNumber as String] as? Int, nearly(rect, bounds) else { continue }
+        match = CGWindowID(number); break
+    }
+    guard let windowID = match else { throw ControlError("The focused window could not be identified on screen.") }
+    let token = UUID().uuidString.lowercased()
+    withState { watchBindings[token] = WatchBinding(token: token, pid: app.processIdentifier, windowID: windowID, appId: appId, title: title) }
+    return ["token": token, "appId": appId, "pid": Int(app.processIdentifier), "windowId": Int(windowID), "title": title]
+}
+// The binding a token names, and nothing else.
+func boundWatch(_ token: String) -> WatchBinding? {
+    guard let bound = withState({ watchBindings[token] }), watchProbeAllowed(token: token, bound: bound.token) else { return nil }
+    return bound
+}
+// The part of the window to read, as fractions of it with the origin at the
+// top left; nil reads the whole window.
+func watchRegion(_ value: [String:Any]?) -> CGRect? {
+    guard let value, let x = value["x"] as? Double, let y = value["y"] as? Double, let w = value["w"] as? Double, let h = value["h"] as? Double,
+          x.isFinite, y.isFinite, w.isFinite, h.isFinite, x >= 0, y >= 0, x < 1, y < 1, w > 0.05, h > 0.05 else { return nil }
+    return CGRect(x: x, y: y, width: min(w, 1 - x), height: min(h, 1 - y))
+}
+/**
+ Text lines inside an image with their boxes as fractions of it (origin top
+ left), top to bottom then left to right. The region, when given, is cropped
+ out first so the boxes come back in the whole window's fractions whatever
+ Vision does with a region of interest. Bounded: 400 lines of 200 characters.
+ */
+func recognizeLines(_ image: CGImage, region: CGRect?, maxLines: Int = 400, maxChars: Int = 200) -> [OcrLine] {
+    var source = image, origin = CGRect(x: 0, y: 0, width: 1, height: 1)
+    if let region {
+        let pixels = CGRect(x: region.minX * CGFloat(image.width), y: region.minY * CGFloat(image.height), width: region.width * CGFloat(image.width), height: region.height * CGFloat(image.height)).integral
+        if pixels.width >= 8, pixels.height >= 8, let cropped = image.cropping(to: pixels) { source = cropped; origin = region }
+    }
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = false
+    request.minimumTextHeight = 0.01
+    guard (try? VNImageRequestHandler(cgImage: source).perform([request])) != nil else { return [] }
+    let observations = (request.results ?? []).sorted {
+        abs($0.boundingBox.midY - $1.boundingBox.midY) > 0.008 ? $0.boundingBox.midY > $1.boundingBox.midY : $0.boundingBox.minX < $1.boundingBox.minX
+    }
+    var lines = [OcrLine]()
+    for observation in observations where lines.count < maxLines {
+        guard let text = observation.topCandidates(1).first?.string.trimmingCharacters(in: .whitespaces), !text.isEmpty else { continue }
+        let box = observation.boundingBox
+        lines.append(OcrLine(t: String(text.prefix(maxChars)), x: round3(origin.minX + box.minX * origin.width), y: round3(origin.minY + (1 - box.maxY) * origin.height),
+                             w: round3(box.width * origin.width), h: round3(box.height * origin.height)))
+    }
+    return lines
+}
+// One read of the bound window: its text as lines with boxes, and nothing
+// else kept. No input is sent, no window is activated, the latch is not
+// consulted (nothing here needs it), and the capture covers that window alone.
+@available(macOS 14.0, *)
+func probeWatch(token: String, region: [String:Any]?) async throws -> [String:Any] {
+    guard let bound = boundWatch(token) else { throw ControlError("Unknown watch token.") }
+    if IsSecureEventInputEnabled() { return ["ok": false, "code": "secure_input"] }
+    if screenLocked() { return ["ok": false, "code": "screen_locked"] }
+    guard let app = NSRunningApplication(processIdentifier: bound.pid), !app.isTerminated else { return ["ok": false, "code": "window_gone"] }
+    let appId = app.bundleIdentifier ?? bound.appId
+    if appId != bound.appId || watchRefused(appId) { return ["ok": false, "code": "protected"] }
+    // A browser window is refused by the page it shows now, as a capture is:
+    // the user may have opened their bank in the watched window since.
+    if browserAppIDs.contains(appId) {
+        guard let window = watchWindowElement(pid: bound.pid, windowID: bound.windowID) else { return ["ok": false, "code": "window_gone"] }
+        if watchWindowProtected(appId: appId, window: window) { return ["ok": false, "code": "protected"] }
+    }
+    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+    guard let window = content.windows.first(where: { $0.windowID == bound.windowID && $0.owningApplication?.processID == bound.pid }) else { return ["ok": false, "code": "window_gone"] }
+    guard window.isOnScreen, window.frame.width > 40, window.frame.height > 40 else { return ["ok": false, "code": "not_visible"] }
+    let filter = SCContentFilter(desktopIndependentWindow: window)
+    let config = SCStreamConfiguration()
+    let ratio = min(2, 1600 / window.frame.width)
+    config.width = Int(window.frame.width * ratio); config.height = Int(window.frame.height * ratio); config.showsCursor = false
+    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    let lines = recognizeLines(image, region: watchRegion(region))
+    let lastManual = lastManualInput()
+    let now = ProcessInfo.processInfo.systemUptime
+    let hidIdle = CGEventType(rawValue: ~0).map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) } ?? 0
+    let idleMs = Int(max(0, (lastManual.map { now - $0 } ?? hidIdle) * 1000))
+    return ["ok": true, "frontmost": NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid, "title": String((window.title ?? "").prefix(300)),
+            "lines": lines.map { ["t": $0.t, "x": $0.x, "y": $0.y, "w": $0.w, "h": $0.h] }, "idleMs": idleMs]
+}
+// Brings the bound window forward for the wake-up run: the application is
+// activated and that window, found by its current bounds, raised. Refused for
+// an application that has since become protected.
+func focusWatch(token: String) async throws -> [String:Any] {
+    guard let bound = boundWatch(token) else { throw ControlError("Unknown watch token.") }
+    guard let app = NSRunningApplication(processIdentifier: bound.pid), !app.isTerminated, !watchRefused(app.bundleIdentifier ?? "") else { throw ControlError("The watched application is gone or protected.", code: "SURFACE_BLOCKED") }
+    let window = watchWindowElement(pid: bound.pid, windowID: bound.windowID)
+    guard !watchWindowProtected(appId: app.bundleIdentifier ?? bound.appId, window: window) else { throw ControlError("The watched page is protected.", code: "SURFACE_BLOCKED") }
+    if app.isHidden { app.unhide() }
+    app.activate(options: [])
+    if let window { AXUIElementPerformAction(window, kAXRaiseAction as CFString) }
+    try await Task.sleep(nanoseconds: 300_000_000)
+    withState { lastInputTime = ProcessInfo.processInfo.systemUptime }
+    return ["focused": NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid]
 }
 // MARK: system index
 struct IndexedApp { let name: String; let bundleId: String; let lastUsed: Date?; let useCount: Int? }
@@ -1909,6 +2121,24 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
         guard let action = command["action"] as? [String:Any] else { throw ControlError("Missing action.") }
         if #available(macOS 14.0,*) { return try await revalidate(action) }
         throw ControlError("macOS 14 required.")
+    // Detached watches: read-only reads of one bound window, a flag for the
+    // Escape rule, and one activation before a wake-up run. None sends input.
+    case "bindWatch": return try bindWatch()
+    case "probe":
+        guard let token = command["token"] as? String else { throw ControlError("Missing token.") }
+        if #available(macOS 14.0, *) { return try await probeWatch(token: token, region: command["region"] as? [String:Any]) }
+        throw ControlError("macOS 14 required.")
+    case "unbindWatch":
+        let token = command["token"] as? String ?? ""
+        withState { watchBindings[token] = nil }
+        return ["unbound": true]
+    case "setWatchMode":
+        let on = command["on"] as? Bool ?? false
+        withState { watching = on; if !on { lastEscapeAt = nil } }
+        return ["watching": on]
+    case "focusWatch":
+        guard let token = command["token"] as? String else { throw ControlError("Missing token.") }
+        return try await focusWatch(token: token)
     case "restore":
         let framePID = getCurrentFrame()?["pid"] as? Int
         let candidate = framePID.flatMap { NSRunningApplication(processIdentifier:pid_t($0)) }

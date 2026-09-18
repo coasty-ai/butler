@@ -19,8 +19,12 @@ import type {
   Controller,
   ExecutionResult,
   Frame,
+  OcrLine,
+  ProbeResult,
+  Region,
   Settings,
   Surface,
+  WatchBinding,
 } from "../src/core/schema";
 
 export interface HelperHooks {
@@ -398,6 +402,101 @@ export function presenceReport(value: unknown): PresenceReport | undefined {
     displayHeldAwake,
   } satisfies Record<keyof PresenceReport, unknown>;
 }
+/** The helper's watch methods (increment 5A); none of them sends input. */
+const watchMethods = new Set([
+  "bindWatch",
+  "probe",
+  "unbindWatch",
+  "setWatchMode",
+  "focusWatch",
+]);
+/**
+ * A bounded copy of the helper's watch binding, or undefined when its shape
+ * is not one. The token is opaque: it names the window only to the helper.
+ */
+export function watchBinding(value: unknown): WatchBinding | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  if (
+    typeof v.token !== "string" ||
+    !/^[A-Za-z0-9-]{8,64}$/.test(v.token) ||
+    typeof v.appId !== "string" ||
+    typeof v.pid !== "number" ||
+    !Number.isInteger(v.pid) ||
+    typeof v.windowId !== "number" ||
+    !Number.isInteger(v.windowId)
+  )
+    return undefined;
+  return {
+    token: v.token,
+    appId: v.appId.slice(0, 255),
+    pid: v.pid,
+    windowId: v.windowId,
+    title: typeof v.title === "string" ? v.title.slice(0, 300) : "",
+  };
+}
+const fraction = (value: unknown): number | undefined =>
+  typeof value === "number" &&
+  Number.isFinite(value) &&
+  value >= 0 &&
+  value <= 1
+    ? value
+    : undefined;
+const probeFailures = new Set([
+  "window_gone",
+  "not_visible",
+  "protected",
+  "secure_input",
+  "screen_locked",
+  "failed",
+]);
+/** At most this many lines of at most this many characters leave the helper. */
+export const PROBE_MAX_LINES = 400;
+export const PROBE_MAX_CHARS = 200;
+/**
+ * The helper's probe reply, bounded, or undefined when the shape is not one.
+ * Lines are text read from the watched window: they go to the watch's pure
+ * rules and never into a Snapshot or a trace.
+ */
+export function probeResult(value: unknown): ProbeResult | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  if (v.ok === false)
+    return typeof v.code === "string" && probeFailures.has(v.code)
+      ? {
+          ok: false,
+          code: v.code as Exclude<ProbeResult, { ok: true }>["code"],
+        }
+      : { ok: false, code: "failed" };
+  if (v.ok !== true || !Array.isArray(v.lines)) return undefined;
+  const lines: OcrLine[] = [];
+  for (const raw of v.lines.slice(0, PROBE_MAX_LINES)) {
+    if (!raw || typeof raw !== "object") continue;
+    const l = raw as Record<string, unknown>;
+    const x = fraction(l.x),
+      y = fraction(l.y),
+      w = fraction(l.w),
+      h = fraction(l.h);
+    if (
+      typeof l.t !== "string" ||
+      x === undefined ||
+      y === undefined ||
+      w === undefined ||
+      h === undefined
+    )
+      continue;
+    const t = l.t.slice(0, PROBE_MAX_CHARS);
+    if (t.trim()) lines.push({ t, x, y, w, h });
+  }
+  const idleMs = Number(v.idleMs);
+  return {
+    ok: true,
+    frontmost: v.frontmost === true,
+    title: typeof v.title === "string" ? v.title.slice(0, 300) : "",
+    lines,
+    idleMs: Number.isFinite(idleMs) && idleMs >= 0 ? idleMs : 0,
+  };
+}
 /** Per-request deadlines. Typing is paced natively, so it scales with length. */
 export function nativeTimeout(
   method: string,
@@ -406,6 +505,11 @@ export function nativeTimeout(
   if (method === "capture" || method === "revalidate") return 25000;
   // Spotlight metadata lookups are fast; memory recall never waits long.
   if (method === "index") return 3000;
+  // A probe is one window capture and its OCR; binding and focusing list the
+  // windows on screen and activate one; the rest flip a flag.
+  if (method === "probe") return 10000;
+  if (method === "bindWatch" || method === "focusWatch") return 8000;
+  if (method === "unbindWatch" || method === "setWatchMode") return 3000;
   // The helper answers presence on its reader thread, ahead of its command
   // queue, so it never waits behind a capture or paced typing and answers in
   // milliseconds; a slow answer means a wedged helper, not a long request.
@@ -507,11 +611,15 @@ export class NativeController implements Controller {
           ? { message: "The system index did not answer in time.", kill: false }
           : method === "presence"
             ? { message: "Presence did not answer in time.", kill: false }
-            : {
-                message:
-                  "Desktop control stopped responding and is restarting.",
-                kill: true,
-              },
+            : watchMethods.has(method)
+              ? // A slow probe costs one read of a background window; a
+                // restart would pause whatever run is going on.
+                { message: "The watch did not answer in time.", kill: false }
+              : {
+                  message:
+                    "Desktop control stopped responding and is restarting.",
+                  kill: true,
+                },
       )
       .then(
         (result) => {
@@ -602,6 +710,30 @@ export class NativeController implements Controller {
   }
   async restore() {
     await this.request("restore");
+  }
+  /** Binds the frontmost window for a detached watch; the helper mints the token. */
+  async bindWatch(): Promise<WatchBinding> {
+    const binding = watchBinding(await this.request("bindWatch"));
+    if (!binding)
+      throw new Error("Native controller returned no watch binding.");
+    return binding;
+  }
+  /** One read of the bound window's text; only the token names the window. */
+  async probe(token: string, region?: Region): Promise<ProbeResult> {
+    const result = probeResult(
+      await this.request("probe", { token, ...(region ? { region } : {}) }),
+    );
+    if (!result) throw new Error("Native controller returned no probe result.");
+    return result;
+  }
+  async unbindWatch(token: string) {
+    await this.request("unbindWatch", { token });
+  }
+  async setWatchMode(on: boolean) {
+    await this.request("setWatchMode", { on });
+  }
+  async focusWatch(token: string) {
+    await this.request("focusWatch", { token });
   }
   close() {
     this.helper.close(() => this.stop());

@@ -149,3 +149,161 @@ func terminalFocusEvidence(roleDescription: String, label: String, domClasses: [
     let words = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     return words.range(of: "^terminal\\b", options: .regularExpression) != nil
 }
+
+// MARK: Watching a coding agent's panel
+
+/**
+ The states a coding agent's panel can show, read from its text: the same
+ anchor tables as src/core/monitor.ts, so the helper and the watch agree on
+ what "working", "needs permission" and "done" look like. The strings come
+ from the Claude Code extension bundle and VS Code's own message table;
+ Cursor's and Cascade's are unverified and kept short. Nothing here acts on
+ the text: a wrong guess costs a wake, never an input.
+ */
+let agentPanelAnchors: [String: [(state: String, patterns: [String])]] = [
+    "claude-code": [
+        ("needs_permission", ["do you want to proceed", "tell claude what to do instead", "claude needs your permission", "waiting for your permission",
+                              "claude is waiting for your decision", "claude is requesting permission", "no, keep planning"]),
+        ("working", ["queue another message", "claude is working", "esc to interrupt", "compacting conversation"]),
+        ("idle", ["ask claude to edit", "cmd ?esc to focus or unfocus claude", "ready for your input"]),
+        ("done", ["^finished$", "^stopped$", "claude is waiting for your input"]),
+        ("error", ["\\binterrupted\\b", "api error", "^failed$"]),
+    ],
+    "copilot": [
+        ("needs_permission", ["\\brun .{1,80} command\\?", "waiting for confirmation", "continue to iterate\\?", "allow in this session", "always allow"]),
+        ("review_edits", ["keep all edits", "undo all edits"]),
+        ("working", ["^working\\b", "thinking\\.\\.\\.", "waiting for tool"]),
+        ("idle", ["^chat input", "ask copilot", "press enter to send"]),
+        ("done", ["new chat response"]),
+        ("error", ["^retry$"]),
+    ],
+    "cursor-agent": [
+        ("needs_permission", ["\\brun\\b.*\\bskip\\b"]),
+        ("review_edits", ["keep all", "undo all", "review next file"]),
+        ("working", ["^generating"]),
+    ],
+    "windsurf-cascade": [
+        ("needs_permission", ["\\baccept\\b.*\\breject\\b", "^continue$"]),
+        ("working", ["^generating", "^running"]),
+    ],
+]
+// When several states show at once the one that needs the user wins, then a
+// failure, then activity: a permission question sits above the spinner.
+let agentStatePriority = ["needs_permission", "review_edits", "error", "working", "done", "idle"]
+// Exact on-screen labels that allow one request once, by agent and kind. None
+// of them grants more than one use; forbiddenAllowLabel checks that too.
+let agentAllowLabels: [String: [String: String]] = [
+    "claude-code": ["command": "Yes", "edit": "Yes", "tool": "Yes", "plan": "Yes, and manually approve edits"],
+    "copilot": ["command": "Allow", "tool": "Allow", "edit": "Allow", "continue": "Continue", "review": "Keep"],
+    "cursor-agent": ["command": "Run", "tool": "Run", "edit": "Run", "review": "Keep All"],
+    "windsurf-cascade": ["command": "Run", "tool": "Run", "edit": "Run"],
+]
+private let forbiddenAllowPattern = try! NSRegularExpression(pattern: "don'?t ask again|allow all|always allow|in this session|in this workspace|bypass|run everything|turbo|autopilot|auto[- ]?accept|auto approve", options: [.caseInsensitive])
+func forbiddenAllowLabel(_ label: String) -> Bool {
+    forbiddenAllowPattern.firstMatch(in: label, range: NSRange(label.startIndex..., in: label)) != nil
+}
+private var anchorPatternCache = [String: NSRegularExpression]()
+private let anchorCacheLock = NSLock()
+private func anchorPattern(_ pattern: String) -> NSRegularExpression? {
+    anchorCacheLock.lock(); defer { anchorCacheLock.unlock() }
+    if let cached = anchorPatternCache[pattern] { return cached }
+    guard let compiled = try? NSRegularExpression(pattern: pattern) else { return nil }
+    anchorPatternCache[pattern] = compiled
+    return compiled
+}
+/**
+ OCR reads an ellipsis as three dots, curly quotes as straight ones and the
+ command glyph before "Esc" as "#" or "X"; anchors match this lowercase,
+ single-spaced form. Same rule as normalizeOcr in src/core/monitor.ts.
+ */
+func normalizeOcrText(_ s: String) -> String {
+    var text = s.replacingOccurrences(of: "…", with: "...")
+    for quote in ["‘", "’", "‚", "‛"] { text = text.replacingOccurrences(of: quote, with: "'") }
+    for quote in ["“", "”", "„", "‟"] { text = text.replacingOccurrences(of: quote, with: "\"") }
+    text = text.replacingOccurrences(of: "⌘", with: "cmd").lowercased()
+    text = text.replacingOccurrences(of: "(^|\\s)[#x](?=\\s?esc\\b)", with: "$1cmd", options: .regularExpression)
+    return text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+}
+private func lineMatches(_ patterns: [String], _ line: String) -> Bool {
+    patterns.contains { pattern in
+        guard let regex = anchorPattern(pattern) else { return false }
+        return regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
+    }
+}
+/// Whether a normalized line is one of the agent's anchors.
+func agentAnchor(agent: String, line: String) -> Bool {
+    (agentPanelAnchors[agent] ?? []).contains { lineMatches($0.patterns, line) }
+}
+private func classifyPanel(agent: String, lines: [String], states: [String] = agentStatePriority) -> String {
+    let table = agentPanelAnchors[agent] ?? []
+    for state in states {
+        guard let entry = table.first(where: { $0.state == state }) else { continue }
+        if lines.contains(where: { lineMatches(entry.patterns, $0) }) { return state }
+    }
+    return "unknown"
+}
+private let askingStates = ["needs_permission", "review_edits"]
+private let activityStates = ["error", "working", "done", "idle"]
+/**
+ The panel's state from its normalized lines with their vertical position and
+ height as fractions of the window. A question for the user counts wherever it
+ is: the agent shows it once and takes it down when answered. The activity
+ states are read from the bottom first, where the placeholder, spinner and
+ status sit, because the transcript above may still quote an old
+ "interrupted"; the whole panel is read only when the bottom says nothing.
+ */
+func agentPanelState(agent: String, lines: [(text: String, y: Double, h: Double)]) -> String {
+    let all = lines.map { $0.text }
+    let asking = classifyPanel(agent: agent, lines: all, states: askingStates)
+    if asking != "unknown" { return asking }
+    let bottom = lines.filter { $0.y + $0.h >= 0.6 }.map { $0.text }
+    let fromBottom = classifyPanel(agent: agent, lines: bottom, states: activityStates)
+    if fromBottom != "unknown" { return fromBottom }
+    return classifyPanel(agent: agent, lines: all, states: activityStates)
+}
+
+// MARK: Watch mode
+
+/**
+ Whether the user's Escape is the emergency stop. While a detached watch is
+ the only thing going on, the helper's input is latched off and Escape is the
+ user's own key in their own work, so a single press must not end the watch:
+ two within 0.8 s do. Without a watch, one Escape stops as it always has.
+ */
+func emergencyEscape(now: TimeInterval, lastEscapeAt: TimeInterval?, watching: Bool) -> Bool {
+    guard watching else { return true }
+    guard let last = lastEscapeAt else { return false }
+    return now - last <= 0.8 && now >= last
+}
+/// A probe names the bound window by the token the helper minted, and by nothing else.
+func watchProbeAllowed(token: String, bound: String?) -> Bool {
+    guard let bound, !bound.isEmpty, !token.isEmpty else { return false }
+    return token == bound
+}
+/// Windows one helper holds bound at once; a watch is released before its wake-up run, so more is a leak.
+let watchBindingsMax = 4
+/**
+ The same rule a capture applies to a browser window (guardSurface): a page on
+ a protected domain, or any of its subdomains, is never read. A browser
+ window whose page cannot be told is refused too while any domain is
+ protected, since a watch reads it every few seconds without the user there.
+ */
+func watchDomainRefused(domain: String?, browser: Bool, protectedDomains: [String]) -> Bool {
+    guard let domain = domain?.lowercased(), !domain.isEmpty else { return browser && !protectedDomains.isEmpty }
+    return protectedDomains.contains { let p = $0.lowercased(); return domain == p || domain.hasSuffix("." + p) }
+}
+
+// MARK: Opening an item in a named application
+
+/**
+ The floor for open_file with an application: the one named must not be one a
+ file may never reach (System Settings, Shortcuts, screen sharing) nor one the
+ launch floor or the user's protected list refuses, terminals among them.
+ Unlike the default route a folder may open in an application other than
+ Finder, as an editor opens a project; the policy asks the user first unless
+ their own words named both (openFileDecision), since an editor can run a
+ project's own tasks as it opens.
+ */
+func namedFileHandlerRefused(_ named: LaunchCandidate, protectedApps: [String]) -> Bool {
+    fileHandlerDeniedIds.contains(named.bundleId.lowercased()) || launchCandidateDenied(named, protectedApps: protectedApps)
+}

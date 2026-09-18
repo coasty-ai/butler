@@ -34,6 +34,7 @@ import {
   type Settings,
   type Snapshot,
   type TaskSource,
+  type WatchContext,
 } from "../src/core/schema";
 import {
   MANUAL_PAUSE_MESSAGE,
@@ -131,10 +132,12 @@ import {
 import { runView, statusLine } from "../src/assistant/run-view";
 import type {
   Channel,
+  ProgressFacts,
   ProgressReport,
   ProgressSink,
   RunView,
   TurnDecision,
+  WatchState,
 } from "../src/assistant/types";
 import { PRESENCE_REFRESH_MS, createPresenceService } from "./presence";
 import { ProgressReporter, createProgressSummarizer } from "./progress";
@@ -144,6 +147,22 @@ import { createTailscaleProvider } from "./remote/tailscale";
 import { remoteApprovalTier, validateRemoteSettings } from "../src/remote/auth";
 import { remoteTurnReply } from "../src/remote/protocol";
 import { TASK_QUEUE_MAX, TaskQueue } from "./task-queue";
+import {
+  HeldNews,
+  WatchManager,
+  droppedLine,
+  factsLine,
+  fallbackReport,
+  handoffNotes,
+  relayLine,
+  wakeTask,
+  type FactsHint,
+  type RelayGone,
+  type RelayRequest,
+  type WakeCause,
+  type WakeContext,
+  type WatchChain,
+} from "./watch";
 import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
 import {
@@ -532,6 +551,7 @@ const messages = new MessagesChannel({
       void conversation.stopSpeaking();
       voiceHeld = false;
       taskQueue.clear();
+      stopWatches();
       runner?.stop();
     },
     resume: () => {
@@ -662,7 +682,7 @@ function currentRunView() {
   const now = Date.now();
   return runView(snapshot, {
     queued: taskQueue.list(now),
-    watches: [],
+    watches: watchers.list(),
     lastFinished,
     now,
     // The activation that asked paused the run to listen; it goes on once
@@ -826,6 +846,188 @@ function remoteThumbnail(frame: Frame): Buffer | undefined {
     .resize({ width: 360, quality: "good" })
     .toJPEG(50);
 }
+/** A fixed report straight to the sinks, for lines the reporter has no facts for. */
+function onProgress(report: ProgressReport) {
+  for (const sink of progressSinks) sink.onProgress(report);
+}
+/**
+ * Detached watches of a coding agent's window (increment 5A). A monitor step
+ * hands its window here and its run ends; a wake queues a new run with
+ * origin "watch", and a permission question the agent shows is put to the
+ * user on the pill, never answered by the app.
+ */
+const watchers = new WatchManager({
+  controller: {
+    probe: (token, region) => getNative().probe(token, region),
+    unbindWatch: (token) => getNative().unbindWatch(token),
+    // Watch mode is on while watches run with no run of its own: the Mac
+    // stays awake for them when keepAwake is on, as it does for a run.
+    setWatchMode: (on) => {
+      power.setWatching(on);
+      return getNative().setWatchMode(on);
+    },
+    focusWatch: (token) => getNative().focusWatch(token),
+  },
+  presence,
+  settings: () => settings,
+  onWake: (w, cause, ctx) => queueWake(w, cause, ctx),
+  onFacts: (f, hint) => watchFacts(f, hint),
+  onRelay: (r) => showRelay(r),
+  onRelayGone: (id, reason) => hideRelay(id, reason),
+  // A wake waits for room in the queue rather than being dropped after the
+  // watch has already let go of its window.
+  canWake: () => taskQueue.list(Date.now()).length < TASK_QUEUE_MAX,
+  trace: debug,
+});
+/** Ends every watch, and any news of theirs still waiting for the pill. */
+function stopWatches() {
+  watchPill.clear();
+  return watchers.stop();
+}
+/**
+ * What each queued wake-up run starts with, by queued task id: the queue
+ * itself carries only text and origin. Pruned as the queue drains.
+ */
+const wakes = new Map<
+  string,
+  { watch: WatchContext; chain: WatchChain; spoken: boolean }
+>();
+function queueWake(w: WatchState, cause: WakeCause, ctx: WakeContext) {
+  const now = Date.now();
+  const watch: WatchContext = {
+    cause,
+    ...(w.agent ? { agent: w.agent } : {}),
+    state: w.state,
+    minutes: w.minutes,
+    lastChangeMinutes: Math.max(0, Math.floor((now - w.lastChangeAt) / 60000)),
+    ...(ctx.notes.length ? { steps: ctx.notes } : {}),
+    ...(ctx.panelTail ? { panelText: ctx.panelTail } : {}),
+  };
+  // A follow-up that quotes the watched request, never the request itself,
+  // and with no taskSource: these are the app's words, not the user's.
+  const added = taskQueue.add(wakeTask(w, cause, ctx), "watch", now);
+  if (!("position" in added)) {
+    // The watch has let go of the window by now: the user hears that the
+    // follow-up is not coming instead of nothing at all.
+    debug("WatchWakeDropped", {
+      cause,
+      code: "full" in added ? "queue_full" : "credentials",
+    });
+    watchNews(w.runId, 0, "final", droppedLine(w, cause), ctx.origin);
+    return;
+  }
+  const queued = taskQueue.list(now).at(-1);
+  // The wake-up run answers the way the chain was asked for: a spoken "keep
+  // an eye on it" gets its result spoken, however many wakes later.
+  if (queued)
+    wakes.set(queued.id, {
+      watch,
+      chain: ctx.chain,
+      spoken: ctx.origin === "voice",
+    });
+  debug("WatchWakeQueued", { cause, status: w.state });
+  scheduleQueueDrain();
+}
+/**
+ * The watch's latest line or relay card that a run or the microphone kept
+ * off the pill; shown when the pill would otherwise go away (armDoneHide).
+ */
+const watchPill = new HeldNews<Partial<PillState>>();
+/** A watch's card on the pill now, or once the pill is free. */
+function showWatchPill(card: Partial<PillState>, relay?: string) {
+  const now = watchPill.offer(card, listening || runActive(), relay);
+  if (!now) return;
+  relayCard = relay;
+  setPill(now);
+}
+/**
+ * A fixed line about a watch, to the sinks and the pill. Only fixed lines
+ * come through here: nothing read from the watched window is ever spoken or
+ * sent. The line is spoken only for a watch asked for by voice and never
+ * texted (fallbackReport); the reporter words the watch's own progress.
+ */
+function watchNews(
+  runId: string,
+  seq: number,
+  kind: ProgressReport["kind"],
+  text: string,
+  origin?: RunOrigin,
+) {
+  onProgress(
+    fallbackReport({ runId, seq, kind, text, origin, at: Date.now() }),
+  );
+  showWatchPill({
+    phase: "done",
+    label: text,
+    transcript: "",
+    canApprove: false,
+    synthetic: false,
+    inputLevel: 0,
+  });
+}
+/**
+ * Progress from a watch. The reporter words it and decides who hears it
+ * (spoken, texted, the phone page) at its own cadence; news that waits on
+ * the user (a wake held back, a stall) also shows its fixed line on the pill.
+ */
+function watchFacts(f: ProgressFacts, hint?: FactsHint) {
+  reporter.onWatchFacts(f);
+  const text = hint && factsLine(f, hint);
+  if (text)
+    showWatchPill({
+      phase: "done",
+      label: text,
+      transcript: "",
+      canApprove: false,
+      synthetic: false,
+      inputLevel: 0,
+    });
+}
+/** The relay card on the pill, by relay id, so an answer in the editor clears it. */
+let relayCard: string | undefined;
+/**
+ * The agent asked the user something. The card says what and points at the
+ * editor; the click that would answer it lands in increment 5B, and the app
+ * never answers on its own.
+ */
+function showRelay(r: RelayRequest) {
+  // Spoken: the fixed line for the kind of request. The question itself is
+  // screen text and stays on the pill card, next to the editor.
+  onProgress(
+    fallbackReport({
+      runId: r.runId,
+      seq: r.seq,
+      kind: "needs_you",
+      text: relayLine(r),
+      origin: r.origin,
+      at: Date.now(),
+    }),
+  );
+  showWatchPill(
+    {
+      phase: "working",
+      label: `${relayLine(r).split(". ")[0]}: ${r.question}`,
+      transcript: "Answer it in the editor; I never answer for you.",
+      canApprove: false,
+      synthetic: false,
+      inputLevel: 0,
+    },
+    r.id,
+  );
+}
+/** The card comes down; only a question answered on screen says so. */
+function hideRelay(id: string, reason: RelayGone) {
+  watchPill.forget(id);
+  if (relayCard !== id) return;
+  relayCard = undefined;
+  if (listening || runActive()) return;
+  setPill({
+    phase: "done",
+    label: reason === "answered" ? "Answered in the editor." : "",
+    transcript: "",
+    canApprove: false,
+  });
+}
 /** How an approval answered through a channel is journaled. */
 function approvalSource(channel: Channel): ApprovalSource {
   return channel === "voice"
@@ -858,6 +1060,14 @@ function refreshSpeechPill() {
 function armDoneHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
+    // A watch's news that a run or the microphone kept off the pill comes up
+    // before the pill goes away.
+    const held = watchPill.take(listening || runActive());
+    if (held) {
+      relayCard = held.relay;
+      setPill(held.item);
+      return;
+    }
     pill = { ...idlePill };
     indicator.hide();
   }, conversation.doneHoldMs(doneRunId));
@@ -892,7 +1102,22 @@ function getNative() {
       () => {
         // Only the native Escape emergency stop cancels a run.
         if (shuttingDown) return;
-        if (!snapshot.run || terminal(snapshot.run.status)) return;
+        // With no run, the helper emits this only for two Escapes within
+        // 0.8 s while a watch is on; during a run, for one Escape. Either way
+        // it is the emergency stop and it ends the watches too, as a spoken
+        // "stop" does: a watch must not wake a run after it.
+        watchPill.clear();
+        const watchesStopped = watchers.onEmergencyStop();
+        if (!snapshot.run || terminal(snapshot.run.status)) {
+          if (watchesStopped)
+            setPill({
+              phase: "done",
+              label: "Stopped watching.",
+              transcript: "",
+              canApprove: false,
+            });
+          return;
+        }
         cancelVoiceCapture();
         abortTurn();
         void conversation.stopSpeaking();
@@ -1879,8 +2104,10 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
   switch (plan.kind) {
     case "stop":
       voiceHeld = false;
-      // A stop is for everything the user asked for, queued tasks included.
+      // A stop is for everything the user asked for, queued tasks and
+      // watches included.
       taskQueue.clear();
+      stopWatches();
       runner?.stop("Stopped.");
       idleCard("Stopped.");
       return;
@@ -2171,6 +2398,7 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
 function trackRun(s: Snapshot) {
   const run = s.run;
   if (!run) return;
+  watchers.setRunActive(!terminal(run.status));
   if (!terminal(run.status)) {
     startPresenceRefresh();
     return;
@@ -2215,15 +2443,23 @@ async function drainQueue(attempt: number) {
   }
   const next = taskQueue.next(Date.now());
   if (!next) return;
+  const wake = wakes.get(next.id);
+  for (const id of wakes.keys())
+    if (!taskQueue.list(Date.now()).some((t) => t.id === id)) wakes.delete(id);
   debug("QueuedTaskStarted", {
     source: next.origin,
     textLength: next.text.length,
   });
   try {
+    if (wake?.spoken) conversation.noteInput("voice");
     await dispatch("start", [
       next.text,
       false,
-      { origin: "queue", taskSource: next.taskSource },
+      {
+        origin: next.origin === "watch" ? "watch" : "queue",
+        taskSource: next.taskSource,
+        ...(wake ? { watch: wake.watch, chain: wake.chain } : {}),
+      },
     ]);
   } catch (error) {
     debug("QueuedTaskFailed", errorDetails(error));
@@ -2587,6 +2823,30 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
               "proposal",
             ])
             .optional(),
+          // Why a watch woke the model; only the queue drain passes it.
+          watch: z
+            .object({
+              cause: z.string().max(40),
+              agent: z.string().max(40).optional(),
+              state: z.string().max(40),
+              minutes: z.number().int().min(0),
+              lastChangeMinutes: z.number().int().min(0),
+              steps: z.array(z.string().max(120)).max(5).optional(),
+              panelText: z.string().max(1500).optional(),
+            })
+            .strict()
+            .optional(),
+          // The chain of watches that wake belongs to; only with watch.
+          chain: z
+            .object({
+              startedAt: z.number().finite(),
+              wakes: z.number().int().min(0).max(1000),
+              origin: z
+                .enum(["voice", "typed", "message", "queue", "watch", "remote"])
+                .optional(),
+            })
+            .strict()
+            .optional(),
         })
         .optional()
         .parse(args[2]);
@@ -2628,6 +2888,23 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         recentTasks,
         // The synthetic tutorial never recalls or learns.
         tutorial ? undefined : runMemory(),
+        // A monitor step hands its window to the detached watch and ends.
+        tutorial
+          ? {}
+          : {
+              onMonitor: (binding, spec, run) =>
+                watchers.start(binding, {
+                  ...spec,
+                  runId: run.id,
+                  task: run.task,
+                  taskSource: run.taskSource,
+                  origin: run.origin,
+                  appName: run.appName,
+                  notes: handoffNotes(run.steps),
+                  corrections: run.corrections,
+                  ...(run.chain ? { chain: run.chain } : {}),
+                }),
+            },
       );
       voiceHeld = false;
       window.hide();
@@ -2636,6 +2913,8 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
           origin,
           taskSource:
             from?.taskSource ?? (origin === "typed" ? "user_words" : undefined),
+          ...(from?.watch ? { watch: from.watch } : {}),
+          ...(from?.watch && from.chain ? { chain: from.chain } : {}),
         })
         .catch((error) => {
           debug("RunStartFailed", errorDetails(error));
@@ -2670,6 +2949,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       void conversation.stopSpeaking();
       voiceHeld = false;
       taskQueue.clear();
+      stopWatches();
       runner?.stop();
       return;
     case "confirm": {
@@ -3517,6 +3797,7 @@ app.on("before-quit", () => {
   clearTimeout(drainTimer);
   for (const timer of deferredReloads.values()) clearTimeout(timer);
   deferredReloads.clear();
+  stopWatches();
   runner?.stop();
   flushMemory();
   native?.close();

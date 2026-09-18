@@ -417,6 +417,31 @@ describe("synthetic Gym", () => {
       "<APP>",
       "<FILE>",
     ]);
+    // An application named to open the item in is masked like a launched one.
+    const openedIn: any = {
+      event_id: crypto.randomUUID(),
+      type: "ActionExecuted",
+      data: {
+        action: {
+          type: "open_file",
+          path: "~/work/proj",
+          app: "Acme Internal Tool",
+          frame_id: "local",
+        },
+      },
+    };
+    const named = prepareBundle(r, [openedIn], [], {
+      runId: r.id,
+      level: "trajectory",
+      excludedFrames: [],
+      excludedEvents: [],
+    });
+    expect(named.steps?.[0]).toEqual({
+      type: "open_file",
+      path: "<FILE>",
+      app: "<APP>",
+    });
+    expect(JSON.stringify(named)).not.toContain("Acme");
     // Statistics bundles contain no steps at all.
     const stats = prepareBundle(r, [opened], [], {
       runId: r.id,

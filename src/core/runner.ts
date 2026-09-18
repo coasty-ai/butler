@@ -17,6 +17,8 @@ import type {
   MemoryContext,
   TaskSource,
   Usage,
+  WatchBinding,
+  WatchContext,
 } from "./schema";
 import type {
   MemoryAccess,
@@ -36,6 +38,7 @@ import {
   utf16Prefix,
 } from "./labels";
 import { evaluate, surfacePolicy, PASTE_ALLOWED } from "./policy";
+import { watchSpec, type WatchChain, type WatchSpec } from "./monitor";
 import { redactSecrets, scanText } from "./sanitize";
 import {
   HelperUnavailableError,
@@ -64,6 +67,7 @@ const actionTypes = new Set([
   "menu_item",
   "click_control",
   "wait",
+  "monitor",
   "request_user",
   "done",
   "fail",
@@ -102,6 +106,13 @@ export function echoAction(input: unknown): Record<string, unknown> {
     echo.keys = a.keys.slice(0, 4).map((k) => keyName(k) ?? "?");
   if (a.type === "open_app" && typeof a.name === "string")
     echo.name = bound(a.name, 100);
+  if (a.type === "open_file" && typeof a.app === "string")
+    echo.app = bound(a.app, 100);
+  if (a.type === "monitor")
+    for (const field of ["every_s", "max_min", "until"] as const)
+      if (["number", "string"].includes(typeof a[field]))
+        echo[field] =
+          typeof a[field] === "string" ? bound(String(a[field]), 12) : a[field];
   if (a.type === "menu_item" && Array.isArray(a.path))
     echo.path = a.path
       .slice(0, 3)
@@ -416,7 +427,13 @@ export const MANUAL_PAUSE_MESSAGE = "Paused — you’re controlling the compute
 export const TARGET_HANDOFF_MESSAGE =
   "I can’t find the right control. Click it for me and I’ll continue.";
 /** Plans never contain terminal or free-form steps; those stay model-only. */
-const unplannable = new Set(["done", "fail", "request_user", "drag"]);
+const unplannable = new Set([
+  "done",
+  "fail",
+  "request_user",
+  "drag",
+  "monitor",
+]);
 const recallBudgetMs = 2000;
 /** After the last plan step, recheck completeWhen this many times, this far apart. */
 const planRechecks = 3;
@@ -506,6 +523,35 @@ export type ApprovalSource = "voice" | "pill" | "typed" | "message" | "remote";
  */
 export type TakeoverSource =
   "manual_input" | "request_user" | "policy" | "surface" | "handoff";
+/** The run a monitor step hands its window over from. */
+export interface MonitorHandoff {
+  id: string;
+  task: string;
+  taskSource?: TaskSource;
+  origin?: RunOrigin;
+  /** Display name of the watched application, for what is said about it. */
+  appName?: string;
+  /**
+   * The actions this run executed, oldest first (the last few): the watch
+   * words them for the wake-up run as steps already taken, never quoting
+   * typed text (src/assistant/steps.ts, which core cannot import).
+   */
+  steps: Action[];
+  /** The user's corrections to this run, in order: they bind the wake-up run too. */
+  corrections: string[];
+  /** Set when a watch woke this run: a new watch continues that chain. */
+  chain?: WatchChain;
+}
+/** Executed actions kept for a monitor handoff. */
+const HANDOFF_STEPS = 12;
+/** Hooks outside the run loop (increment 5A: the detached watch). */
+export interface RunnerExtras {
+  /**
+   * A monitor step bound the frontmost window natively; the watch takes it
+   * from here and the run completes. Without this hook monitor is refused.
+   */
+  onMonitor?(binding: WatchBinding, spec: WatchSpec, run: MonitorHandoff): void;
+}
 export class Runner {
   settled = true;
   snapshot: Snapshot = {
@@ -574,6 +620,12 @@ export class Runner {
   private handsOn = false;
   private trajectory: TrajectoryStep[] = [];
   private appsSeen = new Set<string>();
+  /** Why a watch woke this run; given to the model with every frame. */
+  private watchContext?: WatchContext;
+  /** The chain of watches and wakes this run belongs to, when a watch woke it. */
+  private watchChain?: WatchChain;
+  /** The last few actions executed, for a monitor handoff. */
+  private executed: Action[] = [];
   constructor(
     private controller: Controller,
     private provider: Provider,
@@ -582,6 +634,7 @@ export class Runner {
     private emit: (s: Snapshot) => void,
     private recentTasks: ScreenContext["recentTasks"] = [],
     private memory?: MemoryAccess,
+    private extras: RunnerExtras = {},
   ) {}
   /**
    * Apply saved settings to the active run. Budgets take effect on the next
@@ -1357,6 +1410,107 @@ export class Runner {
       // Memory is best effort.
     }
   }
+  /**
+   * A monitor step: the helper binds the frontmost window, the detached watch
+   * takes it over through extras.onMonitor, and the run completes so the
+   * runner is free for the next task. "completed" ends the loop; "rejected"
+   * leaves a history entry and lets the model choose again.
+   */
+  private async monitor(
+    action: Extract<Action, { type: "monitor" }>,
+    frame: Frame,
+    epoch: number,
+  ): Promise<"completed" | "rejected"> {
+    const run = this.snapshot.run!;
+    const reject = (result: string) => {
+      this.history.push({
+        type: "monitor",
+        action: echoAction(action),
+        result,
+      });
+      return "rejected" as const;
+    };
+    if (run.synthetic || !this.controller.bindWatch || !this.extras.onMonitor) {
+      this.event("ActionFailed", { code: "MONITOR_UNAVAILABLE" });
+      return reject(
+        "No input was sent. Monitoring isn't available here; use wait, or finish with done.",
+      );
+    }
+    let binding: WatchBinding;
+    try {
+      binding = await this.controller.bindWatch();
+    } catch (error) {
+      if (this.held || epoch !== this.epoch) return "rejected";
+      if (await this.recoverNative(error, epoch, action)) return "rejected";
+      // The helper's own refusals (too many windows watched, no focused
+      // window, a window it cannot find on screen) and a slow answer end
+      // the step, not the run: the model hears it and finishes another way.
+      this.event("ActionFailed", { code: "MONITOR_REFUSED" });
+      return reject(
+        `No input was sent. The window could not be watched (${bound(error instanceof Error ? error.message : "no answer", 160)}); use wait, or finish with done.`,
+      );
+    }
+    const release = () => {
+      void this.controller.unbindWatch?.(binding.token).catch(() => {});
+    };
+    if (this.held || epoch !== this.epoch) {
+      release();
+      return "rejected";
+    }
+    // The watch must hold the window the model looked at, not one that came
+    // to the front since the screenshot.
+    if (frame.appId && binding.appId !== frame.appId) {
+      release();
+      this.event("ActionFailed", { code: "STATE_CHANGED" });
+      return reject(
+        "No input was sent. Another application came to the front before the watch could start; look at the new screenshot and monitor again.",
+      );
+    }
+    const spec = watchSpec(action);
+    const appName = frame.context?.appName?.trim() || undefined;
+    // The watch may refuse the window (it has woken the model too often in
+    // the last hour): the binding is released and the model hears why, in
+    // the watch's own words; any other failure gets a fixed line.
+    try {
+      this.extras.onMonitor(binding, spec, {
+        id: run.id,
+        task: run.task,
+        ...(run.taskSource ? { taskSource: run.taskSource } : {}),
+        ...(run.origin ? { origin: run.origin } : {}),
+        ...(appName ? { appName } : {}),
+        steps: [...this.executed],
+        corrections: (run.corrections ?? []).map((c) => c.text),
+        ...(this.watchChain ? { chain: { ...this.watchChain } } : {}),
+      });
+    } catch (error) {
+      release();
+      this.event("ActionFailed", { code: "MONITOR_REFUSED" });
+      const refused =
+        error instanceof Error &&
+        (error as { code?: unknown }).code === "MONITOR_REFUSED";
+      return reject(
+        `No input was sent. ${refused ? bound(error.message, 300) : "The watch refused this window; use wait, or finish with done."}`,
+      );
+    }
+    run.actions++;
+    this.event("MonitorStarted", {
+      appId: binding.appId,
+      mode: spec.until,
+      delayMs: spec.everyMs,
+      durationMs: spec.maxMs,
+    });
+    this.event("ActionExecuted", { action, frame_id: frame.id });
+    const what = appName ?? "it";
+    run.summary =
+      spec.until === "change"
+        ? `Keeping an eye on ${what}. I’ll let you know when it changes.`
+        : spec.until === "input"
+          ? `Keeping an eye on ${what}. I’ll let you know when it needs you.`
+          : `Keeping an eye on ${what}. I’ll let you know when it’s done.`;
+    this.event("RunCompleted");
+    this.status("completed", run.summary);
+    return "completed";
+  }
   private async capture() {
     this.lastSurface = undefined;
     const surface = await this.controller.surface();
@@ -1386,10 +1540,20 @@ export class Runner {
   }
   async start(
     task: string,
-    options: { origin?: RunOrigin; taskSource?: TaskSource } = {},
+    options: {
+      origin?: RunOrigin;
+      taskSource?: TaskSource;
+      /** Set on a run a detached watch woke (electron/watch.ts). */
+      watch?: WatchContext;
+      /** The chain that watch belongs to, for a watch this run starts. */
+      chain?: WatchChain;
+    } = {},
   ) {
     if (this.active()) throw new Error("A run is already active.");
     this.settled = false;
+    this.watchContext = options.watch;
+    this.watchChain = options.chain;
+    this.executed = [];
     this.started = Date.now();
     this.heldMs = 0;
     this.heldSince = undefined;
@@ -1436,9 +1600,13 @@ export class Runner {
     });
     this.schedule();
     const history = this.history;
+    // A wake-up run neither recalls nor learns: its objective is a follow-up
+    // that quotes the watched request, and a plan recalled for that request
+    // would replay its steps with nobody at the Mac.
     this.memoryRun =
       !!this.memory &&
       !run.synthetic &&
+      run.origin !== "watch" &&
       this.controller.kind !== "tutorial" &&
       this.settings.memory !== false;
     // Abandon a proposed plan step that did not execute.
@@ -1551,7 +1719,17 @@ export class Runner {
                     ? "\nUser corrections, in order. Preserve earlier constraints unless explicitly superseded:\n" +
                       run.corrections.map((c) => c.text).join("\n")
                     : ""),
-                frame,
+                // Why a watch woke this run stays visible on every step, since
+                // the model only sees one screenshot and twelve history
+                // entries. Only the model's copy carries it: the panel text
+                // in it never enters a Snapshot, a trace or a saved frame.
+                frame:
+                  this.watchContext && frame.context
+                    ? {
+                        ...frame,
+                        context: { ...frame.context, watch: this.watchContext },
+                      }
+                    : frame,
                 history: history.slice(-12),
                 ...(this.memoryContext ? { memory: this.memoryContext } : {}),
               },
@@ -1649,11 +1827,16 @@ export class Runner {
           this.settings,
           run.synthetic,
           {
+            // A wake-up run's objective quotes the watched request: only the
+            // user's own corrections to this run can ask it for a paste.
             pasteRequested: pasteRequested(
-              run.task,
+              run.origin === "watch" ? "" : run.task,
               run.corrections,
               run.taskSource,
             ),
+            ...(run.taskSource === "user_words" && run.origin !== "watch"
+              ? { userWords: run.task }
+              : {}),
           },
         );
         if (this.held || epoch !== this.epoch) {
@@ -1837,13 +2020,19 @@ export class Runner {
           break;
         }
         if (action.type === "fail") throw new Error(action.reason);
+        if (action.type === "monitor") {
+          // Runner-side, never sent to controller.execute: the watch takes
+          // the window and this run is over.
+          if ((await this.monitor(action, frame, epoch)) === "completed") break;
+          continue;
+        }
         this.event("PolicyAllowed", { reason: decision.reason });
         this.status(
           "executing",
           action.type === "open_app"
             ? `Opening ${bound(action.name, 100)}.`
             : action.type === "open_file"
-              ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}.`
+              ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}${action.app ? ` in ${bound(action.app, 60)}` : ""}.`
               : action.type === "menu_item"
                 ? `Choosing ${bound(action.path.join(" › "), 100)}.`
                 : action.type === "click_control"
@@ -1915,6 +2104,7 @@ export class Runner {
         }
         this.resetCounters();
         run.actions++;
+        this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
         const launched =
           action.type === "open_app" &&
           outcome &&
@@ -1938,6 +2128,10 @@ export class Runner {
                   outcome.opened.kind === "folder"
                     ? ("folder" as const)
                     : ("document" as const),
+                ...(typeof outcome.opened.appId === "string" &&
+                outcome.opened.appId
+                  ? { appId: bound(outcome.opened.appId, 200) }
+                  : {}),
               }
             : undefined;
         if (action.type === "open_file") this.lastOpened = !!opened;
@@ -1995,7 +2189,7 @@ export class Runner {
                 ? `Opened ${launched.name} (${launched.appId}); frontmost=true. Verify appId on the next screenshot; if no window is visible use the app's New shortcut.`
                 : `Launch requested for ${launched.appId}; not frontmost yet. Wait briefly before retrying.`
               : opened
-                ? `Opened ${opened.path} (${opened.kind}). Verify the next screenshot.`
+                ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`
                 : ["type_text", "key", "hotkey"].includes(action.type)
                   ? `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot shows the intended result before done.`
                   : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +

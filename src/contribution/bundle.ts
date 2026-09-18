@@ -83,8 +83,12 @@ export function prepareBundle(
       const result: Record<string, unknown> = { type: a.type };
       for (const [k, v] of Object.entries(a)) {
         if (k === "frame_id") continue;
-        // Installed application names reveal the contributor's software.
-        if (a.type === "open_app" && k === "name") {
+        // Installed application names reveal the contributor's software,
+        // whether launched or named to open a file in.
+        if (
+          (a.type === "open_app" && k === "name") ||
+          (a.type === "open_file" && k === "app")
+        ) {
           result[k] = "<APP>";
           continue;
         }

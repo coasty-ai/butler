@@ -47,14 +47,15 @@ const terminal = [
 // VS Code, VSCodium, Cursor and Windsurf share one interface and one policy
 // (src/core/ide.ts): their palette asks before running a command and refuses
 // terminal, task, run and debug commands, and typing needs a box the editor's
-// own command just opened.
+// own command just opened. A coding agent working in them (Claude Code,
+// Copilot Chat) is watched with monitor, never driven by hand.
 const codeEditor = [
-  "Open a file by name with CMD+P, type part of the name, then UP or DOWN and ENTER.",
-  "Find in the file with CMD+F and across the project with CMD+SHIFT+F; ESC closes the box.",
+  "Open a folder or file here in one step with open_file(path, app) and a ~/ path from context.memory.",
+  "CMD+P opens a file by name (type part of it, then UP or DOWN and ENTER); CMD+F finds in it, CMD+SHIFT+F everywhere.",
+  "Type only into a box the editor's own command just opened, and save with CMD+S only when the objective asks.",
   "Palette commands (CMD+SHIFT+P): type the whole command name, not a prefix picked with arrows; the user approves it.",
   "Never open a terminal, run a task or start debugging: terminals run whatever is typed and are refused.",
-  "Type only into a box the editor's own command just opened, such as CMD+P or CMD+F.",
-  "Save with CMD+S only when the objective asks you to change the file.",
+  "Watch Claude Code or Copilot with monitor until 'done'; never press Yes, Allow, Run, Continue, Keep or Undo for them.",
 ];
 
 /** Reliable routes per application, keyed by bundle id (lowercased at lookup). */

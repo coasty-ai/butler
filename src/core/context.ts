@@ -50,6 +50,20 @@ const contextSchema = z
     // The rest of the workspace: what else is open, and what has arrived.
     openApps: z.array(bounded(300)).max(14).optional(),
     notifications: z.array(bounded(300)).max(12).optional(),
+    // Why a run started after a detached watch woke the model (increment
+    // 5A): fixed codes plus the panel's last text, bounded like screenText.
+    watch: z
+      .object({
+        cause: bounded(40),
+        agent: bounded(40).optional(),
+        state: bounded(40),
+        minutes: z.number().int().min(0).max(100000),
+        lastChangeMinutes: z.number().int().min(0).max(100000),
+        steps: z.array(bounded(120)).max(5).optional(),
+        panelText: bounded(1500).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 // Context can contain useful names/addresses. Remove only the detected
@@ -108,6 +122,21 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
     }),
     ...(c.notifications && {
       notifications: c.notifications.map((line) => clean(line).slice(0, 300)),
+    }),
+    ...(c.watch && {
+      watch: {
+        cause: c.watch.cause,
+        ...(c.watch.agent !== undefined && { agent: c.watch.agent }),
+        state: c.watch.state,
+        minutes: c.watch.minutes,
+        lastChangeMinutes: c.watch.lastChangeMinutes,
+        ...(c.watch.steps && {
+          steps: c.watch.steps.map((line) => clean(line).slice(0, 120)),
+        }),
+        ...(c.watch.panelText !== undefined && {
+          panelText: clean(c.watch.panelText).slice(0, 1500),
+        }),
+      },
     }),
   };
 }

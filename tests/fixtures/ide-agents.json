@@ -1,5 +1,5 @@
 {
-  "comment": "Shared coding-editor fixture. TypeScript src/core/ide.ts and policy.ts, and native IdeSafety.swift, NamedTargets.swift and LaunchSafety.swift, must give these verdicts. Palette strings are command titles as typed into VS Code's palette; terminal focus cases are the focused element's AXRoleDescription, label and AXDOMClassList.",
+  "comment": "Shared coding-editor fixture. TypeScript src/core/ide.ts and policy.ts, and native IdeSafety.swift, NamedTargets.swift and LaunchSafety.swift, must give these verdicts. Palette strings are command titles as typed into VS Code's palette; terminal focus cases are the focused element's AXRoleDescription, label and AXDOMClassList. Panel states are OCR lines (t, y, h as window fractions) of a coding agent's panel and the state src/core/monitor.ts and IdeSafety.swift must read from them.",
   "ideApps": {
     "com.microsoft.VSCode": "vscode",
     "com.microsoft.VSCodeInsiders": "vscode",
@@ -30,9 +30,7 @@
     "co.zeit.hyper",
     "com.github.wez.wezterm"
   ],
-  "terminalAppPrefixes": [
-    "dev.warp.warp-"
-  ],
+  "terminalAppPrefixes": ["dev.warp.warp-"],
   "terminalApps": [
     "com.apple.Terminal",
     "com.googlecode.iterm2",
@@ -52,11 +50,7 @@
     "dev.warp.warpdrive",
     "com.mitchellh.ghosttyfan"
   ],
-  "paletteTitles": [
-    "Command Palette…",
-    "Command Palette",
-    "Show All Commands"
-  ],
+  "paletteTitles": ["Command Palette…", "Command Palette", "Show All Commands"],
   "notPaletteTitles": [
     "Go to File…",
     "Quick Open",
@@ -150,9 +144,7 @@
     {
       "roleDescription": "text entry area",
       "label": "",
-      "domClasses": [
-        "xterm-helper-textarea"
-      ],
+      "domClasses": ["xterm-helper-textarea"],
       "ide": false,
       "terminal": true
     },
@@ -166,19 +158,14 @@
     {
       "roleDescription": "text entry area",
       "label": "Chat Input",
-      "domClasses": [
-        "inputarea"
-      ],
+      "domClasses": ["inputarea"],
       "ide": true,
       "terminal": false
     },
     {
       "roleDescription": "text entry area",
       "label": "Editor content;Press Alt+F1 for Accessibility Options.",
-      "domClasses": [
-        "inputarea",
-        "monaco-mouse-cursor-text"
-      ],
+      "domClasses": ["inputarea", "monaco-mouse-cursor-text"],
       "ide": true,
       "terminal": false
     },
@@ -209,5 +196,390 @@
     "in.sinew.enpass",
     "me.proton.pass",
     "com.keepersecurity."
+  ],
+  "ocrNormalization": [
+    {
+      "in": "⌘ Esc to focus or unfocus Claude",
+      "out": "cmd esc to focus or unfocus claude"
+    },
+    {
+      "in": "# Esc to focus or unfocus Claude",
+      "out": "cmd esc to focus or unfocus claude"
+    },
+    {
+      "in": "X Esc to focus or unfocus Claude",
+      "out": "cmd esc to focus or unfocus claude"
+    },
+    {
+      "in": "Ask Claude to edit…",
+      "out": "ask claude to edit..."
+    },
+    {
+      "in": "  Queue   another\tmessage… ",
+      "out": "queue another message..."
+    },
+    {
+      "in": "Yes, and don’t ask again",
+      "out": "yes, and don't ask again"
+    },
+    {
+      "in": "“Keep All Edits”",
+      "out": "\"keep all edits\""
+    },
+    {
+      "in": "Exit the box",
+      "out": "exit the box"
+    }
+  ],
+  "agentStates": [
+    {
+      "agent": "claude-code",
+      "state": "idle",
+      "lines": [
+        {
+          "t": "Claude Code",
+          "y": 0.02,
+          "h": 0.02
+        },
+        {
+          "t": "I updated the endpoint and ran the tests.",
+          "y": 0.5,
+          "h": 0.02
+        },
+        {
+          "t": "⌘ Esc to focus or unfocus Claude",
+          "y": 0.95,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "idle",
+      "lines": [
+        {
+          "t": "Ask Claude to edit…",
+          "y": 0.94,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "working",
+      "lines": [
+        {
+          "t": "Running npm test",
+          "y": 0.5,
+          "h": 0.02
+        },
+        {
+          "t": "Queue another message…",
+          "y": 0.94,
+          "h": 0.02
+        },
+        {
+          "t": "esc to interrupt",
+          "y": 0.9,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "needs_permission",
+      "lines": [
+        {
+          "t": "Do you want to proceed with Bash?",
+          "y": 0.8,
+          "h": 0.02
+        },
+        {
+          "t": "npm test",
+          "y": 0.82,
+          "h": 0.02
+        },
+        {
+          "t": "1. Yes",
+          "y": 0.85,
+          "h": 0.02
+        },
+        {
+          "t": "2. Yes, and don't ask again",
+          "y": 0.87,
+          "h": 0.02
+        },
+        {
+          "t": "3. No, tell Claude what to do instead",
+          "y": 0.89,
+          "h": 0.02
+        },
+        {
+          "t": "Esc to interrupt",
+          "y": 0.95,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "needs_permission",
+      "lines": [
+        {
+          "t": "Claude needs your permission",
+          "y": 0.3,
+          "h": 0.02
+        },
+        {
+          "t": "Queue another message…",
+          "y": 0.94,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "error",
+      "lines": [
+        {
+          "t": "Tool interrupted",
+          "y": 0.85,
+          "h": 0.02
+        },
+        {
+          "t": "Ask Claude to edit…",
+          "y": 0.94,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "idle",
+      "lines": [
+        {
+          "t": "Tool interrupted",
+          "y": 0.2,
+          "h": 0.02
+        },
+        {
+          "t": "Ask Claude to edit…",
+          "y": 0.94,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "done",
+      "lines": [
+        {
+          "t": "Finished",
+          "y": 0.8,
+          "h": 0.02
+        },
+        {
+          "t": "Ask Claude to edit…",
+          "y": 0.94,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "unknown",
+      "lines": [
+        {
+          "t": "main.ts",
+          "y": 0.05,
+          "h": 0.02
+        },
+        {
+          "t": "export function foo() {}",
+          "y": 0.5,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "state": "needs_permission",
+      "lines": [
+        {
+          "t": "Do you want to proceed?",
+          "y": 0.3,
+          "h": 0.02
+        },
+        {
+          "t": "export function foo() {}",
+          "y": 0.5,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "copilot",
+      "state": "working",
+      "lines": [
+        {
+          "t": "Working",
+          "y": 0.9,
+          "h": 0.02
+        },
+        {
+          "t": "Chat Input",
+          "y": 0.95,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "copilot",
+      "state": "needs_permission",
+      "lines": [
+        {
+          "t": "Run `npm test` command?",
+          "y": 0.8,
+          "h": 0.02
+        },
+        {
+          "t": "Allow",
+          "y": 0.85,
+          "h": 0.02
+        },
+        {
+          "t": "Skip",
+          "y": 0.85,
+          "h": 0.02
+        },
+        {
+          "t": "Chat Input",
+          "y": 0.95,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "copilot",
+      "state": "review_edits",
+      "lines": [
+        {
+          "t": "Keep All Edits",
+          "y": 0.9,
+          "h": 0.02
+        },
+        {
+          "t": "Undo All Edits",
+          "y": 0.9,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "copilot",
+      "state": "needs_permission",
+      "lines": [
+        {
+          "t": "Continue to iterate?",
+          "y": 0.85,
+          "h": 0.02
+        },
+        {
+          "t": "Continue",
+          "y": 0.9,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "copilot",
+      "state": "idle",
+      "lines": [
+        {
+          "t": "Chat Input",
+          "y": 0.95,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "copilot",
+      "state": "error",
+      "lines": [
+        {
+          "t": "Retry",
+          "y": 0.9,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "cursor-agent",
+      "state": "review_edits",
+      "lines": [
+        {
+          "t": "Review next file",
+          "y": 0.9,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "cursor-agent",
+      "state": "needs_permission",
+      "lines": [
+        {
+          "t": "Run   Skip",
+          "y": 0.9,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "windsurf-cascade",
+      "state": "needs_permission",
+      "lines": [
+        {
+          "t": "Accept   Reject",
+          "y": 0.9,
+          "h": 0.02
+        }
+      ]
+    },
+    {
+      "agent": "windsurf-cascade",
+      "state": "unknown",
+      "lines": [
+        {
+          "t": "Cascade",
+          "y": 0.05,
+          "h": 0.02
+        }
+      ]
+    }
+  ],
+  "forbiddenAllowLabels": [
+    "Yes, and don't ask again",
+    "Yes, allow all edits this session",
+    "Always Allow",
+    "Allow in this Session",
+    "Allow in this Workspace",
+    "Always Allow Exact Command Line",
+    "Allow All Commands in this Session",
+    "Bypass permissions",
+    "Run Everything",
+    "Turbo",
+    "Autopilot",
+    "Enable Auto Approve",
+    "Yes, and auto-accept"
+  ],
+  "allowedAllowLabels": [
+    "Yes",
+    "Allow",
+    "Run",
+    "Continue",
+    "Keep",
+    "Keep All",
+    "Yes, and manually approve edits"
   ]
 }
