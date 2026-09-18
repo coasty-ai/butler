@@ -96,3 +96,13 @@ func searchCommandChecks(_ check: (Bool, String) -> Void) {
     check(!searchCommandCurrent(commandPid: 7, commandAt: 100, pid: 8, now: 101), "another application never inherits it")
     check(!searchCommandCurrent(commandPid: 7, commandAt: 100, pid: 7, now: 100 + searchCommandSeconds + 1), "it expires")
 }
+
+func queryFieldChecks(_ check: (Bool, String) -> Void) {
+    check(replacesOnType(role: "AXTextArea", subrole: "", label: "Search or ask a question"), "YouTube's search box holds a query")
+    check(replacesOnType(role: "AXTextField", subrole: "AXSearchField", label: ""), "a search field holds a query")
+    check(replacesOnType(role: "AXTextField", subrole: "", label: "Find in page"), "a find field holds a query")
+    check(!replacesOnType(role: "AXTextArea", subrole: "", label: "Message #general"), "a message box keeps its text")
+    check(!replacesOnType(role: "AXTextArea", subrole: "", label: ""), "an unnamed editor keeps its text")
+    check(!replacesOnType(role: "AXTextField", subrole: "AXSecureTextField", label: "Search"), "a secure field is never touched")
+    check(!replacesOnType(role: "AXButton", subrole: "", label: "Search"), "a search button is not a field")
+}

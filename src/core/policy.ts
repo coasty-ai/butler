@@ -593,7 +593,7 @@ function namedControlRefusal(
   if (surface.controlStatus === "missing")
     return {
       kind: "RETRY",
-      reason: `No input was sent. Nothing on screen is named ${quote(action.label)} now. Take a fresh look and name a control from context.controls.`,
+      reason: `No input was sent. Nothing in context.controls is named ${quote(action.label)} now. If you can see it in the screenshot, click it by position with click(x,y) instead; otherwise take a fresh look. Do not repeat this name.`,
     };
   if (surface.controlStatus === "ambiguous")
     return {

@@ -1462,6 +1462,28 @@ func execute(_ action:[String:Any]) throws {
             return (value as! AXUIElement)
         }
         let typingTarget = focusedElement()
+        // A query field that already holds text is replaced, not appended to:
+        // select its contents first (by accessibility, falling back to the
+        // field's own Select All) so the typed text becomes the whole query.
+        if let target = typingTarget,
+           replacesOnType(role: attribute(target,kAXRoleAttribute) as? String ?? "",
+                          subrole: attribute(target,kAXSubroleAttribute) as? String ?? "",
+                          label: fieldLabel(target)),
+           let existing = attribute(target,kAXValueAttribute) as? String, !existing.isEmpty {
+            let length = (existing as NSString).length
+            var range = CFRange(location: 0, length: length)
+            if let value = AXValueCreate(.cfRange, &range) {
+                _ = AXUIElementSetAttributeValue(target, kAXSelectedTextRangeAttribute as CFString, value)
+            }
+            var selected = CFRange(location: 0, length: 0)
+            let applied = attribute(target, kAXSelectedTextRangeAttribute).map { AXValueGetValue($0 as! AXValue, .cfRange, &selected) } ?? false
+            if !(applied && selected.location == 0 && selected.length == length) {
+                try ensureRunning()
+                let down = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:true); down?.flags = .maskCommand; postInput(down)
+                let up = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:false); up?.flags = .maskCommand; postInput(up)
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
         var sinceGuard = 0, lastGuard = ProcessInfo.processInfo.systemUptime
         for character in text {
             try ensureRunning()

@@ -265,3 +265,18 @@ let searchCommandSeconds = 45.0
 func searchCommandCurrent(commandPid: pid_t, commandAt: TimeInterval, pid: pid_t, now: TimeInterval) -> Bool {
     commandPid == pid && now >= commandAt && now - commandAt <= searchCommandSeconds
 }
+
+// MARK: Query fields
+
+/**
+ Whether a focused field holds a query rather than content, so a new query
+ typed into it replaces the old one instead of being appended to it (live:
+ "midwest safety" + "By Justin Bieber" became one search). Search, find,
+ filter and ask boxes only; a document, message or note keeps its text.
+ */
+func replacesOnType(role: String, subrole: String, label: String) -> Bool {
+    guard ["AXTextField", "AXTextArea", "AXComboBox"].contains(role), subrole != "AXSecureTextField" else { return false }
+    if subrole == "AXSearchField" { return true }
+    let words = label.lowercased()
+    return ["search", "find", "filter", "query", "ask a question", "jump to", "go to"].contains { words.contains($0) }
+}
