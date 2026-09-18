@@ -1238,6 +1238,14 @@ func revalidate(_ action: [String:Any]) async throws -> [String:Any] {
     // against a fresh capture below.
     // Check the ORIGINAL window before capture replaces currentFrame.
     guard sameWindow(oldWindow, windowState(), for: action) else { throw changedScreen("The active window moved or changed.") }
+    // A named menu item or control is resolved again by name at the moment of
+    // input, so a second screenshot proves nothing about it and costs a third
+    // of a second. Skipped while the observation is recent enough for
+    // execute's own age check; a slow approval still gets a fresh capture.
+    if ["menu_item", "click_control"].contains(action["type"] as? String ?? ""),
+       ProcessInfo.processInfo.systemUptime*1000 - (previous["capturedAt"] as? Double ?? 0) < 20000 {
+        try ensureRunning(); return previous
+    }
     let fresh = try await capture()
     guard let current = getCurrentFrame(), let newWindow = current["window"] as? WindowState,
           let pixels = current["pixels"] as? ScreenPixels, let geometry = fresh["geometry"] as? [String:Any],
