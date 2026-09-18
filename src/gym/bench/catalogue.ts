@@ -1,6 +1,9 @@
 import type { BenchCategory, BenchTask, Evidence, Grade } from "./types";
 import {
   BROWSER_APPS,
+  CALCULATOR,
+  MUSIC,
+  NOTES,
   SEARCH_HOSTS,
   accessibilityText,
   containsAll,
@@ -9,6 +12,7 @@ import {
   gradeFrontmostAnd,
   hostMatches,
   hostMatchesAny,
+  inputCount,
   launchedApp,
   openedPathStep,
   typedAtLeast,
@@ -27,10 +31,6 @@ import {
  * id, window title, accessibility text, committed browser host) or the run
  * journal. No grader compares screenshots, and none returns screen text.
  */
-
-const CALCULATOR = "com.apple.Calculator";
-const NOTES = "com.apple.Notes";
-const MUSIC = "com.apple.Music";
 
 /** A task that only has to bring an application to the front. */
 function opensApp(
@@ -55,11 +55,41 @@ function opensApp(
   };
 }
 
-/** Calculator: the display must show the answer, not just the app. */
+/** Operands drawn for one attempt, with the answer the display must show. */
+export type Operands = { a: string; b: string; answer: string };
+
+/** A three-digit number times a two-digit one: a four or five digit product. */
+export function drawMultiply(random: () => number = Math.random): Operands {
+  const a = 100 + Math.floor(random() * 900);
+  const b = 12 + Math.floor(random() * 88);
+  return { a: String(a), b: String(b), answer: String(a * b) };
+}
+
+/**
+ * A percentage with one decimal of a multiple of 40, so the answer is a whole
+ * number: 17.5 percent of 240 is 42, never 41.99.
+ */
+export function drawPercent(random: () => number = Math.random): Operands {
+  const percents = [12.5, 17.5, 22.5, 27.5, 32.5, 37.5];
+  const percent = percents[Math.floor(random() * percents.length)];
+  const base = 40 * (4 + Math.floor(random() * 9));
+  return {
+    a: String(percent),
+    b: String(base),
+    answer: String(Math.round((percent * base) / 100)),
+  };
+}
+
+/**
+ * Calculator: the display must show the answer, not just the app. Operands
+ * are drawn per attempt and the journal must show them entered, because
+ * Calculator keeps its last result on screen: a repeat that only brings the
+ * app forward would otherwise pass on the previous attempt's display.
+ */
 function calculates(
   id: string,
   instruction: string,
-  answer: string,
+  draw: (random?: () => number) => Operands,
   difficulty: "medium" | "hard",
   maxCost: number,
 ): BenchTask {
@@ -73,14 +103,22 @@ function calculates(
     maxActions: 20,
     maxSeconds: 180,
     safety: "Arithmetic in Calculator. Nothing is saved or sent.",
-    verifies: `Calculator is frontmost and its accessibility text shows ${answer}.`,
-    grade: (evidence) =>
-      gradeFrontmostAnd(
+    verifies:
+      "Calculator is frontmost, its accessibility text shows the answer for the operands drawn for this attempt, and the journal shows at least the operands entered in Calculator.",
+    prepare: async () => draw(),
+    grade: (evidence) => {
+      const { a, b, answer } = evidence.parameters;
+      if (!a || !b || !answer) return unverifiable("NO_OPERANDS");
+      return gradeFrontmostAnd(
         evidence,
         [CALCULATOR],
-        (text) => ({ result: containsNumber(text, answer) }),
-        { result: "RESULT_NOT_SHOWN" },
-      ),
+        (text, { journal }) => ({
+          result: containsNumber(text, answer),
+          entered: inputCount(journal, [CALCULATOR]) >= a.length + b.length + 1,
+        }),
+        { result: "RESULT_NOT_SHOWN", entered: "NOT_ENTERED" },
+      );
+    },
   };
 }
 
@@ -320,15 +358,15 @@ export const CATALOGUE: BenchTask[] = [
   ),
   calculates(
     "calculator-multiply",
-    "Open Calculator and multiply 128 by 46",
-    "5888",
+    "Open Calculator and multiply {a} by {b}",
+    drawMultiply,
     "medium",
     0.15,
   ),
   calculates(
     "calculator-percent",
-    "In Calculator, work out 17.5 percent of 240",
-    "42",
+    "In Calculator, work out {a} percent of {b}",
+    drawPercent,
     "hard",
     0.2,
   ),

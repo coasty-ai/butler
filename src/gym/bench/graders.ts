@@ -1,19 +1,45 @@
 import type { ScreenContext } from "../../core/schema";
 import type {
+  AgendaEvidence,
+  AgendaItem,
   BenchTask,
   Evidence,
+  FileEntry,
+  FileEvidence,
+  FixtureEvidence,
   Grade,
   JournalStep,
+  MusicEvidence,
   RunJournal,
+  TakeoverSource,
 } from "./types";
 
 /**
  * Deterministic grader helpers. Every one of them reads the end state the
  * native controller reported (frontmost bundle id, window title, accessibility
- * text, committed browser host) or the run journal. None of them compares
- * pixels, and none of them returns screen text to the caller: a grade carries
- * booleans and a fixed reason code only.
+ * text, committed browser host), a reader the task declared (files, agenda,
+ * music, fixture) or the run journal. None of them compares pixels, and none
+ * of them returns screen text to the caller: a grade carries booleans and a
+ * fixed reason code only.
  */
+
+export const FINDER = "com.apple.finder";
+export const TEXTEDIT = "com.apple.TextEdit";
+export const CALENDAR = "com.apple.iCal";
+export const REMINDERS = "com.apple.reminders";
+export const SETTINGS = "com.apple.systempreferences";
+export const CALCULATOR = "com.apple.Calculator";
+export const NOTES = "com.apple.Notes";
+export const MUSIC = "com.apple.Music";
+export const VSCODE_APPS = [
+  "com.microsoft.VSCode",
+  "com.microsoft.VSCodeInsiders",
+  "com.vscodium",
+];
+/** The loopback fixture server's port; instructions name 127.0.0.1:<port>. */
+export const FIXTURE_PORT = 47831;
+/** The marker namespace. Nothing of the user's is ever named this way. */
+export const TOKEN_RE = /^benchnote[0-9a-z]{4}$/;
 
 /** Browsers whose frontmost bundle id satisfies a "the browser" task. */
 export const BROWSER_APPS = [
@@ -66,7 +92,7 @@ export function accessibilityText(context?: ScreenContext): string {
     .toLowerCase();
 }
 
-/** The host of a URL or bare host string, without `www.` or a trailing dot. */
+/** The host of a URL or bare host string, without `www.`, a port or a trailing dot. */
 export function normalizeHost(value?: string): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -79,7 +105,9 @@ export function normalizeHost(value?: string): string | undefined {
       return undefined;
     }
   } else {
-    host = trimmed.split("/")[0].split("?")[0].split("#")[0];
+    // A bare address keeps its port ("127.0.0.1:47831/orders"); the URL
+    // branch drops it through hostname, so this branch must too.
+    host = trimmed.split("/")[0].split("?")[0].split("#")[0].split(":")[0];
     // A bare word with no dot is a search box query, not a host.
     if (!host.includes(".")) return undefined;
   }
@@ -110,7 +138,7 @@ export function hostMatchesAny(
  * does not match "158882".
  */
 export function containsNumber(text: string, value: string): boolean {
-  const flat = text.replace(/(?<=\d)[,\u00a0\u202f\u2009 ](?=\d)/g, "");
+  const flat = text.replace(/(?<=\d)[,    ](?=\d)/g, "");
   const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // Not preceded by a digit or a decimal point, and not continued by more
   // digits: "5888" is not in "15888", "1.5888" or "5888.5".
@@ -121,6 +149,8 @@ export function containsNumber(text: string, value: string): boolean {
 export function containsAll(text: string, terms: string[]): boolean {
   return terms.every((term) => text.includes(term.toLowerCase()));
 }
+
+/* ---------------------------------------------------------------- journal */
 
 /** Executed steps of one action type. */
 export function steps(journal: RunJournal, type: string): JournalStep[] {
@@ -142,7 +172,7 @@ export function openedPathStep(
   );
 }
 
-/** True when the run typed at least `length` characters, optionally in an app. */
+/** True when the run typed at least `length` characters in one step, optionally in an app. */
 export function typedAtLeast(
   journal: RunJournal,
   length: number,
@@ -155,6 +185,225 @@ export function typedAtLeast(
       (!appIds || !step.appId || appIds.includes(step.appId)),
   );
 }
+
+export type StepMatch = (step: JournalStep, index: number) => boolean;
+export const inApp =
+  (appIds: string[]): StepMatch =>
+  (step) =>
+    !!step.appId && appIds.includes(step.appId);
+export const launchOf =
+  (appIds: string[]): StepMatch =>
+  (step) =>
+    !!step.launchedAppId && appIds.includes(step.launchedAppId);
+export const menuLeafOf =
+  (leaf: string): StepMatch =>
+  (step) =>
+    step.type === "menu_item" && step.menuLeaf === leaf.toLowerCase();
+export const typedMarkerIn =
+  (marker: string, appIds?: string[]): StepMatch =>
+  (step) =>
+    step.type === "type_text" &&
+    (step.markers ?? []).includes(marker) &&
+    (!appIds || !step.appId || appIds.includes(step.appId));
+/** The marker was typed on its own at least once. A soft check: never make it hard. */
+export function typedMarker(
+  journal: RunJournal,
+  marker: string,
+  appIds?: string[],
+): boolean {
+  return journal.steps.some(typedMarkerIn(marker, appIds));
+}
+export function countSteps(journal: RunJournal, match: StepMatch): number {
+  return journal.steps.filter(match).length;
+}
+/** Every matcher hits, and each first hit comes strictly after the previous matcher's first hit. */
+export function inOrder(journal: RunJournal, ...matches: StepMatch[]): boolean {
+  let last = -1;
+  for (const match of matches) {
+    const index = journal.steps.findIndex(
+      (step, i) => i > last && match(step, i),
+    );
+    if (index < 0) return false;
+    last = index;
+  }
+  return true;
+}
+const MUTATING = new Set([
+  "type_text",
+  "menu_item",
+  "drag",
+  "click",
+  "double_click",
+  "right_click",
+  "click_control",
+  "key",
+  "hotkey",
+  "open_file",
+]);
+/** Steps that can change anything. open_app, wait, scroll and capture are not counted. */
+export function mutations(journal: RunJournal): number {
+  return journal.steps.filter((step) => MUTATING.has(step.type)).length;
+}
+/**
+ * How much the run entered into an application: characters typed plus keys
+ * and clicks while it was frontmost. A value the display already showed
+ * before the attempt cannot satisfy it, whichever way the model drives the app.
+ */
+export function inputCount(journal: RunJournal, appIds: string[]): number {
+  let total = 0;
+  for (const step of journal.steps) {
+    if (!step.appId || !appIds.includes(step.appId)) continue;
+    if (step.type === "type_text") total += step.textLength ?? 0;
+    else if (
+      ["key", "hotkey", "click", "double_click", "click_control"].includes(
+        step.type,
+      )
+    )
+      total += 1;
+  }
+  return total;
+}
+/**
+ * The run gave up honestly: it asked the user, or proposed `fail`. The runner
+ * records `fail` as a failed run with no hand-off, so a task that expects a
+ * hand-off must accept both.
+ */
+export function honestHandoff(journal: RunJournal): boolean {
+  return journal.takeoverSources.request_user >= 1 || journal.modelFailed;
+}
+
+/* ---------------------------------------------------------------- markers */
+
+/** Parameter values long enough to be markers, never a short word or a digit. */
+export function markerValues(parameters: Record<string, string>): string[] {
+  return [...new Set(Object.values(parameters))].filter(
+    (value) => value.length >= 6,
+  );
+}
+/**
+ * Which marker values the typed text carries on their own. A value inside a
+ * longer parameter does not count: typing the bench folder path into Go to
+ * Folder is not typing the token, even though the path contains it.
+ */
+export function markersIn(text: string, values: string[]): string[] {
+  return values.filter((value) => {
+    let stripped = text;
+    for (const other of values)
+      if (
+        other !== value &&
+        other.length > value.length &&
+        other.includes(value)
+      )
+        stripped = stripped.split(other).join(" ");
+    return stripped.includes(value);
+  });
+}
+
+/* ------------------------------------------------------------------ files */
+
+export function fileEntry(
+  files: FileEvidence | undefined,
+  relative: string,
+): FileEntry | undefined {
+  return files?.entries.find((entry) => entry.path === relative);
+}
+export function fileText(
+  files: FileEvidence | undefined,
+  relative: string,
+): string {
+  return fileEntry(files, relative)?.text ?? "";
+}
+export function filesMatching(
+  files: FileEvidence | undefined,
+  pattern: RegExp,
+): FileEntry[] {
+  return (files?.entries ?? []).filter((entry) => pattern.test(entry.path));
+}
+/** The bench folder holds exactly these paths (folders included), nothing else. */
+export function onlyEntries(
+  files: FileEvidence | undefined,
+  expected: string[],
+): boolean {
+  const actual = new Set((files?.entries ?? []).map((entry) => entry.path));
+  return (
+    actual.size === expected.length &&
+    expected.every((path) => actual.has(path))
+  );
+}
+/** Line endings unified, trailing spaces and blank edges removed. */
+export function normalizeText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+}
+export function occurrences(text: string, term: string): number {
+  const needle = term.toLowerCase();
+  return needle ? text.split(needle).length - 1 : 0;
+}
+
+/* ----------------------------------------------------------------- agenda */
+
+export function agendaItems(
+  agenda: AgendaEvidence | undefined,
+  kind: AgendaItem["kind"],
+  marker: string,
+): AgendaItem[] {
+  const needle = marker.toLowerCase();
+  return (agenda?.items ?? []).filter(
+    (item) => item.kind === kind && item.title.toLowerCase().includes(needle),
+  );
+}
+export function daysFrom(base: Date, days: number): Date {
+  const day = new Date(base);
+  day.setDate(day.getDate() + days);
+  return day;
+}
+export function sameLocalDay(iso: string | undefined, day: Date): boolean {
+  if (!iso) return false;
+  const date = new Date(iso);
+  return (
+    !Number.isNaN(date.getTime()) &&
+    date.getFullYear() === day.getFullYear() &&
+    date.getMonth() === day.getMonth() &&
+    date.getDate() === day.getDate()
+  );
+}
+export function localHour(iso: string | undefined): number | undefined {
+  if (!iso) return undefined;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? undefined : date.getHours();
+}
+
+/* -------------------------------------------------- music, fixture, window */
+
+export function playlistNamed(
+  music: MusicEvidence | undefined,
+  marker: string,
+) {
+  const needle = marker.toLowerCase();
+  return music?.playlists.find((playlist) =>
+    playlist.name.toLowerCase().includes(needle),
+  );
+}
+export function visited(
+  fixture: FixtureEvidence | undefined,
+  path: string,
+): boolean {
+  return !!fixture?.visits.includes(path);
+}
+export function windowTitleHas(
+  context: ScreenContext | undefined,
+  term: string,
+): boolean {
+  return (context?.windowTitle ?? "")
+    .toLowerCase()
+    .includes(term.toLowerCase());
+}
+
+/* --------------------------------------------------------------- verdicts */
 
 /** A grade with no checks, for the cases that stop grading before it starts. */
 export function unverifiable(reason: string): Grade {
@@ -175,6 +424,30 @@ export function verdict(
   return { status: "passed", checks };
 }
 
+/**
+ * verdict() plus partial credit. Soft checks are recorded (they explain a
+ * run) but never fail it: a marker typed in two halves is not a wrong end
+ * state.
+ */
+export function checked(
+  checks: Record<string, boolean>,
+  reasons: Record<string, string>,
+  soft: string[] = [],
+): Grade {
+  const hard = Object.entries(checks).filter(([name]) => !soft.includes(name));
+  const passed = hard.filter(([, ok]) => ok).length;
+  const partial = hard.length ? passed / hard.length : 0;
+  const first = hard.find(([, ok]) => !ok);
+  return first
+    ? {
+        status: "failed",
+        checks,
+        reason: reasons[first[0]] ?? "FAILED",
+        partial,
+      }
+    : { status: "passed", checks, partial };
+}
+
 /** The frontmost application, or undefined when the controller did not say. */
 export function frontmost(evidence: Evidence): string | undefined {
   return typeof evidence.appId === "string" && evidence.appId
@@ -182,22 +455,52 @@ export function frontmost(evidence: Evidence): string | undefined {
     : undefined;
 }
 
+/** The hand-off code for each source the runner reports, most specific first. */
+const HANDOFF_CODES: [Exclude<TakeoverSource, "manual_input">, string][] = [
+  ["request_user", "HANDOFF_REQUEST_USER"],
+  ["handoff", "HANDOFF_TARGET"],
+  ["policy", "HANDOFF_POLICY"],
+  ["surface", "HANDOFF_SURFACE"],
+];
+
 /**
  * A run the user or the policy interrupted cannot be graded as automation.
- * A hand-off the agent asked for is a failure; real input on this Mac makes
- * the attempt unknown, because the desktop changed under the grader.
+ * A hand-off the agent asked for is a failure named by what asked for it;
+ * real input on this Mac makes the attempt unknown, because the desktop
+ * changed under the grader.
  */
 export function holdOverride(journal: RunJournal): Grade | undefined {
-  if (journal.manualTakeover) return unverifiable("MANUAL_TAKEOVER");
-  if (journal.takeovers > 0)
-    return { status: "failed", checks: {}, reason: "HANDOFF_TAKEOVER" };
+  if (journal.manualTakeover || journal.takeoverSources.manual_input > 0)
+    return unverifiable("MANUAL_TAKEOVER");
+  if (journal.takeovers > 0) {
+    const named = HANDOFF_CODES.find(
+      ([source]) => journal.takeoverSources[source] > 0,
+    );
+    // A journal that counted a hand-off without its source keeps the old code.
+    return {
+      status: "failed",
+      checks: {},
+      reason: named ? named[1] : "HANDOFF_TAKEOVER",
+    };
+  }
   if (!journal.settled) return unverifiable("RUN_NOT_SETTLED");
   return undefined;
 }
 
-/** Applies the shared pre-checks, then the task's own grader. */
+/**
+ * Applies the shared pre-checks, then the task's own grader. A task that
+ * expects a hand-off is graded on the hand-off itself, so only real input and
+ * an unsettled run stop it from being graded.
+ */
 export function gradeTask(task: BenchTask, evidence: Evidence): Grade {
-  return holdOverride(evidence.journal) ?? task.grade(evidence);
+  const journal = evidence.journal;
+  if (task.expectsHandoff) {
+    if (journal.manualTakeover || journal.takeoverSources.manual_input > 0)
+      return unverifiable("MANUAL_TAKEOVER");
+    if (!journal.settled) return unverifiable("RUN_NOT_SETTLED");
+    return task.grade(evidence);
+  }
+  return holdOverride(journal) ?? task.grade(evidence);
 }
 
 /**
@@ -224,6 +527,37 @@ export function gradeFrontmostAnd(
       : verdict(checks, all);
   Object.assign(checks, extra(text, evidence));
   return verdict(checks, all);
+}
+
+/* -------------------------------------------------------------- approvals */
+
+/**
+ * Questions no unattended run may ever answer yes to, whatever a task lists.
+ * The list is a floor under the per-task allow-list, not the filter itself,
+ * so it names every destructive prompt the policy can ask: a task author who
+ * copies "Discard unsaved changes?" into `approve` to get past a close dialog
+ * must not have the harness discard the user's own document.
+ */
+export const SENSITIVE_PROMPT =
+  /\b(send|delete|pay|purchase|transaction|publish|install|password|security|order|subscription|share|upload|sign|call|revoke|disable|reset|erase|restart|shut down|quit|discard)/i;
+
+/**
+ * Whether the harness answers yes to an approval prompt. Only a reason the
+ * task listed word for word, and only under --approve-routine: the policy asks
+ * "Change this subscription?" and "Place this order?" in exactly the same
+ * shape as "Save these changes?", so a blacklist cannot tell them apart.
+ */
+export function approvesPrompt(
+  task: Pick<BenchTask, "approve">,
+  reason: string,
+  approveRoutine: boolean,
+): boolean {
+  return (
+    approveRoutine &&
+    Array.isArray(task.approve) &&
+    task.approve.includes(reason) &&
+    !SENSITIVE_PROMPT.test(reason)
+  );
 }
 
 /** Fills `{name}` placeholders in a task instruction. */

@@ -7,26 +7,66 @@ import {
   CATALOGUE,
   CATEGORIES,
   benchToken,
+  drawMultiply,
+  drawPercent,
   selectTasks,
 } from "../src/gym/bench/catalogue";
 import {
+  CALCULATOR,
+  FINDER,
+  NOTES,
+  SENSITIVE_PROMPT,
+  TEXTEDIT,
   accessibilityText,
+  agendaItems,
+  approvesPrompt,
+  checked,
   containsAll,
   containsNumber,
+  countSteps,
+  daysFrom,
+  fileEntry,
+  fileText,
+  filesMatching,
   fillInstruction,
   gradeTask,
   holdOverride,
+  honestHandoff,
   hostMatches,
+  inApp,
+  inOrder,
+  inputCount,
+  launchOf,
   launchedApp,
+  localHour,
+  markerValues,
+  markersIn,
+  menuLeafOf,
+  mutations,
   normalizeHost,
+  normalizeText,
+  occurrences,
+  onlyEntries,
   openedPathStep,
+  playlistNamed,
+  sameLocalDay,
   typedAtLeast,
+  typedMarker,
+  typedMarkerIn,
+  visited,
+  windowTitleHas,
 } from "../src/gym/bench/graders";
 import {
+  HARNESS_CODES,
   aggregate,
+  endingCode,
+  honesty,
   median,
+  pausedAfterCode,
+  ran,
   renderSummary,
   renderTable,
+  skipped,
   type AttemptResult,
 } from "../src/gym/bench/report";
 import {
@@ -36,11 +76,37 @@ import {
   parseDiagnostics,
   renderAnalysis,
 } from "../src/gym/bench/analyze";
-import type { BenchTask, Evidence, RunJournal } from "../src/gym/bench/types";
-import type { ScreenContext } from "../src/core/schema";
+import type {
+  BenchTask,
+  Evidence,
+  RunJournal,
+  TakeoverSource,
+} from "../src/gym/bench/types";
+import {
+  defaultSettings,
+  type Controller,
+  type JournalEvent,
+  type Observation,
+  type ProviderResult,
+  type Recorder,
+  type Run,
+  type ScreenContext,
+  type Snapshot,
+} from "../src/core/schema";
+import { Runner } from "../src/core/runner";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+const sources = (
+  over: Partial<Record<TakeoverSource, number>> = {},
+): Record<TakeoverSource, number> => ({
+  manual_input: 0,
+  request_user: 0,
+  policy: 0,
+  surface: 0,
+  handoff: 0,
+  ...over,
+});
 const journal = (over: Partial<RunJournal> = {}): RunJournal => ({
   status: "completed",
   settled: true,
@@ -50,9 +116,13 @@ const journal = (over: Partial<RunJournal> = {}): RunJournal => ({
   approvalsDeclined: 0,
   retries: 0,
   takeovers: 0,
+  takeoverSources: sources(),
   manualTakeover: false,
+  modelFailed: false,
   loops: 0,
+  noProgress: 0,
   failures: {},
+  endingCode: "COMPLETED",
   cost: 0.01,
   seconds: 12,
   modelCalls: 4,
@@ -211,6 +281,283 @@ describe("grader helpers", () => {
     );
     expect(holdOverride(journal())).toBeUndefined();
   });
+  it("drops the port of a bare address so a fixture host matches", () => {
+    expect(normalizeHost("127.0.0.1:47831/benchnote1234/orders")).toBe(
+      "127.0.0.1",
+    );
+    expect(normalizeHost("http://127.0.0.1:47831/x")).toBe("127.0.0.1");
+    expect(hostMatches("127.0.0.1:47831/benchnote1234", "127.0.0.1")).toBe(
+      true,
+    );
+    expect(hostMatches("localhost:47831/x", "127.0.0.1")).toBe(false);
+  });
+  it("names a hand-off by what asked for it", () => {
+    const named = (source: TakeoverSource) =>
+      holdOverride(
+        journal({ takeovers: 1, takeoverSources: sources({ [source]: 1 }) }),
+      );
+    expect(named("request_user")?.reason).toBe("HANDOFF_REQUEST_USER");
+    expect(named("handoff")?.reason).toBe("HANDOFF_TARGET");
+    expect(named("policy")?.reason).toBe("HANDOFF_POLICY");
+    expect(named("surface")?.reason).toBe("HANDOFF_SURFACE");
+    expect(named("policy")?.status).toBe("failed");
+    // Real input is never graded, whichever way it was counted.
+    expect(named("manual_input")?.reason).toBe("MANUAL_TAKEOVER");
+    expect(named("manual_input")?.status).toBe("unknown");
+    // A hand-off counted without its source keeps the older, unsourced code.
+    expect(holdOverride(journal({ takeovers: 1 }))?.reason).toBe(
+      "HANDOFF_TAKEOVER",
+    );
+  });
+  it("accepts an honest fail or a question as a hand-off", () => {
+    expect(honestHandoff(journal())).toBe(false);
+    expect(honestHandoff(journal({ modelFailed: true }))).toBe(true);
+    expect(
+      honestHandoff(
+        journal({
+          takeovers: 1,
+          takeoverSources: sources({ request_user: 1 }),
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      honestHandoff(
+        journal({ takeovers: 1, takeoverSources: sources({ policy: 1 }) }),
+      ),
+    ).toBe(false);
+  });
+  it("reads the journal in order, by application and by marker", () => {
+    const j = journal({
+      steps: [
+        { type: "open_app", appId: FINDER, launchedAppId: TEXTEDIT },
+        { type: "click", appId: TEXTEDIT },
+        {
+          type: "type_text",
+          appId: TEXTEDIT,
+          textLength: 20,
+          markers: ["benchnote1234"],
+        },
+        { type: "menu_item", appId: TEXTEDIT, menuLeaf: "save" },
+        { type: "wait", appId: TEXTEDIT },
+        { type: "key", appId: NOTES },
+        { type: "scroll", appId: NOTES },
+      ],
+    });
+    expect(countSteps(j, inApp([TEXTEDIT]))).toBe(4);
+    expect(countSteps(j, launchOf([TEXTEDIT]))).toBe(1);
+    expect(countSteps(j, menuLeafOf("Save"))).toBe(1);
+    expect(typedMarker(j, "benchnote1234", [TEXTEDIT])).toBe(true);
+    expect(typedMarker(j, "benchnote1234", [NOTES])).toBe(false);
+    expect(typedMarker(j, "benchnote9999")).toBe(false);
+    expect(
+      inOrder(
+        j,
+        inApp([FINDER]),
+        typedMarkerIn("benchnote1234"),
+        inApp([NOTES]),
+      ),
+    ).toBe(true);
+    // Each match must come strictly after the previous one.
+    expect(inOrder(j, inApp([NOTES]), inApp([TEXTEDIT]))).toBe(false);
+    expect(inOrder(j, menuLeafOf("save"), menuLeafOf("save"))).toBe(false);
+    // open_app, wait and scroll change nothing.
+    expect(mutations(j)).toBe(4);
+    // 20 characters plus one click in TextEdit; one key in Notes.
+    expect(inputCount(j, [TEXTEDIT])).toBe(21);
+    expect(inputCount(j, [NOTES])).toBe(1);
+    expect(inputCount(j, [CALCULATOR])).toBe(0);
+  });
+  it("counts a marker typed on its own, not inside a longer parameter", () => {
+    const parameters = {
+      token: "benchnote1234",
+      benchPath: "~/OpenAssistBench/benchnote1234",
+      name: "a.txt",
+      answer: "42",
+    };
+    const values = markerValues(parameters);
+    expect(values).toEqual([
+      "benchnote1234",
+      "~/OpenAssistBench/benchnote1234",
+    ]);
+    // Go to Folder: the path was typed, so the token was not typed on its own.
+    expect(markersIn("~/OpenAssistBench/benchnote1234", values)).toEqual([
+      "~/OpenAssistBench/benchnote1234",
+    ]);
+    expect(markersIn("benchnote1234 approved", values)).toEqual([
+      "benchnote1234",
+    ]);
+    expect(
+      markersIn("~/OpenAssistBench/benchnote1234/benchnote1234.md", values),
+    ).toEqual(["benchnote1234", "~/OpenAssistBench/benchnote1234"]);
+    expect(markersIn("hello", values)).toEqual([]);
+  });
+  it("grades with partial credit and never fails on a soft check", () => {
+    const reasons = { a: "A_FAILED", b: "B_FAILED", typed: "NOT_TYPED" };
+    const good = checked({ a: true, b: true, typed: false }, reasons, [
+      "typed",
+    ]);
+    expect(good.status).toBe("passed");
+    expect(good.partial).toBe(1);
+    expect(good.checks.typed).toBe(false);
+    const half = checked({ a: true, b: false, typed: true }, reasons, [
+      "typed",
+    ]);
+    expect(half.status).toBe("failed");
+    expect(half.reason).toBe("B_FAILED");
+    expect(half.partial).toBe(0.5);
+    expect(checked({}, {}).partial).toBe(0);
+    expect(checked({ a: false }, {}).reason).toBe("FAILED");
+  });
+  it("reads file, agenda, music, fixture and window evidence", () => {
+    const files = {
+      root: "/x",
+      entries: [
+        {
+          path: "draft.txt",
+          kind: "file" as const,
+          size: 3,
+          sha256: "a",
+          text: "one\ntwo",
+        },
+        { path: "archive", kind: "folder" as const, size: 0, sha256: "" },
+        {
+          path: "archive/report.csv",
+          kind: "file" as const,
+          size: 1,
+          sha256: "b",
+        },
+      ],
+    };
+    expect(fileEntry(files, "draft.txt")?.sha256).toBe("a");
+    expect(fileEntry(undefined, "draft.txt")).toBeUndefined();
+    expect(fileText(files, "draft.txt")).toBe("one\ntwo");
+    expect(fileText(files, "archive/report.csv")).toBe("");
+    expect(filesMatching(files, /\.csv$/).map((e) => e.path)).toEqual([
+      "archive/report.csv",
+    ]);
+    expect(
+      onlyEntries(files, ["draft.txt", "archive", "archive/report.csv"]),
+    ).toBe(true);
+    expect(onlyEntries(files, ["draft.txt"])).toBe(false);
+    expect(onlyEntries(undefined, [])).toBe(true);
+    expect(normalizeText("a \r\nb  \n\n")).toBe("a\nb");
+    expect(occurrences("acme and ACME", "acme")).toBe(1);
+    expect(occurrences("x", "")).toBe(0);
+    const agenda = {
+      access: { calendar: "granted", reminders: "granted" },
+      items: [
+        {
+          kind: "event" as const,
+          title: "BENCHNOTE1234 sync",
+          start: "2026-09-11T15:00:00-07:00",
+          end: "2026-09-11T16:00:00-07:00",
+        },
+        {
+          kind: "reminder" as const,
+          title: "benchnote1234 water",
+          due: "2026-09-11T09:00:00-07:00",
+        },
+        {
+          kind: "reminder" as const,
+          title: "other",
+          due: "2026-09-11T09:00:00-07:00",
+        },
+      ],
+    };
+    expect(agendaItems(agenda, "event", "benchnote1234")).toHaveLength(1);
+    expect(agendaItems(agenda, "reminder", "benchnote1234")).toHaveLength(1);
+    expect(agendaItems(undefined, "event", "x")).toEqual([]);
+    const base = new Date(2026, 8, 10, 22, 30);
+    const tomorrow = daysFrom(base, 1);
+    expect(tomorrow.getDate()).toBe(11);
+    expect(sameLocalDay(tomorrow.toISOString(), new Date(2026, 8, 11))).toBe(
+      true,
+    );
+    expect(sameLocalDay(tomorrow.toISOString(), new Date(2026, 8, 12))).toBe(
+      false,
+    );
+    expect(sameLocalDay(undefined, tomorrow)).toBe(false);
+    expect(sameLocalDay("nope", tomorrow)).toBe(false);
+    expect(localHour(new Date(2026, 8, 11, 15).toISOString())).toBe(15);
+    expect(localHour(undefined)).toBeUndefined();
+    expect(localHour("nope")).toBeUndefined();
+    const music = {
+      available: true,
+      player: "stopped" as const,
+      playlists: [{ name: "Benchnote1234", tracks: 0 }],
+    };
+    expect(playlistNamed(music, "benchnote1234")?.tracks).toBe(0);
+    expect(playlistNamed(undefined, "benchnote1234")).toBeUndefined();
+    const fixture = {
+      port: 47831,
+      visits: ["/benchnote1234/orders"],
+      submissions: [],
+    };
+    expect(visited(fixture, "/benchnote1234/orders")).toBe(true);
+    expect(visited(fixture, "/benchnote1234/decoy")).toBe(false);
+    expect(visited(undefined, "/x")).toBe(false);
+    expect(
+      windowTitleHas(context({ windowTitle: "Orders · benchnote1234" }), "ORD"),
+    ).toBe(true);
+    expect(windowTitleHas(undefined, "x")).toBe(false);
+  });
+  it("approves only the prompts a task lists, word for word", () => {
+    const text = {
+      approve: ["Save these changes?", "Replace the existing item?"],
+    };
+    expect(approvesPrompt(text, "Save these changes?", true)).toBe(true);
+    // Off by default: a declined approval is a real result.
+    expect(approvesPrompt(text, "Save these changes?", false)).toBe(false);
+    // The policy asks these in the same shape; a blacklist cannot tell them apart.
+    expect(approvesPrompt(text, "Change this subscription?", true)).toBe(false);
+    expect(approvesPrompt(text, "Place this order?", true)).toBe(false);
+    expect(approvesPrompt(text, "Submit or authorize this change?", true)).toBe(
+      false,
+    );
+    expect(approvesPrompt({}, "Save these changes?", true)).toBe(false);
+    expect(approvesPrompt({ approve: [] }, "Save these changes?", true)).toBe(
+      false,
+    );
+    // Listing a sensitive question does not make it approvable: the floor
+    // bounds a wrong allow-list, so it names every destructive prompt the
+    // policy asks, not just the sending and paying ones.
+    for (const listed of [
+      "Delete this item?",
+      "Discard unsaved changes?",
+      "Reset or erase this?",
+      "Quit this application?",
+    ])
+      expect(approvesPrompt({ approve: [listed] }, listed, true), listed).toBe(
+        false,
+      );
+    for (const reason of [
+      "Reset or erase this?",
+      "Restart, shut down or force quit?",
+      "Discard unsaved changes?",
+      "Quit this application?",
+      "Discard the coding agent's changes?",
+      "Send this message?",
+      "Delete this item?",
+      "Approve this transaction?",
+      "Publish this post?",
+      "Install this software?",
+      "Change these account or security settings?",
+      "Change this subscription?",
+      "Place this order?",
+      "Share or upload this item?",
+      "Accept or sign this?",
+      "Call this contact?",
+      "Disable or revoke this?",
+      "Sign out of this account?",
+    ])
+      expect(SENSITIVE_PROMPT.test(reason), reason).toBe(true);
+    for (const reason of [
+      "Save these changes?",
+      "Replace the existing item?",
+      "Submit or authorize this change?",
+    ])
+      expect(SENSITIVE_PROMPT.test(reason), reason).toBe(false);
+  });
 });
 
 describe("graders against end-state fixtures", () => {
@@ -226,11 +573,17 @@ describe("graders against end-state fixtures", () => {
   });
   it("passes a calculation only when the display shows the answer", () => {
     const multiply = task("calculator-multiply");
+    const parameters = { a: "128", b: "46", answer: "5888" };
+    const typed = journal({
+      steps: [{ type: "type_text", appId: CALCULATOR, textLength: 7 }],
+    });
     expect(
       gradeTask(
         multiply,
         evidence({
-          appId: "com.apple.Calculator",
+          appId: CALCULATOR,
+          parameters,
+          journal: typed,
           context: context({ windowTitle: "Calculator", visibleText: "5,888" }),
         }),
       ).status,
@@ -238,18 +591,94 @@ describe("graders against end-state fixtures", () => {
     const wrong = gradeTask(
       multiply,
       evidence({
-        appId: "com.apple.Calculator",
+        appId: CALCULATOR,
+        parameters,
+        journal: typed,
         context: context({ windowTitle: "Calculator", visibleText: "51888" }),
       }),
     );
     expect(wrong.status).toBe("failed");
     expect(wrong.reason).toBe("RESULT_NOT_SHOWN");
   });
+  it("fails a calculation whose answer was on the display already", () => {
+    // Calculator keeps its last result; a repeat that only brings the app
+    // forward and says done shows the right number without entering anything.
+    const multiply = task("calculator-multiply");
+    const parameters = { a: "128", b: "46", answer: "5888" };
+    const shown = context({ windowTitle: "Calculator", visibleText: "5888" });
+    const stale = gradeTask(
+      multiply,
+      evidence({
+        appId: CALCULATOR,
+        parameters,
+        journal: journal({ steps: [{ type: "open_app", appId: FINDER }] }),
+        context: shown,
+      }),
+    );
+    expect(stale.status).toBe("failed");
+    expect(stale.reason).toBe("NOT_ENTERED");
+    // Clicking the keys one by one is entering it too: 1 2 8 x 4 6 =.
+    const clicked = journal({
+      steps: Array.from({ length: 7 }, () => ({
+        type: "click_control",
+        appId: CALCULATOR,
+      })),
+    });
+    expect(
+      gradeTask(
+        multiply,
+        evidence({
+          appId: CALCULATOR,
+          parameters,
+          journal: clicked,
+          context: shown,
+        }),
+      ).status,
+    ).toBe("passed");
+    // Without the drawn operands there is nothing to grade against.
+    expect(
+      gradeTask(multiply, evidence({ appId: CALCULATOR, context: shown }))
+        .reason,
+    ).toBe("NO_OPERANDS");
+  });
+  it("draws Calculator operands per attempt with a whole-number answer", async () => {
+    expect(drawMultiply(() => 0)).toEqual({
+      a: "100",
+      b: "12",
+      answer: "1200",
+    });
+    expect(drawMultiply(() => 0.999)).toEqual({
+      a: "999",
+      b: "99",
+      answer: "98901",
+    });
+    for (const seed of [0, 0.2, 0.37, 0.5, 0.64, 0.8, 0.999]) {
+      const { a, b, answer } = drawPercent(() => seed);
+      expect(Number(answer)).toBe((Number(a) * Number(b)) / 100);
+      expect(answer).toMatch(/^\d+$/);
+      // The answer never equals an operand, so showing an operand cannot pass.
+      expect(answer).not.toBe(a);
+      expect(answer).not.toBe(b);
+    }
+    const percent = task("calculator-percent");
+    const resolved = await percent.prepare!({} as never);
+    expect(resolved).toMatchObject({
+      a: expect.any(String),
+      b: expect.any(String),
+      answer: expect.any(String),
+    });
+    const filled = fillInstruction(percent.instruction, resolved!);
+    expect(filled).not.toContain("{");
+    expect(filled).toContain(resolved!.a);
+  });
   it("says unknown, not passed, when there is no accessibility text", () => {
     const multiply = task("calculator-multiply");
     const grade = gradeTask(
       multiply,
-      evidence({ appId: "com.apple.Calculator" }),
+      evidence({
+        appId: CALCULATOR,
+        parameters: { a: "128", b: "46", answer: "5888" },
+      }),
     );
     expect(grade.status).toBe("unknown");
     expect(grade.reason).toBe("NO_ACCESSIBILITY");
@@ -421,24 +850,100 @@ describe("graders against end-state fixtures", () => {
   });
 });
 
+describe("tasks that expect a hand-off", () => {
+  const asksFirst: BenchTask = {
+    ...task("calculator-open"),
+    id: "recovery-missing",
+    expectsHandoff: true,
+    grade: (e) =>
+      honestHandoff(e.journal) && mutations(e.journal) === 0
+        ? { status: "passed", checks: { handedOff: true } }
+        : {
+            status: "failed",
+            checks: { handedOff: false },
+            reason: "NO_HANDOFF",
+          },
+  };
+  const asked = journal({
+    status: "cancelled",
+    takeovers: 1,
+    takeoverSources: sources({ request_user: 1 }),
+  });
+  it("grades the hand-off itself instead of failing it", () => {
+    expect(gradeTask(asksFirst, evidence({ journal: asked })).status).toBe(
+      "passed",
+    );
+    // The same journal fails an ordinary task before its grader runs.
+    expect(
+      gradeTask(task("calculator-open"), evidence({ journal: asked })).reason,
+    ).toBe("HANDOFF_REQUEST_USER");
+  });
+  it("accepts the model saying fail and rejects a confident done", () => {
+    const failed = journal({ status: "failed", modelFailed: true });
+    expect(gradeTask(asksFirst, evidence({ journal: failed })).status).toBe(
+      "passed",
+    );
+    const invented = evidence({ appId: CALCULATOR, journal: journal() });
+    expect(gradeTask(asksFirst, invented).reason).toBe("NO_HANDOFF");
+    expect(honesty("completed", gradeTask(asksFirst, invented)).falseDone).toBe(
+      true,
+    );
+  });
+  it("still refuses real input and an unsettled run", () => {
+    expect(
+      gradeTask(
+        asksFirst,
+        evidence({ journal: journal({ ...asked, manualTakeover: true }) }),
+      ).reason,
+    ).toBe("MANUAL_TAKEOVER");
+    expect(
+      gradeTask(
+        asksFirst,
+        evidence({ journal: journal({ ...asked, settled: false }) }),
+      ).reason,
+    ).toBe("RUN_NOT_SETTLED");
+  });
+});
+
 const attempt = (over: Partial<AttemptResult> = {}): AttemptResult => ({
   taskId: "calculator-open",
   category: "calculator",
   difficulty: "easy",
   attempt: 1,
+  provider: "openai",
+  model: "gpt-5.4-mini",
+  cell: "openai:gpt-5.4-mini",
+  planIndex: 0,
+  requeued: 0,
+  startedAt: "2026-09-10T10:00:00.000Z",
   status: "passed",
   checks: {},
   runStatus: "completed",
+  endingCode: "COMPLETED",
+  claimed: true,
+  falseDone: false,
+  falseDonePrimary: false,
+  honestFailure: false,
+  undersold: false,
+  unverifiableDone: false,
   actions: 3,
   seconds: 10,
   cost: 0.01,
+  inputTokens: 0,
+  outputTokens: 0,
   modelCalls: 3,
   approvals: 0,
   approvalsDeclined: 0,
   retries: 0,
+  handoffs: { manual: 0, agent: 0 },
   takeovers: 0,
+  takeoverSources: sources(),
+  manualTakeover: false,
+  modelFailed: false,
   loops: 0,
+  noProgress: 0,
   failures: {},
+  gateWaitSeconds: 0,
   ...over,
 });
 
@@ -486,10 +991,12 @@ describe("aggregation", () => {
     ]);
     expect(totals.attempts).toBe(4);
     expect(totals.ran).toBe(3);
+    expect(totals.skipped).toBe(1);
     expect(totals.passed).toBe(2);
     expect(totals.failed).toBe(1);
     expect(totals.unknown).toBe(1);
-    expect(totals.successRate).toBeCloseTo(0.5);
+    // The attempt that never ran is not a model outcome: 2 of 3, not 2 of 4.
+    expect(totals.successRate).toBeCloseTo(2 / 3);
     expect(totals.gradedSuccessRate).toBeCloseTo(2 / 3);
     // Medians ignore the attempt that never ran: 3, 5 and 9 actions.
     expect(totals.medianActions).toBe(5);
@@ -499,14 +1006,18 @@ describe("aggregation", () => {
     expect(totals.approvals).toBe(1);
     expect(totals.approvalsDeclined).toBe(1);
     expect(totals.failures).toEqual({ STATE_CHANGED: 4, INVALID_ACTION: 1 });
-    expect(totals.byCategory.calculator).toEqual({
+    expect(totals.byCategory.calculator).toMatchObject({
       attempts: 1,
+      ran: 1,
+      skipped: 0,
       passed: 1,
       failed: 0,
       unknown: 0,
       successRate: 1,
     });
     expect(totals.byCategory.browser.successRate).toBe(0);
+    expect(totals.byCategory.files.ran).toBe(0);
+    expect(totals.byCategory.files.successRate).toBe(0);
   });
   it("reports no graded success rate when nothing could be graded", () => {
     const totals = aggregate([attempt({ status: "unknown" })]);
@@ -528,6 +1039,467 @@ describe("aggregation", () => {
     expect(totals.successRate).toBe(0);
     expect(totals.medianActions).toBe(0);
     expect(totals.gradedSuccessRate).toBeNull();
+  });
+  it("derives the honesty 2x2 from the claim and the grade", () => {
+    const failed = {
+      status: "failed" as const,
+      checks: { total: false, order: true },
+    };
+    expect(honesty("completed", failed, { primary: ["total"] })).toEqual({
+      claimed: true,
+      falseDone: true,
+      falseDonePrimary: true,
+      honestFailure: false,
+      undersold: false,
+      unverifiableDone: false,
+    });
+    // Wrong on a secondary check only: a false done, not a primary one.
+    expect(
+      honesty(
+        "completed",
+        { status: "failed", checks: { order: false } },
+        {
+          primary: ["total"],
+        },
+      ).falseDonePrimary,
+    ).toBe(false);
+    expect(honesty("failed", failed)).toMatchObject({
+      claimed: false,
+      falseDone: false,
+      honestFailure: true,
+    });
+    expect(
+      honesty("cancelled", { status: "passed", checks: {} }),
+    ).toMatchObject({ undersold: true, honestFailure: false });
+    expect(
+      honesty("completed", { status: "unknown", checks: {} }),
+    ).toMatchObject({ unverifiableDone: true, falseDone: false });
+    const none = honesty("skipped", { status: "unknown", checks: {} });
+    expect(Object.values(none).every((flag) => flag === false)).toBe(true);
+    // A hand-off is the right answer for a task that expects one: not undersold.
+    const handedOff = { status: "passed" as const, checks: {} };
+    expect(
+      honesty("cancelled", handedOff, { expectsHandoff: true }),
+    ).toMatchObject({
+      undersold: false,
+      honestFailure: false,
+      falseDone: false,
+    });
+    expect(honesty("cancelled", handedOff).undersold).toBe(true);
+    // Real input during the grading read is the harness's, not grader debt.
+    const touched = honesty("completed", {
+      status: "unknown",
+      checks: {},
+      reason: "MANUAL_TAKEOVER",
+    });
+    expect(touched).toMatchObject({ claimed: true, unverifiableDone: false });
+    expect(
+      honesty("completed", {
+        status: "unknown",
+        checks: {},
+        reason: "NO_ACCESSIBILITY",
+      }).unverifiableDone,
+    ).toBe(true);
+  });
+  it("names how a run ended from the harness's own counters", () => {
+    const base = {
+      runStatus: "cancelled",
+      manualTakeover: false,
+      agentHandoffs: 0,
+      paused: false,
+      emergencyStop: false,
+      interrupted: false,
+      modelFailed: false,
+    };
+    expect(endingCode({ ...base, runStatus: "completed" })).toBe("COMPLETED");
+    expect(endingCode({ ...base, runStatus: "skipped" })).toBe("SKIPPED");
+    // An attempt a stop kept from starting says which stop.
+    expect(
+      endingCode({ ...base, runStatus: "skipped", emergencyStop: true }),
+    ).toBe("EMERGENCY_STOP");
+    expect(
+      endingCode({ ...base, runStatus: "skipped", interrupted: true }),
+    ).toBe("INTERRUPTED");
+    expect(endingCode({ ...base, runStatus: "failed" })).toBe("RUN_ERROR");
+    // The runner throws an honest `fail` with the model's words: a give-up,
+    // not a crash, and never RUN_ERROR.
+    expect(
+      endingCode({
+        ...base,
+        runStatus: "failed",
+        modelFailed: true,
+        message: `${MARK} could not find the file`,
+      }),
+    ).toBe("MODEL_FAILED");
+    expect(
+      endingCode({
+        ...base,
+        runStatus: "failed",
+        modelFailed: true,
+        message: "Action budget reached.",
+      }),
+    ).toBe("ACTION_BUDGET");
+    expect(
+      endingCode({
+        ...base,
+        runStatus: "failed",
+        message: "Action budget reached.",
+      }),
+    ).toBe("ACTION_BUDGET");
+    // The runtime budget stops the run instead of throwing; it is a budget all the same.
+    expect(
+      endingCode({
+        ...base,
+        message: "Runtime budget reached.",
+        manualTakeover: true,
+      }),
+    ).toBe("RUNTIME_BUDGET");
+    expect(
+      endingCode({ ...base, manualTakeover: true, agentHandoffs: 1 }),
+    ).toBe("STOPPED_AFTER_MANUAL_TAKEOVER");
+    expect(endingCode({ ...base, agentHandoffs: 1, paused: true })).toBe(
+      "STOPPED_AFTER_HANDOFF",
+    );
+    expect(endingCode({ ...base, paused: true, interrupted: true })).toBe(
+      "STOPPED_WHILE_PAUSED",
+    );
+    expect(endingCode({ ...base, interrupted: true })).toBe("INTERRUPTED");
+    expect(endingCode({ ...base })).toBe("USER_CANCELLED");
+    expect(
+      endingCode({
+        ...base,
+        runStatus: "failed",
+        emergencyStop: true,
+        message: "Action budget reached.",
+      }),
+    ).toBe("EMERGENCY_STOP");
+    expect(endingCode({ ...base, runStatus: "takeover" })).toBe("NOT_SETTLED");
+    // The message is only ever compared, never copied into the code.
+    expect(
+      endingCode({ ...base, runStatus: "failed", message: `${MARK} broke` }),
+    ).toBe("RUN_ERROR");
+  });
+  it("names why a run paused from the runner's fixed phrases", () => {
+    expect(
+      pausedAfterCode(
+        "I seem to be stuck repeating the same steps. Say continue with a hint.",
+      ),
+    ).toBe("PAUSED_LOOP");
+    expect(
+      pausedAfterCode(
+        "You declined several actions. Say continue with a hint when ready.",
+      ),
+    ).toBe("PAUSED_DENIALS");
+    expect(
+      pausedAfterCode(
+        "I can’t reach the model service right now. Say continue to try again.",
+      ),
+    ).toBe("PAUSED_PROVIDER");
+    expect(
+      pausedAfterCode(
+        "The model keeps proposing invalid actions. Say continue to retry or give a hint.",
+      ),
+    ).toBe("PAUSED_INVALID");
+    // An event name is not a cause, and the message is compared whole.
+    expect(pausedAfterCode("ActionLoopDetected")).toBe("PAUSED_OTHER");
+    expect(pausedAfterCode(`${MARK} stuck repeating`)).toBe("PAUSED_OTHER");
+    expect(pausedAfterCode(undefined)).toBe("PAUSED_OTHER");
+  });
+  it("reports harness skips apart and never against success", () => {
+    for (const code of [
+      "NO_PREPARED_TARGET",
+      "BUDGET_EXHAUSTED",
+      "SKIPPED",
+      "MANUAL_TAKEOVER",
+      "MANUAL_INPUT_UNSEEN",
+    ])
+      expect(HARNESS_CODES.has(code), code).toBe(true);
+    const manual = attempt({
+      status: "unknown",
+      reason: "MANUAL_TAKEOVER",
+      runStatus: "cancelled",
+      manualTakeover: true,
+      handoffs: { manual: 1, agent: 0 },
+      actions: 9,
+      cost: 0.05,
+    });
+    expect(skipped(manual)).toBe(true);
+    expect(ran(manual)).toBe(false);
+    // A grader unknown is a model outcome and stays in the denominator.
+    const blind = attempt({ status: "unknown", reason: "NO_ACCESSIBILITY" });
+    expect(skipped(blind)).toBe(false);
+    expect(
+      skipped(attempt({ status: "failed", reason: "MANUAL_TAKEOVER" })),
+    ).toBe(false);
+    const totals = aggregate([attempt(), manual, blind]);
+    expect(totals.attempts).toBe(3);
+    expect(totals.skipped).toBe(1);
+    expect(totals.ran).toBe(2);
+    expect(totals.unknown).toBe(2);
+    expect(totals.successRate).toBeCloseTo(0.5);
+    // The cut-short attempt still cost money, but its actions skew no median.
+    expect(totals.totalCost).toBeCloseTo(0.07);
+    expect(totals.medianActions).toBe(3);
+    expect(totals.handoffs).toEqual({ manual: 1, agent: 0 });
+    expect(renderSummary(totals)).toContain("skipped 1");
+  });
+  it("breaks results down by model, and by model and category", () => {
+    const sonnet = {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      cell: "anthropic:claude-sonnet-5",
+    };
+    const totals = aggregate([
+      attempt({ ...honesty("completed", { status: "passed", checks: {} }) }),
+      attempt({
+        status: "failed",
+        reason: "RESULT_NOT_SHOWN",
+        ...honesty(
+          "completed",
+          { status: "failed", checks: { result: false } },
+          { primary: ["result"] },
+        ),
+        handoffs: { manual: 0, agent: 0 },
+      }),
+      attempt({
+        ...sonnet,
+        category: "browser",
+        status: "failed",
+        reason: "HANDOFF_POLICY",
+        runStatus: "cancelled",
+        endingCode: "STOPPED_AFTER_HANDOFF",
+        ...honesty("cancelled", { status: "failed", checks: {} }),
+        takeovers: 1,
+        takeoverSources: sources({ policy: 1 }),
+        handoffs: { manual: 0, agent: 1 },
+        cost: 0.03,
+      }),
+      attempt({
+        ...sonnet,
+        ...honesty("completed", { status: "passed", checks: {} }),
+        cost: 0.02,
+      }),
+      attempt({
+        ...sonnet,
+        status: "unknown",
+        reason: "NO_PREPARED_TARGET",
+        runStatus: "skipped",
+        endingCode: "SKIPPED",
+        cost: 0,
+      }),
+    ]);
+    expect(Object.keys(totals.byModel).sort()).toEqual([
+      "anthropic:claude-sonnet-5",
+      "openai:gpt-5.4-mini",
+    ]);
+    const mini = totals.byModel["openai:gpt-5.4-mini"];
+    expect(mini).toMatchObject({
+      attempts: 2,
+      ran: 2,
+      passed: 1,
+      failed: 1,
+      falseDone: 1,
+      falseDonePrimary: 1,
+      honestFailure: 0,
+    });
+    expect(mini.falseDoneRate).toBeCloseTo(0.5);
+    expect(mini.costPerSuccess).toBeCloseTo(0.02);
+    const claude = totals.byModel["anthropic:claude-sonnet-5"];
+    expect(claude).toMatchObject({
+      attempts: 3,
+      ran: 2,
+      skipped: 1,
+      passed: 1,
+      failed: 1,
+      honestFailure: 1,
+      falseDone: 0,
+    });
+    expect(claude.successRate).toBeCloseTo(0.5);
+    expect(claude.handoffs).toEqual({ manual: 0, agent: 1 });
+    expect(
+      totals.byModelCategory["anthropic:claude-sonnet-5"].browser,
+    ).toMatchObject({ attempts: 1, failed: 1, honestFailure: 1 });
+    expect(
+      totals.byModelCategory["anthropic:claude-sonnet-5"].calculator,
+    ).toMatchObject({ attempts: 2, passed: 1, skipped: 1 });
+    expect(
+      totals.byModelCategory["openai:gpt-5.4-mini"].browser,
+    ).toBeUndefined();
+    expect(totals.falseDone).toBe(1);
+    expect(totals.honestFailure).toBe(1);
+    expect(totals.falseDoneRate).toBeCloseTo(1 / 3);
+    expect(totals.takeovers).toBe(1);
+    const summary = renderSummary(totals);
+    expect(summary).toContain("by model");
+    expect(summary).toContain("false done 1");
+    expect(summary).toContain("hand-offs agent 1 manual 0");
+    const table = renderTable([
+      attempt({
+        status: "failed",
+        reason: "HANDOFF_POLICY",
+        endingCode: "STOPPED_AFTER_HANDOFF",
+      }),
+    ]);
+    expect(table).toContain("STOPPED_AFTER_HANDOFF");
+    expect(table).toContain("openai:gpt-5.4-mini");
+  });
+  it("keeps harness skips out of the honesty counters", () => {
+    // A completed run, then real input during the grading read: the row is
+    // a skip, and whatever flags it carries are not grader debt.
+    const touched = attempt({
+      status: "unknown",
+      reason: "MANUAL_TAKEOVER",
+      runStatus: "completed",
+      manualTakeover: true,
+      claimed: true,
+      unverifiableDone: true,
+    });
+    const totals = aggregate([
+      touched,
+      attempt({
+        status: "unknown",
+        reason: "NO_ACCESSIBILITY",
+        ...honesty("completed", { status: "unknown", checks: {} }),
+      }),
+    ]);
+    expect(totals.skipped).toBe(1);
+    expect(totals.unverifiableDone).toBe(1);
+    expect(totals.falseDoneRate).toBeNull();
+    expect(renderSummary(totals)).toContain("unverifiable done 1");
+  });
+  it("counts no progress and empties cleanly", () => {
+    expect(
+      aggregate([attempt({ noProgress: 2 }), attempt({ noProgress: 1 })])
+        .noProgress,
+    ).toBe(3);
+    const empty = aggregate([]);
+    expect(empty.byModel).toEqual({});
+    expect(empty.byModelCategory).toEqual({});
+    expect(empty.skipped).toBe(0);
+    expect(empty.falseDoneRate).toBeNull();
+    expect(empty.costPerSuccess).toBeNull();
+    expect(renderSummary(empty)).toContain("skipped 0");
+  });
+});
+
+/**
+ * The runner's own event order, not a hand-written one: a model that repeats
+ * itself gets the loop warning, runs four more steps, and is paused for it
+ * after an ActionExecuted (and, under a replay plan, a PlanAbandoned). Only
+ * the pause phrase names the cause, and the harness reads it the way this
+ * emit does: from the first snapshot that carries the paused status.
+ */
+describe("pause cause from a real run", () => {
+  const usage = { inputTokens: 0, outputTokens: 0, cost: 0 };
+  const geometry = {
+    display_id: 1,
+    x: 0,
+    y: 0,
+    width: 1440,
+    height: 900,
+    native_width: 2880,
+    native_height: 1800,
+    model_width: 1280,
+    model_height: 720,
+    scale_factor: 2,
+  };
+  function recorder() {
+    const events: JournalEvent[] = [];
+    let run: Run | undefined;
+    const r: Recorder = {
+      begin: (value) => {
+        run = value;
+      },
+      save: (value) => {
+        run = value;
+      },
+      frame: () => {},
+      append: (id, type, data = {}) => {
+        const event: JournalEvent = {
+          event_id: crypto.randomUUID(),
+          run_id: id,
+          type,
+          data,
+          sequence_number: events.length + 1,
+          schema_version: 1,
+          monotonic_timestamp: performance.now(),
+          wall_clock_timestamp: new Date().toISOString(),
+        };
+        events.push(event);
+        return event;
+      },
+    };
+    return { recorder: r, events, run: () => run };
+  }
+  let frames = 0;
+  const controller: Controller = {
+    kind: "native",
+    surface: async () => ({
+      appId: CALCULATOR,
+      pid: 7,
+      secureInput: false,
+      unknown: false,
+    }),
+    capture: async () => ({
+      id: `frame-${++frames}`,
+      sha256: "same",
+      image: "",
+      geometry,
+      capturedAt: 0,
+      synthetic: false,
+      appId: CALCULATOR,
+      context: { appName: "Calculator", windowTitle: "Calculator" },
+    }),
+    execute: async () => {},
+    resume: async () => {},
+    stop: () => {},
+  };
+  it("classifies a loop pause as PAUSED_LOOP from the paused snapshot", async () => {
+    const m = recorder();
+    // The same action every time: the runner warns at the fourth repeat and
+    // pauses four executed actions later.
+    const provider = {
+      next: async (o: Observation): Promise<ProviderResult> => ({
+        usage,
+        action: { type: "capture", frame_id: o.frame.id },
+      }),
+    };
+    let printed = 0;
+    let paused = false;
+    let pausedAfter: string | undefined;
+    let lastEvent: string | undefined;
+    let beforePause: string | undefined;
+    let runner: Runner;
+    const emit = (snapshot: Snapshot) => {
+      for (const event of snapshot.events.slice(printed)) {
+        if (event.type === "RunPaused") {
+          paused = true;
+          beforePause = lastEvent;
+        }
+        lastEvent = event.type;
+      }
+      printed = snapshot.events.length;
+      const status = snapshot.run?.status;
+      if (status === "paused") {
+        pausedAfter ??= pausedAfterCode(snapshot.message);
+        // Nobody is there to say continue during an unattended benchmark.
+        setTimeout(() => runner.stop("Benchmark stopped at paused."), 0);
+      }
+    };
+    runner = new Runner(
+      controller,
+      provider,
+      m.recorder,
+      structuredClone(defaultSettings),
+      emit,
+    );
+    await runner.start("keep looking at the screen", { origin: "bench" });
+    expect(paused).toBe(true);
+    expect(m.events.some((e) => e.type === "ActionLoopDetected")).toBe(true);
+    // The event before RunPaused is the executed action, never the warning.
+    expect(beforePause).toBe("ActionExecuted");
+    expect(pausedAfter).toBe("PAUSED_LOOP");
+    expect(runner.snapshot.run?.status).toBe("cancelled");
   });
 });
 
@@ -581,6 +1553,121 @@ describe("bench --dry-run", () => {
     );
     expect(child.status).toBe(2);
     expect(child.stderr).toContain("Unknown task or category");
+  });
+});
+
+/**
+ * bench.mjs drives the real desktop and a paid model, so it is never run by a
+ * test. These rules read its source, the way the import-order check does:
+ * each one pins a behaviour the graders depend on.
+ */
+describe("bench.mjs harness rules", () => {
+  const source = readFileSync(join(root, "scripts/bench.mjs"), "utf8");
+  const attemptStart = source.indexOf("async function runAttempt(");
+  const body = source.slice(attemptStart);
+  it("stops the run outright on real input, even while confirming", () => {
+    expect(source).toContain('runner?.stop("Manual input during benchmark.")');
+    // manualTakeover() only interrupts a pending prompt while the run is
+    // confirming; the queued approval would then let the run continue.
+    expect(source).not.toContain("manualTakeover()");
+  });
+  it("ends the whole benchmark on the native emergency stop", () => {
+    const callback = source.slice(
+      source.indexOf("new NativeController("),
+      source.indexOf("// Executed steps"),
+    );
+    expect(callback).toContain("emergency = true;");
+    expect(callback).toContain("stopped = true;");
+    expect(source).toContain('emergency ? "emergency stop" : "interrupted"');
+  });
+  it("resumes the helper before the grading capture and reads manual input after it", () => {
+    expect(attemptStart).toBeGreaterThan(0);
+    const start = body.indexOf("await runner.start(");
+    const resume = body.indexOf("await controller.resume()");
+    const capture = body.indexOf("await controller.capture()");
+    const latch = body.indexOf("controller.stop();");
+    const flag = body.indexOf("manualTakeover: manualInput");
+    expect(start).toBeGreaterThan(0);
+    expect(resume).toBeGreaterThan(start);
+    expect(capture).toBeGreaterThan(resume);
+    expect(latch).toBeGreaterThan(capture);
+    expect(flag).toBeGreaterThan(latch);
+  });
+  it("skips an attempt a stop reached before its run started", () => {
+    // Escape or Ctrl-C during the settle or prepare finds only a terminal
+    // runner to stop; starting would resume the helper and undo the latch.
+    const prepare = body.indexOf("task.prepare(");
+    const check = body.indexOf('if (stopped) return neverRan(base, "SKIPPED")');
+    const reset = body.indexOf("manualInput = false;");
+    const start = body.indexOf("await runner.start(");
+    expect(prepare).toBeGreaterThan(0);
+    expect(check).toBeGreaterThan(prepare);
+    expect(reset).toBeGreaterThan(check);
+    expect(start).toBeGreaterThan(reset);
+  });
+  it("grades real input before a missing end state, and reads none after it", () => {
+    // Input during the grading read makes the capture refuse: the attempt is
+    // the environment's, never a grader unknown counted against the model.
+    const manual = body.indexOf('unverifiable("MANUAL_TAKEOVER")');
+    const graded = body.indexOf("gradeTask(task, evidence)");
+    const noEndState = body.indexOf('"NO_END_STATE"');
+    expect(manual).toBeGreaterThan(0);
+    expect(graded).toBeGreaterThan(manual);
+    expect(noEndState).toBeGreaterThan(graded);
+    const guard = body.indexOf("if (!manualInput) {");
+    expect(guard).toBeGreaterThan(0);
+    expect(body.indexOf("await controller.resume()")).toBeGreaterThan(guard);
+  });
+  it("stops the benchmark on real input whatever the flags", () => {
+    const loop = source.slice(
+      source.indexOf("const result = await runAttempt("),
+      source.indexOf(
+        "} catch (error) {",
+        source.indexOf("const result = await runAttempt("),
+      ),
+    );
+    const manual = loop.indexOf("if (result.manualTakeover) {");
+    const flag = loop.indexOf('values["continue-on-takeover"]');
+    expect(manual).toBeGreaterThan(0);
+    expect(flag).toBeGreaterThan(manual);
+    expect(loop.slice(manual, flag)).toContain(
+      'stoppedBecause = "manual input"',
+    );
+    expect(source).toContain("Real input on this Mac always stops.");
+  });
+  it("starts every run as a bench run", () => {
+    expect(body).toContain('origin: "bench"');
+  });
+  it("approves through the per-task allow-list and nothing else", () => {
+    expect(body).toContain("approvesPrompt(");
+    expect(source).not.toContain("sensitive.test(");
+    // UserDenied never carries source "approval"; the harness counts its own declines.
+    expect(source).not.toContain('d.source === "approval"');
+    expect(body).toContain("counters.approvalsDeclined++");
+  });
+  it("brings the Finder forward before prepare so no target app is frontmost", () => {
+    expect(source).toContain('execFile("open", ["-a", "Finder"]');
+    const neutral = body.indexOf("await neutralStart()");
+    const prepare = body.indexOf("task.prepare(");
+    expect(neutral).toBeGreaterThan(0);
+    expect(prepare).toBeGreaterThan(neutral);
+  });
+  it("records hand-off sources, honest fails, no-progress and the ending", () => {
+    for (const text of [
+      "counters.takeoverSources[source]++",
+      'd.action?.type === "fail"',
+      'event.type === "NoProgressDetected"',
+      "endingCode({",
+      "modelFailed: counters.modelFailed",
+      "modelFailed: journal.modelFailed",
+      // The pause cause comes from the runner's phrase on the paused snapshot;
+      // the event before RunPaused never names it.
+      "pausedAfterCode(snapshot.message)",
+      "markersIn(action.text, markers)",
+      "schema_version: 2",
+    ])
+      expect(source, text).toContain(text);
+    expect(source).not.toContain("pausedAfterCode(lastEvent)");
   });
 });
 

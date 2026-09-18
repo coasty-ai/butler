@@ -250,8 +250,9 @@ export const setupSteps = [
 ] as const;
 export type SetupStep = (typeof setupSteps)[number];
 /**
- * The proof task. `calculator-multiply` in src/gym/bench/catalogue.ts grades
- * this exact instruction, so `npm run bench` exercises what first run asks for.
+ * The proof task: one draw of the `calculator-multiply` template in
+ * src/gym/bench/catalogue.ts, which the bench grades with operands drawn per
+ * attempt, so `npm run bench` exercises what first run asks for.
  */
 export const firstTask = "Open Calculator and multiply 128 by 46";
 /**

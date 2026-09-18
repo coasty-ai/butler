@@ -201,9 +201,13 @@ export const cloudVoices = [
 /** Kokoro voice packs: the base American voice and the British male pair. */
 export const kokoroVoices = ["af_heart", "bm_george", "bm_fable"] as const;
 export type KokoroVoiceId = (typeof kokoroVoices)[number];
-/** How a run was started: what asked for it, not who approved its steps. */
+/**
+ * How a run was started: what asked for it, not who approved its steps.
+ * "bench" is the automation benchmark driving the desktop unattended; it never
+ * arrives through the app's IPC, which accepts only the interactive origins.
+ */
 export type RunOrigin =
-  "voice" | "typed" | "message" | "queue" | "watch" | "remote";
+  "voice" | "typed" | "message" | "queue" | "watch" | "remote" | "bench";
 /**
  * Whose words the task text is. Only "user_words" counts as the user's own
  * request for provenance checks: typed, texted, or speech heard with at least

@@ -17,6 +17,7 @@ import { defaultSettings, settingsSchema } from "../src/core/schema";
 import { providerDefaults } from "../src/providers/catalog";
 import { validateProviderEndpoint } from "../src/core/privacy";
 import { CATALOGUE } from "../src/gym/bench/catalogue";
+import { fillInstruction } from "../src/gym/bench/graders";
 import { previewBridge } from "../src/ui/preview";
 
 /** A status with nothing granted and no model, as the first poll can return. */
@@ -219,7 +220,10 @@ describe("first-run setup", () => {
 
   it("proposes the task the bench already grades", () => {
     const task = CATALOGUE.find((t) => t.id === "calculator-multiply");
-    expect(task?.instruction).toBe(firstTask);
+    // The bench draws the operands per attempt; the first-run task is one draw.
+    expect(fillInstruction(task!.instruction, { a: "128", b: "46" })).toBe(
+      firstTask,
+    );
     expect(firstTask).toBe("Open Calculator and multiply 128 by 46");
   });
 

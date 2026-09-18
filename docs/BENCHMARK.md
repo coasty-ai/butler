@@ -26,9 +26,9 @@ npm run bench -- --provider openai --tasks calculator-multiply \
 
 - **It refuses to start without `--i-know-this-drives-my-mac`.** `--dry-run` is the only thing that runs without it, and a dry run loads neither a provider, a controller nor the runner.
 - It prints a warning naming the number of runs, the model and the cost ceiling before the first run.
-- It **stops at the first hand-off** (`takeover` or `paused`), because nobody is there to say continue. `--continue-on-takeover` keeps going instead.
-- Every existing stop path still works: the native emergency stop, real mouse or key input, Ctrl-C. Each stops the current run and ends the benchmark.
-- Approvals are **declined** by default and counted; a declined approval is a real result. `--approve-routine` approves prompts whose reason contains none of `send delete pay purchase publish install password security`, the same filter `npm run test:live` uses.
+- It **stops at the first hand-off** (`takeover` or `paused`), because nobody is there to say continue. `--continue-on-takeover` keeps going after an agent hand-off instead.
+- Every existing stop path still works: the native emergency stop, real mouse or key input, Ctrl-C. Each stops the current run and ends the benchmark, whatever the flags; an Escape or Ctrl-C between attempts skips the next one instead of starting it.
+- Approvals are **declined** by default and counted; a declined approval is a real result. `--approve-routine` approves only a prompt the task lists word for word in `BenchTask.approve`, and never one that names a send, delete, payment, order, subscription, sign-in, quit, reset or discard, whatever the task lists. No smoke task lists any, so on the smoke suite the flag approves nothing.
 - Every attempt carries the task's own action, time and cost budget, and the benchmark stops when the total budget is spent.
 
 The catalogue itself is side-effect free or self-cleaning. Nothing in it sends, posts, pays, installs, deletes user data, or touches Messages or Mail. The one task that creates something (`notes-create-delete`) creates a note with a marker generated for that attempt and deletes that same note.
@@ -46,8 +46,8 @@ The catalogue itself is side-effect free or self-cleaning. Nothing in it sends, 
 | `--max-cost <dollars>`                 | Total budget for the whole benchmark. Default: the sum of the per-task caps.                                              |
 | `--memory`                             | Run with the learned-memory path on (recall, built-in intents, learned skills).                                           |
 | `--memory-dir <dir>`                   | Where that store lives. Default: a scratch directory in the OS temp folder with its own random key, never a real profile. |
-| `--continue-on-takeover`               | Do not stop the benchmark at the first hand-off.                                                                          |
-| `--approve-routine`                    | Approve routine, non-consequential approval prompts.                                                                      |
+| `--continue-on-takeover`               | Do not stop the benchmark at the first agent hand-off. Real input on this Mac always stops it.                            |
+| `--approve-routine`                    | Approve only the prompts a task lists as routine (`BenchTask.approve`), never a destructive one.                          |
 | `--out <file>`                         | Result file. Default `output/bench/<timestamp>.json`.                                                                     |
 
 `--memory` is how you measure whether learning helps: run `--tasks calculator --repeat 3` with and without it and compare median actions, cost and model calls. With memory on, a repeated task can replay with **zero model calls** (`modelCalls` in the result file).
@@ -62,8 +62,8 @@ Twelve tasks. Each has an id, the spoken instruction, the applications it needs,
 | `browser-goto`             | browser / easy        | Go to example.com                                                   | A browser is frontmost and the **committed page host** is `example.com`                                                                  | $0.08 |
 | `browser-search`           | browser / medium      | Search the web for the San Francisco weather forecast               | A browser is frontmost, the host is a known search engine, and the address or page text contains "san francisco" and "weather"           | $0.12 |
 | `calculator-open`          | calculator / easy     | Open Calculator                                                     | Calculator is frontmost                                                                                                                  | $0.05 |
-| `calculator-multiply`      | calculator / medium   | Open Calculator and multiply 128 by 46                              | Calculator is frontmost and its accessibility text shows `5888` (or `5,888`)                                                             | $0.15 |
-| `calculator-percent`       | calculator / hard     | In Calculator, work out 17.5 percent of 240                         | Calculator is frontmost and its accessibility text shows `42`                                                                            | $0.20 |
+| `calculator-multiply`      | calculator / medium   | Open Calculator and multiply {a} by {b} _(drawn per attempt)_       | Calculator is frontmost, its accessibility text shows the product, and the journal shows the operands entered in Calculator              | $0.15 |
+| `calculator-percent`       | calculator / hard     | In Calculator, work out {a} percent of {b} _(drawn per attempt)_    | Calculator is frontmost, its accessibility text shows the whole-number answer, and the journal shows the operands entered                | $0.20 |
 | `notes-open`               | notes / easy          | Open Notes                                                          | Notes is frontmost                                                                                                                       | $0.05 |
 | `notes-create-delete`      | notes / hard          | In Notes, create a note containing the marker, then delete it       | The journal shows the marker typed while Notes was frontmost, Notes is frontmost, and the marker is **gone** from the accessibility text | $0.30 |
 | `files-open-recent`        | files / medium        | Open the file _(resolved from the system index)_                    | The journal shows `open_file` opening exactly that path with the handling application frontmost, or the window title names the file      | $0.12 |
@@ -85,7 +85,7 @@ Every grader is deterministic and reads one of two sources. **No grader compares
 Grading is layered:
 
 - A run in which **real input on this Mac** took over is `unknown` (`MANUAL_TAKEOVER`): the desktop changed under the grader, so nothing can be claimed. Re-run it.
-- A run the **agent** handed off (repeated unidentified targets, a policy block, `request_user`) is `failed` (`HANDOFF_TAKEOVER`). It did not automate the task.
+- A run the **agent** handed off is `failed`, named by what asked for it: `HANDOFF_REQUEST_USER`, `HANDOFF_TARGET` (repeated unidentified targets), `HANDOFF_POLICY`, `HANDOFF_SURFACE`. It did not automate the task. A task marked `expectsHandoff` is graded on the hand-off itself instead.
 - A run that never settled is `unknown` (`RUN_NOT_SETTLED`).
 - Otherwise the task's own grader runs. **If it cannot read what it needs, the result is `unknown`, never `passed`.** No accessibility text means `NO_ACCESSIBILITY`; no frontmost application means `NO_FRONTMOST_INFO`; a browser task with no address at all means `NO_BROWSER_ADDRESS`.
 
@@ -102,7 +102,7 @@ Reason codes you will see:
 | `FILE_NOT_OPENED` / `HANDLER_NOT_FRONTMOST`                                      | The file never opened, or its application did not come forward.                 |
 | `CALCULATOR_NOT_LAUNCHED`                                                        | The multi-application task skipped its first half.                              |
 | `NO_PREPARED_TARGET`                                                             | Nothing in the system index to open; the attempt was skipped, not failed.       |
-| `MANUAL_TAKEOVER` / `HANDOFF_TAKEOVER` / `RUN_NOT_SETTLED`                       | See above.                                                                      |
+| `MANUAL_TAKEOVER` / `HANDOFF_*` / `RUN_NOT_SETTLED`                              | See above.                                                                      |
 | `NO_ACCESSIBILITY` / `NO_FRONTMOST_INFO` / `NO_BROWSER_ADDRESS` / `NO_END_STATE` | The grader could not verify. Not a pass and not a failure.                      |
 
 ### Reading the numbers
@@ -123,7 +123,7 @@ calculator-multiply  1  FAIL      16  71.2  $0.088    0      3    0  RESULT_NOT_
 
 The summary block:
 
-- **success rate** = passed / attempts. Unknown attempts count against it, deliberately: an attempt nobody can verify is not a success.
+- **success rate** = passed / ran. Grader unknowns count against it, deliberately: an attempt nobody can verify is not a success. Harness skips (`NO_PREPARED_TARGET`, `MANUAL_TAKEOVER`, an attempt a stop kept from starting) are reported as **skipped** and never count.
 - **of graded attempts** = passed / (passed + failed), which is what to quote when the Mac was touched mid-run. If the two diverge a lot, the benchmark ran in a noisy environment; re-run it.
 - **median actions / median seconds** are over attempts that actually ran; skipped attempts are excluded.
 - **total cost** is the sum of every attempt, including failed ones.
