@@ -12,6 +12,7 @@ import {
   nativeImage,
   shell,
   systemPreferences,
+  powerSaveBlocker,
 } from "electron";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -110,12 +111,11 @@ import {
   type TurnPlan,
 } from "../src/voice/turns";
 import { runView, statusLine } from "../src/assistant/run-view";
-import type {
-  Channel,
-  ProgressReport,
-  ProgressSink,
-} from "../src/assistant/types";
+import type { Channel, ProgressSink } from "../src/assistant/types";
 import { PRESENCE_REFRESH_MS, createPresenceService } from "./presence";
+import { ProgressReporter, createProgressSummarizer } from "./progress";
+import { KeepAwake } from "./power";
+import { textSettings } from "../src/providers/text";
 import { TASK_QUEUE_MAX, TaskQueue } from "./task-queue";
 import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
@@ -511,14 +511,32 @@ function lastAgentInputAt(): number | undefined {
   return undefined;
 }
 /**
- * Every channel that delivers progress updates. The reporter that produces
- * them lands in increment 4B; until then nothing calls this.
+ * Every channel that delivers progress updates, and the one reporter that
+ * writes them (electron/progress.ts): it follows the run through emit(),
+ * summarizes on the dialog model and charges the run's budget.
  */
 const progressSinks: ProgressSink[] = [conversation, messages];
-function onProgress(report: ProgressReport) {
-  for (const sink of progressSinks) sink.onProgress(report);
-}
-void onProgress;
+const reporter = new ProgressReporter({
+  settings: () => settings,
+  presence,
+  summarize: createProgressSummarizer({
+    settings: () => textSettings(settings),
+    key: () => providerKey(credentials, settings),
+    fetch: desktopTransport(debug),
+    trace: debug,
+  }),
+  addUsage: (runId, usage) => {
+    if (snapshot.run?.id === runId) runner?.addUsage(usage);
+  },
+  sinks: progressSinks,
+  trace: debug,
+});
+/** Holds the display awake during runs and watches when keepAwake is on. */
+const power = new KeepAwake({
+  settings: () => settings,
+  blocker: () => powerSaveBlocker,
+  trace: debug,
+});
 /** The fixed status line every channel answers "how's it going?" with. */
 function statusText() {
   const now = Date.now();
@@ -1796,6 +1814,8 @@ function emit(s: Snapshot) {
   snapshot = s;
   diagnostics?.snapshot(s);
   messages.onSnapshot(s);
+  reporter.onSnapshot(s);
+  power.onSnapshot(s);
   trackRun(s);
   if (window && !window.isDestroyed()) window.webContents.send("snapshot", s);
   // Decides what to say about this moment; it never speaks while listening.
@@ -2004,6 +2024,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       settings = next;
       saveConfig();
       updateTray();
+      power.apply();
       if (voiceEngineChanged) {
         // A reply in the old engine may still be playing.
         await conversation.stopSpeaking();
@@ -2992,6 +3013,8 @@ app.on("before-quit", () => {
   debug("AppStopping");
   clearInterval(diagnosticHeartbeat);
   stopPresenceRefresh();
+  reporter.close();
+  power.release();
   clearTimeout(drainTimer);
   for (const timer of deferredReloads.values()) clearTimeout(timer);
   deferredReloads.clear();

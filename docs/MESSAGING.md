@@ -186,6 +186,9 @@ counts as one moment:
 Never: screenshots, partial transcripts, ordinary step narration ("Opening
 Notes."), typed text, credentials, full URLs or file paths. Every line is
 bounded to 300 characters, at most 8 per run and 20 per hour in total.
+Progress updates from the shared reporter (`electron/progress.ts`) have a cap
+of their own per run (`MESSAGE_PROGRESS_LIMIT`), so a long, busy run never
+uses up the moments an owner is waiting for; the hourly cap covers both.
 
 ### Default: only tasks started by text
 
@@ -195,6 +198,15 @@ spoken replies already say everything, and texting it again is noise on a
 device they are not looking at. It is also the smaller privacy footprint:
 nothing about work done at the desk is copied to a phone. `all` sends updates
 for every run, for when the Mac is left working alone.
+
+`away` sits between the two: runs started by text as under `texted`, plus a
+progress update for any run once the Mac has been left alone, after which that
+run's ending is texted too. "Left alone" is deliberately strict, because a
+person can be at the Mac without touching it (presenting from it, on a call):
+presence must have read away for two minutes without a break, and nothing may
+be texted within a minute of the last input the run posted itself, since that
+input resets the Mac's idle time and can hide a person's own. The rule lives in
+`src/assistant/progress.ts` (`awayUpdatesAllowed`).
 
 A quiet-hours window was considered instead. It needs a clock, a timezone and a
 rule for what happens to an update that falls inside it, and it does not
@@ -212,7 +224,7 @@ from `.env` at runtime:
 | `messages`         | `false`    | The whole channel.                                                                                             |
 | `messagesHandle`   | `""`       | The one handle ever texted or read.                                                                            |
 | `messagesCommands` | `true`     | Read replies as commands. With this off, `chat.db` is never opened at all and Full Disk Access is unnecessary. |
-| `messagesUpdates`  | `"texted"` | `texted` or `all`, as above.                                                                                   |
+| `messagesUpdates`  | `"texted"` | `texted`, `away` or `all`, as above.                                                                           |
 
 Saving with `messages: true` and an unusable handle is rejected
 (`validateMessageSettings`), and so is a number without its country code:

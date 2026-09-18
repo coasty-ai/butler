@@ -117,6 +117,12 @@ export interface ProgressReport {
   send: boolean;
   /** The fixed line was used because no summary was available. */
   fallback: boolean;
+  /**
+   * Set on a "final" report: how the run, or the watched agent, ended. The
+   * sinks prefix their outcome word from this, never from whatever is
+   * running when the recap arrives.
+   */
+  outcome?: "completed" | "failed";
 }
 
 /** Anything that delivers progress: spoken replies, texts, the phone remote. */

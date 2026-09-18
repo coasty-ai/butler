@@ -24,6 +24,8 @@ import {
 } from "../src/voice/speakable";
 import { momentKey } from "./conversation";
 import type { ProgressReport } from "../src/assistant/types";
+import { textable } from "../src/assistant/progress";
+import { terminal } from "../src/core/runner";
 import { HelperProcess, type HelperHooks } from "./controller";
 import {
   errorDetails,
@@ -39,6 +41,12 @@ export const MESSAGE_MAX_SEND = 300;
 export const MESSAGE_MAX_TEXT = 2000;
 /** Updates per run, so a stuck loop cannot text somebody forty times. */
 export const MESSAGE_RUN_LIMIT = 8;
+/**
+ * Progress updates per run, apart from the moments: the reporter paces them
+ * (every few active minutes at most) and the hourly cap bounds the total,
+ * and a busy run must still get its approval or takeover moment out.
+ */
+export const MESSAGE_PROGRESS_LIMIT = 40;
 /** Outgoing texts per hour across every run and reply. */
 export const MESSAGE_HOUR_LIMIT = 20;
 /** A command older than this never runs: late sync is not consent. */
@@ -583,6 +591,7 @@ export class MessagesChannel {
   private snapshot?: Snapshot;
   private sentKeys: string[] = [];
   private runCounts = new Map<string, number>();
+  private progressCounts = new Map<string, number>();
   private textedRuns = new Set<string>();
   private announced = new Set<string>();
   private pendingStart?: { at: number; task: string };
@@ -599,11 +608,77 @@ export class MessagesChannel {
     return { ...this.state };
   }
   /**
-   * Progress updates from the shared reporter (increment 4B). Until the
-   * texting rules for them land in 4A, nothing is sent: run moments still
-   * come from onSnapshot.
+   * Progress updates from the shared reporter. The reporter decided who gets
+   * this one (`send`: a run the owner started by text, every run under
+   * "all", and under "away" every run once the Mac has been left alone for
+   * two minutes with no agent input for one, see src/assistant/progress.ts).
+   * This side keeps the channel's own rules: a per-run cap of its own next
+   * to the moments' (so updates never use up the approval or takeover
+   * moment an away owner is waiting for), the hourly cap, the sentence
+   * filter again, one text per kind and set of facts, and a run that got a
+   * texted update is joined, so its ending is texted too. A final recap
+   * follows the done moment, which emit() texts first, and carries its own
+   * outcome: by the time it arrives the next queued run may be the one on
+   * screen. A live run's needs-you report is the run's own moment instead,
+   * worded here by messageMoment.
    */
-  onProgress(_report: ProgressReport): void {}
+  onProgress(r: ProgressReport): void {
+    const target = messageTarget(this.options.settings());
+    if (!target || !r.send) return;
+    const live = this.snapshot?.run;
+    if (
+      r.kind === "needs_you" &&
+      live?.id === r.runId &&
+      !terminal(live.status)
+    ) {
+      // A joined run had the hold texted from its snapshot already; a run
+      // started at the desk under "away" is joined now and hears it once.
+      const joined = target.updates === "all" || this.textedRuns.has(r.runId);
+      this.join(r.runId);
+      if (!joined) this.sendMoment(this.snapshot!, false);
+      return;
+    }
+    const key = `progress:${r.runId}:${r.kind}:${r.seq}`;
+    if (this.sentKeys.includes(key)) return;
+    let prefix = "";
+    let moment: string | undefined;
+    if (r.kind === "final") {
+      const failed = r.outcome === "failed";
+      moment = `${failed ? "failed" : "done"}:${r.runId}`;
+      prefix = this.sentKeys.includes(moment)
+        ? "Recap: "
+        : failed
+          ? "Couldn’t finish. "
+          : "Done. ";
+    }
+    const reason = `progress:${r.kind}`;
+    // Bounded apart from the prefix, so a four-sentence recap keeps its four.
+    const safe = textable(r.text, MESSAGE_MAX_SEND - prefix.length, 4);
+    if (!safe) {
+      this.trace("MessageDropped", { reason, cause: "filtered" });
+      return;
+    }
+    const count = this.progressCounts.get(r.runId) ?? 0;
+    // The recap is the run's last word; everything else shares the cap.
+    if (r.kind !== "final" && count >= MESSAGE_PROGRESS_LIMIT) {
+      this.trace("MessageDropped", { reason, cause: "progress_limit" });
+      return;
+    }
+    this.join(r.runId);
+    this.remember(key);
+    if (moment && prefix !== "Recap: ") this.remember(moment);
+    this.progressCounts.set(r.runId, count + 1);
+    this.send(prefix + safe, reason);
+  }
+  /**
+   * Joined: a live run whose moments are texted from here on, and whose
+   * terminal snapshot is its ending, not a run loaded from history
+   * (onSnapshot's first-and-terminal rule).
+   */
+  private join(runId: string) {
+    this.textedRuns.add(runId);
+    this.announced.add(runId);
+  }
   /**
    * Applies the saved settings: configures the helper, rebaselines the row
    * cursor and starts or stops polling. Rejects with a readable message; the
@@ -653,11 +728,11 @@ export class MessagesChannel {
     const run = s.run;
     if (!run) return;
     this.prune();
-    const terminal = ["completed", "cancelled", "failed"].includes(run.status);
+    const ended = terminal(run.status);
     // A run that appears just after a texted "do" belongs to that text.
     if (
       this.pendingStart &&
-      !terminal &&
+      !ended &&
       !this.announced.has(run.id) &&
       this.now() - this.pendingStart.at < 15000
     ) {
@@ -666,12 +741,18 @@ export class MessagesChannel {
     }
     const target = messageTarget(this.options.settings());
     if (!target) return;
-    // "away" adds updates once the user has left the Mac; until the presence
-    // gate lands (increment 4A) it texts the same runs as "texted".
+    // "away" adds updates once the user has left the Mac: the reporter's
+    // first progress text joins the run (onProgress) and its later moments
+    // follow here; until then it texts the same runs as "texted".
     if (target.updates !== "all" && !this.textedRuns.has(run.id)) return;
     const first = !this.announced.has(run.id);
     if (first) this.announced.add(run.id);
-    if (first && terminal) return; // A run loaded from history, not a new one.
+    if (first && ended) return; // A run loaded from history, not a new one.
+    this.sendMoment(s, first);
+  }
+  /** Texts the snapshot's moment, once, within the run's moment cap. */
+  private sendMoment(s: Snapshot, first: boolean) {
+    const run = s.run!;
     const moment = messageMoment(s, first);
     if (!moment || this.sentKeys.includes(moment.key)) return;
     const count = this.runCounts.get(run.id) ?? 0;
@@ -856,6 +937,8 @@ export class MessagesChannel {
       this.textedRuns = new Set([...this.textedRuns].slice(-100));
     if (this.runCounts.size > 200)
       this.runCounts = new Map([...this.runCounts].slice(-100));
+    if (this.progressCounts.size > 200)
+      this.progressCounts = new Map([...this.progressCounts].slice(-100));
   }
   private startPolling() {
     if (this.timer !== undefined) return;
