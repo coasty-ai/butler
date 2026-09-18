@@ -523,6 +523,12 @@ export interface Frame {
 export interface ScreenContext {
   appName: string;
   windowTitle: string;
+  /**
+   * How many windows the frontmost application shows on screen. 0 means it is
+   * open and frontmost with no window (Calendar after its window closed), so
+   * the screenshot shows whatever is behind it. A count only, never titles.
+   */
+  windowCount?: number;
   documentName?: string;
   selectedText?: string;
   launcher?: { query: string; selectedResult?: string };
@@ -658,6 +664,11 @@ export interface Surface {
   focusedSubrole?: string;
   /** Title, description or placeholder of the focused element (bounded). */
   focusedLabel?: string;
+  /**
+   * Windows the frontmost application shows on screen, reported natively for
+   * open_app and for a click on a Dock application. 0 means open with no window.
+   */
+  windowCount?: number;
   /** open_app resolution produced natively by surface(action). */
   launcherName?: string;
   launcherStatus?: "resolved" | "unresolved" | "ambiguous" | "refused";
@@ -769,6 +780,13 @@ export interface ExecutionResult {
     name: string;
     frontmost: boolean;
     wasRunning: boolean;
+    /**
+     * For an application that was already running: the windows it shows after
+     * open_app, and whether its own Window menu had to show the main window.
+     * Absent after a cold launch, whose window may still be on its way.
+     */
+    windows?: number;
+    restoredWindow?: boolean;
   };
   opened?: {
     path: string;

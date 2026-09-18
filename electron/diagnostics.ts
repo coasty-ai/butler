@@ -85,6 +85,8 @@ const fields = new Set([
   "launchedAppId",
   "frontmost",
   "wasRunning",
+  "launchedWindows",
+  "restoredWindow",
   "nameLength",
   "problem",
   "normalized",
@@ -160,6 +162,7 @@ const countFields = new Set([
   "segments",
   "sentences",
   "dropped",
+  "launchedWindows",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
@@ -186,6 +189,7 @@ const flagFields = new Set([
   "fallback",
   "preempt",
   "stream",
+  "restoredWindow",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -446,6 +450,9 @@ export class LocalDiagnostics {
               launchedAppId: launched.appId,
               frontmost: launched.frontmost,
               wasRunning: launched.wasRunning,
+              // A count and a flag: whether a running app came up windowless.
+              launchedWindows: launched.windows,
+              restoredWindow: launched.restoredWindow,
             }
           : {}),
         // An opened file is logged by kind and handling app, never its path.

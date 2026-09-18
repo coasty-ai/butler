@@ -294,6 +294,8 @@ test("native error codes map to typed errors and execute returns the launch reco
   if (request.method === 'blocked') return reply({id: request.id, error: 'Sensitive input is active. Take over to finish it.', code: 'SURFACE_BLOCKED'});
   if (request.method === 'execute' && request.action.type === 'open_app') {
     if (request.action.name === 'Missing') return reply({id: request.id, error: 'The application could not be launched.', code: 'LAUNCH_FAILED'});
+    if (request.action.name === 'Calendar') return reply({id: request.id, result: {executed: true, launched: {appId: 'com.apple.iCal', name: 'Calendar', frontmost: true, wasRunning: true, windows: 0, restoredWindow: false}}});
+    if (request.action.name === 'Garbled') return reply({id: request.id, result: {executed: true, launched: {appId: 'com.apple.iCal', name: 'Calendar', frontmost: true, wasRunning: true, windows: '0', restoredWindow: 'yes'}}});
     return reply({id: request.id, result: {executed: true, launched: {appId: 'com.apple.Notes', name: 'Notes', frontmost: true, wasRunning: false}}});
   }
   reply({id: request.id, result: {executed: true}});`);
@@ -333,6 +335,38 @@ test("native error codes map to typed errors and execute returns the launch reco
         name: "Notes",
         frontmost: true,
         wasRunning: false,
+      },
+    });
+    // A running app that came up windowless reports its window count.
+    expect(
+      await controller.execute(
+        { type: "open_app", frame_id: "f", name: "Calendar" },
+        frame,
+        new AbortController().signal,
+      ),
+    ).toEqual({
+      launched: {
+        appId: "com.apple.iCal",
+        name: "Calendar",
+        frontmost: true,
+        wasRunning: true,
+        windows: 0,
+        restoredWindow: false,
+      },
+    });
+    // A malformed count is dropped, never read as "no window".
+    expect(
+      await controller.execute(
+        { type: "open_app", frame_id: "f", name: "Garbled" },
+        frame,
+        new AbortController().signal,
+      ),
+    ).toEqual({
+      launched: {
+        appId: "com.apple.iCal",
+        name: "Calendar",
+        frontmost: true,
+        wasRunning: true,
       },
     });
     expect(

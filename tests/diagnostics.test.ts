@@ -177,6 +177,8 @@ describe("local diagnostic stream", () => {
           name: "Zeta Private Notes",
           frontmost: false,
           wasRunning: true,
+          windows: 0,
+          restoredWindow: false,
         },
       });
       add("ActionFailed", {
@@ -207,6 +209,9 @@ describe("local diagnostic stream", () => {
         launchedAppId: "com.example.zeta",
         frontmost: false,
         wasRunning: true,
+        // Whether a running app came up windowless: a count and a flag.
+        launchedWindows: 0,
+        restoredWindow: false,
         nameLength: 18,
       });
       expect(events[3].data.problem).toBe("The response contained no action.");

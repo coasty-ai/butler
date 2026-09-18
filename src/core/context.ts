@@ -10,6 +10,8 @@ const contextSchema = z
   .object({
     appName: short,
     windowTitle: short,
+    // A count, never titles: 0 is an application open with no window.
+    windowCount: z.number().int().min(0).max(99).optional(),
     documentName: short.optional(),
     selectedText: z.string().max(2000).optional(),
     browserAddress: z.string().max(2000).optional(),
@@ -77,6 +79,7 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
   return {
     appName: clean(c.appName),
     windowTitle: clean(c.windowTitle),
+    ...(c.windowCount !== undefined && { windowCount: c.windowCount }),
     ...(c.documentName !== undefined && {
       documentName: clean(c.documentName),
     }),

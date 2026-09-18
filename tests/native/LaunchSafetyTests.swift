@@ -71,6 +71,23 @@ func launchSafetyChecks(_ check: (Bool, String) -> Void) {
     check(!launchReopenAllowed(wasRunning: true, alreadyReopened: true, elapsed: 1.2, onScreenWindows: 2), "reopen happens at most once")
     check(!launchReopenAllowed(wasRunning: true, alreadyReopened: false, elapsed: 0.5, onScreenWindows: 2), "reopen waits for activation to stall")
     check(!launchReopenAllowed(wasRunning: false, alreadyReopened: false, elapsed: 2, onScreenWindows: 1), "a cold launch is never reopened")
+    // standardWindowCount: what "shows a window" means for open_app and context.windowCount.
+    func win(_ pid: Int, layer: Int = 0, alpha: Double = 1, w: Double = 900, h: Double = 600) -> OnScreenWindow {
+        OnScreenWindow(pid: pid, layer: layer, alpha: alpha, width: w, height: h)
+    }
+    check(standardWindowCount([win(7), win(7), win(8)], pid: 7) == 2, "the application's own normal windows are counted")
+    check(standardWindowCount([win(8), win(7, layer: 25)], pid: 7) == 0, "a menu bar item or panel above the normal layer is not a window")
+    check(standardWindowCount([win(7, alpha: 0)], pid: 7) == 0, "an invisible window is not shown")
+    check(standardWindowCount([win(7, w: 1, h: 1), win(7, w: 900, h: 20)], pid: 7) == 0, "a sliver or helper surface is not a window")
+    check(standardWindowCount([win(7, w: 40, h: 40)], pid: 7) == 1, "a small real window still counts")
+    check(standardWindowCount([], pid: 7) == 0, "nothing on screen is no window")
+    // windowCountSettled: an app just brought to the front is called windowless only after a settle.
+    check(!windowCountSettled(windows: 0, waited: 0), "no window the moment an app turns frontmost is not yet final")
+    check(!windowCountSettled(windows: 0, waited: 0.3), "an unhidden window still has time to arrive")
+    check(!windowCountSettled(windows: 0, waited: 0.6), "a Space switch still animating is not yet no window")
+    check(windowCountSettled(windows: 0, waited: windowSettleSeconds), "no window after the settle is final")
+    check(windowCountSettled(windows: 1, waited: 0), "a window on screen is final at once")
+    check(windowSettleSeconds <= 1, "the settle stays well inside the open_app timeout")
     let many = (1...9).map { app("Tool \($0)", "com.example.tool\($0)") }
     if case .ambiguous(let names) = resolve("Tool", many) { check(names.count == 5, "candidate names are bounded to five") }
     else { check(false, "candidate names are bounded to five") }

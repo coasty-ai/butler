@@ -24,6 +24,7 @@ import CoreGraphics
         presenceChecks(check)
         electronAccessibilityChecks(check)
         namedTargetChecks(check)
+        mainWindowMenuChecks(check)
         searchCommandChecks(check)
         ideSafetyChecks(check)
         queryFieldChecks(check)

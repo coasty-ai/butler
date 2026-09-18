@@ -325,11 +325,23 @@ function launchedResult(value: unknown): ExecutionResult["launched"] {
   const v = value as Record<string, unknown>;
   if (typeof v.appId !== "string" || typeof v.name !== "string")
     return undefined;
+  // Only a count the helper actually reported: a missing or malformed one
+  // must not read as "no window" and tell the model the app is empty.
+  const windows =
+    typeof v.windows === "number" &&
+    Number.isInteger(v.windows) &&
+    v.windows >= 0
+      ? Math.min(v.windows, 99)
+      : undefined;
   return {
     appId: v.appId.slice(0, 255),
     name: v.name.slice(0, 120),
     frontmost: v.frontmost === true,
     wasRunning: v.wasRunning === true,
+    ...(windows !== undefined && {
+      windows,
+      restoredWindow: v.restoredWindow === true,
+    }),
   };
 }
 function openedResult(value: unknown): ExecutionResult["opened"] {

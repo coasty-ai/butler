@@ -124,7 +124,9 @@ export const playbooks: Record<string, string[]> = {
     "Never open, forward or reply to messages the objective did not ask about.",
   ],
   "com.apple.ical": [
-    "Create an event with CMD+N, type the title, then TAB through the date and time fields.",
+    "With no window (context.windowCount 0) choose Window > Calendar first; the screenshot shows the app behind it.",
+    "Create an event with File > New Event (CMD+N): type it with its time, e.g. Pick up packages today at 6 PM, press ENTER.",
+    "Read the new event back from the screenshot, its day and time included, before returning done.",
     "Switch views with CMD+1 for day, CMD+2 for week and CMD+3 for month; CMD+T jumps to today.",
     "Find an event with CMD+F, type the words, press ENTER, then UP and DOWN through the results.",
     "Moving or deleting an event changes the user's calendar: propose it only when asked.",

@@ -85,6 +85,31 @@ describe("bounded screen context", () => {
         cleanScreenContext({ appName: "A", windowTitle: "B", controls: bad }),
       ).toBeUndefined();
   });
+  it("says when the frontmost application shows no window, as a bounded count", () => {
+    // Live: Calendar came to the front with no window, and the screenshot
+    // showed the application behind it with an empty window title.
+    const windowless = cleanScreenContext({
+      appName: "Calendar",
+      windowTitle: "",
+      windowCount: 0,
+    });
+    expect(windowless?.windowCount).toBe(0);
+    expect(
+      cleanScreenContext({ appName: "Notes", windowTitle: "N", windowCount: 3 })
+        ?.windowCount,
+    ).toBe(3);
+    expect(
+      cleanScreenContext({ appName: "A", windowTitle: "B" }),
+    ).not.toHaveProperty("windowCount");
+    for (const bad of [-1, 1.5, 100, "0", Number.NaN, null])
+      expect(
+        cleanScreenContext({
+          appName: "A",
+          windowTitle: "B",
+          windowCount: bad,
+        }),
+      ).toBeUndefined();
+  });
   it("reports a blind application and its bounded menus", () => {
     const result = cleanScreenContext({
       appName: "Spotify",

@@ -490,9 +490,12 @@ function openAppDecision(
     .filter(Boolean)
     .join(", ");
   if (status === "resolved" && surface.launcherAppId) {
+    const frontmost = surface.launcherAppId === surface.appId;
     // Already frontmost: launching again changes nothing and the model would
     // repeat it. Say so instead of spending a step (live: Spotify, 12 times).
-    if (surface.launcherAppId === surface.appId)
+    // Unless it shows no window at all (live: Calendar): then nothing on
+    // screen is its, and open_app is what shows its main window natively.
+    if (frontmost && surface.windowCount !== 0)
       return {
         kind: "RETRY",
         reason: `No input was sent. ${quote(action.name)} is already open and frontmost. Work with what is on screen, or use a keyboard shortcut.`,
@@ -508,7 +511,12 @@ function openAppDecision(
         reason:
           "That application is protected. Ask the user to open it with request_user.",
       };
-    return { kind: "ALLOW", reason: "Open a verified installed application." };
+    return frontmost
+      ? {
+          kind: "ALLOW",
+          reason: "Show the main window of an application open with no window.",
+        }
+      : { kind: "ALLOW", reason: "Open a verified installed application." };
   }
   if (status === "ambiguous")
     return {
@@ -1215,6 +1223,16 @@ export function evaluate(
       settings,
     );
     if (appPolicy.kind !== "ALLOW") return appPolicy;
+    // The frontmost application's own icon while it shows no window: the
+    // click is how a person gets the window back (live: Calendar), and the
+    // generic redirect below reads as a dead end after open_app was refused.
+    // It promises no open_app result: the helper restores only a Window menu
+    // item it recognizes, and the history then says not to open it again.
+    if (surface.launcherAppId === surface.appId && surface.windowCount === 0)
+      return {
+        kind: "RETRY",
+        reason: `No input was sent. ${quote(surface.appName || surface.targetLabel || "This application")} is open but shows no window. Choose its window from its Window menu in context.menus, or use File > New.`,
+      };
     // A stray pointer near the screen edge must not launch an app. open_app
     // requires naming the application, which states the intent explicitly.
     return {

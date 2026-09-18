@@ -85,6 +85,58 @@ func namedTargetChecks(_ check: (Bool, String) -> Void) {
     check(menuDigestLine(menu: "Long", items: many, itemLimit: 3) == "Long: Item 0, Item 1, Item 2", "items are bounded")
 }
 
+// mainWindowMenuEntry: the Window menu entry that shows a windowless app's main window.
+func mainWindowMenuChecks(_ check: (Bool, String) -> Void) {
+    func item(_ title: String, enabled: Bool = true, submenu: Bool = false, shortcut: String? = nil) -> MenuItemDigest? {
+        title.isEmpty ? nil : MenuItemDigest(title: title, shortcut: shortcut, enabled: enabled, submenu: submenu)
+    }
+    // Entries as the helper reads them (a separator digests to nil); the
+    // answer is the entry's position, standing in for the element pressed.
+    func pick(_ names: [String], _ menu: [MenuItemDigest?], bundleId: String = "com.example.app") -> Int? {
+        mainWindowMenuEntry(appNames: names, bundleId: bundleId, entries: Array(menu.enumerated()), digest: { $0.element })?.offset
+    }
+    let front = item("Bring All to Front")
+    // Calendar's Window menu with its window closed (item order from its MainMenu nib).
+    let calendar = [item("Minimize", enabled: false, shortcut: "CMD+M"), item("Zoom", enabled: false), item("Move Window to Left Side of Screen", enabled: false),
+                    item(""), item("Calendar", shortcut: "CMD+0"), item(""), front]
+    check(pick(["Calendar"], calendar, bundleId: "com.apple.iCal") == 4, "Calendar's Window menu item shows its main window")
+    check(pick(["calendar "], calendar) == 4, "the application name matches case- and space-insensitively")
+    check(pick(["Notes"], calendar) == nil, "another application's name is not this application's window")
+    check(pick(["Calendar"], [item("Calendar", submenu: true), front]) == nil, "a submenu is not a window")
+    // AppKit validates a closed menu lazily: the helper re-checks with it open.
+    check(pick(["Calendar"], [item("Calendar", enabled: false), front]) == 0, "a greyed-out read is still the candidate")
+    check(pick(["Mail"], [item("Minimize"), item("Message Viewer", shortcut: "CMD+0"), front], bundleId: "com.apple.mail") == 1,
+          "Mail's main window is its Message Viewer")
+    check(pick(["Mail"], [item("Minimize"), item("Message Viewer"), front], bundleId: "COM.APPLE.MAIL") == 1, "the bundle identifier matches case-insensitively")
+    for title in ["Message Viewer", "Main Window", "Main Window…"] {
+        check(pick(["Widget"], [item(title), front], bundleId: "com.example.widget") == nil, "\(title) is only another application's main window")
+    }
+    check(pick(["Code", "Visual Studio Code"], [item("Visual Studio Code"), front]) == 0, "any of the application's names identifies it")
+    // The window list after Bring All to Front is titled by the windows
+    // themselves (a web page's <title>, a folder), minimized ones included.
+    for title in ["Safari", "Main Window", "Message Viewer"] {
+        let menu = [item("Minimize"), item("Zoom"), item(""), front, item(""), item(title)]
+        check(pick(["Safari"], menu, bundleId: "com.apple.mail") == nil, "a window-list entry titled \(title) is never pressed")
+    }
+    check(pick(["Calendar"], [item("Minimize"), item("Arrange in Front"), item("Calendar")]) == nil, "Arrange in Front also starts the window list")
+    check(pick(["Calendar"], [item("Minimize"), item("Calendar")]) == nil, "without Bring All to Front the window list cannot be told apart")
+    check(pick(["Calendar"], [item("Calendar"), front, item("Calendar")]) == 0, "the command before the list is the one taken")
+    // The entry checked is the entry pressed, never a longer title before it.
+    check(pick(["Calendar"], [item("Calendar Settings"), item("Calendar"), front]) == 1, "a prefix-sharing entry before the exact one is not pressed")
+    check(pick(["Calendar"], [item("Calendar Settings"), item("Calendar Settings", enabled: false), item("Calendar"), front]) == 2,
+          "the exact entry is found past every near miss")
+    // An application named like a window command never gets that command.
+    for name in ["Zoom", "Minimize", "Move", "Close Window", "Merge All Windows", "Tile Window to Left of Screen"] {
+        check(pick([name], [item(name), front]) == nil, "\(name) acts on windows and is never pressed")
+    }
+    check(pick(["Bring All to Front"], [front, item("")]) == nil, "Bring All to Front is never pressed")
+    check(pick(["Quit Calendar"], [item("Quit Calendar"), front]) == nil, "a refused menu path stays refused")
+    check(pick(["Calendar"], [item("Calendar Settings"), item("Calendars"), item("Show Calendar List"), front]) == nil,
+          "only the exact name, never a longer or shorter title")
+    check(pick([""], [item("x"), front]) == nil, "an empty name matches nothing")
+    check(pick(["Calendar"], []) == nil, "no Window menu, no restore")
+}
+
 func searchCommandChecks(_ check: (Bool, String) -> Void) {
     for title in ["Search", "Find…", "Find in Files", "Quick Open", "Jump to…", "Command Palette…", "Filter", "Go to File…", "Quick Search"] {
         check(searchCommandTitle(title), "\(title) opens a search field")

@@ -164,6 +164,54 @@ func menuPathRefused(_ path: [String]) -> Bool {
     }
 }
 
+// MARK: A windowless application's main window
+
+/**
+ A running application can come to the front with no window at all (live:
+ Calendar after its window was closed), and the screenshot then shows the
+ application behind it. A Dock click would reopen it through LaunchServices,
+ but a windowless document app answers that with an Open panel or a template
+ chooser (launchReopenAllowed in LaunchSafety.swift), so the helper presses the
+ application's own Window menu item for its main window instead. Only an exact
+ name is taken: the application's own name (Calendar, Notes, Messages, Music,
+ Spotify) or its fixed main-window title below; never an item that acts on
+ windows already there, and never one menuPathRefused refuses.
+
+ AppKit lists every window of the application after Bring All to Front, titled
+ by the window itself (a web page's title, a folder, a terminal's escape
+ sequence), minimized and other-Space windows included. Nothing past that item
+ is a command, so the scan ends there, and a menu without it is not read at
+ all: its window list could not be told from its commands. Disabled items stay
+ candidates, because AppKit validates a menu only when it opens; the helper
+ checks again with the menu open. The entry itself is returned, so the item
+ pressed is the item checked, never a longer title sharing its prefix.
+ */
+// Main windows not named after their application, by bundle identifier
+// (lowercased), each confirmed in the application's own menu nib.
+let mainWindowMenuTitles: [String: Set<String>] = ["com.apple.mail": ["message viewer"]]
+private let windowListStartTitles: Set<String> = ["bring all to front", "arrange in front"]
+private let windowArrangingWords: Set<String> = [
+    "close", "minimize", "minimise", "merge", "move", "zoom", "tile", "fill", "center", "centre",
+    "full", "hide", "bring", "cycle", "arrange", "remove", "resize", "float",
+]
+func mainWindowMenuEntry<Entry>(appNames: [String], bundleId: String, entries: [Entry], digest: (Entry) -> MenuItemDigest?) -> Entry? {
+    let names = Set(appNames.map { normalizeTargetTitle($0).lowercased() }.filter { !$0.isEmpty })
+    let fixed = mainWindowMenuTitles[bundleId.lowercased()] ?? []
+    var chosen: Entry? = nil
+    for entry in entries {
+        guard let item = digest(entry) else { continue } // separators carry no title
+        let title = normalizeTargetTitle(item.title).lowercased()
+        if windowListStartTitles.contains(title) { return chosen }
+        guard chosen == nil, !item.submenu, !title.isEmpty, !menuPathRefused(["Window", item.title]) else { continue }
+        let words = title.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        guard !words.contains(where: windowArrangingWords.contains) else { continue }
+        // Exact, never targetTitleMatches: its word-boundary prefix would let
+        // "Calendar" take "Calendar Settings".
+        if names.contains(title) || fixed.contains(title) { chosen = entry }
+    }
+    return nil
+}
+
 // AXMenuItemCmdModifiers is a mask over Command: bit 3 clear means Command is
 // part of the shortcut, and the low bits add Shift, Option and Control. The
 // names are the agent's own key names, so a shortcut read from a menu is one

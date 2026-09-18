@@ -1150,6 +1150,98 @@ describe("open_app policy", () => {
       }).kind,
     ).toBe("ALLOW");
   });
+  it("lets open_app show the window of a frontmost app that has none", () => {
+    // Live: Calendar was running with no window; open_app activated it, the
+    // screenshot showed the app behind it, and a second open_app was refused
+    // with "work with what is on screen" until the run handed over.
+    const calendar: Partial<Surface> = {
+      appId: "com.apple.iCal",
+      appName: "Calendar",
+      launcherStatus: "resolved",
+      launcherAppId: "com.apple.iCal",
+      launcherName: "Calendar",
+    };
+    expect(
+      decide(openApp("Calendar"), { ...calendar, windowCount: 0 }),
+    ).toEqual({
+      kind: "ALLOW",
+      reason: "Show the main window of an application open with no window.",
+    });
+    // A window on screen, or a helper that reported no count, keeps the refusal.
+    for (const windowCount of [1, undefined])
+      expect(
+        decide(openApp("Calendar"), { ...calendar, windowCount }).reason,
+      ).toMatch(/already open and frontmost/);
+    // The windowless exception never reaches past a refusal.
+    expect(
+      decide(openApp("Installer"), {
+        ...calendar,
+        windowCount: 0,
+        appId: "com.apple.installer",
+        launcherAppId: "com.apple.installer",
+      }).kind,
+    ).not.toBe("ALLOW");
+    expect(
+      decide(openApp("Calendar"), {
+        ...calendar,
+        windowCount: 0,
+        launcherStatus: "refused",
+      }).kind,
+    ).toBe("DENY");
+    expect(
+      evaluate(
+        openApp("Calendar"),
+        { ...base, ...calendar, windowCount: 0 },
+        {
+          ...settings,
+          protectedApps: [...settings.protectedApps, "com.apple.ical"],
+        },
+        false,
+      ).kind,
+    ).not.toBe("ALLOW");
+  });
+  it("turns a Dock click on the windowless frontmost app into a route", () => {
+    const dock: Partial<Surface> = {
+      appId: "com.apple.iCal",
+      appName: "Calendar",
+      targetAppId: "com.apple.dock",
+      targetRole: "AXDockItem",
+      targetSubrole: "AXApplicationDockItem",
+      launcherAppId: "com.apple.iCal",
+      targetLabel: "Calendar",
+    };
+    const windowless = decide(click(), { ...dock, windowCount: 0 });
+    // It never sends the model back to open_app, which the history of a
+    // windowless open_app tells it not to repeat.
+    expect(windowless.reason).not.toMatch(/open_app/);
+    expect(windowless).toEqual({
+      kind: "RETRY",
+      reason:
+        "No input was sent. Calendar is open but shows no window. Choose its window from its Window menu in context.menus, or use File > New.",
+    });
+    // With a window, or on another application's icon, the redirect is generic.
+    for (const surface of [
+      { ...dock, windowCount: 1 },
+      { ...dock, windowCount: 0, appId: "com.apple.Notes" },
+      dock,
+    ]) {
+      const decision = decide(click(), surface);
+      expect(decision.kind).toBe("RETRY");
+      expect(decision.reason).toBe(
+        "No input was sent. To open or switch to an application, use open_app with its exact name instead of clicking the Dock.",
+      );
+    }
+    // Refusals still come first.
+    expect(
+      decide(click(), {
+        ...dock,
+        windowCount: 0,
+        appId: "com.apple.Terminal",
+        launcherAppId: "com.apple.Terminal",
+        targetLabel: "Terminal",
+      }).kind,
+    ).toBe("USER_TAKEOVER");
+  });
   it("opens a verified installed application", () => {
     expect(decide(openApp("Google Chrome"), resolved)).toEqual({
       kind: "ALLOW",

@@ -979,6 +979,211 @@ describe("runner open_app execution", () => {
       expect(runner.snapshot.run?.actions).toBe(1);
     },
   );
+  it.each([
+    [0, false, "Calendar is open but shows no window."],
+    [1, true, "Opened Calendar (com.apple.iCal); frontmost=true."],
+    // The helper's own restore claim wins over a count that has not caught up.
+    [0, true, "Opened Calendar (com.apple.iCal); frontmost=true."],
+    [2, false, "Opened Calendar (com.apple.iCal); frontmost=true."],
+    [undefined, undefined, "Opened Calendar (com.apple.iCal); frontmost=true."],
+  ])(
+    "tells the model when the app it opened shows no window (windows=%s, restored=%s)",
+    async (windows, restoredWindow, start) => {
+      const { windowlessResult } = await import("../src/core/runner");
+      allowAll();
+      const m = memory();
+      const c = controller({
+        execute: vi.fn(async () => ({
+          launched: {
+            appId: "com.apple.iCal",
+            name: "Calendar",
+            frontmost: true,
+            wasRunning: true,
+            ...(windows !== undefined && { windows, restoredWindow }),
+          },
+        })),
+      });
+      const p = scripted([act({ type: "open_app", name: "Calendar" })]);
+      const runner = new Runner(c, p, m.recorder, settings, () => {});
+      await runner.start("Open Calendar");
+      const result = p.observations[1].history.at(-1)!.result;
+      expect(result.startsWith(start)).toBe(true);
+      if (windows === 0 && !restoredWindow) {
+        // Live: Calendar came up windowless and the model opened it again.
+        expect(result).toBe(windowlessResult("Calendar"));
+        expect(result).toBe(
+          "Calendar is open but shows no window. Use its Window menu or File > New (its New shortcut) to show one; don't open it again.",
+        );
+      }
+      // The journal carries the count and the flag, never more.
+      expect(m.of("ActionExecuted")[0].data.launched).toEqual({
+        appId: "com.apple.iCal",
+        frontmost: true,
+        wasRunning: true,
+        ...(windows !== undefined && { windows, restoredWindow }),
+      });
+    },
+  );
+  // Live: Calendar came up windowless; policy lets open_app of a windowless
+  // frontmost app through for one native restore, and every execution reset
+  // the retry count, so repeats only met the loop tracker's eighth step.
+  const windowlessCalendar: Surface = {
+    ...surface,
+    appId: "com.apple.iCal",
+    appName: "Calendar",
+    launcherStatus: "resolved",
+    launcherAppId: "com.apple.iCal",
+    launcherName: "Calendar",
+    windowCount: 0,
+  };
+  // The real policy decides open_app; the other steps are allowed.
+  const realOpenApp = () => {
+    policy.evaluate = ((a: Action) =>
+      a.type === "open_app"
+        ? undefined
+        : {
+            kind: "ALLOW",
+            reason: "Test.",
+          }) as unknown as typeof policy.evaluate;
+  };
+  const opens = (execute: ReturnType<typeof vi.fn>) =>
+    execute.mock.calls.filter(([a]) => (a as Action).type === "open_app")
+      .length;
+  it("refuses a second open_app of the app it just left windowless, until another step runs", async () => {
+    const { windowlessRepeat } = await import("../src/core/runner");
+    realOpenApp();
+    const m = memory();
+    const execute = vi.fn(async (a: Action) =>
+      a.type === "open_app"
+        ? {
+            launched: {
+              appId: "com.apple.iCal",
+              name: "Calendar",
+              frontmost: true,
+              wasRunning: true,
+              windows: 0,
+              restoredWindow: false,
+            },
+          }
+        : {},
+    );
+    const c = controller({ surface: async () => windowlessCalendar, execute });
+    const open = act({ type: "open_app", name: "Calendar" });
+    const p = scripted([open, open, act({ type: "key", key: "ENTER" }), open]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("Open Calendar");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    // The repeat is refused with no input; the step after another action is not.
+    expect(p.observations[2].history.at(-1)).toEqual({
+      type: "open_app",
+      action: { type: "open_app", name: "Calendar" },
+      result: windowlessRepeat("Calendar"),
+    });
+    expect(windowlessRepeat("Calendar")).toBe(
+      "No input was sent. Calendar is open but shows no window, and opening it again will not show one. Use its Window menu or File > New.",
+    );
+    expect(opens(execute)).toBe(2);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(1);
+  });
+  it("hands over after three windowless repeats instead of looping", async () => {
+    const { TARGET_HANDOFF_MESSAGE } = await import("../src/core/runner");
+    realOpenApp();
+    const m = memory();
+    const execute = vi.fn(async () => ({
+      launched: {
+        appId: "com.apple.iCal",
+        name: "Calendar",
+        frontmost: true,
+        wasRunning: true,
+        windows: 0,
+        restoredWindow: false,
+      },
+    }));
+    const c = controller({ surface: async () => windowlessCalendar, execute });
+    const p = scripted(
+      Array.from({ length: 4 }, () =>
+        act({ type: "open_app", name: "Calendar" }),
+      ),
+    );
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("Open Calendar");
+    await until(() => runner.snapshot.run?.status === "takeover");
+    expect(runner.snapshot.message).toBe(TARGET_HANDOFF_MESSAGE);
+    expect(opens(execute)).toBe(1);
+    runner.stop();
+    await running;
+  });
+  it.each([
+    [
+      "the window was restored",
+      { windows: 1, restoredWindow: true },
+      windowlessCalendar,
+    ],
+    // The helper's restore claim wins over a count that has not caught up.
+    [
+      "the helper restored a window it has not counted yet",
+      { windows: 0, restoredWindow: true },
+      windowlessCalendar,
+    ],
+    ["the count is unknown", {}, windowlessCalendar],
+    [
+      "another app is in front",
+      { windows: 0, restoredWindow: false },
+      { ...windowlessCalendar, appId: "com.apple.Notes" },
+    ],
+  ])("lets open_app run again when %s", async (_name, counts, frontSurface) => {
+    realOpenApp();
+    const m = memory();
+    const execute = vi.fn(async () => ({
+      launched: {
+        appId: "com.apple.iCal",
+        name: "Calendar",
+        frontmost: true,
+        wasRunning: true,
+        ...counts,
+      },
+    }));
+    const c = controller({
+      surface: async () => frontSurface as Surface,
+      execute,
+    });
+    const open = act({ type: "open_app", name: "Calendar" });
+    const p = scripted([open, open]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("Open Calendar");
+    expect(opens(execute)).toBe(2);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(0);
+  });
+  it("keeps a policy refusal's own reason for a windowless repeat", async () => {
+    // The first open_app is allowed and leaves Calendar windowless; policy
+    // then refuses the second one, and that refusal is what the model reads.
+    let opened = 0;
+    policy.evaluate = (a) =>
+      a.type === "open_app" && opened++ > 0
+        ? { kind: "DENY", reason: "That application must be opened manually." }
+        : { kind: "ALLOW", reason: "Test." };
+    const m = memory();
+    const execute = vi.fn(async () => ({
+      launched: {
+        appId: "com.apple.iCal",
+        name: "Calendar",
+        frontmost: true,
+        wasRunning: true,
+        windows: 0,
+        restoredWindow: false,
+      },
+    }));
+    const c = controller({ surface: async () => windowlessCalendar, execute });
+    const open = act({ type: "open_app", name: "Calendar" });
+    const p = scripted([open, open]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("Open Calendar");
+    expect(p.observations[2].history.at(-1)!.result).toBe(
+      "No input was sent. That application must be opened manually.",
+    );
+    expect(m.of("UserDenied")).toHaveLength(1);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(0);
+  });
 });
 
 describe("executed step memory", () => {

@@ -258,6 +258,23 @@ export const loopWarning =
 export const appSwitchWarning =
   " Warning: you keep switching between applications. Switching again will not show new information. Read the values you need from the current screenshot and context now, then finish the step in this application.";
 /**
+ * The history result for an open_app that brought a running application to
+ * the front with no window, after its own Window menu showed none either
+ * (live: Calendar). Without it the model read the app behind as the one it
+ * opened, or opened it again. Content-free apart from the display name.
+ */
+export const windowlessResult = (name: string) =>
+  `${name} is open but shows no window. Use its Window menu or File > New (its New shortcut) to show one; don't open it again.`;
+/**
+ * The refusal of a second open_app for an application the last executed step
+ * already brought up windowless. Policy allows open_app of a windowless
+ * frontmost app so the helper can restore its window once; after that the
+ * same call returns the same result, and each execution resets the retry
+ * count, so only this keeps the targeting hand-off within reach.
+ */
+export const windowlessRepeat = (name: string) =>
+  `No input was sent. ${name} is open but shows no window, and opening it again will not show one. Use its Window menu or File > New.`;
+/**
  * What one observation looked like, for the no-progress check. It is compared
  * in memory only: never journaled, never sent and never stored.
  */
@@ -590,6 +607,8 @@ export class Runner {
   private approvalSource?: ApprovalSource;
   private signatures: string[] = [];
   private switches: (string | null)[] = [];
+  /** The app the last executed open_app left frontmost with no window. */
+  private windowlessApp?: { appId: string; name: string };
   private switchWarned = false;
   private loopWarned = false;
   private sinceLoopWarning = 0;
@@ -648,6 +667,7 @@ export class Runner {
   private resetLoop() {
     this.signatures = [];
     this.switches = [];
+    this.windowlessApp = undefined;
     this.switchWarned = false;
     this.loopWarned = false;
     this.sinceLoopWarning = 0;
@@ -1821,7 +1841,7 @@ export class Runner {
           if (await this.recoverNative(error, epoch, action)) continue;
           throw error;
         }
-        const decision = evaluate(
+        const evaluated = evaluate(
           action,
           actionSurface,
           this.settings,
@@ -1839,6 +1859,19 @@ export class Runner {
               : {}),
           },
         );
+        // Only an ALLOW is replaced: every refusal keeps its own reason.
+        const windowless = this.windowlessApp;
+        const decision =
+          evaluated.kind === "ALLOW" &&
+          action.type === "open_app" &&
+          windowless !== undefined &&
+          actionSurface.launcherAppId?.toLowerCase() === windowless.appId &&
+          actionSurface.appId?.toLowerCase() === windowless.appId
+            ? {
+                kind: "RETRY" as const,
+                reason: windowlessRepeat(windowless.name),
+              }
+            : evaluated;
         if (this.held || epoch !== this.epoch) {
           planFail("interrupted");
           continue;
@@ -2115,7 +2148,19 @@ export class Runner {
                 name: bound(String(outcome.launched.name || action.name), 120),
                 frontmost: outcome.launched.frontmost === true,
                 wasRunning: outcome.launched.wasRunning === true,
+                ...(typeof outcome.launched.windows === "number" && {
+                  windows: outcome.launched.windows,
+                  restoredWindow: outcome.launched.restoredWindow === true,
+                }),
               }
+            : undefined;
+        // Set by an open_app that left its app windowless, cleared by any
+        // other executed step.
+        this.windowlessApp =
+          launched?.frontmost &&
+          launched.windows === 0 &&
+          !launched.restoredWindow
+            ? { appId: launched.appId.toLowerCase(), name: launched.name }
             : undefined;
         const opened =
           action.type === "open_file" &&
@@ -2166,6 +2211,10 @@ export class Runner {
                   appId: launched.appId,
                   frontmost: launched.frontmost,
                   wasRunning: launched.wasRunning,
+                  ...(launched.windows !== undefined && {
+                    windows: launched.windows,
+                    restoredWindow: launched.restoredWindow,
+                  }),
                 },
               }
             : {}),
@@ -2186,7 +2235,9 @@ export class Runner {
           result:
             (launched
               ? launched.frontmost
-                ? `Opened ${launched.name} (${launched.appId}); frontmost=true. Verify appId on the next screenshot; if no window is visible use the app's New shortcut.`
+                ? launched.windows === 0 && !launched.restoredWindow
+                  ? windowlessResult(launched.name)
+                  : `Opened ${launched.name} (${launched.appId}); frontmost=true. Verify appId on the next screenshot; if no window is visible use the app's New shortcut.`
                 : `Launch requested for ${launched.appId}; not frontmost yet. Wait briefly before retrying.`
               : opened
                 ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`

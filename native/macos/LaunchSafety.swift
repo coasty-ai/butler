@@ -82,6 +82,32 @@ func launchReopenAllowed(wasRunning: Bool, alreadyReopened: Bool, elapsed: TimeI
     wasRunning && !alreadyReopened && elapsed >= 1 && onScreenWindows > 0
 }
 
+// One on-screen window as the window server lists it. Counted only when a
+// person would call it the application's window: on the normal layer, drawn,
+// and larger than a status item or an invisible helper surface. Minimized
+// windows and windows on another Space are not on screen, so not counted.
+struct OnScreenWindow {
+    let pid: Int
+    let layer: Int
+    let alpha: Double
+    let width: Double
+    let height: Double
+}
+let standardWindowMinSide = 40.0
+func standardWindowCount(_ windows: [OnScreenWindow], pid: Int) -> Int {
+    windows.filter { $0.pid == pid && $0.layer == 0 && $0.alpha > 0 && $0.width >= standardWindowMinSide && $0.height >= standardWindowMinSide }.count
+}
+// A running application turns frontmost before an unhidden window or a Space
+// switch reaches the screen. Any window is a final count; none is final only
+// after this long, or open_app would call a hidden TextEdit windowless and
+// send the model to File > New instead of the user's open document. A Space
+// switch animates for about half a second, so the settle is the full second
+// launchReopenAllowed already waits before judging a running app's windows.
+let windowSettleSeconds = 1.0
+func windowCountSettled(windows: Int, waited: TimeInterval) -> Bool {
+    windows > 0 || waited >= windowSettleSeconds
+}
+
 func launchDenied(name: String, displayName: String, bundleId: String) -> Bool {
     let id = bundleId.lowercased()
     return id.isEmpty || launchNameDenied(name) || launchNameDenied(displayName) || launchNameDenied(id) || matches(launchBundlePattern, id) ||

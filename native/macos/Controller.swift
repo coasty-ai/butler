@@ -293,6 +293,18 @@ func inputApplication() -> NSRunningApplication? {
     }
     return NSWorkspace.shared.frontmostApplication
 }
+// How many windows an application shows (standardWindowCount decides which
+// count). The window server's list needs no accessibility call, so a hung
+// application cannot stall it.
+func onScreenWindowCount(_ pid: pid_t, list: [[String:Any]]? = nil) -> Int {
+    let windows = list ?? (CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements],kCGNullWindowID) as? [[String:Any]] ?? [])
+    return standardWindowCount(windows.compactMap { info in
+        guard let owner = info[kCGWindowOwnerPID as String] as? Int, let raw = info[kCGWindowBounds as String] as? [String:Any],
+              let rect = CGRect(dictionaryRepresentation: raw as CFDictionary) else { return nil }
+        return OnScreenWindow(pid: owner, layer: info[kCGWindowLayer as String] as? Int ?? -1, alpha: info[kCGWindowAlpha as String] as? Double ?? 1,
+                              width: Double(rect.width), height: Double(rect.height))
+    }, pid: Int(pid))
+}
 func windowState() -> WindowState {
     let running = inputApplication()
     let pid = running?.processIdentifier ?? 0
@@ -702,6 +714,40 @@ func pressMenuPath(_ path: [String]) throws {
     noteCommand(item.title, pid: app.processIdentifier, appId: app.bundleIdentifier ?? "")
 }
 /**
+ Shows a frontmost, windowless application's main window by pressing the
+ Window menu item that names it (mainWindowMenuEntry in NamedTargets.swift).
+ The element that rule approved is the one pressed: resolving its title again
+ would take the first item sharing that prefix. Like pressMenuPath, an item
+ that reads greyed out is checked once more with its menu open. Never a
+ LaunchServices reopen: a windowless document app answers that with an Open
+ panel. False when the application lists no such item or it stays disabled; a
+ stop or a blocked surface still throws.
+ */
+func restoreMainWindow(pid: pid_t, bundleId: String, appNames: [String]) throws -> Bool {
+    let element = AXUIElementCreateApplication(pid)
+    _ = AXUIElementSetMessagingTimeout(element, 2.0)
+    func find() -> AXUIElement? {
+        guard let top = menuBarItem(element, "Window"), let menu = submenuOf(top) else { return nil }
+        return mainWindowMenuEntry(appNames: appNames, bundleId: bundleId, entries: menuEntries(menu, limit: 40), digest: menuEntryDigest)
+    }
+    func enabled(_ item: AXUIElement) -> Bool { attribute(item, kAXEnabledAttribute) as? Bool ?? true }
+    guard var item = find(), inputApplication()?.processIdentifier == pid else { return false }
+    var opened = false
+    if !enabled(item) {
+        guard let top = menuBarItem(element, "Window") else { return false }
+        try ensureRunning()
+        _ = AXUIElementPerformAction(top, kAXPressAction as CFString); opened = true
+        Thread.sleep(forTimeInterval: 0.2)
+        guard let again = find(), enabled(again) else { pressEscape(); return false }
+        item = again
+    }
+    try ensureRunning(); try guardSurface()
+    guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { if opened { pressEscape() }; return false }
+    withState { menuSnapshot = nil } // menus revalidate after their own command
+    noteCommand(nil, pid: pid, appId: bundleId) // a window command, never a search
+    return true
+}
+/**
  The controls the model was shown, read again now: the same walk capture uses,
  so a name it quoted resolves to where that control is at this moment.
  */
@@ -860,6 +906,12 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
         case .refused: result["launcherStatus"] = "refused"
         }
         stateLock.lock(); launchBinding = cached; stateLock.unlock()
+    }
+    // Whether the frontmost application shows any window, for open_app and a
+    // Dock click on an application: opening the frontmost app again is only
+    // useful when it has no window to work in (policy.ts).
+    if action?["type"] as? String == "open_app" || result["launcherAppId"] != nil {
+        result["windowCount"] = min(onScreenWindowCount(app.processIdentifier), 99)
     }
     if let a = action, a["type"] as? String == "open_file" {
         let requested = a["path"] as? String ?? ""
@@ -1146,6 +1198,10 @@ func screenContext() -> [String:Any] {
     }
     var windows=recentWindows
     if let list=CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements],kCGNullWindowID) as? [[String:Any]] {
+        // A frontmost application with no window shows the app behind it in
+        // the screenshot (live: Calendar); the count says so, never a title.
+        // Spotlight's panel is not a window the model works in.
+        if app.bundleIdentifier != "com.apple.Spotlight" {result["windowCount"]=min(onScreenWindowCount(app.processIdentifier,list:list),99)}
         for window in list where windows.count<12 {
             guard let pid=window[kCGWindowOwnerPID as String] as? Int,pid != Int(getppid()),let other=NSRunningApplication(processIdentifier:pid_t(pid)),!protectedApps.contains(where:{(other.bundleIdentifier ?? "").lowercased().contains($0.lowercased())}),let title=window[kCGWindowName as String] as? String,!title.isEmpty else{continue}
             let entry=["appName":other.localizedName ?? "", "title":String(title.prefix(300))]
@@ -1691,10 +1747,6 @@ func openApplication(_ action:[String:Any]) async throws -> [String:Any] {
     }
     let started = ProcessInfo.processInfo.systemUptime
     var reopened = false
-    func onScreenWindowCount(_ pid: pid_t) -> Int {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements],kCGNullWindowID) as? [[String:Any]] else { return 0 }
-        return list.filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && ($0[kCGWindowLayer as String] as? Int) == 0 }.count
-    }
     while !frontmost() && ProcessInfo.processInfo.systemUptime - started < 2.5 {
         try await Task.sleep(nanoseconds: 50_000_000); try ensureRunning()
         // Background activation can be declined; LaunchServices activation of the
@@ -1709,8 +1761,34 @@ func openApplication(_ action:[String:Any]) async throws -> [String:Any] {
         }
         if let outcome = outcome, outcome.state().1 && !wasRunning { throw ControlError("The application could not be opened.", code: "LAUNCH_FAILED") }
     }
+    var launched: [String:Any] = ["appId": appId, "name": display, "frontmost": frontmost(), "wasRunning": wasRunning]
+    // A running app can come to the front with no window (live: Calendar),
+    // leaving the screenshot to the app behind it; the reopen above is refused
+    // for windowless apps, so its own Window menu shows the main window. Only
+    // for an app that was running: a cold launch opens its own window, and its
+    // count right now would only race it. An unhidden app's windows, or ones
+    // on a Space macOS is still switching to, arrive a moment after it turns
+    // frontmost, so none counts only once settled (LaunchSafety.swift). The
+    // waits stay inside the timeout.
+    if wasRunning, let running, frontmost() {
+        let pid = running.processIdentifier, since = ProcessInfo.processInfo.systemUptime
+        var windows = onScreenWindowCount(pid), restored = false
+        while !windowCountSettled(windows: windows, waited: ProcessInfo.processInfo.systemUptime - since) {
+            try await Task.sleep(nanoseconds: 50_000_000); try ensureRunning()
+            windows = onScreenWindowCount(pid)
+        }
+        if windows == 0, try restoreMainWindow(pid: pid, bundleId: appId, appNames: [running.localizedName ?? "", display]) {
+            let deadline = ProcessInfo.processInfo.systemUptime + 1.5
+            while windows == 0 && ProcessInfo.processInfo.systemUptime < deadline {
+                try await Task.sleep(nanoseconds: 50_000_000); try ensureRunning()
+                windows = onScreenWindowCount(pid)
+            }
+            restored = windows > 0
+        }
+        launched["windows"] = windows; launched["restoredWindow"] = restored
+    }
     withState { lastInputTime = ProcessInfo.processInfo.systemUptime; launchBinding = nil }
-    return ["executed": true, "launched": ["appId": appId, "name": display, "frontmost": frontmost(), "wasRunning": wasRunning]]
+    return ["executed": true, "launched": launched]
 }
 final class FileOpenOutcome: @unchecked Sendable {
     let lock = NSLock(); var done = false; var failed = false; var appId: String? = nil

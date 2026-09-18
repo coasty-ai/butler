@@ -255,6 +255,9 @@ describe("provider-neutral adapters", () => {
       'context.accessibility is "none"',
       "publishes no accessibility information",
       "Do not call open_app for an application that is already frontmost",
+      // Live: Calendar came up windowless and the model reopened it.
+      "An application can be open and frontmost with no window (context.windowCount is 0",
+      "use its Window menu or File > New to show one instead of calling open_app again",
       "never repeat a blind click",
       "Its menus still work, and they are the reliable route there",
       "arrow keys and ENTER",
@@ -285,6 +288,15 @@ describe("provider-neutral adapters", () => {
     const request = buildRequest(s("openai"), "K", { ...o, frame });
     const context = JSON.parse(request.body.input[0].content[0].text).context;
     expect(context.accessibility).toBe("none");
+    // The window count reaches the model beside the other screen details.
+    const windowless = buildRequest(s("openai"), "K", {
+      ...o,
+      frame: { ...frame, context: { ...frame.context, windowCount: 0 } },
+    });
+    expect(
+      JSON.parse(windowless.body.input[0].content[0].text).context.windowCount,
+    ).toBe(0);
+    expect(windowless.body.instructions).toBe(request.body.instructions);
     expect(context.menus).toEqual(menus);
     expect(context.appName).toBe("Spotify");
     // An unknown level is dropped with the rest of an unbounded context.

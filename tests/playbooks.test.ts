@@ -78,6 +78,23 @@ describe("app playbook table", () => {
     // The live failure behind the loop: shortcuts are no-ops with no window.
     expect(text).toContain("Window > Spotify");
   });
+  it("creates a Calendar event in plain words and shows a closed window first", () => {
+    const text = playbookFor("com.apple.iCal", "Calendar").join(" ");
+    expect(playbookFor(undefined, "Calendar")).toEqual(
+      playbooks["com.apple.ical"],
+    );
+    // One typed sentence carries the title and the time, then ENTER.
+    expect(text).toContain("File > New Event (CMD+N)");
+    expect(text).toContain("Pick up packages today at 6 PM");
+    expect(text).toContain("press ENTER");
+    expect(text).toContain("Read the new event back from the screenshot");
+    expect(text).not.toContain("TAB through the date");
+    // Finding an existing event stays a keyboard route (bench: agenda-cal-move).
+    expect(text).toContain("Find an event with CMD+F");
+    // Live: Calendar came up windowless and the model reopened it.
+    expect(text).toContain("context.windowCount 0");
+    expect(text).toContain("Window > Calendar");
+  });
   it("routes Chrome through the address bar instead of the pointer", () => {
     const text = playbookFor("com.google.Chrome", "Google Chrome").join(" ");
     expect(text).toContain("CMD+L");
