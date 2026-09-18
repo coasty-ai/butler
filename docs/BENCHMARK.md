@@ -153,6 +153,136 @@ Screenshots dominate the input tokens, so cost scales with actions. A change tha
 
 Voice: nothing here uses the microphone, the wake phrase, endpointing or spoken replies. Latency from key-down to first action, multi-display behaviour, and anything requiring a sign-in are also out of scope. The catalogue is deliberately safe, so it under-samples the hard, consequential tasks where approvals and policy blocks matter most.
 
+## 1b. The long-horizon suite
+
+Twenty-eight tasks of 10 to 40 steps each, across the Finder, TextEdit, Calendar, Reminders, Calculator, Music, System Settings and a browser, defined in `src/gym/bench/catalogue-long.ts` with `suite: "long"`. The smoke suite above is unchanged and stays the default.
+
+**How to run it.** Not yet from `npm run bench`: that script still runs the smoke catalogue only, and a long task needs the per-attempt bench folder, fixture server and agenda helper that the attempt runner provides. A harness selects tasks with `selectSuite(selector, suite)` and `catalogueFor(suite)` from `catalogue-long.ts` (a selector of `long` or `all` picks a whole suite; ids and categories resolve against the suite chosen), and reads the end state and cleans up with `readEvidence` and `cleanupAttempt` from `src/gym/bench/readers.ts`, which implement the `EvidenceReaders` and `Cleanup` contract in `types.ts`. `writeInside` in the same file backs `PrepareContext.write`, and `agendaFor(task)` builds `PrepareContext.agenda` for one attempt (below).
+
+**What the harness must do for the suite's safety to hold.** Create the attempt's bench folder empty immediately before `prepare()`: cleanup dates the attempt by that folder's birth time and deletes nothing older (see Cleanup). Build `PrepareContext.agenda` per attempt with `agendaFor(task)` and pass nothing else: it is `undefined` unless every store the task writes is granted and has its local `OpenAssistBench` container, and an agenda task's `prepare()` skips without it. When answering an approval, also require that the frontmost application is one of `task.apps`, and for `Replace the existing item?` that no sheet or dialog is in front: the policy asks the same question for the Find bar's Replace and for the Save panel's overwrite confirmation, and the reason string alone cannot tell them apart.
+
+### Where an attempt may work
+
+Every attempt gets a token (`benchnote` plus four base-36 characters, a name nothing of yours has) and works only inside that token's namespace:
+
+- **Files**: the folder `~/OpenAssistBench/<token>`, which the harness creates empty before `prepare()` writes the task's fixture files into it. Every instruction that works on files names the folder, and the Finder tasks open it in the Finder before the run starts, so the model begins in the right window. Every file the model is asked to open in TextEdit is named with the token too (`<token>-notes.txt`, `<token>-budget.txt`), so a search, Open Recent or the Open panel can only match the benchmark's file, never a document of yours called `notes.txt` or `budget.txt`.
+- **Calendar and Reminders**: items titled with the token, in a calendar and a reminders list called `OpenAssistBench` that the agenda helper creates in the **local** source ("On My Mac"), which does not sync to your other devices. The graders fail an item written to any other calendar (`WRONG_CALENDAR`, `WRONG_LIST`), including a synced calendar that happens to share the name.
+- **Web pages**: `http://127.0.0.1:47831/<token>/...`, served by `scripts/bench-fixtures.mjs` on the loopback interface only. The pages link only to the same token's registered pages, load nothing external, and carry `Content-Security-Policy: default-src 'self'` plus a `style-src` hash that admits only the pages' own inline stylesheet.
+
+Nothing in the suite sends, buys, installs or deletes anything by instruction, touches Messages or Mail, or signs in anywhere.
+
+### The tasks
+
+| id                           | Category / difficulty  | Steps | Actions / time | Cap   | Readers        | Primary checks         |
+| ---------------------------- | ---------------------- | ----- | -------------- | ----- | -------------- | ---------------------- |
+| `research-fact-note`         | research-note / medium | 12-22 | 44 / 500s      | $0.40 | files, fixture | noted                  |
+| `research-compare-note`      | research-note / medium | 15-25 | 50 / 560s      | $0.40 | files, fixture | noted                  |
+| `research-list-note`         | research-note / hard   | 20-35 | 70 / 760s      | $0.60 | files, fixture | noted                  |
+| `agenda-cal-create-tomorrow` | agenda / medium        | 10-20 | 40 / 460s      | $0.25 | agenda         | exists, day, start     |
+| `agenda-cal-move`            | agenda / hard          | 10-25 | 50 / 560s      | $0.40 | agenda         | single, start          |
+| `agenda-rem-create`          | agenda / medium        | 10-16 | 32 / 380s      | $0.25 | agenda         | exists, due            |
+| `agenda-rem-complete`        | agenda / medium        | 10-14 | 28 / 340s      | $0.25 | agenda         | completed              |
+| `agenda-rem-two`             | agenda / hard          | 16-30 | 60 / 660s      | $0.40 | agenda         | dentist, permit        |
+| `files-rename-pattern`       | files / medium         | 10-18 | 36 / 420s      | $0.25 | files          | renamed                |
+| `files-new-folder-move`      | files / medium         | 10-18 | 36 / 420s      | $0.25 | files          | folder, moved          |
+| `files-sort-by-type`         | files / hard           | 25-40 | 80 / 860s      | $0.60 | files          | textSorted, dataSorted |
+| `files-compress`             | files / medium         | 10-16 | 32 / 380s      | $0.25 | files          | zip                    |
+| `text-append-line`           | text-editing / medium  | 10-15 | 30 / 360s      | $0.25 | files          | appended               |
+| `text-new-doc-save`          | text-editing / hard    | 15-30 | 60 / 660s      | $0.40 | files          | saved, content         |
+| `text-find-replace`          | text-editing / medium  | 12-25 | 50 / 560s      | $0.40 | files          | replaced               |
+| `browser-nav-chain`          | browser / medium       | 10-16 | 32 / 380s      | $0.25 | fixture        | onOrder                |
+| `browser-form-submit-local`  | browser / medium       | 12-22 | 44 / 500s      | $0.40 | fixture        | submitted              |
+| `browser-find-in-table`      | browser / medium       | 12-20 | 40 / 460s      | $0.25 | fixture        | onItem                 |
+| `media-search-library`       | media / medium         | 10-16 | 32 / 380s      | $0.25 | music          | query, notPlaying      |
+| `settings-about`             | settings / medium      | 10-16 | 32 / 380s      | $0.25 | none           | onAbout                |
+| `settings-search-about`      | settings / medium      | 10-14 | 28 / 340s      | $0.25 | none           | onAbout                |
+| `multi-page-calc-note`       | multi-app / hard       | 18-30 | 60 / 660s      | $0.40 | files, fixture | noteTotal              |
+| `multi-draft-to-reminder`    | multi-app / hard       | 15-30 | 60 / 660s      | $0.40 | agenda, files  | reminder, due          |
+| `multi-folder-note-event`    | multi-app / hard       | 20-40 | 80 / 860s      | $0.60 | agenda, files  | event, day, start      |
+| `recovery-wrong-folder`      | recovery / medium      | 10-18 | 36 / 420s      | $0.25 | files          | renamed                |
+| `recovery-stale-draft`       | recovery / medium      | 12-20 | 40 / 460s      | $0.25 | files          | appended               |
+| `recovery-wrong-page`        | recovery / medium      | 12-22 | 44 / 500s      | $0.40 | fixture        | total                  |
+| `recovery-missing-file`      | recovery / medium      | 10-15 | 30 / 360s      | $0.25 | files          | handedOff              |
+
+Each task carries its instruction template, a safety note and what it verifies, for a dry run to print. Budgets come from the step range: actions are about twice the generous maximum (capped at 80), time is 60 s plus 10 s an action (capped at 900 s), and the cap is $0.25, $0.40 or $0.60 by length. **The ceiling is $9.55 per pass at caps**; measured spend runs at roughly a third of caps for `gpt-5.4-mini` and two thirds for `claude-sonnet-5`, so set per-model caps explicitly rather than one `--max-cost` for a multi-model cycle.
+
+Numbers on pages (employee counts, prices, order totals) and the correct answers are drawn per attempt, so a remembered answer cannot pass. Several tasks start from the **wrong place on purpose**, set up through LaunchServices (`open`), never through the controller and never with synthetic input: `recovery-wrong-folder` opens a decoy subfolder, `recovery-stale-draft` opens the wrong document, `recovery-wrong-page` opens a decoy orders page with different totals, and both settings tasks start System Settings on the General pane so that About is never left over from the previous attempt.
+
+### How the long graders verify
+
+Every long grader reads the end state back through a reader the task declared, never the model's own report:
+
+| Reader    | What it reads                                                                                                                                                                                                                              |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `files`   | The bench folder, walked without following symlinks and without dotfiles: path, size and SHA-256 of every item, the lowercased text of `.txt/.md/.csv` files, RTF through the built-in `textutil`, a zip's entry list through `unzip -Z1`. |
+| `agenda`  | `coarena-agenda find <token>`: every event within 45 days and every reminder, completed ones included, whose title carries the token, with its times and container.                                                                        |
+| `music`   | Music's player state through JXA. **Off unless `OPEN_ASSIST_BENCH_MUSIC=1`**, because the first Apple Event to Music from a terminal shows an Automation prompt (below).                                                                   |
+| `fixture` | The fixture server's log for the token: pages opened, in order, and form fields posted.                                                                                                                                                    |
+
+A missing reader, a denied agenda grant or a malformed read makes the attempt `unknown` (`NO_FILE_EVIDENCE`, `NO_AGENDA_EVIDENCE`, `NO_CALENDAR_ACCESS`, `NO_REMINDERS_ACCESS`, `NO_MUSIC_READER`, `NO_FIXTURE_EVIDENCE`), never `passed`.
+
+- **Primary checks** define completion. A run that said `done` with any primary check false is a **false done** (`falseDonePrimary`); `falseDone` counts any failed check. Other checks still fail the attempt (an extra file, a second event, a changed original) and feed **partial credit**: hard checks passed over hard checks total. A few checks are soft (the marker typed as a word of its own, a Save menu item): recorded, never failing.
+- A value left on screen by the previous attempt cannot pass: Calculator and Music tasks also need the entry in the journal (`NOT_ENTERED`, `SEARCH_NOT_TYPED`), and `settings-about` needs input in System Settings (`NOT_NAVIGATED`).
+- `recovery-missing-file` expects a **hand-off**: `<token>-budget.txt` does not exist. It passes when the run asks the user or proposes `fail` (critique G2) and the folder still holds only the unchanged readme. Looking for the file first (File > Open, Go to Folder, typing the path) is fine: the journal's mutating steps are recorded as the soft check `noMutation`, and the end state decides. The runner's own hand-off after three unidentified targets does not count (the retried actions never ran, so nothing shows the file was missing), nor does a policy or protected-surface hand-off (`NO_HANDOFF`); a `done` is the false done.
+- The browser tasks keep grading when another application is in front: the checks that read the window are false (`NOT_FRONTMOST`) and the ones that read the fixture server's log still count, so a `done` that submitted nothing is a primary false done with partial credit.
+- Agenda attempts are skipped within an hour of local midnight, when "tomorrow" could change between prepare and grade, and whenever the harness has no `agenda` for them. `agendaFor(task)` runs `coarena-agenda setup` (idempotent) before every agenda attempt and returns an agenda only when setup reports each store the task writes (Calendar for events, Reminders for reminders, by the apps the task names) as granted with its local `OpenAssistBench` container in place. Without the container the model would be told to use a list that is not there and would write to your default list, which may be shared; without the grant nothing could read the item back or remove it. Fixture tasks are skipped when no fixture server is running. A skip is `NO_PREPARED_TARGET`: it never counts against the model.
+
+### Approvals
+
+`--approve-routine` approves only the prompts a task lists word for word: the TextEdit and research tasks `Save these changes?`, `text-find-replace` also `Replace the existing item?` (its Find bar's Replace and All buttons), the loopback form `Submit or authorize this change?`, every other task nothing. Replace is kept off every other task on purpose: the policy asks exactly that question when a Save panel offers to overwrite an existing file, anywhere on disk, and a save task that approved it would overwrite a document of yours that happened to share the name. Page names, file names and folder names were chosen so the model never has to click a label the policy reads as consequential (an order page is titled by its id, the new folder is `<token>-reports`, not `-archive`); `tests/bench-long.test.ts` reads the policy's own pattern and checks every page and name against it.
+
+### Cleanup
+
+After the readers, whatever happened (a crash, a stop, a hand-off), `cleanupAttempt` removes what the attempt made and reports what it could not. **A token in a name does not make a thing the attempt's**: a model can type the token into one of your reminders or rename one of your files to it. So cleanup dates the attempt by the birth time of its bench folder, which the harness creates empty just before `prepare()`, and deletes only what was made after that:
+
+1. The bench folder `~/OpenAssistBench/<token>`, only when it is exactly the folder the token names and is not a symlink (`CLEANUP_REFUSED` otherwise). Anything inside it that is older than the folder (a file or folder of yours the model moved in) is first moved, not deleted, to `~/OpenAssistBench/.quarantine/<token>/` with its relative path, and reported as `LEFTOVER_FOREIGN_FILE`: look there after a cycle that reports it. If that move fails, or the folder cannot be walked to the end, nothing is deleted (`LEFTOVER_FILES`).
+2. `coarena-agenda remove <token> <start>`, with the folder's birth time as the start. Items carrying the token in the benchmark's own local containers go (a repeating one as a whole series); anywhere else an item goes only if it was created after the start, has no attendees (removing it would send them cancellations) and does not repeat. Everything else is kept and counted, and the attempt reports `LEFTOVER_FOREIGN_MARKED` for a person to check. Then `find <token> wide` verifies over two years each way, the widest window EventKit searches (`LEFTOVER_EVENT`, `LEFTOVER_REMINDER`). A store the helper has no grant for reads as empty, so when a store the task writes is not granted the result is `LEFTOVER_AGENDA_UNVERIFIED`, never clean.
+3. The fixture server forgets the token's log.
+4. The task's own `cleanup`, if any.
+5. For file tasks, a Spotlight sweep for things saved in the wrong place: `mdfind -onlyin ~ 'kMDItemFSName == "<token>*"c'` (case-insensitive: a model may capitalise the token). It deletes only regular files the attempt made whose name starts with **this attempt's** token, under your home folder outside `~/Library`, or in TextEdit's iCloud folder (`~/Library/Mobile Documents/com~apple~TextEdit/Documents`, where TextEdit saves when iCloud Drive is on), never through a symlink. A folder or bundle carrying the token (an `.rtfd` saved elsewhere), or anything elsewhere in iCloud Drive, is reported as `LEFTOVER_STRAY_FILE`, not deleted. A token-named file older than the attempt is yours, renamed by the model: it stays where it is (moving it out of an iCloud folder would delete it on your other devices) and is reported as `LEFTOVER_FOREIGN_FILE`. No answer from Spotlight (indexing off, a timeout) is `SWEEP_UNVERIFIED`, not clean. Spotlight lags a save by seconds, so run a sweep again at the end of a cycle.
+
+Each step runs on its own, so one that fails never keeps the others from running. A rename the model makes outside the bench folder to a name without the token cannot be detected; that is why the Finder tasks open the right folder first and name it.
+
+### What is not in the long suite, and why
+
+- **Notes**: iCloud syncs a note to every device within seconds, reading it back needs an Automation grant that would prompt mid-run, and the reader was never verified. The research tasks write into a TextEdit file in the bench folder instead.
+- **A new Music playlist**: iCloud Music Library syncs playlists, and Music shows subscription offers.
+- **System Settings panes other than General and About**: Storage has sheets that delete, Printers & Scanners adds a printer with one click.
+- **VS Code**: it reopens your last workspace, so a task would edit your own files unless the harness starts it with an isolated profile (`--user-data-dir`), which `PrepareContext.openWithLaunchServices` cannot pass yet; and on this Mac it is not under a launch root. The `ide` category stays reserved.
+
+### Before the first long cycle (attended, once)
+
+1. `node scripts/build-native.mjs`, then `native/bin/coarena-agenda request` in the terminal that will run the cycle, and grant Calendar and Reminders. `native/bin/coarena-agenda setup` then creates the two `OpenAssistBench` containers; `NO_LOCAL_SOURCE` means this Mac has no "On My Mac" source and the agenda tasks cannot run safely. The harness runs `setup` again before every agenda attempt and skips the attempt unless it reports the task's store ready, so a Mac in that state, or one where `teardown` ran since, never runs them.
+2. For the Music reader: open Music, run `osascript -l JavaScript -e 'Application("Music").playerState()'` in that terminal, allow the Automation prompt, then set `OPEN_ASSIST_BENCH_MUSIC=1` for the cycle. Without it `media-search-library` is always `unknown`.
+3. Leave TextEdit, Calendar, Reminders, Music and System Settings closed with nothing unsaved. The harness never quits an application.
+
+### The agenda helper's benchmark commands
+
+`coarena-agenda` is the app's read-only calendar helper (`status`, `request`, `read`). The long suite adds five commands to the same binary. **The app never calls them**; they are for the benchmark harness, and they change the helper's contract from read-only to "writes only benchmark items":
+
+| Command                    | Does                                                                                                                                                                                                                                                                                                         | Prints                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| `setup`                    | Creates the `OpenAssistBench` calendar and/or list in the local source, for each store that is granted.                                                                                                                                                                                                      | `{"access":…,"containers":{"calendar":…}}`                 |
+| `find <token> [wide]`      | Lists events within ±45 days (`wide`: ±730, EventKit's widest) and all reminders whose title carries the token: at most 25 events, 50 rows in all.                                                                                                                                                           | `{"access":…,"items":[{kind,title,calendar,recurring,…}]}` |
+| `add <json>`               | Adds one event (`kind, title, start, end, allDay`) or reminder (`kind, title, due`) to the benchmark's container.                                                                                                                                                                                            | `{"added":"event"}`                                        |
+| `remove <token> [<start>]` | Over ±730 days: deletes the token's items in the benchmark's local containers (a repeating event as a whole series), and elsewhere only items created since `<start>` (ISO 8601) with no attendees and no repetition. Keeps and counts the rest; without a start, everything outside the containers is kept. | `{"removed":n,"foreign":m}`                                |
+| `teardown`                 | Deletes the two containers, only if everything in them is titled with a benchmark marker.                                                                                                                                                                                                                    | `{"access":…,"removed":{"calendar":true}}`                 |
+
+Every command refuses before EventKit sees anything outside the namespace: `find` and `remove` take only a token matching `^benchnote[0-9a-z]{4}$` (`BAD_TOKEN`), `remove` only a start that parses (`BAD_START`), `add` only an item whose title, as it will be saved, carries a marker as a word of its own (`BAD_ITEM`), and `teardown` keeps a container that holds anything else (`CONTAINER_HOLDS_USER_ITEMS`). Items print their kind, title, times with the local offset, completion, whether they repeat and container name only, never notes, locations, attendees or URLs; a container that shares the benchmark's name but syncs prints as `OpenAssistBench (synced)`. Errors print `{"access":…,"error":"<CODE>"}`: `NO_ACCESS`, `NO_LOCAL_SOURCE`, `SETUP_FAILED`, `ADD_FAILED`, `REMOVE_FAILED`, `TEARDOWN_FAILED`. The rules are pure functions in `native/macos/AgendaRules.swift`, tested in `tests/native/AgendaRulesTests.swift` (`npm run test:native-safety`).
+
+### The fixture server
+
+```
+node scripts/bench-fixtures.mjs                  # serve on 127.0.0.1:47831 until Ctrl-C
+FIXTURE_PORT=47900 node scripts/bench-fixtures.mjs
+```
+
+The harness imports `startFixtureServer(store, {port})` and passes it a `createFixtureStore()` from `src/gym/bench/fixtures.ts`. It binds `127.0.0.1` or `::1` and refuses anything else, `localhost` included, before a socket opens (`FIXTURE_HOST`); it never proxies or fetches. Every response is `Cache-Control: no-store` with a same-origin Content-Security-Policy whose `style-src` is the hash of the pages' one inline stylesheet (`PAGE_STYLE`), so tables keep their borders and nothing else can style a page. A prefetch, a prerender (`Sec-Purpose`/`Purpose`) or a request that does not accept HTML (a favicon) gets an empty 204 and is not logged, so the omnibox's predictions never count as a visit; a `HEAD` is not a visit either. A form post is recorded and answered with a 303 to the token's thanks page. Nothing is written to disk.
+
+### Not yet confirmed on this Mac
+
+That a local ("On My Mac") EventKit source exists while iCloud Calendar is on; System Settings' window title being the pane name (the grader falls back to text only About shows); the General pane URL `x-apple.systempreferences:com.apple.systempreferences.GeneralSettings`; how `Surface.domain` renders `http://127.0.0.1:47831/…` (the graders fall back to the browser address); and the Finder's behaviour when the open bench folder is deleted during cleanup. The first attended cycle settles these.
+
 ## 2. `npm run analyze-runs`
 
 ```
@@ -219,16 +349,22 @@ Two shapes worth naming, because they look similar and are not:
 
 ## Where the code lives
 
-| File                         | What it is                                                                           |
-| ---------------------------- | ------------------------------------------------------------------------------------ |
-| `scripts/bench.mjs`          | The benchmark CLI: flags, safety gate, the run loop and the result file.             |
-| `scripts/analyze-runs.mjs`   | The analyzer CLI: file input, `--since`, rendering.                                  |
-| `src/gym/bench/catalogue.ts` | The tasks and their graders.                                                         |
-| `src/gym/bench/graders.ts`   | Deterministic grader helpers over end state and journal.                             |
-| `src/gym/bench/report.ts`    | Aggregation and the stdout table.                                                    |
-| `src/gym/bench/analyze.ts`   | Diagnostics parsing, classification and the report, with the content rules enforced. |
-| `src/gym/bench/types.ts`     | Shared types.                                                                        |
-| `tests/bench.test.ts`        | Catalogue, graders, aggregation, `--dry-run` and analyzer tests.                     |
+| File                              | What it is                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------ |
+| `scripts/bench.mjs`               | The benchmark CLI: flags, safety gate, the run loop and the result file.             |
+| `scripts/analyze-runs.mjs`        | The analyzer CLI: file input, `--since`, rendering.                                  |
+| `src/gym/bench/catalogue.ts`      | The tasks and their graders.                                                         |
+| `src/gym/bench/graders.ts`        | Deterministic grader helpers over end state and journal.                             |
+| `src/gym/bench/report.ts`         | Aggregation and the stdout table.                                                    |
+| `src/gym/bench/analyze.ts`        | Diagnostics parsing, classification and the report, with the content rules enforced. |
+| `src/gym/bench/types.ts`          | Shared types.                                                                        |
+| `src/gym/bench/catalogue-long.ts` | The long-horizon suite and suite selection (`catalogueFor`, `selectSuite`).          |
+| `src/gym/bench/fixtures.ts`       | The long suite's web pages (pure generators) and the fixture store.                  |
+| `src/gym/bench/readers.ts`        | End-state readers, per-attempt cleanup and the agenda readiness probe `agendaFor`.   |
+| `scripts/bench-fixtures.mjs`      | The loopback fixture web server.                                                     |
+| `native/macos/Agenda.swift`       | The agenda helper, including the benchmark commands; rules in `AgendaRules.swift`.   |
+| `tests/bench.test.ts`             | Catalogue, graders, aggregation, `--dry-run` and analyzer tests.                     |
+| `tests/bench-long.test.ts`        | Long-suite invariants, every long grader, the fixtures, readers and cleanup.         |
 
 Both CLIs register `tsx` at startup so they import those TypeScript modules under plain `node`.
 
