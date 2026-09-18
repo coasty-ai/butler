@@ -213,9 +213,11 @@ export const settingsSchema = z
     memory: z.boolean().default(true),
     /**
      * Read notification banners as they arrive and carry the recent ones in
-     * the model's context. Off means the helper never reads them at all.
+     * the model's context. Off by default: banners carry other people's
+     * messages and one-time codes, so reading them is a choice, never a
+     * surprise. Off means the helper never reads them at all.
      */
-    notifications: z.boolean().default(true),
+    notifications: z.boolean().default(false),
     /**
      * Read upcoming events and open reminders so a task knows what is on the
      * user's plate. Needs Calendar and Reminders access, asked for in Settings.
@@ -292,7 +294,7 @@ export const defaultSettings: Settings = {
   contributionEndpoint: "",
   handsFree: false,
   memory: true,
-  notifications: true,
+  notifications: false,
   agenda: false,
   voiceReplies: "voice",
   voiceEngine: "system",
