@@ -32,7 +32,7 @@ import {
   normalizeRole,
   utf16Prefix,
 } from "./labels";
-import { evaluate, surfacePolicy } from "./policy";
+import { evaluate, surfacePolicy, PASTE_ALLOWED } from "./policy";
 import { redactSecrets, scanText } from "./sanitize";
 import {
   HelperUnavailableError,
@@ -368,6 +368,18 @@ export function searchRoute(
     path.every((part) => typeof part === "string" && part.trim())
     ? path.map((part) => part.trim())
     : undefined;
+}
+/**
+ * Whether the user's own words asked for a paste. Only then may policy allow
+ * Command-V, and only into an identified text field.
+ */
+export function pasteRequested(
+  task: string,
+  corrections?: { text: string }[],
+): boolean {
+  return /\bpaste\b/i.test(
+    [task, ...(corrections ?? []).map((c) => c.text)].join("\n"),
+  );
 }
 export const MANUAL_PAUSE_MESSAGE = "Paused — you’re controlling the computer.";
 /** Hand-off after repeated unidentified targets; a click by the user resolves it. */
@@ -1560,6 +1572,7 @@ export class Runner {
           actionSurface,
           this.settings,
           run.synthetic,
+          { pasteRequested: pasteRequested(run.task, run.corrections) },
         );
         if (this.held || epoch !== this.epoch) {
           planFail("interrupted");
@@ -1763,7 +1776,11 @@ export class Runner {
         this.attempted++;
         try {
           outcome = await this.controller.execute(
-            action,
+            // Native refuses every clipboard chord unless policy marked this
+            // one as the paste the user asked for.
+            decision.reason === PASTE_ALLOWED
+              ? ({ ...action, paste: true } as unknown as Action)
+              : action,
             executionFrame,
             this.abort.signal,
           );

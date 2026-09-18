@@ -7,6 +7,7 @@ import {
   ideMenuRefused,
   ideQuickInputField,
   isTerminalApp,
+  credentialAppPrefixes,
   paletteClass,
   paletteTitle,
   quickOpenRunsCommand,
@@ -66,6 +67,7 @@ const floorProtectedApps = new Set([
 const floorProtectedPrefixes = [
   "com.apple.automator.",
   "com.apple.scripteditor.id.",
+  ...credentialAppPrefixes,
 ];
 function floorProtected(appId: string | undefined): boolean {
   const id = (appId ?? "").toLowerCase();
@@ -829,11 +831,19 @@ function namedTargetUnderPointer(surface: Surface): boolean {
     agrees(named, text)
   );
 }
+/** What the run knows that the surface does not. */
+export interface PolicyContext {
+  /** The user's own words (task or corrections) asked for a paste. */
+  pasteRequested?: boolean;
+}
+/** The decision reason that marks the one clipboard press native may send. */
+export const PASTE_ALLOWED = "Paste what the user copied, as asked.";
 export function evaluate(
   action: Action,
   surface: Surface,
   settings: Settings,
   synthetic: boolean,
+  context: PolicyContext = {},
 ): Decision {
   const protectedSurface = surfacePolicy(surface, settings);
   if (protectedSurface.kind !== "ALLOW") return protectedSurface;
@@ -858,11 +868,30 @@ export function evaluate(
     action.type === "hotkey" &&
     action.keys.some((k) => ["CMD", "CTRL", "ALT"].includes(k)) &&
     action.keys.some((k) => ["V", "C", "X"].includes(k))
-  )
+  ) {
+    // The clipboard can hold a secret the user copied a moment ago, and
+    // copying screen content out is exfiltration. The one exception: when the
+    // user's own words asked for a paste, Command-V alone, into an identified
+    // text field, pastes what they copied. Copy and cut are never allowed.
+    const pasteOnly =
+      action.keys.length === 2 &&
+      action.keys.includes("CMD") &&
+      action.keys.includes("V");
+    if (
+      context.pasteRequested &&
+      pasteOnly &&
+      !surface.unknown &&
+      ["AXTextField", "AXTextArea", "AXComboBox"].includes(
+        surface.focusedRole ?? "",
+      )
+    )
+      return { kind: "ALLOW", reason: PASTE_ALLOWED };
     return {
       kind: "DENY",
-      reason: "Clipboard access is disabled in GUI Research Mode.",
+      reason:
+        "Clipboard access is disabled. Pasting is allowed only when the user asked for a paste and a text field is focused; copying and cutting never are.",
     };
+  }
   if (["capture", "done", "fail", "wait"].includes(action.type))
     return { kind: "ALLOW", reason: "" };
   // Before the synthetic ALLOW: the tutorial must never launch real apps.

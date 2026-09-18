@@ -16,6 +16,17 @@ func independentNavigationShortcut(_ action:[String:Any], appId:String) -> Bool 
     return ["CMD+SPACE","CMD+TAB","CMD+SHIFT+TAB","CMD+F"].contains(chord) || (chord == "CMD+L" && browserAppIDs.contains(appId))
 }
 
+// The clipboard is off limits to the agent: it can carry a secret the user
+// copied a moment ago, and copying screen content out is exfiltration. The one
+// exception is the paste the user asked for, which policy marks on the action:
+// Command-V alone, never copy or cut, never another modifier.
+func clipboardChordAllowed(names: [String], paste: Bool) -> Bool {
+    let modifiers = names.filter { ["CMD", "CTRL", "ALT"].contains($0) }
+    let clipboard = names.filter { ["C", "V", "X"].contains($0) }
+    if modifiers.isEmpty || clipboard.isEmpty { return true }
+    return paste && names.count == 2 && modifiers == ["CMD"] && clipboard == ["V"]
+}
+
 func focusedEditingAction(_ action:[String:Any]) -> Bool {
     if action["type"] as? String == "type_text" {return true}
     if action["type"] as? String == "key" {return ["LEFT","RIGHT","UP","DOWN","HOME","END","BACKSPACE","DELETE","TAB"].contains(action["key"] as? String ?? "")}

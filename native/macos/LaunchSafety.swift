@@ -34,7 +34,10 @@ func terminalApp(_ bundleId: String?) -> Bool {
 let launchFloorDenied: Set<String> = Set(terminalAppIds).union(["com.apple.scripteditor2", "com.apple.automator", "com.apple.diskutility", "com.apple.keychainaccess", "com.apple.migrateassistant", "com.apple.bootcampassistant", "com.apple.installer", "com.apple.spotlight", "com.apple.siri", "ai.coarena.openassist", "com.github.electron"])
 // Automator/AppleScript applets and web-app wrappers are scripts, not products;
 // every Warp channel is a terminal.
-let launchRefusedPrefixes = ["com.apple.automator.", "com.apple.scripteditor.id.", "com.apple.safari.webapp.", "com.google.chrome.app."] + terminalAppPrefixes
+// Password managers: never launched, whatever the settings say. Identical to
+// credentialAppPrefixes in src/core/policy.ts and the shared fixture.
+let credentialAppPrefixes = ["com.1password.", "com.agilebits.onepassword", "com.apple.passwords", "com.bitwarden.", "com.lastpass.", "com.dashlane.", "org.keepassxc.", "com.nordpass.", "in.sinew.enpass", "me.proton.pass", "com.keepersecurity."]
+let launchRefusedPrefixes = ["com.apple.automator.", "com.apple.scripteditor.id.", "com.apple.safari.webapp.", "com.google.chrome.app."] + terminalAppPrefixes + credentialAppPrefixes
 // Identical to INSTALLER_PATTERN in src/core/policy.ts; keep the two in step.
 let launchNamePattern = try! NSRegularExpression(pattern: "\\b(?:install\\w*|uninstall\\w*|setup\\w*|updater?|migrat\\w*|boot ?camp\\w*|recovery)\\b", options: [.caseInsensitive])
 let launchBundlePattern = try! NSRegularExpression(pattern: "(installer|uninstall|setup|updater)", options: [.caseInsensitive])

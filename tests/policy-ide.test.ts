@@ -15,6 +15,7 @@ import {
   quickOpenTitle,
   terminalAppIds,
   terminalAppPrefixes,
+  credentialAppPrefixes,
 } from "../src/core/ide";
 import fixture from "./fixtures/ide-agents.json";
 
@@ -57,6 +58,7 @@ describe("editor family and terminal ids (shared with the native fixture)", () =
   it("lists the same terminals as native LaunchSafety.swift", () => {
     expect([...terminalAppIds]).toEqual(fixture.terminalAppIds);
     expect([...terminalAppPrefixes]).toEqual(fixture.terminalAppPrefixes);
+    expect([...credentialAppPrefixes]).toEqual(fixture.credentialAppPrefixes);
     for (const id of fixture.terminalApps)
       expect([id, isTerminalApp(id)]).toEqual([id, true]);
     for (const id of fixture.notTerminalApps)
@@ -765,5 +767,44 @@ describe("a coding agent's work is not thrown away without asking", () => {
     expect(
       decide(click, button("Undo", { targetAppId: "com.apple.Notes" })).kind,
     ).toBe("ALLOW");
+  });
+});
+
+// From the plan: a protected-app list the user cannot remove, password managers
+// included. Emptying the setting must change nothing for them.
+describe("password managers stay protected with the setting emptied", () => {
+  const bare = { ...defaultSettings, protectedApps: [] as string[] };
+  const click = actionSchema.parse({
+    type: "click",
+    frame_id: "f",
+    x: 0.5,
+    y: 0.5,
+  });
+  for (const prefix of fixture.credentialAppPrefixes)
+    it(`hands over in ${prefix}…`, () => {
+      const decision = evaluate(
+        click,
+        { appId: `${prefix}app`, pid: 1, secureInput: false, unknown: false },
+        bare,
+        false,
+      );
+      expect(decision.kind).toBe("USER_TAKEOVER");
+    });
+  it("still automates an ordinary app with the setting emptied", () => {
+    expect(
+      evaluate(
+        click,
+        {
+          appId: "com.apple.Notes",
+          pid: 1,
+          secureInput: false,
+          unknown: false,
+          targetRole: "AXButton",
+          targetLabel: "New Note",
+        },
+        bare,
+        false,
+      ).kind,
+    ).not.toBe("USER_TAKEOVER");
   });
 });

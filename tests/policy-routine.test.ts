@@ -9,8 +9,10 @@ import {
   evaluate,
   launcherMatches,
   isInstallerName,
+  PASTE_ALLOWED,
   type Decision,
 } from "../src/core/policy";
+import { pasteRequested } from "../src/core/runner";
 import { redactSecrets, sanitizeText, scanText } from "../src/core/sanitize";
 import { describeAction } from "../src/voice/router";
 import installerNames from "./fixtures/installer-names.json";
@@ -2004,5 +2006,67 @@ describe("typing into the search the application just opened", () => {
       kind: "ALLOW",
       reason: "Type in a known non-secure text field.",
     });
+  });
+});
+
+// Live: "paste the image in Messages" was refused at CMD+V by the blanket
+// clipboard rule; pasting what the user copied, when they asked for it, is the
+// one clipboard press the agent may make.
+describe("paste on request", () => {
+  const field = { focusedRole: "AXTextArea", focusedLabel: "Message" };
+  const asked = { pasteRequested: true };
+  it("allows CMD+V into a text field when the user asked for a paste", () => {
+    expect(
+      evaluate(
+        hotkey("CMD", "V"),
+        { ...base, ...field },
+        settings,
+        false,
+        asked,
+      ),
+    ).toEqual({ kind: "ALLOW", reason: PASTE_ALLOWED });
+  });
+  it("refuses it without the request, without a field, or with any other chord", () => {
+    expect(
+      evaluate(hotkey("CMD", "V"), { ...base, ...field }, settings, false).kind,
+    ).toBe("DENY");
+    expect(
+      evaluate(hotkey("CMD", "V"), base, settings, false, asked).kind,
+    ).toBe("DENY");
+    expect(
+      evaluate(
+        hotkey("CMD", "C"),
+        { ...base, ...field },
+        settings,
+        false,
+        asked,
+      ).kind,
+    ).toBe("DENY");
+    expect(
+      evaluate(
+        hotkey("CMD", "X"),
+        { ...base, ...field },
+        settings,
+        false,
+        asked,
+      ).kind,
+    ).toBe("DENY");
+    expect(
+      evaluate(
+        hotkey("CMD", "SHIFT", "V"),
+        { ...base, ...field },
+        settings,
+        false,
+        asked,
+      ).kind,
+    ).toBe("DENY");
+  });
+  it("reads the request from the user's own words only", () => {
+    expect(pasteRequested("Paste the image into Messages")).toBe(true);
+    expect(pasteRequested("send it", [{ text: "you can just paste it" }])).toBe(
+      true,
+    );
+    expect(pasteRequested("copy the link and send it")).toBe(false);
+    expect(pasteRequested("open the pastebin site")).toBe(false);
   });
 });

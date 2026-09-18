@@ -30,7 +30,9 @@
     "co.zeit.hyper",
     "com.github.wez.wezterm"
   ],
-  "terminalAppPrefixes": ["dev.warp.warp-"],
+  "terminalAppPrefixes": [
+    "dev.warp.warp-"
+  ],
   "terminalApps": [
     "com.apple.Terminal",
     "com.googlecode.iterm2",
@@ -50,7 +52,11 @@
     "dev.warp.warpdrive",
     "com.mitchellh.ghosttyfan"
   ],
-  "paletteTitles": ["Command Palette…", "Command Palette", "Show All Commands"],
+  "paletteTitles": [
+    "Command Palette…",
+    "Command Palette",
+    "Show All Commands"
+  ],
   "notPaletteTitles": [
     "Go to File…",
     "Quick Open",
@@ -144,7 +150,9 @@
     {
       "roleDescription": "text entry area",
       "label": "",
-      "domClasses": ["xterm-helper-textarea"],
+      "domClasses": [
+        "xterm-helper-textarea"
+      ],
       "ide": false,
       "terminal": true
     },
@@ -158,14 +166,19 @@
     {
       "roleDescription": "text entry area",
       "label": "Chat Input",
-      "domClasses": ["inputarea"],
+      "domClasses": [
+        "inputarea"
+      ],
       "ide": true,
       "terminal": false
     },
     {
       "roleDescription": "text entry area",
       "label": "Editor content;Press Alt+F1 for Accessibility Options.",
-      "domClasses": ["inputarea", "monaco-mouse-cursor-text"],
+      "domClasses": [
+        "inputarea",
+        "monaco-mouse-cursor-text"
+      ],
       "ide": true,
       "terminal": false
     },
@@ -183,5 +196,18 @@
       "ide": true,
       "terminal": false
     }
+  ],
+  "credentialAppPrefixes": [
+    "com.1password.",
+    "com.agilebits.onepassword",
+    "com.apple.passwords",
+    "com.bitwarden.",
+    "com.lastpass.",
+    "com.dashlane.",
+    "org.keepassxc.",
+    "com.nordpass.",
+    "in.sinew.enpass",
+    "me.proton.pass",
+    "com.keepersecurity."
   ]
 }

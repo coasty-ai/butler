@@ -50,6 +50,22 @@ export const terminalAppIds: readonly string[] = [
 ];
 // Warp ships each channel under its own id (Warp-Stable, Warp-Preview, …).
 export const terminalAppPrefixes: readonly string[] = ["dev.warp.warp-"];
+// Password managers hold every credential the user has. Whatever the settings
+// say, the agent never sees, clicks or launches them; the same list is on the
+// native launch floor (LaunchSafety.swift) and in tests/fixtures/ide-agents.json.
+export const credentialAppPrefixes: readonly string[] = [
+  "com.1password.",
+  "com.agilebits.onepassword",
+  "com.apple.passwords",
+  "com.bitwarden.",
+  "com.lastpass.",
+  "com.dashlane.",
+  "org.keepassxc.",
+  "com.nordpass.",
+  "in.sinew.enpass",
+  "me.proton.pass",
+  "com.keepersecurity.",
+];
 
 export function isTerminalApp(appId?: string): boolean {
   const id = (appId ?? "").trim().toLowerCase();

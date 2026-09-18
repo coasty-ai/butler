@@ -92,6 +92,10 @@ func ideSafetyChecks(_ check: (Bool, String) -> Void) {
     check(terminalAppIds == strings("terminalAppIds"), "native terminal ids equal the fixture and src/core/ide.ts")
     check(terminalAppPrefixes == strings("terminalAppPrefixes"), "native terminal prefixes equal the fixture")
     check(launchFloorDenied.isSuperset(of: terminalAppIds), "every terminal id is on the launch floor")
+    check(credentialAppPrefixes == strings("credentialAppPrefixes"), "native password-manager prefixes equal the fixture")
+    for prefix in strings("credentialAppPrefixes") {
+        check(launchDenied(name: "Vault", displayName: "Vault", bundleId: prefix + "app"), "launching a password manager (\(prefix)) is refused")
+    }
     for id in strings("terminalApps") {
         check(terminalApp(id), "fixture terminal \(id)")
         check(launchDenied(name: "Some App", displayName: "Some App", bundleId: id), "launching \(id) is refused")

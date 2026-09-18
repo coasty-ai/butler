@@ -1547,7 +1547,7 @@ func execute(_ action:[String:Any]) throws {
     case "key", "hotkey":
         let names = action["keys"] as? [String] ?? [action["key"] as? String ?? ""]
         guard names.count<=4,names.allSatisfy({keys[$0] != nil}) else {throw ControlError("Unsupported key.")}
-        if names.contains(where:{["CMD","CTRL","ALT"].contains($0)}) && names.contains(where:{["C","V","X"].contains($0)}) {throw ControlError("Clipboard disabled.")}
+        guard clipboardChordAllowed(names: names, paste: action["paste"] as? Bool == true) else {throw ControlError("Clipboard disabled.")}
         var flags:CGEventFlags = [];for name in names {if name == "CMD"{flags.insert(.maskCommand)};if name == "CTRL"{flags.insert(.maskControl)};if name == "ALT"{flags.insert(.maskAlternate)};if name == "SHIFT"{flags.insert(.maskShift)}}
         var pressed:[CGKeyCode] = [];defer {for code in pressed.reversed(){postInput(CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:false))}}
         for name in names {try ensureRunning();let code = keys[name]!;let e = CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:true);e?.flags = flags;postInput(e);pressed.append(code)}
