@@ -490,6 +490,9 @@ struct MenuSnapshot {
     // Chord ("CMD+L") to the item it invokes, so a shortcut the model presses
     // is checked against the application's own declaration of what it does.
     let shortcuts: [String: String]
+    // The application's own enabled search command ("Edit" > "Search"), so a
+    // refusal to type blind can name the route that makes typing possible.
+    let searchPath: [String]?
 }
 var menuSnapshot: MenuSnapshot? = nil // guarded by stateLock
 // The application's own search command the agent ran last, if any, so text
@@ -536,7 +539,7 @@ func menuEntryDigest(_ item: AXUIElement) -> MenuItemDigest? {
 func menuMap(_ app: AXUIElement, pid: pid_t) -> MenuSnapshot {
     if let cached = withState({ menuSnapshot }), cached.pid == pid,
        ProcessInfo.processInfo.systemUptime - cached.at < menuSnapshotSeconds { return cached }
-    var lines = [String](), shortcuts = [String: String]()
+    var lines = [String](), shortcuts = [String: String](), searchPath: [String]? = nil
     if let bar = attribute(app, kAXMenuBarAttribute) {
         for item in menuEntries(bar as! AXUIElement, limit: menuListLimit + 6) where lines.count < menuListLimit {
             let title = normalizeTargetTitle(attribute(item, kAXTitleAttribute) as? String ?? "")
@@ -545,11 +548,12 @@ func menuMap(_ app: AXUIElement, pid: pid_t) -> MenuSnapshot {
             let entries = menuEntries(menu, limit: menuItemListLimit + 8).compactMap(menuEntryDigest)
             for entry in entries {
                 if let shortcut = entry.shortcut, shortcuts[shortcut] == nil { shortcuts[shortcut] = entry.title }
+                if searchPath == nil, entry.enabled, !entry.submenu, searchCommandTitle(entry.title) { searchPath = [title, entry.title] }
             }
             lines.append(menuDigestLine(menu: title, items: entries))
         }
     }
-    let snapshot = MenuSnapshot(pid: pid, at: ProcessInfo.processInfo.systemUptime, lines: lines, shortcuts: shortcuts)
+    let snapshot = MenuSnapshot(pid: pid, at: ProcessInfo.processInfo.systemUptime, lines: lines, shortcuts: shortcuts, searchPath: searchPath)
     withState { menuSnapshot = snapshot }
     return snapshot
 }
@@ -786,6 +790,11 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     if let command = withState({ searchCommand }),
        searchCommandCurrent(commandPid: command.pid, commandAt: command.at, pid: app.processIdentifier, now: ProcessInfo.processInfo.systemUptime) {
         result["searchOpenedBy"] = command.title
+    } else if let type = action?["type"] as? String, ["type_text", "key"].contains(type),
+              let path = menuMap(element, pid: app.processIdentifier).searchPath {
+        // Typing with nothing identified to type into: name the application's
+        // own way to open a field, so the refusal is a route, not a dead end.
+        result["searchCommand"] = path.map { utf16Prefix($0, 60) }
     }
     if let status = namedControl {
         result["controlStatus"] = status.status
@@ -1258,6 +1267,14 @@ func revalidate(_ action: [String:Any]) async throws -> [String:Any] {
         guard sameElement(oldWindow.focused, newWindow.focused), oldWindow.focusedValue == newWindow.focusedValue, oldWindow.focusedSignature == newWindow.focusedSignature else { throw changedScreen("The focused field changed.") }
         if let focused=newWindow.focused,elementRect(focused) != nil,["AXTextField","AXTextArea","AXComboBox"].contains(attribute(focused,kAXRoleAttribute) as? String ?? ""),focusedEditingAction(action) {try ensureRunning();return fresh}
         if action["type"] as? String == "key",action["key"] as? String == "ENTER",oldWindow.addressBar,newWindow.addressBar {try ensureRunning();return fresh}
+        // The application's own search command just opened the field this goes
+        // to, in this same application and window (checked above), and nothing
+        // else has happened since. Its results, artwork and caret animate as
+        // the field opens; those pixels are not the target of the keystrokes.
+        if let command = withState({ searchCommand }),
+           searchCommandCurrent(commandPid: command.pid, commandAt: command.at, pid: newWindow.pid, now: ProcessInfo.processInfo.systemUptime) {
+            try ensureRunning(); return fresh
+        }
     }
     guard oldWindow.controls == newWindow.controls else { throw changedScreen("The window's controls changed.") }
     // Keyboard input goes to the focused element, verified identical above

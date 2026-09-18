@@ -346,6 +346,29 @@ interface Reaim {
 export const reaimNote =
   " Note: the screen moved after that screenshot, so this input was automatically re-aimed at the same control (same role and name) in a fresh screenshot before it ran. Only its position changed, not the control.";
 /** Pause shown while the user's own mouse or keyboard input holds the run. */
+/**
+ * The application's own search command to run when typing was refused because
+ * nothing identified is focused (Spotify publishes no text fields, but its
+ * Edit > Search opens one). Taking the route is a normal menu_item step: it goes
+ * through surface, policy and native revalidation like any proposed action, and
+ * the model then types into the field the application opened. Undefined when
+ * the refusal was for anything else, when a search is already open, or when the
+ * application publishes no such command.
+ */
+export function searchRoute(
+  action: Action,
+  surface: Surface,
+): string[] | undefined {
+  if (action.type !== "type_text" || surface.unknown || surface.searchOpenedBy)
+    return undefined;
+  const path = surface.searchCommand;
+  return Array.isArray(path) &&
+    path.length >= 2 &&
+    path.length <= 3 &&
+    path.every((part) => typeof part === "string" && part.trim())
+    ? path.map((part) => part.trim())
+    : undefined;
+}
 export const MANUAL_PAUSE_MESSAGE = "Paused — you’re controlling the computer.";
 /** Hand-off after repeated unidentified targets; a click by the user resolves it. */
 export const TARGET_HANDOFF_MESSAGE =
@@ -451,6 +474,8 @@ export class Runner {
   private credentialDenials = 0;
   private declines = 0;
   private targetingRetries = 0;
+  /** Applications whose search route the runner already took this run. */
+  private searchRoutes = new Set<string>();
   private stateChanges = 0;
   private providerFailures = 0;
   private epoch = 0;
@@ -663,6 +688,7 @@ export class Runner {
     this.targetingRetries = 0;
     this.stateChanges = 0;
     this.providerFailures = 0;
+    this.searchRoutes.clear();
   }
   private check() {
     if (!this.active()) throw new Error("STOPPED");
@@ -1330,6 +1356,8 @@ export class Runner {
     // At most one automatic re-aim per model-proposed action; see reaim().
     let reaim: Reaim | undefined;
     let reaimed = false;
+    // A search route to take on the next step instead of asking the model.
+    let routed: string[] | undefined;
     try {
       if (this.memoryRun) await this.recall(task);
       if (!this.active()) return;
@@ -1407,6 +1435,14 @@ export class Runner {
               usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
             };
           }
+        }
+        if (!result && routed) {
+          // The application's own search command, as a normal proposed step.
+          result = {
+            action: { type: "menu_item", frame_id: frame.id, path: routed },
+            usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          };
+          routed = undefined;
         }
         if (!result) {
           this.status("thinking", "Choosing the next action.");
@@ -1533,6 +1569,21 @@ export class Runner {
             focusedRole: actionSurface.focusedRole,
             launcherStatus: actionSurface.launcherStatus,
           });
+          const route = searchRoute(action, actionSurface);
+          if (route && !this.searchRoutes.has(actionSurface.appId)) {
+            this.searchRoutes.add(actionSurface.appId);
+            routed = route;
+            this.event("SearchRouteTaken", {
+              appId: actionSurface.appId,
+              depth: route.length,
+            });
+            history.push({
+              type: action.type,
+              action: echoAction(action),
+              result: `No input was sent: no text field was focused. Opening ${route.join(" > ")} so the application shows its search field; type the text again on the next step.`,
+            });
+            continue;
+          }
           history.push({
             type: action.type,
             action: echoAction(action),

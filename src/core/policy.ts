@@ -1171,11 +1171,18 @@ export function evaluate(
           reason: `Type here in ${appLabel(surface)}? I can’t see its text fields.`,
         }
       );
+    // The application publishes its own way to open a search field: name it,
+    // so the next step is that route rather than the same text again.
+    const route = (surface.searchCommand ?? [])
+      .map((part) => quote(part))
+      .filter(Boolean);
     return {
       kind: "RETRY",
       reason: surface.unknown
         ? "No input was sent. The focused field could not be identified. Capture a fresh screenshot and focus the intended text field first."
-        : "No input was sent. No known text field is focused. Click the intended text field first, then type.",
+        : route.length >= 2
+          ? `No input was sent. No text field is focused in ${appLabel(surface)}. Open its search first with menu_item ${JSON.stringify(route)}, then type.`
+          : "No input was sent. No known text field is focused. Click the intended text field first, then type.",
     };
   }
   if (action.type === "key")

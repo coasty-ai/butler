@@ -1240,6 +1240,11 @@ function planRun() {
     held: runHeld(),
     pendingReason: snapshot.pending?.reason,
     task: run.task,
+    // Stuck, handed back or paused, rather than waiting on its own question.
+    stalled:
+      runHeld() &&
+      !snapshot.pending &&
+      (run.status === "paused" || snapshot.message === TARGET_HANDOFF_MESSAGE),
   };
 }
 async function command(
@@ -1415,6 +1420,20 @@ async function executePlan(plan: TurnPlan, fromVoice: boolean) {
       });
       await runner!.amendTask(plan.text);
       return;
+    case "replace": {
+      // The user moved on from a stalled run: end it without cutting off the
+      // spoken acknowledgement, wait for its loop to settle, then start.
+      voiceHeld = false;
+      runner?.stop("Replaced by a new request.");
+      for (
+        let waited = 0;
+        runner && !runner.settled && waited < 3000;
+        waited += 50
+      )
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      await dispatch("start", [plan.text, false]);
+      return;
+    }
     case "revise":
     case "start": {
       voiceHeld = false;

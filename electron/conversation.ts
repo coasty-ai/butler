@@ -412,6 +412,7 @@ export class Conversation {
         // Acknowledge out loud in every mode, like a person would. In
         // hands-free the follow-up window reopens right after the reply.
         case "start":
+        case "replace":
           reply("ackStart", "ack", true, ptt ? undefined : CONTINUATION_WINDOW);
           break;
         case "revise":

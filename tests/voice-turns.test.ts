@@ -16,6 +16,7 @@ import {
   isControlPhrase,
   joinUtterances,
   planVoiceTurn,
+  startsNewTask,
   utteranceCompleteness,
   voiceIntent,
   type VoiceTurnInput,
@@ -882,5 +883,64 @@ describe("turn planning", () => {
     expect(plan({ text: "   ", source: "text" })).toEqual({
       kind: "acknowledge",
     });
+  });
+});
+
+// Live: "Jump to Spotify and play after hours" was stuck and handed back; the
+// user then said "Go to Notes and write a note for me", which was merged into
+// the Spotify run as a correction, so the run bounced between the two apps.
+describe("a new request while a run is stalled", () => {
+  const stuck = {
+    id: "r1",
+    status: "paused",
+    actions: 6,
+    held: true,
+    stalled: true,
+    task: "Jump to Spotify and play after hours by the Weeknd please",
+  };
+  const plan = (text: string, run = stuck) =>
+    planVoiceTurn({
+      text,
+      source: "wake",
+      now: 1000,
+      run,
+      confidence: 0.95,
+      gateMatches: false,
+    });
+  it("starts the unrelated request instead of correcting the stuck run", () => {
+    expect(plan("Go to Notes and write a note for me")).toEqual({
+      kind: "replace",
+      text: expect.stringMatching(/notes/i),
+    });
+    expect(plan("Open Slack and message Prateek").kind).toBe("replace");
+  });
+  it("keeps hints and corrections as corrections", () => {
+    expect(plan("search for after hours").kind).toBe("revise");
+    expect(plan("open Spotify instead").kind).toBe("revise");
+    expect(plan("actually play Blinding Lights").kind).toBe("revise");
+    expect(plan("use the search box").kind).toBe("revise");
+  });
+  it("never replaces a run that asked a question or is still working", () => {
+    expect(
+      plan("Go to Notes and write a note for me", { ...stuck, stalled: false })
+        .kind,
+    ).toBe("revise");
+    expect(
+      plan("Go to Notes and write a note for me", {
+        ...stuck,
+        status: "executing",
+        held: false,
+        stalled: false,
+      }).kind,
+    ).toBe("revise");
+  });
+  it("tells requests from hints by subject", () => {
+    expect(startsNewTask("Go to Notes and write a note", stuck.task)).toBe(
+      true,
+    );
+    expect(startsNewTask("play after hours", stuck.task)).toBe(false);
+    expect(startsNewTask("open it", stuck.task)).toBe(false);
+    expect(startsNewTask("no, open Notes", stuck.task)).toBe(false);
+    expect(startsNewTask("can you check my email", stuck.task)).toBe(true);
   });
 });

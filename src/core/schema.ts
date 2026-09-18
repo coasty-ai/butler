@@ -434,6 +434,11 @@ export interface Surface {
    * goes into that search field even when the field is not exposed.
    */
   searchOpenedBy?: string;
+  /**
+   * The application's own search command ("Edit", "Search"), reported when
+   * text is proposed with nothing identified to type into.
+   */
+  searchCommand?: string[];
 }
 export interface Usage {
   inputTokens: number;

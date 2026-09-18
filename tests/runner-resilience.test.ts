@@ -14,7 +14,7 @@ import {
   type Snapshot,
   type Surface,
 } from "../src/core/schema";
-import { Runner } from "../src/core/runner";
+import { Runner, searchRoute } from "../src/core/runner";
 import type { MemoryAccess } from "../src/core/memory";
 import {
   HelperUnavailableError,
@@ -1349,5 +1349,50 @@ describe("automatic re-aim after a screen change", () => {
     await runner.resume();
     await running;
     expect(runner.snapshot.run?.status).toBe("completed");
+  });
+});
+
+describe("taking the application's own search route", () => {
+  const type = {
+    type: "type_text",
+    frame_id: "f",
+    text: "after hours",
+  } as const;
+  const surface = {
+    appId: "com.spotify.client",
+    pid: 1,
+    secureInput: false,
+    unknown: false,
+  };
+  it("opens the app's search when typing is refused with nothing focused", () => {
+    expect(
+      searchRoute(type, { ...surface, searchCommand: ["Edit", "Search"] }),
+    ).toEqual(["Edit", "Search"]);
+  });
+  it("does nothing once a search is open, or without a published route", () => {
+    expect(
+      searchRoute(type, {
+        ...surface,
+        searchOpenedBy: "Search",
+        searchCommand: ["Edit", "Search"],
+      }),
+    ).toBeUndefined();
+    expect(searchRoute(type, surface)).toBeUndefined();
+    expect(
+      searchRoute(type, {
+        ...surface,
+        unknown: true,
+        searchCommand: ["Edit", "Search"],
+      }),
+    ).toBeUndefined();
+    expect(
+      searchRoute(
+        { type: "key", frame_id: "f", key: "ENTER" },
+        { ...surface, searchCommand: ["Edit", "Search"] },
+      ),
+    ).toBeUndefined();
+    expect(
+      searchRoute(type, { ...surface, searchCommand: ["Search"] }),
+    ).toBeUndefined();
   });
 });

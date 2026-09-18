@@ -687,7 +687,10 @@ export type TurnPlan =
   | { kind: "clarify"; question: string; fragment: string }
   | { kind: "amendTask"; text: string }
   | { kind: "revise"; text: string }
-  | { kind: "start"; text: string };
+  | { kind: "start"; text: string }
+  // A new, unrelated request while the current run is stalled or paused: stop
+  // that run and start this one instead of treating it as a correction.
+  | { kind: "replace"; text: string };
 export type TurnPlanKind = TurnPlan["kind"];
 
 export interface VoiceTurnRun {
@@ -699,6 +702,11 @@ export interface VoiceTurnRun {
   /** The policy question while an approval is pending. */
   pendingReason?: string;
   task: string;
+  /**
+   * Held because it stalled or was paused (stuck, handed back, paused by the
+   * user), not because it asked the user a question or needs an approval.
+   */
+  stalled?: boolean;
 }
 export interface VoiceFragment {
   text: string;
@@ -834,5 +842,71 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
   const task = source === "text" ? text.trim() : cleanTaskText(text);
   if (!task || tokenize(task).every((w) => FILLERS.has(w)))
     return { kind: "acknowledge" };
+  // A run that stalled is waiting for a hint; a request about something else
+  // entirely is the user moving on, not a hint.
+  if (run?.stalled && !pending && startsNewTask(task, run.task))
+    return { kind: "replace", text: task };
   return run ? { kind: "revise", text: task } : { kind: "start", text: task };
+}
+
+// Words that begin a request, and words that carry no subject of their own.
+const TASK_VERBS = new Set(
+  "open go jump switch launch start write create make send search find play check show text email message call look set remind add draft reply read tell get put type book schedule order".split(
+    " ",
+  ),
+);
+const LEADING = new Set(
+  "can could would will you please hey ok okay now also then and so just".split(
+    " ",
+  ),
+);
+const GLUE = new Set(
+  "to and the a an for me my in on of with at up it this that please can you could would will i want like some by from into about".split(
+    " ",
+  ),
+);
+const CORRECTION =
+  /\b(?:instead|actually|rather|i meant|i mean|not that|wrong)\b|^no\b/;
+// Request verbs that are also things a request is about ("email", "text"):
+// they start a request but still count as its subject.
+const NOUN_VERBS = new Set([
+  "email",
+  "text",
+  "message",
+  "call",
+  "book",
+  "order",
+]);
+const stem = (word: string) =>
+  word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word;
+const subjectWords = (text: string) =>
+  new Set(
+    tokenize(text)
+      .filter(
+        (w) =>
+          w.length >= 3 &&
+          (!TASK_VERBS.has(w) || NOUN_VERBS.has(w)) &&
+          !GLUE.has(w) &&
+          !FILLERS.has(w) &&
+          !STOP_WORDS.has(w),
+      )
+      .map(stem),
+  );
+/**
+ * Whether a command to a stalled run is a new request rather than a hint for
+ * it: it begins with a request verb, says nothing like "instead" or "actually",
+ * names a subject of its own, and shares no subject with the stalled task. "Go
+ * to Notes and write a note" is new while "play after hours" is stuck; "search
+ * for after hours" or "use the search" is a hint.
+ */
+export function startsNewTask(text: string, task: string): boolean {
+  const lowered = text.toLowerCase().trim();
+  if (CORRECTION.test(lowered)) return false;
+  const words = tokenize(lowered);
+  const first = words.find((w) => !LEADING.has(w));
+  if (!first || !TASK_VERBS.has(first)) return false;
+  const mine = subjectWords(text);
+  if (!mine.size) return false;
+  const theirs = subjectWords(task);
+  return ![...mine].some((word) => theirs.has(word));
 }
