@@ -232,6 +232,18 @@ export function selectProvider(
   };
 }
 
+/**
+ * The `.env` names a cloud provider's key is imported from, first match wins
+ * (electron/credentials.ts importEnvCredentials). The harness preflight reads
+ * the same table to say which matrix cell has no key before anything is paid
+ * for, so the two can never disagree about a name.
+ */
+export const providerKeyEnv = {
+  openai: ["OPENAI_API_KEY"],
+  anthropic: ["ANTHROPIC_API_KEY"],
+  google: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+} as const satisfies Partial<Record<ProviderKind, readonly string[]>>;
+
 // Bind saved keys to the provider AND exact normalized endpoint, never just a
 // provider label. A custom endpoint must not inherit an official provider key.
 export function credentialScope(

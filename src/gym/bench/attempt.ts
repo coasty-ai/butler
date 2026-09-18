@@ -24,16 +24,21 @@ import {
   type Settings,
   type Snapshot,
 } from "../../core/schema";
+import { frictionCodes } from "./analyze";
 import { benchToken } from "./catalogue";
 import {
   TOKEN_RE,
+  approvalInContext,
   approvesPrompt,
   fillInstruction,
   gradeTask,
   markerValues,
   markersIn,
   unverifiable,
+  type ApprovalView,
 } from "./graders";
+import { needsBenchDir } from "./preflight";
+import { sweepsStrayFiles } from "./readers";
 import {
   endingCode,
   honesty,
@@ -146,7 +151,15 @@ export interface AttemptDeps {
   cleanupAttempt?: Cleanup | null;
   launch: Launch;
   fixture?: FixtureHandle;
-  agenda?: PrepareContext["agenda"];
+  /**
+   * PrepareContext.agenda for one task, asked per attempt (readers.ts
+   * agendaFor): undefined unless every store the task writes is granted and
+   * has its local container right now. One answer for the whole cycle would
+   * outlive a teardown or a revoked grant.
+   */
+  agendaFor?: (task: BenchTask) => Promise<PrepareContext["agenda"]>;
+  /** Tokens in flight, so a sweep can find what a crash left (sweep.ts). */
+  tokens?: TokenLedger;
   /** Where bench folders live. Default ~/OpenAssistBench. */
   benchRoot?: string;
   token?: () => string;
@@ -154,6 +167,33 @@ export interface AttemptDeps {
   sleep?: (ms: number) => Promise<void>;
   /** How long the Finder gets to come forward before prepare, in ms. */
   settleMs?: number;
+}
+
+/**
+ * Where the harness keeps the tokens of attempts that may have left
+ * something behind. A crash between creating the bench folder and cleaning
+ * up (a power cut, a kill -9) leaves no row and no cleanup; only this list
+ * says which token's items a later `--cleanup-only` must look for, and since
+ * when. Every method is best-effort: a ledger that fails never stops an
+ * attempt.
+ */
+export interface TokenLedger {
+  /** Before anything carrying the token exists. */
+  open(token: string, taskId: string): void;
+  /** The bench folder exists; `at` is its birth time, which dates the attempt. */
+  started(token: string, at: number): void;
+  /**
+   * Cleanup ran and left these codes behind (none when it threw: `failed`).
+   * `recheck`: keep the token for a later sweep even when clean. The
+   * attempt's own cleanup passes it when it swept Spotlight for stray files,
+   * which a save seconds earlier is not indexed for yet.
+   */
+  close(
+    token: string,
+    leftovers: string[],
+    failed: boolean,
+    recheck?: boolean,
+  ): void;
 }
 
 export interface AttemptCell {
@@ -258,10 +298,8 @@ export function neverRan(
   };
 }
 
-/** Tasks that need a bench folder: the long suite, and anything with a reader. */
-export function needsBenchDir(task: BenchTask): boolean {
-  return task.suite === "long" || (task.evidence?.length ?? 0) > 0;
-}
+// The one rule for which tasks get a bench folder, shared with the preflight.
+export { needsBenchDir };
 
 /** A relative path prepare() may write: inside the folder, no dotfiles. */
 export function safeRelative(relative: string): boolean {
@@ -276,7 +314,10 @@ export function safeRelative(relative: string): boolean {
  * The Runner's view of the controller: every method delegates, and execute
  * captures a journal step where the action, the frame and the native result
  * are all in hand. The steps stay in memory and hold lengths and ids, never
- * the text. The injected controller is never mutated.
+ * the text. The surface each proposed action is checked on (the runner asks
+ * for it right before the policy, so it is the one a confirmation is about)
+ * is kept as bundle ids, a modal flag and web hosts for the approval rule.
+ * The injected controller is never mutated.
  */
 function journaled(
   controller: BenchController,
@@ -284,10 +325,24 @@ function journaled(
   markers: string[],
   state: HarnessState,
   now: () => Date,
+  seen: ApprovalView,
 ): Controller {
   return {
     kind: controller.kind,
-    surface: (action?: Action) => controller.surface(action),
+    surface: async (action?: Action) => {
+      const found = await controller.surface(action);
+      if (action) {
+        // Every field is overwritten, so nothing of an earlier action's
+        // surface (its page's host) can vouch for this one.
+        seen.appId = found?.appId;
+        seen.targetAppId = found?.targetAppId;
+        // The helper only ever sets the flag when a sheet or dialog is there.
+        seen.modal = found?.modal === true;
+        seen.domain = found?.domain;
+        seen.targetWebHost = found?.targetWebHost;
+      }
+      return found;
+    },
     capture: () => controller.capture(),
     stop: () => controller.stop(),
     resume: () => controller.resume(),
@@ -399,6 +454,7 @@ export async function runAttempt(
     approvals: 0,
     approvalsDeclined: 0,
     retries: 0,
+    blindRetries: 0,
     takeovers: 0,
     takeoverSources: noSources(),
     loops: 0,
@@ -438,11 +494,22 @@ export async function runAttempt(
   const benchPath = benchDir.startsWith(home + "/")
     ? "~" + benchDir.slice(home.length)
     : benchDir;
+  // The ledger is bookkeeping for a later sweep: it never stops an attempt.
+  const note = (write: (ledger: TokenLedger) => void) => {
+    try {
+      if (deps.tokens) write(deps.tokens);
+    } catch {
+      // A sweep then finds the folder by its name instead.
+    }
+  };
   let created = false;
   const ensureBenchDir = () => {
     if (created) return;
     mkdirSync(benchDir, { recursive: true, mode: 0o700 });
     created = true;
+    // Cleanup dates the attempt by this birth time; once the folder is gone
+    // only the ledger remembers it.
+    note((ledger) => ledger.started(token, lstatSync(benchDir).birthtimeMs));
   };
   const ctx: AttemptContext = {
     token,
@@ -481,11 +548,15 @@ export async function runAttempt(
         leftovers.push(...defaultCleanup());
       }
     } catch {
+      note((ledger) => ledger.close(token, leftovers, true));
       return {
         ...(leftovers.length ? { leftovers } : {}),
         cleanupFailed: true,
       };
     }
+    note((ledger) =>
+      ledger.close(token, leftovers, false, sweepsStrayFiles(task)),
+    );
     return leftovers.length ? { leftovers } : {};
   };
   // Once, whichever way out gets there first: a row carries what cleanup
@@ -502,10 +573,21 @@ export async function runAttempt(
     ...(await cleanupOnce()),
   });
 
+  // Before anything carrying the token exists: from here on a crash leaves
+  // an entry for --cleanup-only.
+  note((ledger) => ledger.open(token, task.id));
   try {
     if (needsBenchDir(task)) ensureBenchDir();
     let parameters: Record<string, string> = {};
     if (task.prepare) {
+      // Asked now, for this task: setup must report the task's own stores
+      // ready at this moment, or an agenda task's prepare skips.
+      let agenda: PrepareContext["agenda"];
+      try {
+        agenda = await deps.agendaFor?.(task);
+      } catch {
+        agenda = undefined;
+      }
       const context: PrepareContext = {
         index: (query) => controller.request("index", { query }),
         token: () => token,
@@ -519,7 +601,7 @@ export async function runAttempt(
           mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
           writeFileSync(file, content, { mode: 0o600 });
         },
-        ...(deps.agenda ? { agenda: deps.agenda } : {}),
+        ...(agenda ? { agenda } : {}),
         ...(deps.fixture
           ? {
               fixture: {
@@ -577,12 +659,23 @@ export async function runAttempt(
       },
     };
     let runner: Runner;
+    // The last proposed action's surface, for the approval rule.
+    const seen: ApprovalView = {};
     const emit = (snapshot: Snapshot) => {
       deps.diagnostics?.snapshot(snapshot);
       for (const event of snapshot.events.slice(printed)) {
         const d = event.data ?? {};
         if (event.type === "ModelRequestStarted") counters.modelCalls++;
-        if (event.type === "ActionRetargetRequested") counters.retries++;
+        if (event.type === "ActionRetargetRequested") {
+          counters.retries++;
+          // The analyzer's own rule, so IDE_BLIND means what BLIND_SURFACE does.
+          if (
+            frictionCodes({ event: event.type, data: d }).includes(
+              "BLIND_SURFACE",
+            )
+          )
+            counters.blindRetries++;
+        }
         if (event.type === "PolicyConfirmationRequested") counters.approvals++;
         if (event.type === "UserTakeoverStarted") {
           counters.takeovers++;
@@ -619,11 +712,13 @@ export async function runAttempt(
         counters.approvals > answered
       ) {
         answered = counters.approvals;
-        const approve = approvesPrompt(
-          task,
-          snapshot.pending.reason,
-          caps.approveRoutine,
-        );
+        const reason = snapshot.pending.reason;
+        const approve =
+          approvesPrompt(task, reason, caps.approveRoutine) &&
+          approvalInContext(task, reason, {
+            ...seen,
+            frameAppId: snapshot.frame?.appId,
+          });
         if (!approve) counters.approvalsDeclined++;
         setTimeout(() => runner.confirm(approve), 0);
       }
@@ -637,7 +732,7 @@ export async function runAttempt(
     const steps: JournalStep[] = [];
     const markers = markerValues(parameters);
     runner = new Runner(
-      journaled(controller, steps, markers, state, now),
+      journaled(controller, steps, markers, state, now, seen),
       client,
       recorder,
       settings,
@@ -794,6 +889,7 @@ export async function runAttempt(
       approvals: journal.approvals,
       approvalsDeclined: journal.approvalsDeclined,
       retries: journal.retries,
+      ...(counters.blindRetries ? { blindRetries: counters.blindRetries } : {}),
       handoffs: {
         manual: Math.max(
           counters.takeoverSources.manual_input,

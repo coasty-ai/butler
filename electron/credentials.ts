@@ -6,6 +6,7 @@ import type { Settings } from "../src/core/schema";
 import {
   credentialScope,
   providerDefaults,
+  providerKeyEnv,
   selectProvider,
 } from "../src/providers/catalog";
 
@@ -50,11 +51,10 @@ export function importEnvCredentials(
     const env = parseEnv(readFileSync(file, "utf8"));
     let next = { ...keys };
     let imported = 0;
-    for (const [provider, names] of [
-      ["openai", ["OPENAI_API_KEY"]],
-      ["anthropic", ["ANTHROPIC_API_KEY"]],
-      ["google", ["GEMINI_API_KEY", "GOOGLE_API_KEY"]],
-    ] as const) {
+    for (const [provider, names] of Object.entries(providerKeyEnv) as [
+      keyof typeof providerKeyEnv,
+      readonly string[],
+    ][]) {
       const value = names.map((name) => env[name]?.trim()).find(Boolean);
       if (!value) continue;
       next = withProviderKey(

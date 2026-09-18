@@ -6,15 +6,17 @@
 // touches neither a provider nor the desktop.
 //
 //   node scripts/bench.mjs --dry-run
+//   node scripts/bench.mjs --dry-run --suite long
 //   node scripts/bench.mjs --provider openai --tasks calculator \
 //        --i-know-this-drives-my-mac
 //
 // Screenshots stay in memory, and nothing this script writes contains screen
 // text, window titles, URLs or file paths: results hold task ids, counts,
 // durations, cost and fixed reason codes.
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -27,8 +29,8 @@ const root = resolve(here, "..");
 // `node scripts/bench.mjs` works on its own.
 const { register } = await import("tsx/esm/api");
 register();
-const { CATALOGUE, CATEGORIES, selectTasks } =
-  await import("../src/gym/bench/catalogue.ts");
+const { catalogueFor, categoriesFor, selectSuite } =
+  await import("../src/gym/bench/catalogue-long.ts");
 const { aggregate, renderSummary, renderTable } =
   await import("../src/gym/bench/report.ts");
 
@@ -36,6 +38,7 @@ const { values } = parseArgs({
   options: {
     provider: { type: "string", default: "openai" },
     model: { type: "string" },
+    suite: { type: "string", default: "smoke" },
     tasks: { type: "string" },
     repeat: { type: "string", default: "1" },
     "max-cost": { type: "string" },
@@ -59,7 +62,9 @@ const usage = `Usage: node scripts/bench.mjs [options]
   --i-know-this-drives-my-mac  Required to actually run. PAID and REAL.
   --provider openai|anthropic|google
   --model <id>
-  --tasks <ids|categories>     Comma separated. Categories: ${CATEGORIES.join(", ")}
+  --suite smoke|long|all       The catalogue (default smoke, the 12 short tasks).
+  --tasks <ids|categories>     Comma separated, within the suite; "long" or "smoke"
+                               names a whole suite. Categories: ${categoriesFor("all").join(", ")}
   --repeat <n>                 Attempts per task (default 1).
   --max-cost <dollars>         Total budget for the whole benchmark.
   --memory                     Use the learned-memory path (recall and skills).
@@ -79,10 +84,18 @@ if (!Number.isSafeInteger(repeat) || repeat < 1 || repeat > 20) {
   console.error("--repeat must be a whole number between 1 and 20.");
   process.exit(2);
 }
-const { tasks, unknown } = selectTasks(values.tasks, CATALOGUE);
+if (!["smoke", "long", "all"].includes(values.suite)) {
+  console.error("--suite must be smoke, long or all.");
+  process.exit(2);
+}
+// `--tasks all` keeps its old meaning, every task of the chosen suite.
+const { tasks, unknown } = selectSuite(
+  values.tasks?.trim() === "all" ? undefined : values.tasks,
+  values.suite,
+);
 if (unknown.length) {
   console.error(
-    `Unknown task or category: ${unknown.join(", ")}. Known categories: ${CATEGORIES.join(", ")}.`,
+    `Unknown task or category: ${unknown.join(", ")}. Known categories: ${categoriesFor(values.suite).join(", ")}.`,
   );
   process.exit(2);
 }
@@ -127,6 +140,8 @@ if (values["dry-run"]) {
       );
     if (task.approve?.length)
       console.log(`  approve:  ${task.approve.join(" | ")}`);
+    if (task.evidence?.length)
+      console.log(`  reads:    ${task.evidence.join(", ")}`);
   }
   process.exit(0);
 }
@@ -163,6 +178,7 @@ const { createMemoryAccess } = await import("../src/memory/access.ts");
 const {
   createHarnessState,
   launchServices,
+  neverRan,
   onEmergencyStop,
   onManualInput,
   runAttempt,
@@ -221,6 +237,76 @@ if (!lock.ok) {
 }
 process.on("exit", () => releaseDesktopLock(lockFile, process.pid));
 
+// The long suite's readers and cleanup (they run nothing on import either,
+// but a dry run has no use for them). Music stays off unless
+// OPEN_ASSIST_BENCH_MUSIC=1: its first Apple Event shows an Automation prompt.
+const { AGENDA_BINARY, MUSIC_READER_ENV, createReaders } =
+  await import("../src/gym/bench/readers.ts");
+const {
+  benchRootDirty,
+  fileTokenLedger,
+  remainingLeftovers,
+  sweepTokens,
+  tokenLedgerDir,
+} = await import("../src/gym/bench/sweep.ts");
+const { REMEDY, needsBenchDir, readStartFacts, startSkips, taskGate } =
+  await import("../src/gym/bench/preflight.ts");
+const { FIXTURE_PORT } = await import("../src/gym/bench/graders.ts");
+const home = homedir();
+// So `npm run cycle -- --cleanup-only` finds what a crashed run left.
+const tokenLedger = fileTokenLedger(tokenLedgerDir(home));
+const readers = createReaders({ music: process.env[MUSIC_READER_ENV] === "1" });
+// The fixture server, as a child process for the run, when a selected task
+// reads its log. It ends with this process however it ends; without it
+// those tasks skip as NO_PREPARED_TARGET.
+let fixture;
+if (tasks.some((task) => task.evidence?.includes("fixture"))) {
+  const { spawnFixtureServer } = await import("./bench-fixtures.mjs");
+  try {
+    fixture = await spawnFixtureServer({ port: FIXTURE_PORT });
+  } catch (error) {
+    console.warn(
+      `The fixture server did not start (${error?.code ?? "FIXTURE_FAILED"}): the tasks that read its pages will be skipped. Is port ${FIXTURE_PORT} on 127.0.0.1 taken?`,
+    );
+  }
+}
+
+// The long suite gets the cycle's task-level preflight (preflight.ts), from
+// the same read-only reads: a document application already open (it may
+// hold the person's unsaved work, which a long task could type into and
+// save), an earlier attempt's leftovers, a missing application, no agenda
+// grant, no fixture server. Those tasks are skipped with the code, like a
+// cycle's; the smoke suite runs as before.
+const run = (command, args) =>
+  new Promise((done) =>
+    execFile(
+      command,
+      args,
+      { cwd: root, timeout: 10000, maxBuffer: 8 * 1024 * 1024 },
+      (error, stdout) => done(error ? undefined : String(stdout)),
+    ),
+  );
+let skips = new Map();
+if (tasks.some((task) => task.suite === "long")) {
+  const facts = await readStartFacts(tasks, {
+    run,
+    home,
+    benchRootDirty: () => benchRootDirty(home, tokenLedger.entries()),
+    ...(existsSync(AGENDA_BINARY) ? { agendaBinary: AGENDA_BINARY } : {}),
+    fixture: async () => !!fixture,
+  });
+  skips = startSkips(tasks, facts);
+  for (const [id, code] of skips)
+    console.warn(`${id}: skipped, ${code}. ${REMEDY[code]}`);
+}
+// The skips above, the hour around midnight for an agenda attempt, and an
+// editor that showed no accessibility tree closing its category.
+const gate = taskGate(
+  new Map(tasks.map((task) => [task.id, task])),
+  skips,
+  () => new Date(),
+);
+
 // Shared with the controller's callbacks: Escape stops everything, real input
 // stops the run outright (see attempt.ts for why not a manual takeover).
 const state = createHarnessState();
@@ -264,10 +350,18 @@ const deps = {
   clients: { [cell]: client },
   state,
   memoryAccess,
-  // The suite's end-state readers and cleanup arrive with the long suite; the
-  // smoke tasks read nothing beyond the grading capture.
-  readEvidence: null,
-  cleanupAttempt: null,
+  // What a task declared, read back after the run; the smoke tasks declare
+  // nothing and read only the grading capture. The fixture log is flushed
+  // first, so the last page the model opened is in it.
+  readEvidence: async (task, ctx) => {
+    if (task.evidence?.includes("fixture")) await fixture?.flush();
+    return readers.readEvidence(task, ctx);
+  },
+  cleanupAttempt: readers.cleanupAttempt,
+  // Asked per attempt: the task's own stores, ready right now.
+  agendaFor: readers.agendaFor,
+  tokens: tokenLedger,
+  ...(fixture ? { fixture } : {}),
   launch: launchServices(),
 };
 const attemptCell = {
@@ -279,6 +373,9 @@ const attemptCell = {
 
 const results = [];
 let stoppedBecause;
+/** The final sweep's answer; undefined when it failed, [] when not run. */
+let swept = [];
+const sweeps = tasks.some(needsBenchDir);
 try {
   await controller.configure(settingsSchema.parse(baseSettings));
   for (const [planIndex, { task, attempt }] of plan.entries()) {
@@ -291,12 +388,28 @@ try {
       stoppedBecause = "cost budget";
       break;
     }
+    const skip = gate.skip({ taskId: task.id });
+    if (skip) {
+      const row = neverRan(
+        attemptCell,
+        task,
+        attempt,
+        { maxCost: 0, approveRoutine: false, planIndex },
+        skip,
+        state,
+      );
+      results.push(row);
+      gate.observe(row);
+      console.log(`${task.id} #${attempt}  skipped (${skip})`);
+      continue;
+    }
     const result = await runAttempt(deps, attemptCell, task, attempt, {
       maxCost: Math.min(task.maxCost, budget - spent),
       approveRoutine: values["approve-routine"],
       planIndex,
     });
     results.push(result);
+    gate.observe(result);
     console.log(
       `${result.taskId} #${result.attempt}  ${result.status}${result.reason ? " (" + result.reason + ")" : ""}  ${result.actions} actions  ${result.seconds.toFixed(1)}s  $${result.cost.toFixed(3)}`,
     );
@@ -323,9 +436,30 @@ try {
   );
 } finally {
   try {
+    await fixture?.close();
+  } catch {}
+  try {
     memoryStore?.flush();
   } catch {}
   controller.close();
+  // Still under the lock, as a cycle's: every token the ledger holds (this
+  // run's file tasks, once Spotlight has had time to index their saves) and
+  // every token folder. Without it this run's tokens would stay in the
+  // ledger and skip the next cycle's long tasks as BENCH_ROOT_DIRTY.
+  if (sweeps)
+    try {
+      swept = await sweepTokens({
+        home,
+        ledger: tokenLedger,
+        tasks: new Map(catalogueFor("all").map((task) => [task.id, task])),
+        onWait: (ms) =>
+          console.log(
+            `Waiting ${Math.ceil(ms / 1000)} s for Spotlight to index the last attempt's files before sweeping.`,
+          ),
+      });
+    } catch {
+      swept = undefined;
+    }
 }
 
 const totals = aggregate(results);
@@ -375,4 +509,17 @@ writeFileSync(
   ) + "\n",
 );
 console.log(`\nWrote ${file}`);
-process.exit(totals.failed === 0 && !stoppedBecause ? 0 : 1);
+// renderSummary printed the Leftovers line; anything left behind is a
+// failed run of the benchmark whatever the grades say. After a final sweep,
+// what it could not clear; without one, what the attempts reported.
+const left = sweeps ? remainingLeftovers(results, swept) : [];
+const leftBehind = sweeps
+  ? left.length
+  : Object.keys(totals.leftovers).length || totals.cleanupFailed;
+if (sweeps && left.length)
+  console.log(`Leftovers after the final sweep: ${left.join(", ")}.`);
+if (leftBehind)
+  console.log(
+    "Benchmark items stayed on this Mac: npm run cycle -- --cleanup-only sweeps for them (docs/BENCHMARK.md, Cleanup).",
+  );
+process.exit(totals.failed === 0 && !stoppedBecause && !leftBehind ? 0 : 1);

@@ -290,6 +290,15 @@ export function agendaKinds(task: BenchTask): AgendaKind[] {
 }
 
 /**
+ * Whether cleanup asks Spotlight for files saved elsewhere under the token:
+ * every task that declares the files reader. Its clean answer is not final
+ * (Spotlight lags a save), so the attempt keeps its token for a later sweep.
+ */
+export function sweepsStrayFiles(task: Pick<BenchTask, "evidence">): boolean {
+  return task.evidence?.includes("files") ?? false;
+}
+
+/**
  * The stores `coarena-agenda setup` left ready: granted, with the local
  * OpenAssistBench container in place. setup is idempotent and only ever
  * creates that container in the non-syncing source; an error (NO_ACCESS,
@@ -443,7 +452,7 @@ export const quarantineFor = (home: string, token: string) =>
   join(home, BENCH_ROOT, ".quarantine", token);
 
 /** Birth time in epoch milliseconds, from lstat, never through a link. */
-const bornAt = (path: string): number | undefined => {
+export const bornAt = (path: string): number | undefined => {
   try {
     const ms = lstatSync(path).birthtimeMs;
     return ms > 0 ? ms : undefined;
@@ -699,8 +708,7 @@ export function createReaders(options: ReaderOptions = {}): {
       } catch {
         codes.push("CLEANUP_TASK_FAILED");
       }
-    if (readers.includes("files"))
-      codes.push(...(await sweep(ctx.token, start)));
+    if (sweepsStrayFiles(task)) codes.push(...(await sweep(ctx.token, start)));
     return [...new Set(codes)];
   };
 
@@ -740,20 +748,40 @@ export function createReaders(options: ReaderOptions = {}): {
    * verify. The helper keeps (and counts as foreign) a token-titled item it
    * cannot show the attempt made: LEFTOVER_FOREIGN_MARKED for a person to
    * check. A store the helper has no grant for reads as empty, so an empty
-   * answer from one the task writes proves nothing: LEFTOVER_AGENDA_UNVERIFIED.
+   * answer from one the task writes proves nothing: LEFTOVER_AGENDA_UNVERIFIED,
+   * which no retry changes. A helper that gave no answer (it timed out,
+   * failed, or printed nothing readable, with the stores granted as far as
+   * it said) is LEFTOVER_AGENDA_NO_ANSWER: a later sweep asks again.
    */
   async function cleanAgenda(
     task: BenchTask,
     ctx: AttemptContext,
     start: number | undefined,
   ): Promise<string[]> {
+    const kinds = agendaKinds(task);
+    const granted = (access: { calendar: string; reminders: string }) =>
+      kinds.every(
+        (kind) =>
+          (kind === "event" ? access.calendar : access.reminders) === "granted",
+      );
     try {
       const args = ["remove", ctx.token];
       if (start !== undefined) args.push(new Date(start).toISOString());
       const removed = lastJsonLine(await exec(binary, args, slowMs));
+      if (!removed) return ["LEFTOVER_AGENDA_NO_ANSWER"];
+      if (typeof removed.error === "string") {
+        // A failure carries the helper's status: without a grant no retry
+        // can help, with one the removal itself failed and may not again.
+        const access = (removed.access ?? {}) as Record<string, unknown>;
+        const { calendar, reminders } = access;
+        return typeof calendar === "string" &&
+          typeof reminders === "string" &&
+          !granted({ calendar, reminders })
+          ? ["LEFTOVER_AGENDA_UNVERIFIED"]
+          : ["LEFTOVER_AGENDA_NO_ANSWER"];
+      }
+      // An older helper that does not count what it kept.
       if (
-        !removed ||
-        typeof removed.error === "string" ||
         typeof removed.removed !== "number" ||
         typeof removed.foreign !== "number"
       )
@@ -763,20 +791,16 @@ export function createReaders(options: ReaderOptions = {}): {
       const after = parseAgendaFind(
         await exec(binary, ["find", ctx.token, "wide"], slowMs),
       );
-      if (!after) return [...codes, "LEFTOVER_AGENDA_UNVERIFIED"];
-      const access: Record<AgendaKind, string> = {
-        event: after.access.calendar,
-        reminder: after.access.reminders,
-      };
-      if (agendaKinds(task).some((kind) => access[kind] !== "granted"))
-        codes.push("LEFTOVER_AGENDA_UNVERIFIED");
+      if (!after) return [...codes, "LEFTOVER_AGENDA_NO_ANSWER"];
+      if (!granted(after.access)) codes.push("LEFTOVER_AGENDA_UNVERIFIED");
       if (after.items.some((item) => item.kind === "event"))
         codes.push("LEFTOVER_EVENT");
       if (after.items.some((item) => item.kind === "reminder"))
         codes.push("LEFTOVER_REMINDER");
       return codes;
     } catch {
-      return ["LEFTOVER_AGENDA_UNVERIFIED"];
+      // Timed out, or the helper could not be run at all.
+      return ["LEFTOVER_AGENDA_NO_ANSWER"];
     }
   }
 

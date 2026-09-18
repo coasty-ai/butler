@@ -24,6 +24,8 @@ export interface ComparableCycle {
   planHash: string;
   /** The plan's attempts without their order; equal designs pair. */
   designHash?: string;
+  /** `i/n` when the cycle ran one slice of a plan (--shard, or automatic). */
+  shard?: string;
   /** Run from a tree with uncommitted changes: not the code its gitRev names. */
   dirty?: boolean;
   startedAt: string;
@@ -62,7 +64,11 @@ export interface Regression {
 }
 
 export type NotComparable =
-  "GIT_REV_DIFFERS" | "CATALOGUE_HASH_DIFFERS" | "DIRTY_TREE" | "NO_BASELINE";
+  | "GIT_REV_DIFFERS"
+  | "CATALOGUE_HASH_DIFFERS"
+  | "DIRTY_TREE"
+  | "SHARD_DIFFERS"
+  | "NO_BASELINE";
 
 export interface Comparison {
   comparable: boolean;
@@ -91,11 +97,44 @@ const ALPHA = 0.05;
 const rateOf = (k: number, n: number): Rate => ({ k, n, rate: n ? k / n : 0 });
 
 /**
- * The completed cycles at the current rev and catalogue that cover the plan
- * and share a cell. A cycle run from an uncommitted tree is never a baseline:
- * its rev names code it did not run.
+ * Whether two cycles measured the same mix of work. A shard holds some
+ * (task, repeat) groups of its plan and not others, so its pass rate is
+ * that mix's: the sibling shards of one plan, or a shard and a whole plan,
+ * differ by which tasks they ran, and a difficulty gap between the mixes
+ * would read as a regression with no code changed. Unsharded cycles hold
+ * every task alike; a sharded one matches only the same slice of the same
+ * plan, which its design hash names (shard and seed included).
+ */
+export function sameSlice(a: ComparableCycle, b: ComparableCycle): boolean {
+  if (!a.shard && !b.shard) return true;
+  return (
+    a.shard === b.shard &&
+    a.designHash !== undefined &&
+    a.designHash === b.designHash
+  );
+}
+
+/**
+ * The completed cycles at the current rev and catalogue that cover the plan,
+ * share a cell and ran the same slice of work (sameSlice). A cycle run from
+ * an uncommitted tree is never a baseline: its rev names code it did not
+ * run.
  */
 export function selectBaseline(
+  current: ComparableCycle,
+  candidates: ComparableCycle[],
+): ComparableCycle[] {
+  return timingCycles(current, candidates).filter((cycle) =>
+    sameSlice(cycle, current),
+  );
+}
+
+/**
+ * selectBaseline without the slice rule: cycles whose per-task durations
+ * estimate this plan's, before it is known which slice tonight runs. A
+ * task's median time does not depend on which other tasks ran beside it.
+ */
+export function timingCycles(
   current: ComparableCycle,
   candidates: ComparableCycle[],
 ): ComparableCycle[] {
@@ -294,6 +333,10 @@ export function compareCycles(
     return { ...none, reason: "GIT_REV_DIFFERS" };
   if (baseline.some((cycle) => cycle.catalogueHash !== current.catalogueHash))
     return { ...none, reason: "CATALOGUE_HASH_DIFFERS" };
+  // A named baseline too: the pooled test over two different task mixes
+  // measures the mix, not the code.
+  if (baseline.some((cycle) => !sameSlice(cycle, current)))
+    return { ...none, reason: "SHARD_DIFFERS" };
   const paired =
     baseline.length === 1 &&
     baseline[0].designHash !== undefined &&
@@ -451,4 +494,110 @@ export function compareModels(results: AttemptResult[]): ModelPair[] {
       });
     }
   return out;
+}
+
+/* ----------------------------------------------------------------- probe */
+
+/** Why a probe did not pass, as a fixed code and the row it is about. */
+export interface ProbeReason {
+  code:
+    | "CLASS_NOT_IMPROVED"
+    | "OTHER_CLASS_REGRESSED"
+    | "MODEL_REGRESSED"
+    | "TASKS_CHANGED"
+    | "NO_SHARED_CELLS";
+  key?: string;
+}
+
+export interface ProbeVerdict {
+  code: string;
+  pass: boolean;
+  reasons: ProbeReason[];
+  /** The class over the attempts that ran, in the baseline's scope and now. */
+  before: Rate;
+  after: Rate;
+  /** One-sided p that the class's rate fell. */
+  p: number;
+  comparison: Comparison;
+}
+
+/**
+ * `--probe CODE --baseline <cycle>` (harness-design-loop.md §3.3): the fix
+ * under test against the baseline, over the cells and tasks the probe ran.
+ * It passes when the class's rate fell (one-sided p < 0.05) or the class
+ * is gone (0 in 36 or more attempts), no other agent-owned class is a
+ * regression, and no affected model's success rate is. A probe runs a
+ * different revision by design (that is the fix), so the revision, tree and
+ * catalogue-hash checks of compareCycles are replaced by one on the task
+ * templates the two ran (`templatesMatch`). Evidence for a merge, never for
+ * "fixed": its tasks are the ones the fix was tuned on.
+ */
+export function compareProbe(
+  current: ComparableCycle,
+  baseline: ComparableCycle,
+  code: string,
+  options: {
+    templatesMatch: boolean;
+    classes: (cycle: ComparableCycle, cells: string[]) => ClassRate[];
+    owner: (code: string) => string;
+  },
+): ProbeVerdict {
+  const cells = current.cells.filter((cell) => baseline.cells.includes(cell));
+  const tasks = new Set(current.taskIds);
+  const scoped: ComparableCycle = {
+    ...baseline,
+    gitRev: current.gitRev,
+    catalogueHash: current.catalogueHash,
+    dirty: false,
+    // Another plan: nothing pairs, the pooled z test applies. The probe's
+    // scope replaces the slice rule too: it is judged on its own tasks,
+    // whichever night of a sharded plan the baseline was.
+    designHash: undefined,
+    shard: undefined,
+    taskIds: baseline.taskIds.filter((id) => tasks.has(id)),
+    cells,
+    results: baseline.results.filter(
+      (row) => cells.includes(row.cell) && tasks.has(row.taskId),
+    ),
+  };
+  const now: ComparableCycle = { ...current, dirty: false, shard: undefined };
+  const comparison = compareCycles(now, [scoped], options.classes);
+  const rateFor = (cycle: ComparableCycle): Rate => {
+    const executed = cycle.results.filter(
+      (row) => cells.includes(row.cell) && ran(row),
+    ).length;
+    const found = options
+      .classes(cycle, cells)
+      .find((row) => row.code === code);
+    return rateOf(found?.attempts ?? 0, executed);
+  };
+  const before = rateFor(scoped);
+  const after = rateFor(now);
+  const test = twoProportionZ(before.k, before.n, after.k, after.n);
+  const reasons: ProbeReason[] = [];
+  if (!options.templatesMatch) reasons.push({ code: "TASKS_CHANGED" });
+  if (!cells.length) reasons.push({ code: "NO_SHARED_CELLS" });
+  const improved = after.rate < before.rate && test.pDrop < ALPHA;
+  const cleared = after.k === 0 && after.n >= 36;
+  if (!improved && !cleared) reasons.push({ code: "CLASS_NOT_IMPROVED" });
+  for (const row of comparison.regressions) {
+    if (row.verdict !== "regression") continue;
+    if (
+      row.scope === "class" &&
+      row.key !== code &&
+      options.owner(row.key) === "agent"
+    )
+      reasons.push({ code: "OTHER_CLASS_REGRESSED", key: row.key });
+    if (row.scope === "model")
+      reasons.push({ code: "MODEL_REGRESSED", key: row.key });
+  }
+  return {
+    code,
+    pass: !reasons.length,
+    reasons,
+    before,
+    after,
+    p: test.pDrop,
+    comparison,
+  };
 }

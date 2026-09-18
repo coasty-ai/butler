@@ -5,12 +5,15 @@
 // like `npm run bench`. Nothing runs without --i-know-this-drives-my-mac, and
 // no attempt starts until the Mac has been left alone for --idle seconds
 // (300 by default). --dry-run and --preflight touch neither a provider nor
-// the desktop; they read a few system counters and print.
+// the desktop; they read a few system counters and print. --cleanup-only
+// runs no task: it sweeps for benchmark items a crashed cycle left behind.
 //
 //   node scripts/harness-cycle.mjs --dry-run
+//   node scripts/harness-cycle.mjs --dry-run --suite long
 //   node scripts/harness-cycle.mjs --preflight --time-box 4h
 //   node scripts/harness-cycle.mjs --matrix openai,google --tasks calculator \
 //        --repeat 2 --i-know-this-drives-my-mac
+//   node scripts/harness-cycle.mjs --cleanup-only
 //
 // Screenshots stay in memory, and nothing this script writes contains screen
 // text, window titles, URLs or file paths: results.json and report.md hold
@@ -33,7 +36,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { arch, tmpdir } from "node:os";
+import { arch, homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -42,12 +45,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 
 // Pure modules only until the dry-run and preflight exits: the plan, the
-// presence rules, the report and the price table. tsx is registered here so
-// `node scripts/harness-cycle.mjs` works on its own.
+// presence and preflight rules, the report and the price table. The suite's
+// readers load here too: importing them runs nothing (a test checks), and
+// the preflight asks them which stores a task writes. tsx is registered here
+// so `node scripts/harness-cycle.mjs` works on its own.
 const { register } = await import("tsx/esm/api");
 register();
-const { CATALOGUE, CATEGORIES, selectTasks } =
-  await import("../src/gym/bench/catalogue.ts");
+const { selectTasks } = await import("../src/gym/bench/catalogue.ts");
+const { catalogueFor, categoriesFor, selectSuite } =
+  await import("../src/gym/bench/catalogue-long.ts");
+const { FIXTURE_PORT } = await import("../src/gym/bench/graders.ts");
 const {
   CYCLE_ID,
   buildPlan,
@@ -70,26 +77,55 @@ const {
   runCycleLoop,
   seedOf,
   shardOf,
+  shardsNeeded,
 } = await import("../src/gym/bench/cycle.ts");
 const {
   acquireDesktopLock,
-  agendaLocalSource,
   desktopLockPath,
+  harnessProcesses,
   preflight,
   readGate,
   readSystem,
   releaseDesktopLock,
 } = await import("../src/gym/bench/presence.ts");
 const {
+  REMEDY,
+  agendaSetupError,
+  missingKey,
+  openedByPerson,
+  presentKeyNames,
+  readStartFacts,
+  runningDocumentApps,
+  startSkips,
+  taskGate,
+} = await import("../src/gym/bench/preflight.ts");
+const {
+  AGENDA_BINARY,
+  MUSIC_READER_ENV,
+  agendaKinds,
+  createReaders,
+  parseAgendaSetup,
+} = await import("../src/gym/bench/readers.ts");
+const {
+  benchRootDirty,
+  fileTokenLedger,
+  remainingLeftovers,
+  sweepTokens,
+  tokenLedgerDir,
+} = await import("../src/gym/bench/sweep.ts");
+const {
   buildCycleResults,
   catalogueHash,
   classRates,
   comparable,
+  graderFiles,
+  probeClassRates,
   renderCycleReport,
+  sameTemplates,
 } = await import("../src/gym/bench/cycle-report.ts");
-const { compareCycles, selectBaseline } =
+const { compareCycles, compareProbe, selectBaseline, timingCycles } =
   await import("../src/gym/bench/compare.ts");
-const { analyze, parseDiagnostics } =
+const { analyze, ownerOf, parseDiagnostics } =
   await import("../src/gym/bench/analyze.ts");
 const { median, renderSummary } = await import("../src/gym/bench/report.ts");
 // The whole module: its per-model price table, where it has one, prices the
@@ -100,6 +136,7 @@ const { providerDefaults } = catalog;
 const { values } = parseArgs({
   options: {
     matrix: { type: "string" },
+    suite: { type: "string", default: "smoke" },
     tasks: { type: "string" },
     repeat: { type: "string", default: "3" },
     seed: { type: "string" },
@@ -128,6 +165,7 @@ const { values } = parseArgs({
     "allow-rev-change": { type: "boolean", default: false },
     "dry-run": { type: "boolean", default: false },
     preflight: { type: "boolean", default: false },
+    "cleanup-only": { type: "boolean", default: false },
     "i-know-this-drives-my-mac": { type: "boolean", default: false },
     help: { type: "boolean", default: false },
   },
@@ -137,7 +175,11 @@ const usage = `Usage: node scripts/harness-cycle.mjs [options]     (npm run cycl
 
 Plan
   --matrix <provider[:model],...>  Cells. Default openai. A bare provider uses its default model.
-  --tasks <ids|categories|all>     Categories: ${CATEGORIES.join(", ")}. Default all.
+  --suite <smoke|long|all>         The catalogue: the 12-task smoke suite (default), the long
+                                   suite, or both. A plan holding long tasks that does not fit
+                                   the time box is sharded over nights on its own.
+  --tasks <ids|categories|all>     Within the suite; "long" or "smoke" there names a whole suite.
+                                   Categories: ${categoriesFor("all").join(", ")}. Default all.
   --repeat <n>                     Attempts per task per model, 1-20. Default 3.
   --seed <n>                       Interleaving seed. Default: a hash of the cycle id.
   --shard <i/n>                    Run slice i of n of the same plan.
@@ -164,10 +206,13 @@ Cycle
   --resume <id>                    Continue an interrupted cycle from its ledger.
   --allow-rev-change               Resume at a different git revision.
   --baseline <id|auto|none>        Cycle to compare against. Default auto.
-  --probe <CLASS_CODE>             Only the cells and categories the class touched in --baseline <id>.
+  --probe <CLASS_CODE>             Only the cells and categories the class touched in --baseline <id>,
+                                   judged against it (exit 1 when the probe does not pass).
   --out-dir <dir>                  Default output/harness.
-  --dry-run                        Print the plan, ceilings, estimate, gate state and baseline.
+  --dry-run                        Print the plan, ceilings, estimate, gate state, skips and baseline.
   --preflight                      Check this Mac for an unattended night and exit.
+  --cleanup-only                   Run no task: sweep every store for benchmark items that crashed
+                                   or interrupted attempts left behind, then exit (1 if any remain).
   --i-know-this-drives-my-mac      Required to run. PAID and REAL.`;
 
 if (values.help) {
@@ -265,6 +310,80 @@ function knownCycles() {
   return out;
 }
 
+/** Every task a token or a stored plan may name, by id. */
+const allTasks = new Map(catalogueFor("all").map((task) => [task.id, task]));
+const home = homedir();
+/** Tokens of attempts that may have left something behind (sweep.ts). */
+const tokenLedger = fileTokenLedger(tokenLedgerDir(home));
+/** Said before a sweep waits for Spotlight to index the last attempt's saves. */
+const spotlightWait = (ms) =>
+  console.log(
+    `Waiting ${Math.ceil(ms / 1000)} s for Spotlight to index the last attempt's files before sweeping.`,
+  );
+
+/* ---------------------------------------------------------- cleanup only */
+
+if (values["cleanup-only"]) {
+  // A dry run and a preflight write nothing, and a sweep deletes: asked
+  // together, neither half can be honoured. A --dry-run process is also one
+  // the other harnesses' ps check does not count as driving this desktop.
+  if (values["dry-run"] || values.preflight)
+    fail(
+      "--cleanup-only deletes what it finds, so it does not combine with --dry-run or --preflight. Run it on its own.",
+    );
+  // No task, no model, no desktop input. The sweep deletes only what carries
+  // a benchmark token, by the attempt's own cleanup rules and dated by the
+  // attempt's start, and never while another harness runs: the folder of
+  // the attempt it is in the middle of would go too.
+  const ps = await run("ps", ["-axo", "pid=,command="]);
+  if (ps === undefined)
+    fail("Refusing to sweep: ps could not be read (PRESENCE_UNKNOWN).");
+  if (harnessProcesses(ps, process.pid).length)
+    fail(`Refusing to sweep: HARNESS_RUNNING. ${REMEDY.HARNESS_RUNNING}`);
+  const lockFile = desktopLockPath(home);
+  const lock = acquireDesktopLock(lockFile, {
+    pid: process.pid,
+    script: "harness-cycle",
+    cycle: "cleanup-only",
+    startedAt: new Date().toISOString(),
+  });
+  if (!lock.ok)
+    fail(
+      lock.holder
+        ? `Refusing to sweep: ${lock.holder.script}${lock.holder.cycle ? " " + lock.holder.cycle : ""} is driving this desktop (pid ${lock.holder.pid}).`
+        : `Refusing to sweep: the desktop lock ${lockFile} cannot be read. Remove it if no cycle or bench is running.`,
+    );
+  process.on("exit", () => releaseDesktopLock(lockFile, process.pid));
+  let swept;
+  try {
+    swept = await sweepTokens({
+      home,
+      ledger: tokenLedger,
+      tasks: allTasks,
+      onWait: spotlightWait,
+    });
+  } catch {
+    // The ledger or the bench root could not be read: nothing was answered.
+    console.log(
+      `SWEEP_FAILED: the token ledger (${tokenLedgerDir(home)}) or ~/OpenAssistBench could not be read; fix its permissions and sweep again.`,
+    );
+    releaseDesktopLock(lockFile, process.pid);
+    process.exit(1);
+  }
+  for (const row of swept)
+    console.log(
+      `${row.token}  ${row.leftovers.length ? row.leftovers.join(", ") : "clean"}`,
+    );
+  const left = remainingLeftovers([], swept);
+  console.log(
+    swept.length
+      ? `Swept ${swept.length} token(s). ${left.length ? `Left behind: ${left.join(", ")} (docs/BENCHMARK.md, Cleanup, says what each means; remove them by hand, then sweep again).` : "Nothing left behind."}`
+      : "Nothing to sweep: no token folder under ~/OpenAssistBench and no token in the ledger.",
+  );
+  releaseDesktopLock(lockFile, process.pid);
+  process.exit(left.length ? 1 : 0);
+}
+
 /* ------------------------------------------------------------------ plan */
 
 const resuming = values.resume;
@@ -288,6 +407,8 @@ const requeue = flags.requeue;
 const defaults = Object.fromEntries(
   Object.entries(providerDefaults).map(([key, value]) => [key, value.model]),
 );
+if (!["smoke", "long", "all"].includes(values.suite))
+  fail("--suite takes smoke, long or all.");
 let cells;
 let tasks;
 if (stored) {
@@ -298,8 +419,10 @@ if (stored) {
     defaults,
   );
   cells = matrix.cells;
-  const selection = selectTasks(stored.taskIds.join(","), CATALOGUE);
-  if (selection.unknown.length)
+  // Ids are unique across both suites, so a stored plan resolves whatever
+  // suite it was drawn from.
+  const selection = selectTasks(stored.taskIds.join(","), catalogueFor("all"));
+  if (selection.unknown.length || !stored.taskIds.length)
     fail(
       `The stored plan names tasks this catalogue no longer has: ${selection.unknown.join(", ")}.`,
     );
@@ -311,17 +434,23 @@ if (stored) {
       `Unknown matrix cell: ${matrix.unknown.join(", ")}. Use openai, anthropic or google, optionally with :model.`,
     );
   cells = matrix.cells;
-  const selection = selectTasks(values.tasks, CATALOGUE);
+  // `--tasks all` keeps its old meaning, every task of the chosen suite;
+  // both suites are `--suite all` (or `--tasks smoke,long`).
+  const selector = values.tasks?.trim() === "all" ? undefined : values.tasks;
+  const selection = selectSuite(selector, values.suite);
   if (selection.unknown.length)
     fail(
-      `Unknown task or category: ${selection.unknown.join(", ")}. Known categories: ${CATEGORIES.join(", ")}.`,
+      `Unknown task or category: ${selection.unknown.join(", ")}. Known categories: ${categoriesFor(values.suite).join(", ")}; a suite name (smoke, long, all) selects a whole suite.`,
     );
   tasks = selection.tasks;
 }
 
 const cycles = knownCycles();
+let probe = stored?.probe;
 if (values.probe && !stored) {
-  // A probe replays only where a class showed up in one named baseline.
+  // A probe replays only where a class showed up in one named baseline: the
+  // models it hit, and the baseline's own tasks in the categories it hit,
+  // whichever suite they came from.
   const base = cycles.find((cycle) => cycle.data.cycle.id === values.baseline);
   if (!base) fail("--probe needs --baseline <cycle id> of a finished cycle.");
   const scope = probeScope(base.data.failureClasses ?? [], values.probe);
@@ -330,10 +459,29 @@ if (values.probe && !stored) {
   cells = values.matrix
     ? cells.filter((cell) => scope.cells.includes(cell.cell))
     : parseMatrix(scope.cells.join(","), defaults).cells;
-  tasks = tasks.filter((task) => scope.categories.includes(task.category));
+  const ids = (base.data.cycle.tasks ?? [])
+    .filter((task) => scope.categories.includes(task.category))
+    .map((task) => task.id);
+  if (!ids.length)
+    fail(`Cycle ${values.baseline} lists no task in the class's categories.`);
+  const picked = selectTasks(ids.join(","), catalogueFor("all"));
+  if (picked.unknown.length)
+    fail(
+      `The baseline ran tasks this catalogue no longer has (${picked.unknown.join(", ")}); a probe needs the same tasks.`,
+    );
+  tasks = picked.tasks;
+  probe = { code: values.probe, baseline: values.baseline };
 }
 if (!cells.length) fail("No matrix cells selected.");
 if (!tasks.length) fail("No tasks selected.");
+/** What the selection holds, for plan.json and the report. */
+const suite =
+  stored?.suite ??
+  (tasks.every((task) => task.suite === "long")
+    ? "long"
+    : tasks.some((task) => task.suite === "long")
+      ? "all"
+      : "smoke");
 // Every cost cap (the run's own budget, --max-cost-run, --max-cost-model,
 // --max-cost) is checked against the cell's estimated spend. A model charged
 // at its provider default's rates can spend several times each cap, so a
@@ -345,9 +493,28 @@ if (unpriced.length)
       "Every cost cap is checked against a model's own rates: price the model there, or pick one the catalog prices.",
   );
 
+/** A small text file, or undefined: the same bounds the key import applies. */
+function readSmallText(file) {
+  try {
+    const info = statSync(file);
+    return info.isFile() && info.size <= 64 * 1024
+      ? readFileSync(file, "utf8")
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+// Each cell's key, by the names the app imports it under, from the .env the
+// real start imports. A value is only told from empty: nothing here keeps
+// or prints one.
+const keyNames = presentKeyNames(readSmallText(resolve(root, ".env")));
+const missingKeys = cells
+  .filter((cell) => missingKey(cell.provider, keyNames))
+  .map((cell) => cell.cell);
+
 const repeat = stored ? stored.repeat : number("repeat", 1, 20, true);
-const shardText = stored ? stored.shard : values.shard;
-const shard = parseShard(shardText);
+let shardText = stored ? stored.shard : values.shard;
+let shard = parseShard(shardText);
 if (shard === "invalid") fail("--shard takes i/n, for example 1/3.");
 const startedAt = new Date();
 const cycleId = resuming ?? values.cycle ?? defaultCycleId(startedAt, gitRev);
@@ -360,7 +527,85 @@ const seed = stored
     : seedOf(cycleId);
 const taskIds = tasks.map((task) => task.id);
 const cellIds = cells.map((cell) => cell.cell);
-const plan = shardOf(buildPlan(cellIds, taskIds, repeat, seed), shard);
+const fullPlan = buildPlan(cellIds, taskIds, repeat, seed);
+const byId = new Map(tasks.map((task) => [task.id, task]));
+
+/**
+ * Task templates and the grader source of exactly the suites selected: a
+ * change there changes the metric, and a smoke and a long cycle never share
+ * a hash, so neither is ever the other's baseline.
+ */
+const graderSources = graderFiles(tasks)
+  .map((file) => join(root, file))
+  .filter((file) => existsSync(file))
+  .map((file) => readFileSync(file, "utf8"));
+const catalogue = catalogueHash(tasks, graderSources);
+
+// Twice the baseline's median per task when there is one, the measured pace
+// of about three seconds a step otherwise.
+const medians = {};
+const baselineFor = (cycle, select = selectBaseline) => {
+  if (values.baseline === "none") return [];
+  if (values.baseline !== "auto") {
+    const named = cycles.find((c) => c.data.cycle.id === values.baseline);
+    return named ? [named.comparable] : [];
+  }
+  return select(
+    cycle,
+    cycles.map((c) => c.comparable),
+  );
+};
+// What a baseline is chosen by: revision, catalogue, tasks, cells, and
+// (below, once the shard is known) the slice of the plan.
+const draft = {
+  id: cycleId,
+  gitRev,
+  catalogueHash: catalogue,
+  planHash: "",
+  dirty,
+  startedAt: startedAt.toISOString(),
+  taskIds,
+  cells: cellIds,
+  results: [],
+};
+// Any slice of any plan times a task: tonight's slice is not known yet,
+// and it is chosen by these very medians.
+const timing = baselineFor(draft, timingCycles);
+for (const id of taskIds) {
+  const seconds = timing
+    .flatMap((cycle) => cycle.results)
+    .filter((row) => row.taskId === id && row.runStatus !== "skipped")
+    .map((row) => row.seconds);
+  if (seconds.length) medians[id] = median(seconds);
+}
+
+// The long suite does not fit one night on three models. A plan holding
+// long tasks that does not fit is cut into the fewest shards that each do,
+// and this night runs the first; the others need the same --seed, or they
+// would slice a differently ordered plan. A smoke plan is refused instead,
+// as before: it is short enough that --repeat is the knob.
+let autoShards;
+if (
+  !shardText &&
+  tasks.some((task) => task.suite === "long") &&
+  !fitsTimeBox(
+    estimateSeconds(fullPlan, byId, cooldownSeconds, medians),
+    timeBoxSeconds,
+  )
+) {
+  autoShards = shardsNeeded(
+    fullPlan,
+    byId,
+    cooldownSeconds,
+    timeBoxSeconds,
+    medians,
+  );
+  if (autoShards) {
+    shardText = `1/${autoShards}`;
+    shard = parseShard(shardText);
+  }
+}
+const plan = shardOf(fullPlan, shard);
 const hash = planHash({
   matrix: cellIds,
   taskIds,
@@ -375,7 +620,13 @@ const design = designHash({
   seed,
   shard: shardText,
 });
-const byId = new Map(tasks.map((task) => [task.id, task]));
+// What the dry run names as the baseline: the one the end of the cycle
+// will pick, the same slice of the same plan when tonight is a shard.
+const baseline = baselineFor({
+  ...draft,
+  designHash: design,
+  ...(shardText ? { shard: shardText } : {}),
+});
 const roof = ceiling(plan, byId, runCap);
 const cycleCap = stored
   ? stored.caps.cycle
@@ -387,55 +638,15 @@ const modelCap = stored
   : values["max-cost-model"] !== undefined
     ? number("max-cost-model", 0.01, 1000)
     : cycleCap / cells.length;
-
-/** Task templates and grader source: a change here changes the metric. */
-const graderSources = [
-  "src/gym/bench/graders.ts",
-  "src/gym/bench/catalogue.ts",
-  "src/gym/bench/catalogue-long.ts",
-  "src/gym/bench/readers.ts",
-]
-  .map((file) => join(root, file))
-  .filter((file) => existsSync(file))
-  .map((file) => readFileSync(file, "utf8"));
-const catalogue = catalogueHash(tasks, graderSources);
-
-// Twice the baseline's median per task when there is one, the measured pace
-// of about three seconds a step otherwise.
-const medians = {};
-const baselineFor = (cycle) => {
-  if (values.baseline === "none") return [];
-  if (values.baseline !== "auto") {
-    const named = cycles.find((c) => c.data.cycle.id === values.baseline);
-    return named ? [named.comparable] : [];
-  }
-  return selectBaseline(
-    cycle,
-    cycles.map((c) => c.comparable),
-  );
-};
-const draft = {
-  id: cycleId,
-  gitRev,
-  catalogueHash: catalogue,
-  planHash: hash,
-  designHash: design,
-  dirty,
-  startedAt: startedAt.toISOString(),
-  taskIds,
-  cells: cellIds,
-  results: [],
-};
-const baseline = baselineFor(draft);
-for (const id of taskIds) {
-  const seconds = baseline
-    .flatMap((cycle) => cycle.results)
-    .filter((row) => row.taskId === id && row.runStatus !== "skipped")
-    .map((row) => row.seconds);
-  if (seconds.length) medians[id] = median(seconds);
-}
 const estimate = estimateSeconds(plan, byId, cooldownSeconds, medians);
 const fits = fitsTimeBox(estimate, timeBoxSeconds);
+/** The commands for the other nights of an automatically sharded plan. */
+const shardNights = autoShards
+  ? Array.from(
+      { length: autoShards - 1 },
+      (_, i) => `--shard ${i + 2}/${autoShards} --seed ${seed}`,
+    )
+  : [];
 
 /* ------------------------------------------------------------- the Mac */
 
@@ -481,39 +692,18 @@ const source = {
   appDiagnostics,
 };
 
-const needs = (reader) => tasks.some((task) => task.evidence?.includes(reader));
-const agendaHelper = join(root, "native/bin/coarena-agenda");
-/**
- * Whether a local (never synced) calendar source exists, as far as the
- * read-only `status` can say: false without the helper, undefined when it
- * does not report one. The start then asks `setup`, which fails with
- * NO_LOCAL_SOURCE; a bench event in a synced calendar would reach other
- * people before cleanup removed it.
- */
-async function agendaStatus() {
-  if (!needs("agenda")) return undefined;
-  if (!existsSync(agendaHelper)) return false;
-  return agendaLocalSource(readJsonText(await run(agendaHelper, ["status"])));
-}
-function readJsonText(text) {
-  try {
-    return JSON.parse(text ?? "");
-  } catch {
-    return undefined;
-  }
-}
-/** Whether the fixture port is free on the loopback address. */
+/** Whether the fixture port is free and bindable on the loopback address. */
 async function fixturePortFree() {
-  if (!needs("fixture")) return undefined;
   return new Promise((done) => {
     const server = createServer();
     server.once("error", () => done(false));
-    server.listen(47831, "127.0.0.1", () => server.close(() => done(true)));
+    server.listen(FIXTURE_PORT, "127.0.0.1", () =>
+      server.close(() => done(true)),
+    );
   });
 }
 const system = await readSystem(source);
 allowedHolderPids = system.allowedHolders.map((holder) => holder.pid);
-const agendaLocal = await agendaStatus();
 const unsettled = (() => {
   const log = appDiagnostics();
   if (log === undefined) return undefined;
@@ -527,33 +717,39 @@ const codes = preflight({
   displayHolders: system.displayHolders.length,
   screensaverIdleSeconds: system.screensaverIdleSeconds,
   timeBoxSeconds,
-  agendaLocalSource: agendaLocal,
-  fixturePortFree: await fixturePortFree(),
   locked: system.locked,
   displayAsleep: false,
   unsettledAppRuns: unsettled,
 });
-const REMEDY = {
-  APP_RUNNING:
-    "Quit the Open Assist app (a texted task would start a second agent on this desktop), or pass --allow-app-running.",
-  HARNESS_RUNNING:
-    "Another cycle or bench is driving this desktop (from this or another checkout); let it finish or stop it first.",
-  SCREENSAVER_TOO_SOON:
-    "Set Lock Screen > Start Screen Saver to Never (or beyond the time box) for the night; the lock that follows would stall the gate.",
-  NO_LOCAL_SOURCE:
-    "An agenda task needs a local, unsynced calendar. Run native/bin/coarena-agenda request in this terminal and grant Calendar and Reminders; NO_LOCAL_SOURCE from native/bin/coarena-agenda setup means this Mac has no On My Mac source, and the agenda tasks cannot run.",
-  FIXTURE_PORT:
-    "Port 47831 on 127.0.0.1 is in use; the fixture server needs it.",
-  LOCKED: "The session is locked or not on the console.",
-  DISPLAY_OFF: "The display is asleep.",
-  DISPLAY_HELD_BY_OTHER:
-    "Something else holds the display awake (a call, a video, a caffeinate): end it, or name it with --allow-display-holder.",
-  APP_RUN_ACTIVE:
-    "The running app's log shows a run still in flight; let it finish or quit the app.",
-  PRESENCE_UNKNOWN:
-    "ps or pmset could not be read, so nothing can say whether another agent or a watched screen is here; try again.",
-};
 
+// What tonight can run, task by task, from read-only reads: the agenda
+// helper's `status` (never `setup`, which writes, and runs only at the real
+// start), Spotlight, ps, a bind on the fixture port, the bench root and the
+// token ledger. A condition that concerns some tasks skips those tasks.
+const facts = await readStartFacts(tasks, {
+  run,
+  home,
+  benchRootDirty: () => benchRootDirty(home, tokenLedger.entries()),
+  ...(existsSync(AGENDA_BINARY) ? { agendaBinary: AGENDA_BINARY } : {}),
+  fixture: fixturePortFree,
+});
+/** The document applications running now; undefined when ps failed. */
+const readRunning = async () => {
+  const ps = await run("ps", ["-axo", "pid=,command="]);
+  return ps === undefined ? undefined : runningDocumentApps(ps);
+};
+let skips = startSkips(tasks, facts);
+const runnable = () => tasks.filter((task) => !skips.has(task.id));
+
+function printSkips() {
+  const byCode = new Map();
+  for (const [id, code] of skips)
+    byCode.set(code, [...(byCode.get(code) ?? []), id]);
+  if (!byCode.size) return;
+  console.log("tasks skipped tonight (a resume retries them):");
+  for (const [code, ids] of byCode)
+    console.log(`  ${code} (${ids.join(", ")}): ${REMEDY[code]}`);
+}
 function printGate() {
   console.log(
     `gate now: HID idle ${system.hidIdleSeconds === undefined ? "unknown" : Math.round(system.hidIdleSeconds) + " s"} (needs ${idleSeconds} s before the first attempt)` +
@@ -566,27 +762,45 @@ function printGate() {
       `, app processes ${system.appPids.length}` +
       `, other harnesses ${system.harnessPids.length}` +
       `, app log ${appLog ? (unsettled ? `${unsettled} run(s) unsettled` : "settled") : "absent"}` +
-      (agendaLocal === undefined && needs("agenda")
+      (facts.agendaAccess && runnable().some((task) => agendaKinds(task).length)
         ? ", agenda local source checked at the start (setup)"
         : ""),
   );
-  if (codes.length) {
+  if (codes.length || missingKeys.length || !runnable().length) {
     console.log("preflight refusals:");
     for (const code of codes) console.log(`  ${code}: ${REMEDY[code]}`);
+    for (const cell of missingKeys)
+      console.log(
+        `  MISSING_KEY ${cell} (${catalog.providerKeyEnv[cell.split(":")[0]].join(" or ")} in ${resolve(root, ".env")}): ${REMEDY.MISSING_KEY}`,
+      );
+    if (!runnable().length)
+      console.log(`  NOTHING_TO_RUN: ${REMEDY.NOTHING_TO_RUN}`);
   } else console.log("preflight: clear");
+  printSkips();
 }
 
 if (values.preflight) {
   printGate();
-  process.exit(codes.length ? 2 : 0);
+  process.exit(
+    codes.length || missingKeys.length || !runnable().length ? 2 : 0,
+  );
 }
 
 if (values["dry-run"]) {
   console.log(
-    `Dry run: cycle ${cycleId} at ${gitRev}${dirty ? " (dirty)" : ""}: ${tasks.length} task(s) x ${cells.length} model(s) x ${repeat} = ${plan.length} attempt(s)` +
+    `Dry run: cycle ${cycleId} at ${gitRev}${dirty ? " (dirty)" : ""}, ${suite} suite: ${tasks.length} task(s) x ${cells.length} model(s) x ${repeat} = ${plan.length} attempt(s)` +
       (shard ? ` (shard ${shardText})` : "") +
       ".",
   );
+  if (autoShards)
+    console.log(
+      `The whole plan (${fullPlan.length} attempts) needs ${autoShards} nights to fit the time box: tonight runs shard 1/${autoShards} with --seed ${seed};` +
+        ` the other nights run ${shardNights.join(", then ")}.`,
+    );
+  if (probe)
+    console.log(
+      `Probe ${probe.code} against cycle ${probe.baseline}: the models and categories the class touched there.`,
+    );
   console.log(
     "No provider call, no desktop input and no file written in a dry run.\n",
   );
@@ -609,6 +823,10 @@ if (values["dry-run"]) {
         ? ""
         : ": does not fit 80% of the box. Shard it (--shard 1/2) or cut --repeat."),
   );
+  if (skips.size)
+    console.log(
+      `${runnable().length} of ${tasks.length} task(s) can run tonight; the estimate and ceiling still count every task.`,
+    );
   console.log(
     `baseline: ${values.baseline === "none" ? "none" : baseline.length ? baseline.map((c) => c.id).join(", ") : "none found at this revision and catalogue"}`,
   );
@@ -637,7 +855,7 @@ if (!fits)
   fail(
     `The plan needs about ${Math.round(estimate / 60)} min, more than 80% of the ${Math.round(timeBoxSeconds / 60)} min time box. Shard it or cut --repeat.`,
   );
-if (codes.length) {
+if (codes.length || missingKeys.length || !runnable().length) {
   printGate();
   fail("\nRefusing to start: fix the refusals above first.");
 }
@@ -669,15 +887,29 @@ if (!lock.ok)
 // However the process ends from here, exit included.
 process.on("exit", () => releaseDesktopLock(lockFile, process.pid));
 
-// setup makes the benchmark's calendar and list in the local source, or
-// fails with NO_LOCAL_SOURCE; idempotent, and the only way the helper as it
-// stands can say whether an unsynced source exists.
-if (needs("agenda") && agendaLocal !== true) {
-  const setup = existsSync(agendaHelper)
-    ? readJsonText(await run(agendaHelper, ["setup"]))
-    : undefined;
-  if (agendaLocalSource(undefined, setup ?? null) !== true)
-    fail(`Refusing to start: NO_LOCAL_SOURCE. ${REMEDY.NO_LOCAL_SOURCE}`);
+// setup makes the benchmark's calendar and list in the local source for each
+// granted store, or fails with NO_LOCAL_SOURCE; idempotent, and the only way
+// the helper can say whether an unsynced source exists, which is why it runs
+// here and never in a dry run or a preflight. The agenda tasks it cannot
+// serve are skipped, not the cycle; every agenda attempt asks again
+// (readers.ts agendaFor) before its prepare.
+if (runnable().some((task) => agendaKinds(task).length)) {
+  const answer = await run(AGENDA_BINARY, ["setup"]);
+  const before = new Set(skips.keys());
+  // Kept with the other facts: a later recount (the fixture server failing)
+  // must not forget what setup said.
+  facts.agendaSetup = {
+    ready: parseAgendaSetup(answer ?? ""),
+    error: agendaSetupError(answer),
+  };
+  skips = startSkips(tasks, facts);
+  for (const [id, code] of skips)
+    if (!before.has(id))
+      console.warn(`${id}: skipped, ${code}. ${REMEDY[code]}`);
+  if (!runnable().length) {
+    printGate();
+    fail("\nRefusing to start: fix the refusals above first.");
+  }
 }
 
 /* --------------------------------------------------------- the paid part */
@@ -782,6 +1014,8 @@ if (!stored)
         repeat,
         seed,
         shard: shardText ?? null,
+        suite,
+        ...(probe ? { probe } : {}),
         planHash: hash,
         designHash: design,
         catalogueHash: catalogue,
@@ -853,14 +1087,17 @@ const cycleInfo = (extra = {}) => ({
   gateWaits: gateWaitsOf(
     existsSync(ledgerFile) ? parseLedger(readFileSync(ledgerFile, "utf8")) : [],
   ),
+  suite,
+  ...(probe ? { probe } : {}),
   ...extra,
 });
-function writeReports(results, extra = {}, analysis, comparison) {
+function writeReports(results, extra = {}, analysis, comparison, verdict) {
   const cycle = buildCycleResults({
     cycle: cycleInfo(extra),
     results,
     analysis,
     ...(comparison ? { baseline: comparison } : {}),
+    ...(verdict ? { probe: verdict } : {}),
   });
   writeFileSync(
     join(cycleDir, "results.json"),
@@ -874,7 +1111,10 @@ function writeReports(results, extra = {}, analysis, comparison) {
 }
 
 console.warn(
-  `\nOpen Assist cycle ${cycleId}: ${queue.length} attempt(s) left of ${plan.length}, ${cells.map((c) => c.cell).join(", ")}.\n` +
+  `\nOpen Assist cycle ${cycleId}: ${queue.length} attempt(s) left of ${plan.length}, ${cells.map((c) => c.cell).join(", ")}, ${suite} suite.\n` +
+    (autoShards
+      ? `The whole plan needs ${autoShards} nights: this is shard 1/${autoShards}; the others run ${shardNights.join(", then ")}.\n`
+      : "") +
     `Cost cap $${cycleCap.toFixed(2)} (per model $${modelCap.toFixed(2)}), time box ${Math.round(timeBoxSeconds / 60)} min.\n` +
     `No attempt starts until nobody has touched this Mac for ${idleSeconds} s. Touching it ends the\n` +
     "current attempt and the cycle waits again; Escape ends the cycle; Ctrl-C twice exits.\n",
@@ -944,21 +1184,55 @@ if (!values["no-keep-awake"]) {
   });
 }
 
+// The long suite's end-state readers and cleanup. Music stays off unless
+// OPEN_ASSIST_BENCH_MUSIC=1: its first Apple Event shows an Automation
+// prompt, which must never sit on screen during an unattended night.
+const readers = createReaders({ music: process.env[MUSIC_READER_ENV] === "1" });
+let fixture;
 const deps = {
   controller,
   clients,
   state,
   memoryAccess,
   diagnostics,
-  // The suite's end-state readers and cleanup arrive with the long suite.
-  readEvidence: null,
-  cleanupAttempt: null,
+  // The fixture log is flushed first, so the last page the model opened is
+  // in the evidence the grader reads.
+  readEvidence: async (task, ctx) => {
+    if (task.evidence?.includes("fixture")) await fixture?.flush();
+    return readers.readEvidence(task, ctx);
+  },
+  cleanupAttempt: readers.cleanupAttempt,
+  // Asked per attempt: the task's own stores, ready right now.
+  agendaFor: readers.agendaFor,
+  tokens: tokenLedger,
   launch: launchServices(),
 };
 const deadline = Date.now() + timeBoxSeconds * 1000;
 let outcome = { results: prior, gateWaits: undefined, notRun: queue.length };
 let stoppedBecause;
+let swept = [];
 try {
+  // The fixture server runs as a child process for the cycle, on the
+  // loopback address only, when a task that can run tonight reads its log.
+  // A port taken since the preflight skips those tasks, not the cycle.
+  if (runnable().some((task) => task.evidence?.includes("fixture"))) {
+    const { spawnFixtureServer } = await import("./bench-fixtures.mjs");
+    try {
+      fixture = await spawnFixtureServer({ port: FIXTURE_PORT });
+      deps.fixture = fixture;
+    } catch {
+      const before = new Set(skips.keys());
+      facts.fixture = false;
+      skips = startSkips(tasks, facts);
+      for (const [id, code] of skips)
+        if (!before.has(id))
+          console.warn(`${id}: skipped, ${code}. ${REMEDY[code]}`);
+    }
+  }
+  const gate = taskGate(byId, skips, () => new Date());
+  // What was open when the last attempt ended: the benchmark's own from
+  // then on (an attempt leaves what it opened open).
+  let runningAfterLast;
   await controller.configure(cellInfo.get(cells[0].cell).settings);
   // Arm the emergency tap now, latched: from here on its idle clock counts
   // every unmarked input, so the first gate and the first attempt's
@@ -1000,6 +1274,27 @@ try {
     state,
     readGate: () =>
       readGate({ ...source, presence: () => controller.presence() }),
+    // The start read ps once, and the gate may then wait for hours while
+    // the person keeps working: a document they opened meanwhile may hold
+    // unsaved work a long task would type into. Read again at the first
+    // pass and after any wait that saw a person; what they opened skips
+    // its tasks (APPS_OPEN) from this attempt on.
+    afterGate: async (pass) => {
+      if (!pass.first && !pass.sawInput) return;
+      const opened = openedByPerson(
+        pass,
+        await run("ps", ["-axo", "pid=,command="]),
+        runningAfterLast,
+      );
+      if (!opened.size) return;
+      facts.running = new Set([...(facts.running ?? []), ...opened]);
+      // In place: the task gate holds this map.
+      for (const [id, code] of startSkips(tasks, facts))
+        if (!skips.has(id)) {
+          skips.set(id, code);
+          console.warn(`${id}: skipped, ${code}. ${REMEDY[code]}`);
+        }
+    },
     attempt: async (entry, maxCost, gateWaitSeconds) => {
       const result = await runAttempt(
         deps,
@@ -1017,6 +1312,7 @@ try {
       console.log(
         `${result.cell}  ${result.taskId} #${result.attempt}  ${result.status}${result.reason ? " (" + result.reason + ")" : ""}  ${result.endingCode}  ${result.actions} actions  ${result.seconds.toFixed(1)}s  $${result.cost.toFixed(3)}`,
       );
+      runningAfterLast = await readRunning();
       return result;
     },
     skipped: (entry, reason) =>
@@ -1033,6 +1329,22 @@ try {
         reason,
         state,
       ),
+    // A fixture server that died mid-cycle serves nothing more tonight.
+    skipFor: (entry) =>
+      gate.skip(entry) ??
+      (fixture &&
+      !fixture.alive() &&
+      byId.get(entry.taskId)?.evidence?.includes("fixture")
+        ? "FIXTURE_PORT"
+        : undefined),
+    // Skips are rows like any other, and said out loud.
+    observe: (row) => {
+      gate.observe(row);
+      if (row.runStatus === "skipped")
+        console.log(
+          `${row.cell}  ${row.taskId} #${row.attempt}  skipped (${row.reason})`,
+        );
+    },
     write,
     now: () => Date.now(),
     sleep,
@@ -1052,6 +1364,9 @@ try {
   );
 } finally {
   try {
+    await fixture?.close();
+  } catch {}
+  try {
     memoryStore?.flush();
   } catch {}
   controller.close();
@@ -1061,6 +1376,23 @@ try {
     at: new Date().toISOString(),
     because: stoppedBecause,
   });
+  // The final sweep, still under the lock (a harness starting beside it
+  // would lose its attempt's folder): every token still in the ledger (every
+  // attempt that swept for stray files, once Spotlight has had time to
+  // index them; a check that got no answer; a crashed earlier cycle) and
+  // every token folder, through the attempt's own cleanup rules. A sweep
+  // that fails answers nothing: undefined, and every leftover the rows
+  // reported stands.
+  try {
+    swept = await sweepTokens({
+      home,
+      ledger: tokenLedger,
+      tasks: allTasks,
+      onWait: spotlightWait,
+    });
+  } catch {
+    swept = undefined;
+  }
   releaseDesktopLock(lockFile, process.pid);
 }
 
@@ -1095,19 +1427,47 @@ const current = comparable(
   unCompared.results,
   unCompared.failureClasses,
 );
-const base = baselineFor(current);
-const comparison = base.length
-  ? { cycles: base, comparison: compareCycles(current, base, classRates) }
+// A probe answers to its named baseline, across revisions by design; any
+// other cycle to the baselines at its own revision and catalogue.
+const probeBase = probe
+  ? cycles.find((cycle) => cycle.data.cycle.id === probe.baseline)
   : undefined;
+const verdict = probeBase
+  ? compareProbe(current, probeBase.comparable, probe.code, {
+      templatesMatch: sameTemplates(
+        probeBase.data.cycle.tasks ?? [],
+        unCompared.cycle.tasks,
+      ),
+      classes: probeClassRates(probe.code),
+      owner: ownerOf,
+    })
+  : undefined;
+const base = probeBase ? [probeBase.comparable] : baselineFor(current);
+const comparison = verdict
+  ? { cycles: base, comparison: verdict.comparison }
+  : base.length
+    ? { cycles: base, comparison: compareCycles(current, base, classRates) }
+    : undefined;
 const final = writeReports(
   results,
   { finishedAt, ...(stoppedBecause ? { stoppedBecause } : {}) },
   analysis,
   comparison,
+  verdict,
 );
 
 console.log("");
 console.log(renderSummary(final.aggregate));
+const skippedByCode = {};
+for (const row of results)
+  if (row.runStatus === "skipped" && row.reason)
+    skippedByCode[row.reason] = (skippedByCode[row.reason] ?? 0) + 1;
+if (Object.keys(skippedByCode).length)
+  console.log(
+    `Skipped   ${Object.entries(skippedByCode)
+      .map(([code, n]) => `${code} ${n}`)
+      .join("  ")}`,
+  );
 if (stoppedBecause)
   console.log(
     `\nStopped early: ${stoppedBecause}. ${outcome.notRun} attempt(s) did not run; --resume ${cycleId} continues.`,
@@ -1119,12 +1479,27 @@ if (regressions.length)
   console.log(
     `\nRegressions: ${regressions.map((row) => `${row.scope} ${row.key}`).join(", ")}`,
   );
-const leftovers = results.filter(
-  (row) => row.leftovers?.length || row.cleanupFailed,
-);
-if (leftovers.length)
+if (verdict)
   console.log(
-    `\nLeftovers after ${leftovers.length} attempt(s): see report.md.`,
+    `\nProbe ${verdict.code}: ${verdict.pass ? "pass" : "FAIL"} (class ${verdict.before.k}/${verdict.before.n} before, ${verdict.after.k}/${verdict.after.n} now)` +
+      (verdict.reasons.length
+        ? `: ${verdict.reasons.map((r) => (r.key ? `${r.code} ${r.key}` : r.code)).join(", ")}`
+        : ""),
+  );
+// What is still on this Mac after the final sweep: what no sweep can clear
+// (a file of the person's, a refused folder) and what this one could not.
+const left = remainingLeftovers(results, swept);
+if (!swept)
+  console.log(
+    `\nThe final sweep failed: the token ledger (${tokenLedgerDir(home)}) or ~/OpenAssistBench could not be read, so every leftover the attempts reported stands.`,
+  );
+if (left.length)
+  console.log(
+    `\nLeftovers after the final sweep: ${left.join(", ")}. See report.md and docs/BENCHMARK.md (Cleanup); npm run cycle -- --cleanup-only sweeps again.`,
+  );
+if (autoShards && !stoppedBecause)
+  console.log(
+    `\nShard 1/${autoShards} done. The other nights: ${shardNights.join(", then ")}.`,
   );
 console.log(`\nWrote ${join(cycleDir, "results.json")} and report.md`);
 process.exit(
@@ -1132,7 +1507,7 @@ process.exit(
     ? 130
     : stoppedBecause
       ? 3
-      : regressions.length || leftovers.length
+      : regressions.length || left.length || (verdict && !verdict.pass)
         ? 1
         : 0,
 );

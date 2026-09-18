@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -7,8 +7,10 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -35,7 +37,6 @@ import {
 } from "../src/gym/bench/attempt";
 import {
   acquireDesktopLock,
-  agendaLocalSource,
   appProcesses,
   desktopLockPath,
   gateDecision,
@@ -96,6 +97,7 @@ import {
   compareCycles,
   compareModels,
   selectBaseline,
+  timingCycles,
   type ComparableCycle,
 } from "../src/gym/bench/compare";
 import {
@@ -114,8 +116,85 @@ import {
   ownerOf,
   parseDiagnostics,
 } from "../src/gym/bench/analyze";
-import { ran, type AttemptResult } from "../src/gym/bench/report";
-import type { BenchTask, TakeoverSource } from "../src/gym/bench/types";
+import {
+  TASK_SKIPS,
+  aggregate,
+  leftoversLine,
+  ran,
+  renderSummary,
+  type AttemptResult,
+} from "../src/gym/bench/report";
+import type {
+  BenchTask,
+  FixtureHandle,
+  TakeoverSource,
+} from "../src/gym/bench/types";
+import {
+  REMEDY,
+  agendaAccess,
+  agendaSetupError,
+  ideBlind,
+  installedApps,
+  launchable,
+  missingKey,
+  openedByPerson,
+  presentKeyNames,
+  readStartFacts,
+  requiredApps,
+  runningDocumentApps,
+  startSkip,
+  startSkips,
+  taskGate,
+} from "../src/gym/bench/preflight";
+import {
+  MAX_CLEANUPS,
+  RETRYABLE_LEFTOVERS,
+  SPOTLIGHT_SETTLE_MS,
+  TRANSIENT_LEFTOVERS,
+  benchRootDirty,
+  benchRootTokens,
+  fileTokenLedger,
+  remainingLeftovers,
+  settleDelay,
+  sweepTokens,
+  tokenLedgerDir,
+} from "../src/gym/bench/sweep";
+import {
+  catalogueFor,
+  LONG_CATALOGUE,
+  selectSuite,
+} from "../src/gym/bench/catalogue-long";
+import { CATALOGUE } from "../src/gym/bench/catalogue";
+import {
+  APPROVAL_APPS,
+  BROWSER_APPS,
+  CALCULATOR,
+  FIXTURE_HOST,
+  REPLACE_REASON,
+  SUBMIT_REASON,
+  TEXTEDIT,
+  approvalInContext,
+  approvesPrompt,
+} from "../src/gym/bench/graders";
+import {
+  createReaders,
+  sweepsStrayFiles,
+  strayAction,
+} from "../src/gym/bench/readers";
+import { drawOrders, pages } from "../src/gym/bench/fixtures";
+import { compareProbe } from "../src/gym/bench/compare";
+import {
+  graderFiles,
+  probeClassRates,
+  sameTemplates,
+} from "../src/gym/bench/cycle-report";
+import { seeded, shardsNeeded } from "../src/gym/bench/cycle";
+import {
+  modelPrice,
+  providerDefaults,
+  providerKeyEnv,
+} from "../src/providers/catalog";
+import { importEnvCredentials } from "../electron/credentials";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const scratch = mkdtempSync(join(tmpdir(), "oa-harness-test-"));
@@ -143,6 +222,7 @@ vi.mock("../src/core/policy", async (original) => {
 /* --------------------------------------------------------------- fixtures */
 
 const CALC = "com.apple.Calculator";
+const TOKEN = /^benchnote[0-9a-z]{4}$/;
 const geometry = {
   display_id: 1,
   x: 0,
@@ -174,6 +254,8 @@ const sources = (
 function fakeController(
   o: {
     appId?: string;
+    /** What surface() reports on top of the frontmost app (modal, roles). */
+    surface?: Partial<Surface>;
     presence?: () => Promise<PresenceReport>;
     onGradingCapture?: () => void;
   } = {},
@@ -187,7 +269,13 @@ function fakeController(
     kind: "native",
     surface: async () => {
       calls.push("surface");
-      return { appId, pid: 7, secureInput: false, unknown: false };
+      return {
+        appId,
+        pid: 7,
+        secureInput: false,
+        unknown: false,
+        ...o.surface,
+      };
     },
     capture: async () => {
       calls.push("capture");
@@ -352,7 +440,7 @@ describe("one attempt through the real runner", () => {
         ? { kind: "CONFIRM", reason: "Save these changes?" }
         : { kind: "ALLOW", reason: "" };
     try {
-      const { controller, calls } = fakeController();
+      const { controller, calls } = fakeController({ appId: TEXTEDIT });
       const state = createHarnessState();
       const touch = onManualInput(state);
       const { deps } = attemptDeps(controller, {
@@ -371,7 +459,7 @@ describe("one attempt through the real runner", () => {
       const result = await runAttempt(
         deps,
         CELL,
-        testTask({ approve: ["Save these changes?"] }),
+        testTask({ apps: [TEXTEDIT], approve: ["Save these changes?"] }),
         1,
         { maxCost: 0.05, approveRoutine: true },
       );
@@ -395,7 +483,7 @@ describe("one attempt through the real runner", () => {
           a.type === "click"
             ? { kind: "CONFIRM", reason }
             : { kind: "ALLOW", reason: "" };
-        const { controller, calls } = fakeController();
+        const { controller, calls } = fakeController({ appId: TEXTEDIT });
         const { deps } = attemptDeps(controller, {
           clients: {
             [CELL.cell]: scripted([{ type: "click", x: 0.5, y: 0.5 }]),
@@ -404,7 +492,7 @@ describe("one attempt through the real runner", () => {
         const result = await runAttempt(
           deps,
           CELL,
-          testTask({ approve: ["Save these changes?"] }),
+          testTask({ apps: [TEXTEDIT], approve: ["Save these changes?"] }),
           1,
           { maxCost: 0.05, approveRoutine },
         );
@@ -422,6 +510,271 @@ describe("one attempt through the real runner", () => {
       const off = await run("Save these changes?", false);
       expect(off.clicked).toBe(false);
       expect(off.result.approvalsDeclined).toBe(1);
+    } finally {
+      policy.evaluate = undefined;
+    }
+  });
+
+  it("approves a listed prompt only while one of the task's own applications is in front", async () => {
+    try {
+      policy.evaluate = (a) =>
+        a.type === "click"
+          ? { kind: "CONFIRM", reason: "Save these changes?" }
+          : { kind: "ALLOW", reason: "" };
+      const run = async (appId: string) => {
+        const { controller, calls } = fakeController({ appId });
+        const { deps } = attemptDeps(controller, {
+          clients: {
+            [CELL.cell]: scripted([{ type: "click", x: 0.5, y: 0.5 }]),
+          },
+        });
+        const result = await runAttempt(
+          deps,
+          CELL,
+          testTask({
+            apps: [TEXTEDIT, CALC],
+            approve: ["Save these changes?"],
+          }),
+          1,
+          { maxCost: 0.05, approveRoutine: true },
+        );
+        return { result, clicked: calls.includes("execute:click") };
+      };
+      // In TextEdit, the task's own app: approved as before.
+      const own = await run(TEXTEDIT);
+      expect(own.clicked).toBe(true);
+      expect(own.result.approvalsDeclined).toBe(0);
+      // Calculator is the task's too, but a Save there is not a bench
+      // document's: the reason is scoped to TextEdit.
+      const scoped = await run(CALC);
+      expect(scoped.clicked).toBe(false);
+      expect(scoped.result.approvalsDeclined).toBe(1);
+      // The same listed question with the Finder in front would save the
+      // Finder's (or anyone's) document: declined, and counted.
+      const other = await run("com.apple.finder");
+      expect(other.clicked).toBe(false);
+      expect(other.result.approvals).toBe(1);
+      expect(other.result.approvalsDeclined).toBe(1);
+    } finally {
+      policy.evaluate = undefined;
+    }
+  });
+
+  it("approves Replace only with no sheet or dialog in front", async () => {
+    try {
+      policy.evaluate = (a) =>
+        a.type === "click"
+          ? { kind: "CONFIRM", reason: "Replace the existing item?" }
+          : { kind: "ALLOW", reason: "" };
+      const run = async (modal: boolean) => {
+        const { controller, calls } = fakeController({
+          appId: TEXTEDIT,
+          surface: modal ? { modal: true } : {},
+        });
+        const { deps } = attemptDeps(controller, {
+          clients: {
+            [CELL.cell]: scripted([{ type: "click", x: 0.5, y: 0.5 }]),
+          },
+        });
+        const result = await runAttempt(
+          deps,
+          CELL,
+          testTask({
+            apps: [TEXTEDIT],
+            approve: ["Save these changes?", "Replace the existing item?"],
+          }),
+          1,
+          { maxCost: 0.05, approveRoutine: true },
+        );
+        return { result, clicked: calls.includes("execute:click") };
+      };
+      // The Find bar's Replace button: no sheet, approved.
+      const findBar = await run(false);
+      expect(findBar.clicked).toBe(true);
+      expect(findBar.result.approvalsDeclined).toBe(0);
+      // A Save panel's "already exists, replace it?" is a sheet: declined,
+      // though the reason and the application are the same.
+      const sheet = await run(true);
+      expect(sheet.clicked).toBe(false);
+      expect(sheet.result.approvalsDeclined).toBe(1);
+    } finally {
+      policy.evaluate = undefined;
+    }
+  });
+
+  it("approves a Submit only on a page of the fixture server", async () => {
+    try {
+      policy.evaluate = (a) =>
+        a.type === "click"
+          ? { kind: "CONFIRM", reason: SUBMIT_REASON }
+          : { kind: "ALLOW", reason: "" };
+      const run = async (surface: Partial<Surface>) => {
+        const { controller, calls } = fakeController({
+          appId: "com.google.Chrome",
+          surface,
+        });
+        const { deps } = attemptDeps(controller, {
+          clients: {
+            [CELL.cell]: scripted([{ type: "click", x: 0.5, y: 0.5 }]),
+          },
+        });
+        const result = await runAttempt(
+          deps,
+          CELL,
+          testTask({ apps: BROWSER_APPS, approve: [SUBMIT_REASON] }),
+          1,
+          { maxCost: 0.05, approveRoutine: true },
+        );
+        return { result, clicked: calls.includes("execute:click") };
+      };
+      // The loopback form: the surface the click was checked on says so.
+      const local = await run({
+        domain: FIXTURE_HOST,
+        targetWebHost: FIXTURE_HOST,
+      });
+      expect(local.clicked).toBe(true);
+      expect(local.result.approvalsDeclined).toBe(0);
+      // The person's own browser restored a real site: its Authorize asks
+      // the same question, and is declined.
+      const real = await run({
+        domain: "github.com",
+        targetWebHost: "github.com",
+      });
+      expect(real.clicked).toBe(false);
+      expect(real.result.approvalsDeclined).toBe(1);
+      // No host known at all: no.
+      const unknown = await run({});
+      expect(unknown.clicked).toBe(false);
+      expect(unknown.result.approvalsDeclined).toBe(1);
+    } finally {
+      policy.evaluate = undefined;
+    }
+  });
+
+  it("asks for the agenda per attempt and hands prepare that attempt's answer", async () => {
+    const asked: string[] = [];
+    const answers = [true, false];
+    const got: boolean[] = [];
+    const agendaTask = testTask({
+      id: "test-agenda",
+      evidence: ["agenda"],
+      prepare: async (context) => {
+        got.push(!!context.agenda);
+        return context.agenda ? { token: context.token() } : null;
+      },
+    });
+    const { controller } = fakeController();
+    const { deps } = attemptDeps(controller, {
+      agendaFor: async (task) => {
+        asked.push(task.id);
+        return answers.shift() ? { add: async () => undefined } : undefined;
+      },
+    });
+    const first = await runAttempt(deps, CELL, agendaTask, 1, caps);
+    // The helper's answer changed between attempts (a teardown, a revoked
+    // grant): the second attempt must not run on the first one's answer.
+    const second = await runAttempt(deps, CELL, agendaTask, 2, caps);
+    expect(asked).toEqual(["test-agenda", "test-agenda"]);
+    expect(got).toEqual([true, false]);
+    expect(first.reason).toBeUndefined();
+    expect(second.reason).toBe("NO_PREPARED_TARGET");
+  });
+
+  it("keeps the token ledger around the attempt, and a failing ledger stops nothing", async () => {
+    const benchRoot = join(scratch, "ledger-attempt");
+    const events: string[] = [];
+    const tokens = {
+      open: (token: string, taskId: string) =>
+        events.push(`open ${taskId} ${TOKEN.test(token)}`),
+      started: (_token: string, at: number) =>
+        events.push(`started ${Number.isFinite(at) && at > 0}`),
+      close: (_token: string, leftovers: string[], failed: boolean) =>
+        events.push(`close ${leftovers.join(",") || "clean"} ${failed}`),
+    };
+    const task = testTask({
+      suite: "long",
+      prepare: async (context) => {
+        events.push("prepare");
+        await context.write("a.txt", "x");
+        return { token: context.token() };
+      },
+    });
+    await runAttempt(
+      attemptDeps(fakeController().controller, { benchRoot, tokens }).deps,
+      CELL,
+      task,
+      1,
+      caps,
+    );
+    // Open before anything carrying the token exists; the folder's birth
+    // time once it does; close with what cleanup left (the default cleanup
+    // keeps a folder with content).
+    expect(events).toEqual([
+      "open test-open true",
+      "started true",
+      "prepare",
+      "close LEFTOVER_FILES false",
+    ]);
+    const broken = {
+      open: () => {
+        throw new Error("disk full");
+      },
+      started: () => {
+        throw new Error("disk full");
+      },
+      close: () => {
+        throw new Error("disk full");
+      },
+    };
+    const result = await runAttempt(
+      attemptDeps(fakeController().controller, {
+        benchRoot,
+        tokens: broken,
+      }).deps,
+      CELL,
+      testTask(),
+      1,
+      caps,
+    );
+    expect(result.status).toBe("passed");
+  });
+
+  it("counts the retries a surface with no accessibility caused", async () => {
+    try {
+      policy.evaluate = (a) =>
+        a.type === "type_text"
+          ? { kind: "RETRY", reason: "No text field is focused." }
+          : { kind: "ALLOW", reason: "" };
+      const blind = await runAttempt(
+        attemptDeps(fakeController().controller, {
+          clients: {
+            [CELL.cell]: scripted([{ type: "type_text", text: "hello" }]),
+          },
+        }).deps,
+        CELL,
+        testTask(),
+        1,
+        caps,
+      );
+      expect(blind.retries).toBe(1);
+      expect(blind.blindRetries).toBe(1);
+      // The same retry where the helper did see a focused field is not blind.
+      const seen = await runAttempt(
+        attemptDeps(
+          fakeController({ surface: { focusedRole: "AXGroup" } }).controller,
+          {
+            clients: {
+              [CELL.cell]: scripted([{ type: "type_text", text: "hello" }]),
+            },
+          },
+        ).deps,
+        CELL,
+        testTask(),
+        1,
+        caps,
+      );
+      expect(seen.retries).toBe(1);
+      expect(seen.blindRetries).toBeUndefined();
     } finally {
       policy.evaluate = undefined;
     }
@@ -1350,38 +1703,6 @@ describe("the desktop lock", () => {
   });
 });
 
-describe("the agenda helper's local source", () => {
-  // Shapes coarena-agenda prints (native/macos/Agenda.swift): status carries
-  // access only; setup carries the containers it made, or an error code.
-  const access = { calendar: "granted", reminders: "granted" };
-  it("reads status when it reports the source, and setup otherwise", () => {
-    expect(agendaLocalSource({ access })).toBeUndefined();
-    expect(agendaLocalSource({ access, localSource: true })).toBe(true);
-    expect(agendaLocalSource({ access, localSource: false })).toBe(false);
-    expect(
-      agendaLocalSource(
-        { access },
-        {
-          access,
-          containers: {
-            calendar: "OpenAssistBench",
-            reminders: "OpenAssistBench",
-          },
-        },
-      ),
-    ).toBe(true);
-    for (const error of ["NO_LOCAL_SOURCE", "NO_ACCESS", "SETUP_FAILED"])
-      expect(agendaLocalSource({ access }, { access, error }), error).toBe(
-        false,
-      );
-    // No helper output at all is a refusal at the start.
-    expect(agendaLocalSource(undefined, null)).toBe(false);
-    expect(agendaLocalSource(undefined, { access, containers: {} })).toBe(
-      false,
-    );
-  });
-});
-
 describe("preflight refusals", () => {
   const clear: PreflightInput = {
     appPids: [],
@@ -1406,13 +1727,6 @@ describe("preflight refusals", () => {
     expect(preflight({ ...clear, screensaverIdleSeconds: 5 * 3600 })).toEqual(
       [],
     );
-    expect(preflight({ ...clear, agendaLocalSource: false })).toEqual([
-      "NO_LOCAL_SOURCE",
-    ]);
-    expect(preflight({ ...clear, agendaLocalSource: true })).toEqual([]);
-    expect(preflight({ ...clear, fixturePortFree: false })).toEqual([
-      "FIXTURE_PORT",
-    ]);
     expect(preflight({ ...clear, locked: true })).toEqual(["LOCKED"]);
     expect(preflight({ ...clear, displayHolders: 1 })).toEqual([
       "DISPLAY_HELD_BY_OTHER",
@@ -1882,6 +2196,9 @@ function loop(
     ) => Partial<AttemptResult>;
     deadline?: number;
     tasks?: Map<string, { maxCost: number; maxSeconds: number }>;
+    skipFor?: (entry: QueueEntry, gateCalls: number) => string | undefined;
+    observe?: (row: AttemptResult) => void;
+    afterGate?: (pass: { first: boolean; sawInput: boolean }) => Promise<void>;
   } = {},
 ) {
   let clock = 1_000_000;
@@ -1964,6 +2281,11 @@ function loop(
     sleep: async (ms) => {
       clock += ms;
     },
+    ...(over.skipFor
+      ? { skipFor: (entry: QueueEntry) => over.skipFor!(entry, gateCalls) }
+      : {}),
+    ...(over.observe ? { observe: over.observe } : {}),
+    ...(over.afterGate ? { afterGate: over.afterGate } : {}),
   });
   return { run, lines, ran, state, clockAt: () => clock };
 }
@@ -2409,6 +2731,95 @@ describe("regressions between cycles", () => {
       neededPerArm: powerN(30 / 36, 30 / 36 - 0.1),
     });
   });
+  it("never makes one night of a sharded plan the baseline of another", () => {
+    // The long suite on three models, cut over two nights as the cycle
+    // does on its own: the same plan, seed and revision, disjoint slices.
+    const cells = ["m1", "m2", "m3"];
+    const ids = LONG_CATALOGUE.map((task) => task.id);
+    const plan = buildPlan(cells, ids, 3, 42);
+    const night = (index: number, results: AttemptResult[]) => {
+      const shard = `${index}/2`;
+      return cycleOf({
+        id: `night${index}`,
+        startedAt: `2026-09-1${index}T21:00:00.000Z`,
+        finishedAt: `2026-09-1${index}T23:59:00.000Z`,
+        taskIds: ids,
+        cells,
+        shard,
+        planHash: planHash({
+          matrix: cells,
+          taskIds: ids,
+          repeat: 3,
+          seed: 42,
+          shard,
+        }),
+        designHash: designHash({
+          matrix: cells,
+          taskIds: ids,
+          repeat: 3,
+          seed: 42,
+          shard,
+        }),
+        results,
+      });
+    };
+    const rows = (index: number, passed: (taskId: string) => boolean) =>
+      shardOf(plan, { index, count: 2 }).map((entry) =>
+        (passed(entry.taskId) ? row : failedRow)({
+          planIndex: entry.index,
+          cell: entry.cell,
+          taskId: entry.taskId,
+          attempt: entry.attempt,
+        }),
+      );
+    // The same code both nights: a task passes or fails whichever night
+    // runs it, so any gap between the nights is the mix of tasks they drew.
+    const hard = new Set(ids.slice(0, 10));
+    const pass = (id: string) => !hard.has(id);
+    const one = night(1, rows(1, pass));
+    const two = night(2, rows(2, pass));
+    expect(one.designHash).not.toBe(two.designHash);
+    expect(selectBaseline(two, [one])).toEqual([]);
+    // Named, or pooled by hand: not compared, and said why.
+    expect(compareCycles(two, [one], classes)).toMatchObject({
+      comparable: false,
+      reason: "SHARD_DIFFERS",
+      regressions: [],
+    });
+    // A whole plan is not a slice's baseline either, nor the other way round.
+    const whole = cycleOf({
+      id: "whole",
+      taskIds: ids,
+      cells,
+      results: plan.map((entry) =>
+        row({
+          planIndex: entry.index,
+          cell: entry.cell,
+          taskId: entry.taskId,
+          attempt: entry.attempt,
+        }),
+      ),
+    });
+    expect(selectBaseline(two, [whole])).toEqual([]);
+    expect(selectBaseline({ ...whole, id: "now" }, [two])).toEqual([]);
+    // The same night run again (same slice, same seed): its baseline, paired.
+    const again = night(
+      2,
+      rows(2, () => true),
+    );
+    const chosen = selectBaseline({ ...again, id: "again" }, [one, two]);
+    expect(chosen.map((c) => c.id)).toEqual(["night2"]);
+    const paired = compareCycles({ ...again, id: "again" }, chosen, classes);
+    expect(paired.comparable).toBe(true);
+    expect(paired.regressions.find((r) => r.scope === "model")?.paired).toBe(
+      true,
+    );
+    // Durations still come from any slice: a task's median is its own.
+    expect(timingCycles(two, [one]).map((c) => c.id)).toEqual(["night1"]);
+    // results.json carries the slice into the comparison at the cycle's end.
+    expect(comparable(info({ shard: "2/2" }), []).shard).toBe("2/2");
+    expect(comparable(info(), [])).not.toHaveProperty("shard");
+  });
   it("compares models within a cycle, paired by task and repeat", () => {
     const results = [
       ...many(12, (i) => row({ cell: "a", attempt: i + 1 })),
@@ -2724,7 +3135,7 @@ describe("analyzer additions", () => {
 /* ------------------------------------------------------------------- CLI */
 
 /** Runs a script with a load hook that lists every module it imported. */
-function traced(args: string[]) {
+function traced(args: string[], env?: Record<string, string>) {
   const dir = mkdtempSync(join(scratch, "trace-"));
   const out = join(dir, "loaded.txt");
   writeFileSync(
@@ -2748,7 +3159,12 @@ register(new URL("./hooks.mjs", import.meta.url), { data: { file: ${JSON.stringi
   const child = spawnSync(
     process.execPath,
     ["--import", pathToFileURL(join(dir, "register.mjs")).href, ...args],
-    { cwd: root, encoding: "utf8", timeout: 60000 },
+    {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 60000,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
+    },
   );
   const loaded = readFileSync(out, "utf8")
     .split("\n")
@@ -2883,7 +3299,8 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
     const paid = cycle.indexOf(
       "// Nothing below this line is loaded by --dry-run",
     );
-    const take = cycle.indexOf("acquireDesktopLock(lockFile");
+    // The run's own lock; --cleanup-only takes the same lock further up.
+    const take = cycle.lastIndexOf("acquireDesktopLock(lockFile");
     expect(take).toBeGreaterThan(cycle.indexOf('if (values["dry-run"]) {'));
     expect(take).toBeLessThan(paid);
     expect(cycle).toContain("const lockFile = desktopLockPath();");
@@ -2937,5 +3354,1658 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
   it("is wired as npm run cycle", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     expect(pkg.scripts.cycle).toBe("node scripts/harness-cycle.mjs");
+  });
+});
+
+/* ------------------------------------------------ increment 2: integration */
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const allById = new Map(catalogueFor("all").map((task) => [task.id, task]));
+const byTaskId = (id: string) => {
+  const task = allById.get(id);
+  if (!task) throw new Error(`No task ${id}`);
+  return task;
+};
+
+describe("task-level preflight", () => {
+  const granted = { calendar: "granted", reminders: "granted" };
+
+  it("gives every refusal and skip code a one-line remedy", () => {
+    const codes = [
+      "APP_RUNNING",
+      "HARNESS_RUNNING",
+      "SCREENSAVER_TOO_SOON",
+      "LOCKED",
+      "DISPLAY_OFF",
+      "DISPLAY_HELD_BY_OTHER",
+      "APP_RUN_ACTIVE",
+      "PRESENCE_UNKNOWN",
+      "MISSING_KEY",
+      "NOTHING_TO_RUN",
+      ...TASK_SKIPS,
+    ];
+    expect(Object.keys(REMEDY).sort()).toEqual([...codes].sort());
+    for (const code of codes) {
+      expect(code).toMatch(/^[A-Z][A-Z0-9_]*$/);
+      const remedy = REMEDY[code as keyof typeof REMEDY];
+      expect(remedy, code).toMatch(/\S/);
+      expect(remedy, code).not.toContain("\n");
+    }
+    expect([...TASK_SKIPS].sort()).toEqual([
+      "APPS_OPEN",
+      "APP_NOT_INSTALLED",
+      "BENCH_ROOT_DIRTY",
+      "DAY_BOUNDARY",
+      "FIXTURE_PORT",
+      "IDE_BLIND",
+      "NO_AGENDA_ACCESS",
+      "NO_LOCAL_SOURCE",
+    ]);
+  });
+
+  it("keeps the cycle-level refusals apart from the task skips", () => {
+    const all = preflight({
+      appPids: [1],
+      allowAppRunning: false,
+      harnessPids: [2],
+      unreadable: true,
+      displayHolders: 1,
+      screensaverIdleSeconds: 60,
+      timeBoxSeconds: 3600,
+      locked: true,
+      displayAsleep: true,
+      unsettledAppRuns: 1,
+    });
+    expect(all).toHaveLength(8);
+    for (const code of all) {
+      expect(REMEDY[code], code).toBeTruthy();
+      expect(TASK_SKIPS as readonly string[]).not.toContain(code);
+    }
+  });
+
+  it("tells a set key from an empty one by the names the app imports, and keeps no value", () => {
+    const names = presentKeyNames(
+      "OPENAI_API_KEY=sk-test-one\nGEMINI_API_KEY=\nGOOGLE_API_KEY=g-test\nANTHROPIC_API_KEY=   \n",
+    );
+    expect([...names].sort()).toEqual(["GOOGLE_API_KEY", "OPENAI_API_KEY"]);
+    expect(missingKey("openai", names)).toBe(false);
+    // GOOGLE_API_KEY stands in for GEMINI_API_KEY, as in the app.
+    expect(missingKey("google", names)).toBe(false);
+    expect(missingKey("anthropic", names)).toBe(true);
+    expect(missingKey("openai", presentKeyNames(undefined))).toBe(true);
+    expect(missingKey("openai", presentKeyNames("not an env file"))).toBe(true);
+    // The table the preflight reads is the one the app imports keys by.
+    expect(providerKeyEnv).toEqual({
+      openai: ["OPENAI_API_KEY"],
+      anthropic: ["ANTHROPIC_API_KEY"],
+      google: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    });
+    const env = join(mkdtempSync(join(scratch, "env-")), ".env");
+    writeFileSync(
+      env,
+      "OPENAI_API_KEY=sk-a\nANTHROPIC_API_KEY=sk-b\nGOOGLE_API_KEY=g-c\n",
+    );
+    expect(
+      Object.keys(importEnvCredentials(env, {}))
+        .map((scope) => scope.split(":")[0])
+        .sort(),
+    ).toEqual(["anthropic", "google", "openai"]);
+  });
+
+  it("prices each first-cycle cell at its own model's rates", () => {
+    const catalog = { providerDefaults, modelPrice };
+    const cells = parseMatrix(
+      "openai:gpt-5.4-mini,google:gemini-3.5-flash-lite,anthropic:claude-sonnet-5",
+      {},
+    ).cells;
+    const prices = cells.map((cell) => cellPrices(cell, catalog));
+    expect(prices).toEqual([
+      { inputPrice: 0.75, outputPrice: 4.5 },
+      { inputPrice: 0.3, outputPrice: 2.5 },
+      { inputPrice: 2, outputPrice: 10 },
+    ]);
+    // Each from the catalog's per-model table, not a provider default.
+    for (const [i, cell] of cells.entries())
+      expect(prices[i]).toEqual(modelPrice(cell.provider, cell.model));
+    expect(
+      cellPrices({ provider: "anthropic", model: "claude-sonnet-9" }, catalog),
+    ).toBeUndefined();
+  });
+
+  it("counts an application as installed only where the controller can launch it", () => {
+    const home = "/Users/someone";
+    for (const path of [
+      "/System/Applications/Calculator.app",
+      "/System/Applications/Utilities/Terminal.app",
+      "/Applications/Safari.app",
+      "/System/Cryptexes/App/System/Applications/Safari.app",
+      "/Applications/Utilities/Thing.app",
+      `${home}/Applications/Tool.app`,
+      "/System/Library/CoreServices/Finder.app",
+    ])
+      expect(launchable(path, home), path).toBe(true);
+    for (const path of [
+      `${home}/Downloads/Visual Studio Code.app`,
+      "/System/Library/UserNotifications/Bundles/com.apple.iCal.bundle",
+      "/Applications/Big.app/Contents/Helpers/Helper.app",
+      "/Applications/.hidden/Thing.app",
+      "/Volumes/Backup/Applications/Old.app",
+    ])
+      expect(launchable(path, home), path).toBe(false);
+    const installed = installedApps(
+      {
+        "com.apple.finder": "/System/Library/CoreServices/Finder.app\n",
+        [CALCULATOR]: "/System/Applications/Calculator.app\n",
+        "com.microsoft.VSCode": `${home}/Downloads/Visual Studio Code.app\n`,
+        // The lookup itself failed: not an absence.
+        "com.apple.Safari": undefined,
+      },
+      home,
+    )!;
+    expect(installed.has(CALCULATOR)).toBe(true);
+    expect(installed.has("com.microsoft.VSCode")).toBe(false);
+    expect(installed.has("com.apple.Safari")).toBe(true);
+    // Spotlight off finds nothing, not even the Finder: no evidence, no skip.
+    expect(
+      installedApps({ "com.apple.finder": "", [CALCULATOR]: "" }, home),
+    ).toBeUndefined();
+    expect(
+      requiredApps({ apps: [...BROWSER_APPS, "com.apple.TextEdit"] }),
+    ).toEqual([BROWSER_APPS, ["com.apple.TextEdit"]]);
+  });
+
+  it("names Calculator by the bundle id macOS reports", () => {
+    // Frontmost checks compare exactly; "com.apple.Calculator" never matched.
+    expect(CALCULATOR).toBe("com.apple.calculator");
+    // The policy's own Calculator rules compare against the same id.
+    expect(readFileSync(join(root, "src/core/policy.ts"), "utf8")).toContain(
+      `"${CALCULATOR}"`,
+    );
+    const info = spawnSync(
+      "defaults",
+      [
+        "read",
+        "/System/Applications/Calculator.app/Contents/Info",
+        "CFBundleIdentifier",
+      ],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    if (info.status === 0) expect(info.stdout.trim()).toBe(CALCULATOR);
+  });
+
+  it("skips a task whose application is not installed, and only that task", () => {
+    const installed = new Set(["com.apple.finder", "com.apple.Safari"]);
+    expect(startSkip(byTaskId("calculator-open"), { installed })).toBe(
+      "APP_NOT_INSTALLED",
+    );
+    expect(startSkip(byTaskId("browser-open"), { installed })).toBeUndefined();
+    // Any one browser serves a "the browser" task.
+    expect(
+      startSkip(byTaskId("browser-nav-chain"), {
+        installed: new Set(["com.google.Chrome"]),
+      }),
+    ).toBeUndefined();
+    expect(startSkip(byTaskId("calculator-open"), {})).toBeUndefined();
+  });
+
+  it("skips a long task whose application was open at the start, never a smoke task", () => {
+    const running = runningDocumentApps(
+      [
+        "  101 /System/Applications/TextEdit.app/Contents/MacOS/TextEdit",
+        "  102 /System/Applications/System Settings.app/Contents/MacOS/System Settings",
+        "  103 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+        "  104 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "  105 /System/Applications/TextEdit.app/Contents/XPCServices/x.xpc/Contents/MacOS/x",
+      ].join("\n"),
+    );
+    expect([...running].sort()).toEqual([
+      "com.apple.TextEdit",
+      "com.apple.systempreferences",
+    ]);
+    expect(startSkip(byTaskId("text-append-line"), { running })).toBe(
+      "APPS_OPEN",
+    );
+    expect(startSkip(byTaskId("settings-about"), { running })).toBe(
+      "APPS_OPEN",
+    );
+    // The Finder and the browser are always open.
+    expect(
+      startSkip(byTaskId("files-rename-pattern"), { running }),
+    ).toBeUndefined();
+    expect(
+      startSkip(byTaskId("browser-nav-chain"), { running }),
+    ).toBeUndefined();
+    // A smoke task only opens its application.
+    expect(
+      startSkip(byTaskId("notes-open"), {
+        running: new Set(["com.apple.Notes"]),
+      }),
+    ).toBeUndefined();
+    expect(runningDocumentApps(undefined).size).toBe(0);
+  });
+
+  it("counts as the person's what opened since the start, or since the last attempt after they came back", () => {
+    const textEdit =
+      "  101 /System/Applications/TextEdit.app/Contents/MacOS/TextEdit";
+    const notes = "  102 /System/Applications/Notes.app/Contents/MacOS/Notes";
+    const ps = [textEdit, notes].join("\n");
+    // The first pass: everything open, since the harness has run nothing.
+    expect([
+      ...openedByPerson({ first: true, sawInput: false }, ps, undefined),
+    ]).toEqual(["com.apple.TextEdit", "com.apple.Notes"]);
+    // Whatever an earlier process's attempts left open: this process has
+    // run nothing yet, so a resume counts it as the person's too.
+    expect([
+      ...openedByPerson(
+        { first: true, sawInput: false },
+        ps,
+        new Set(["com.apple.TextEdit"]),
+      ),
+    ]).toEqual(["com.apple.TextEdit", "com.apple.Notes"]);
+    // After a wait that saw a person: only what the last attempt did not
+    // leave open (TextEdit is the benchmark's own by then).
+    expect([
+      ...openedByPerson(
+        { first: false, sawInput: true },
+        ps,
+        new Set(["com.apple.TextEdit"]),
+      ),
+    ]).toEqual(["com.apple.Notes"]);
+    // Nobody seen: nothing new is counted, whatever is open.
+    expect(
+      openedByPerson({ first: false, sawInput: false }, ps, new Set<string>())
+        .size,
+    ).toBe(0);
+    // ps unread: no answer, which the gate refuses on by itself.
+    expect(
+      openedByPerson({ first: true, sawInput: true }, undefined, undefined)
+        .size,
+    ).toBe(0);
+    // What the person opened skips its long tasks from then on.
+    const opened = openedByPerson(
+      { first: true, sawInput: true },
+      textEdit,
+      undefined,
+    );
+    expect(startSkip(byTaskId("text-append-line"), { running: opened })).toBe(
+      "APPS_OPEN",
+    );
+  });
+
+  it("reads the start facts once for every script, read-only", async () => {
+    const calls: string[] = [];
+    const run = async (command: string, args: string[]) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "mdfind")
+        return args[0].includes("com.apple.finder")
+          ? "/System/Library/CoreServices/Finder.app"
+          : args[0].includes("com.apple.TextEdit")
+            ? "/System/Applications/TextEdit.app"
+            : "";
+      if (command === "ps")
+        return "  101 /System/Applications/TextEdit.app/Contents/MacOS/TextEdit";
+      if (args[0] === "status")
+        return JSON.stringify({
+          access: { calendar: "granted", reminders: "denied" },
+        });
+      return undefined;
+    };
+    const tasks = [
+      byTaskId("text-append-line"),
+      byTaskId("agenda-rem-create"),
+      byTaskId("browser-form-submit-local"),
+    ];
+    const facts = await readStartFacts(tasks, {
+      run,
+      home: "/Users/someone",
+      benchRootDirty: () => {
+        throw new Error("ledger unreadable");
+      },
+      agendaBinary: "/x/coarena-agenda",
+      fixture: async () => false,
+    });
+    expect([...(facts.running ?? [])]).toEqual(["com.apple.TextEdit"]);
+    expect(facts.installed?.has("com.apple.TextEdit")).toBe(true);
+    expect(facts.installed?.has("com.apple.reminders")).toBe(false);
+    // A ledger that cannot be read may hold anything.
+    expect(facts.benchRootDirty).toBe(true);
+    expect(facts.agendaAccess).toEqual({
+      calendar: "granted",
+      reminders: "denied",
+    });
+    expect(facts.fixture).toBe(false);
+    // status, never setup: setup writes.
+    expect(calls).toContain("/x/coarena-agenda status");
+    expect(calls.some((call) => call.includes("setup"))).toBe(false);
+    expect(startSkips(tasks, facts)).toEqual(
+      new Map([
+        ["text-append-line", "APPS_OPEN"],
+        ["agenda-rem-create", "APP_NOT_INSTALLED"],
+        ["browser-form-submit-local", "APP_NOT_INSTALLED"],
+      ]),
+    );
+    // No helper built: agenda tasks read as no access; smoke tasks ask nothing.
+    const bare = await readStartFacts([byTaskId("agenda-rem-create")], {
+      run,
+      home: "/Users/someone",
+      benchRootDirty: () => false,
+    });
+    expect(bare.agendaAccess).toBeNull();
+    expect(bare.fixture).toBeUndefined();
+  });
+
+  it("skips the tasks that need a bench folder while an earlier cycle's items remain", () => {
+    expect(
+      startSkip(byTaskId("files-rename-pattern"), { benchRootDirty: true }),
+    ).toBe("BENCH_ROOT_DIRTY");
+    expect(
+      startSkip(byTaskId("calculator-open"), { benchRootDirty: true }),
+    ).toBeUndefined();
+  });
+
+  it("skips agenda tasks by the stores they write: no helper, no grant, no local source", () => {
+    const cal = byTaskId("agenda-cal-create-tomorrow");
+    const rem = byTaskId("agenda-rem-create");
+    expect(startSkip(cal, { agendaAccess: null })).toBe("NO_AGENDA_ACCESS");
+    const remindersOnly = { calendar: "notDetermined", reminders: "granted" };
+    expect(startSkip(cal, { agendaAccess: remindersOnly })).toBe(
+      "NO_AGENDA_ACCESS",
+    );
+    expect(startSkip(rem, { agendaAccess: remindersOnly })).toBeUndefined();
+    // The real start's setup, which alone can say whether a local source is there.
+    expect(
+      startSkip(rem, {
+        agendaAccess: granted,
+        agendaSetup: { ready: [], error: "NO_LOCAL_SOURCE" },
+      }),
+    ).toBe("NO_LOCAL_SOURCE");
+    expect(
+      startSkip(cal, {
+        agendaAccess: granted,
+        agendaSetup: { ready: ["reminder"], error: "" },
+      }),
+    ).toBe("NO_LOCAL_SOURCE");
+    expect(
+      startSkip(rem, {
+        agendaAccess: granted,
+        agendaSetup: { ready: ["reminder"], error: "" },
+      }),
+    ).toBeUndefined();
+    expect(
+      startSkip(rem, {
+        agendaAccess: granted,
+        agendaSetup: { ready: [], error: "NO_ACCESS" },
+      }),
+    ).toBe("NO_AGENDA_ACCESS");
+    // The helper's own shapes: status carries access only, and never a
+    // localSource field.
+    expect(
+      agendaAccess(
+        '{"access":{"calendar":"notDetermined","reminders":"granted"}}\n',
+      ),
+    ).toEqual(remindersOnly);
+    expect(agendaAccess(undefined)).toBeUndefined();
+    expect(agendaSetupError('{"access":{},"error":"NO_LOCAL_SOURCE"}\n')).toBe(
+      "NO_LOCAL_SOURCE",
+    );
+    expect(
+      agendaSetupError(
+        '{"access":{},"containers":{"reminders":"OpenAssistBench"}}',
+      ),
+    ).toBe("");
+    expect(agendaSetupError(undefined)).toBe("UNREADABLE");
+    expect(
+      startSkip(byTaskId("files-compress"), { agendaAccess: null }),
+    ).toBeUndefined();
+  });
+
+  it("skips the fixture tasks when the port is taken, and nothing else", () => {
+    const skips = startSkips(LONG_CATALOGUE, { fixture: false });
+    const fixtureTasks = LONG_CATALOGUE.filter((task) =>
+      task.evidence?.includes("fixture"),
+    ).map((task) => task.id);
+    expect(fixtureTasks.length).toBeGreaterThan(0);
+    expect([...skips.keys()].sort()).toEqual([...fixtureTasks].sort());
+    expect(new Set(skips.values())).toEqual(new Set(["FIXTURE_PORT"]));
+    expect(startSkips(LONG_CATALOGUE, { fixture: true }).size).toBe(0);
+  });
+
+  it("waits out the hour around midnight for agenda attempts only", () => {
+    let now = new Date(2026, 8, 18, 23, 30);
+    const gate = taskGate(allById, new Map(), () => now);
+    expect(gate.skip({ taskId: "agenda-rem-create" })).toBe("DAY_BOUNDARY");
+    expect(gate.skip({ taskId: "multi-draft-to-reminder" })).toBe(
+      "DAY_BOUNDARY",
+    );
+    expect(gate.skip({ taskId: "files-compress" })).toBeUndefined();
+    now = new Date(2026, 8, 19, 1, 5);
+    expect(gate.skip({ taskId: "agenda-rem-create" })).toBeUndefined();
+    const skipped = taskGate(
+      allById,
+      new Map([["files-compress", "APPS_OPEN" as const]]),
+      () => now,
+    );
+    expect(skipped.skip({ taskId: "files-compress" })).toBe("APPS_OPEN");
+    expect(skipped.skip({ taskId: "no-such-task" })).toBeUndefined();
+  });
+
+  it("closes the ide category after an attempt that saw only blind surfaces", () => {
+    const ide = testTask({ id: "ide-test", category: "ide" });
+    const other = testTask({ id: "calc-test" });
+    const gate = taskGate(
+      new Map([
+        [ide.id, ide],
+        [other.id, other],
+      ]),
+      new Map(),
+      () => new Date(2026, 8, 18, 12),
+    );
+    const blind = row({
+      taskId: ide.id,
+      category: "ide",
+      status: "failed",
+      retries: 3,
+      blindRetries: 3,
+    });
+    expect(ideBlind(blind)).toBe(true);
+    expect(ideBlind({ ...blind, blindRetries: 2 })).toBe(false);
+    expect(ideBlind({ ...blind, status: "passed" })).toBe(false);
+    expect(ideBlind({ ...blind, category: "files" })).toBe(false);
+    expect(ideBlind({ ...blind, retries: 0, blindRetries: 0 })).toBe(false);
+    gate.observe({ ...blind, blindRetries: 2 });
+    expect(gate.skip({ taskId: ide.id })).toBeUndefined();
+    gate.observe(blind);
+    expect(gate.skip({ taskId: ide.id })).toBe("IDE_BLIND");
+    expect(gate.skip({ taskId: other.id })).toBeUndefined();
+  });
+});
+
+describe("approval in context", () => {
+  const task = { apps: ["com.apple.TextEdit"] };
+  it("approves nothing it did not before, and less", () => {
+    const view = { appId: "com.apple.TextEdit", modal: false };
+    expect(approvalInContext(task, "Save these changes?", view)).toBe(true);
+    expect(approvalInContext(task, REPLACE_REASON, view)).toBe(true);
+    // Another application in front, or no frontmost reading at all.
+    expect(
+      approvalInContext(task, "Save these changes?", {
+        ...view,
+        appId: "com.apple.finder",
+      }),
+    ).toBe(false);
+    expect(approvalInContext(task, "Save these changes?", {})).toBe(false);
+    // The frame the action was proposed on showed another application.
+    expect(
+      approvalInContext(task, "Save these changes?", {
+        ...view,
+        frameAppId: "com.apple.Notes",
+      }),
+    ).toBe(false);
+    // A sheet or dialog in front, or none known either way, for Replace.
+    expect(
+      approvalInContext(task, REPLACE_REASON, { ...view, modal: true }),
+    ).toBe(false);
+    expect(
+      approvalInContext(task, REPLACE_REASON, { appId: "com.apple.TextEdit" }),
+    ).toBe(false);
+    // A sheet does not block a plain save question.
+    expect(
+      approvalInContext(task, "Save these changes?", { ...view, modal: true }),
+    ).toBe(true);
+    // The pointer is on a browser window behind TextEdit, showing a real
+    // site: that site's Save is not TextEdit's.
+    expect(
+      approvalInContext(task, "Save these changes?", {
+        ...view,
+        targetAppId: "com.google.Chrome",
+        targetWebHost: "github.com",
+      }),
+    ).toBe(false);
+    expect(
+      approvalInContext(task, "Save these changes?", {
+        ...view,
+        targetAppId: "com.google.Chrome",
+      }),
+    ).toBe(false);
+    // Another process drawing TextEdit's own Save panel is not held to
+    // the task's applications.
+    expect(
+      approvalInContext(task, "Save these changes?", {
+        ...view,
+        targetAppId: "com.apple.appkit.xpc.openAndSavePanelService",
+      }),
+    ).toBe(true);
+    // A reason with no scope is never approved, whatever the task lists.
+    expect(approvalInContext(task, "Archive this item?", view)).toBe(false);
+  });
+
+  const long = (id: string) => {
+    const found = LONG_CATALOGUE.find((task) => task.id === id);
+    if (!found) throw new Error(id);
+    return found;
+  };
+  const CHROME = "com.google.Chrome";
+
+  it("approves a Submit only in a browser on the fixture host", () => {
+    const task = long("browser-form-submit-local");
+    expect(approvesPrompt(task, SUBMIT_REASON, true)).toBe(true);
+    const local = { appId: CHROME, modal: false, domain: FIXTURE_HOST };
+    expect(approvalInContext(task, SUBMIT_REASON, local)).toBe(true);
+    expect(
+      approvalInContext(task, SUBMIT_REASON, {
+        ...local,
+        targetWebHost: FIXTURE_HOST,
+      }),
+    ).toBe(true);
+    // A real site the person's browser restored: OAuth's Authorize, a
+    // Join or a Confirm all ask this question.
+    expect(
+      approvalInContext(task, SUBMIT_REASON, {
+        ...local,
+        domain: "github.com",
+      }),
+    ).toBe(false);
+    // The page in front is the fixture's, the control under the pointer
+    // sits in a frame of another site.
+    expect(
+      approvalInContext(task, SUBMIT_REASON, {
+        ...local,
+        targetWebHost: "accounts.example.com",
+      }),
+    ).toBe(false);
+    // localhost is loopback too, but not the host the fixture was given.
+    expect(
+      approvalInContext(task, SUBMIT_REASON, { ...local, domain: "localhost" }),
+    ).toBe(false);
+    // No host known in a browser: no.
+    expect(
+      approvalInContext(task, SUBMIT_REASON, { appId: CHROME, modal: false }),
+    ).toBe(false);
+    // The frame the model acted on showed another application.
+    expect(
+      approvalInContext(task, SUBMIT_REASON, {
+        ...local,
+        frameAppId: "com.apple.finder",
+      }),
+    ).toBe(false);
+  });
+
+  it("approves a Save for the browser-and-TextEdit tasks only with TextEdit in front", () => {
+    for (const id of [
+      "research-fact-note",
+      "research-compare-note",
+      "research-list-note",
+      "multi-page-calc-note",
+    ]) {
+      const task = long(id);
+      expect(approvesPrompt(task, "Save these changes?", true), id).toBe(true);
+      // A site's own Save button (account settings), fixture page or not.
+      for (const domain of ["github.com", FIXTURE_HOST, undefined])
+        expect(
+          approvalInContext(task, "Save these changes?", {
+            appId: CHROME,
+            modal: false,
+            ...(domain ? { domain } : {}),
+          }),
+          `${id} ${domain}`,
+        ).toBe(false);
+      expect(
+        approvalInContext(task, "Save these changes?", {
+          appId: TEXTEDIT,
+          frameAppId: TEXTEDIT,
+          modal: false,
+        }),
+        id,
+      ).toBe(true);
+    }
+  });
+
+  it("gives every routine reason a task lists a scope one of its apps is in", () => {
+    for (const task of [...CATALOGUE, ...LONG_CATALOGUE])
+      for (const reason of task.approve ?? []) {
+        const scope = APPROVAL_APPS[reason];
+        expect(scope, `${task.id}: ${reason}`).toBeDefined();
+        expect(
+          task.apps.some((id) => scope.includes(id)),
+          `${task.id}: ${reason}`,
+        ).toBe(true);
+      }
+  });
+});
+
+describe("task skips in the cycle loop", () => {
+  it("records a skip as a row without waiting for the gate, and says why", async () => {
+    const observed: string[] = [];
+    let gateReads = 0;
+    const { run, lines, ran } = loop({
+      gate: () => {
+        gateReads++;
+        return { tapIdleSeconds: 10_000 };
+      },
+      skipFor: (entry) =>
+        entry.taskId === "a" ? "NO_AGENDA_ACCESS" : undefined,
+      observe: (r) => observed.push(`${r.taskId} ${r.reason ?? r.status}`),
+    });
+    const outcome = await run;
+    expect(ran.every((r) => r.index % 1 === 0)).toBe(true);
+    const bIndexes = buildPlan(["m1", "m2"], ["a", "b"], 1, 1)
+      .filter((e) => e.taskId === "b")
+      .map((e) => e.index);
+    expect(ran.map((r) => r.index)).toEqual(bIndexes);
+    // One gate read per attempt that ran; the skips never waited for idle.
+    expect(gateReads).toBe(bIndexes.length);
+    const skips = outcome.results.filter(
+      (r) => r.reason === "NO_AGENDA_ACCESS",
+    );
+    expect(skips).toHaveLength(2);
+    expect(skips.every((r) => r.runStatus === "skipped")).toBe(true);
+    expect(
+      lines.filter(
+        (l) => l.kind === "attempt" && l.reason === "NO_AGENDA_ACCESS",
+      ),
+    ).toHaveLength(2);
+    expect(observed.filter((o) => o === "a NO_AGENDA_ACCESS")).toHaveLength(2);
+    expect(observed.filter((o) => o === "b passed")).toHaveLength(2);
+    expect(outcome.notRun).toBe(0);
+    // Outside every rate: the model never got these attempts.
+    const totals = aggregate(outcome.results);
+    expect(totals.ran).toBe(2);
+    expect(totals.skipped).toBe(2);
+  });
+
+  it("reads this Mac again after the first gate pass and after a wait that saw a person, before the attempt", async () => {
+    const start = 1_000_000;
+    // The person started the cycle ten seconds ago and kept working.
+    let touchedAt = start - 10_000;
+    const plan = buildPlan(["m1", "m2"], ["a", "b"], 1, 1);
+    const first = plan[0].taskId;
+    const passes: { first: boolean; sawInput: boolean }[] = [];
+    const skips = new Map<string, string>();
+    let attempts = 0;
+    const { run, ran } = loop({
+      gate: (now) => ({ tapIdleSeconds: (now - touchedAt) / 1000 }),
+      afterGate: async (pass) => {
+        passes.push(pass);
+        // While the gate waited, they opened the first task's application.
+        if (pass.first) skips.set(first, "APPS_OPEN");
+      },
+      skipFor: (entry) => skips.get(entry.taskId),
+      attempt: (_, __, now) => {
+        // Back at the Mac five seconds after the first attempt ends.
+        if (attempts++ === 0) touchedAt = now + 5000;
+        return {};
+      },
+    });
+    const outcome = await run;
+    // The skip found at the first pass applies to the attempt that pass
+    // was for: nothing of that task ran.
+    expect(ran.map((r) => plan[r.index].taskId)).not.toContain(first);
+    expect(
+      outcome.results
+        .filter((r) => r.reason === "APPS_OPEN")
+        .map((r) => r.planIndex),
+    ).toEqual(plan.filter((e) => e.taskId === first).map((e) => e.index));
+    // One read per pass: the first, one straight through, one after the
+    // person came back.
+    expect(passes).toEqual([
+      { first: true, sawInput: true },
+      { first: false, sawInput: false },
+      { first: false, sawInput: true },
+    ]);
+  });
+
+  it("asks again after the gate, when the clock may have crossed midnight", async () => {
+    const { run, ran } = loop({
+      gate: () => ({ tapIdleSeconds: 10_000 }),
+      skipFor: (entry, gateReads) =>
+        entry.index === 0 && gateReads > 0 ? "DAY_BOUNDARY" : undefined,
+    });
+    const outcome = await run;
+    expect(ran.map((r) => r.index)).toEqual([1, 2, 3]);
+    expect(outcome.results.find((r) => r.planIndex === 0)?.reason).toBe(
+      "DAY_BOUNDARY",
+    );
+  });
+
+  it("runs a task skip again on resume, and the run replaces the skip", () => {
+    const plan = buildPlan(["m1"], ["a"], 1, 1);
+    const line = (r: AttemptResult): LedgerLine => ({
+      kind: "attempt",
+      at: "2026-09-18T01:00:00.000Z",
+      ...r,
+    });
+    for (const reason of TASK_SKIPS) {
+      const skip = row({
+        planIndex: 0,
+        taskId: "a",
+        cell: "m1",
+        status: "unknown",
+        reason,
+        runStatus: "skipped",
+        cost: 0,
+      });
+      expect(rerunnable(skip), reason).toBe(true);
+      expect(remaining(plan, [line(skip)], 1).map((e) => e.index)).toEqual([0]);
+      const later = row({ planIndex: 0, taskId: "a", cell: "m1" });
+      expect(ledgerResults([line(skip), line(later)])).toEqual([later]);
+    }
+  });
+
+  it("finds the fewest nights a long plan fits in, or says it never will", () => {
+    const tasks = new Map([
+      ["a", { maxSeconds: 900, maxActions: 80 }],
+      ["b", { maxSeconds: 900, maxActions: 80 }],
+    ]);
+    // 18 attempts of 240 s + 20 s overhead + 8 s cooldown = 268 s each.
+    const plan = buildPlan(["m1", "m2", "m3"], ["a", "b"], 3, 7);
+    expect(shardsNeeded(plan, tasks, 8, 4 * 3600)).toBe(1);
+    const hour = shardsNeeded(plan, tasks, 8, 3600);
+    expect(hour).toBe(2);
+    for (let index = 1; index <= 2; index++)
+      expect(
+        fitsTimeBox(
+          estimateSeconds(shardOf(plan, { index, count: 2 }), tasks, 8),
+          3600,
+        ),
+      ).toBe(true);
+    expect(fitsTimeBox(estimateSeconds(plan, tasks, 8), 3600)).toBe(false);
+    // One (task, repeat) group of three models is 804 s: 15 minutes never fit.
+    expect(shardsNeeded(plan, tasks, 8, 900)).toBeUndefined();
+  });
+});
+
+describe("suites in the cycle", () => {
+  it("hashes exactly the selected suites' tasks and sources", () => {
+    const smoke = selectSuite(undefined, "smoke").tasks;
+    const long = selectSuite(undefined, "long").tasks;
+    const all = selectSuite(undefined, "all").tasks;
+    expect(smoke).toEqual(CATALOGUE);
+    expect(graderFiles(smoke)).toEqual([
+      "src/gym/bench/graders.ts",
+      "src/gym/bench/catalogue.ts",
+    ]);
+    expect(graderFiles(long)).toEqual([
+      "src/gym/bench/graders.ts",
+      "src/gym/bench/catalogue-long.ts",
+      "src/gym/bench/fixtures.ts",
+      "src/gym/bench/readers.ts",
+    ]);
+    expect(graderFiles(all)).toEqual([
+      "src/gym/bench/graders.ts",
+      "src/gym/bench/catalogue.ts",
+      "src/gym/bench/catalogue-long.ts",
+      "src/gym/bench/fixtures.ts",
+      "src/gym/bench/readers.ts",
+    ]);
+    const hash = (tasks: BenchTask[], edit?: string) =>
+      catalogueHash(
+        tasks,
+        graderFiles(tasks).map(
+          (file) =>
+            readFileSync(join(root, file), "utf8") +
+            (file === edit ? "\n// edited\n" : ""),
+        ),
+      );
+    expect(new Set([hash(smoke), hash(long), hash(all)]).size).toBe(3);
+    // A long-suite edit leaves the smoke metric alone and moves the long one.
+    expect(hash(smoke, "src/gym/bench/catalogue-long.ts")).toBe(hash(smoke));
+    expect(hash(smoke, "src/gym/bench/readers.ts")).toBe(hash(smoke));
+    expect(hash(long, "src/gym/bench/fixtures.ts")).not.toBe(hash(long));
+    expect(hash(long, "src/gym/bench/readers.ts")).not.toBe(hash(long));
+    expect(hash(smoke, "src/gym/bench/graders.ts")).not.toBe(hash(smoke));
+  });
+});
+
+describe("probe verdicts", () => {
+  const A = "openai:gpt-5.4-mini";
+  // `hits` attempts carry the class under test as their grade reason.
+  const rows = (n: number, hits: number, other = 0, otherCode = "WRONG_ITEM") =>
+    many(n, (i) =>
+      i < hits
+        ? failedRow({ planIndex: i, attempt: i + 1, reason: "NOT_ENTERED" })
+        : i < hits + other
+          ? failedRow({ planIndex: i, attempt: i + 1, reason: otherCode })
+          : row({ planIndex: i, attempt: i + 1 }),
+    );
+  const judge = (
+    before: AttemptResult[],
+    after: AttemptResult[],
+    templatesMatch = true,
+  ) =>
+    compareProbe(
+      cycleOf({
+        id: "probe",
+        gitRev: "fix1234",
+        catalogueHash: "h-fix",
+        results: after,
+      }),
+      // The baseline ran another revision and catalogue: a probe compares
+      // across them by design, which compareCycles alone refuses.
+      cycleOf({
+        id: "base",
+        gitRev: "old1234",
+        catalogueHash: "h-old",
+        dirty: true,
+        results: before,
+      }),
+      "NOT_ENTERED",
+      {
+        templatesMatch,
+        classes: probeClassRates("NOT_ENTERED"),
+        owner: ownerOf,
+      },
+    );
+
+  it("passes when the class fell and nothing else got worse", () => {
+    const verdict = judge(rows(36, 20), rows(36, 3));
+    expect(verdict.comparison.comparable).toBe(true);
+    expect(verdict.before).toMatchObject({ k: 20, n: 36 });
+    expect(verdict.after).toMatchObject({ k: 3, n: 36 });
+    expect(verdict.p).toBeLessThan(0.05);
+    expect(verdict.reasons).toEqual([]);
+    expect(verdict.pass).toBe(true);
+    // Gone in 36 or more attempts passes whatever the baseline's rate.
+    expect(judge(rows(36, 2), rows(36, 0)).pass).toBe(true);
+  });
+
+  it("judges a probe against one night of a sharded plan on its own tasks", () => {
+    // Long-suite baselines are shards; the probe is its own plan. The slice
+    // rule that keeps sibling nights apart must not switch off the probe's
+    // model and class checks.
+    const model = compareProbe(
+      cycleOf({
+        id: "probe",
+        gitRev: "fix1234",
+        results: rows(36, 0, 20, "LOOPED"),
+      }),
+      cycleOf({
+        id: "night1",
+        gitRev: "old1234",
+        shard: "1/3",
+        designHash: "d-night1",
+        results: rows(36, 6),
+      }),
+      "NOT_ENTERED",
+      {
+        templatesMatch: true,
+        classes: probeClassRates("NOT_ENTERED"),
+        owner: ownerOf,
+      },
+    );
+    expect(model.comparison.comparable).toBe(true);
+    expect(model.reasons).toContainEqual({ code: "MODEL_REGRESSED", key: A });
+  });
+
+  it("fails a class that did not move, and says why", () => {
+    const verdict = judge(rows(36, 12), rows(36, 11));
+    expect(verdict.pass).toBe(false);
+    expect(verdict.reasons).toEqual([{ code: "CLASS_NOT_IMPROVED" }]);
+  });
+
+  it("fails when another agent-owned class or a model's success regressed", () => {
+    const worse = judge(rows(36, 20, 1), rows(36, 2, 12));
+    expect(worse.reasons).toContainEqual({
+      code: "OTHER_CLASS_REGRESSED",
+      key: "WRONG_ITEM",
+    });
+    expect(worse.pass).toBe(false);
+    const model = judge(rows(36, 6), rows(36, 0, 20, "LOOPED"));
+    expect(model.after.k).toBe(0);
+    expect(model.reasons).toContainEqual({ code: "MODEL_REGRESSED", key: A });
+    expect(model.pass).toBe(false);
+  });
+
+  it("refuses to judge changed tasks and counts only the probe's own tasks", () => {
+    expect(judge(rows(36, 20), rows(36, 3), false).reasons).toContainEqual({
+      code: "TASKS_CHANGED",
+    });
+    // The baseline's other tasks are not in the probe's denominator.
+    const before = [
+      ...rows(36, 20),
+      ...many(36, (i) => row({ planIndex: 100 + i, taskId: "browser-open" })),
+    ];
+    expect(judge(before, rows(36, 3)).before).toMatchObject({ k: 20, n: 36 });
+  });
+
+  it("rates the class under test from its stored count, frictions included", () => {
+    const rates = probeClassRates("BLIND_SURFACE")(
+      {
+        results: rows(10, 0),
+        failureClasses: [
+          { code: "BLIND_SURFACE", byModel: { [A]: { attempts: 4 } } },
+        ],
+      },
+      [A],
+    );
+    expect(rates).toContainEqual({
+      code: "BLIND_SURFACE",
+      attempts: 4,
+      ran: 10,
+    });
+  });
+
+  it("matches templates task for task", () => {
+    const info = (
+      over: Partial<CycleTaskInfoLike> = {},
+    ): CycleTaskInfoLike => ({
+      id: "t",
+      category: "files",
+      difficulty: "easy",
+      maxCost: 0.1,
+      maxActions: 10,
+      maxSeconds: 60,
+      instruction: "Open {x}",
+      verifies: "v",
+      suite: "long",
+      ...over,
+    });
+    expect(sameTemplates([info()], [info()])).toBe(true);
+    expect(sameTemplates([info()], [info({ instruction: "Close {x}" })])).toBe(
+      false,
+    );
+    expect(sameTemplates([info()], [info({ id: "u" })])).toBe(false);
+  });
+});
+type CycleTaskInfoLike = Parameters<typeof sameTemplates>[0][number];
+
+describe("the token ledger and the sweep", () => {
+  it("keeps a token while something a sweep could clear is left, and names nothing else", () => {
+    const dir = join(mkdtempSync(join(scratch, "ledger-")), "bench-tokens");
+    const ledger = fileTokenLedger(dir);
+    ledger.open("benchnote0aa1", "files-rename-pattern");
+    ledger.started("benchnote0aa1", 1234);
+    ledger.open("benchnote0aa2", "text-append-line");
+    ledger.open("benchnote0aa3", "agenda-rem-create");
+    expect(ledger.entries()).toEqual([
+      { token: "benchnote0aa1", taskId: "files-rename-pattern", start: 1234 },
+      { token: "benchnote0aa2", taskId: "text-append-line" },
+      { token: "benchnote0aa3", taskId: "agenda-rem-create" },
+    ]);
+    // A stray file Spotlight may index later: kept for the next sweep.
+    ledger.close("benchnote0aa1", ["LEFTOVER_STRAY_FILE"], false);
+    // A person's file, and a Spotlight that gave no answer: the answer may
+    // come next time, but only MAX_CLEANUPS times in all; a ledger entry
+    // skips every later night's long tasks.
+    const unanswered = ["LEFTOVER_FOREIGN_FILE", "SWEEP_UNVERIFIED"];
+    ledger.close("benchnote0aa2", unanswered, false);
+    // Cleanup threw: kept.
+    ledger.close("benchnote0aa3", [], true);
+    expect(ledger.entries().map((entry) => entry.token)).toEqual([
+      "benchnote0aa1",
+      "benchnote0aa2",
+      "benchnote0aa3",
+    ]);
+    expect(MAX_CLEANUPS).toBe(3);
+    ledger.close("benchnote0aa2", unanswered, false);
+    expect(ledger.entries()[1]).toMatchObject({ cleanups: 2 });
+    ledger.close("benchnote0aa2", unanswered, false);
+    expect(ledger.entries().map((entry) => entry.token)).toEqual([
+      "benchnote0aa1",
+      "benchnote0aa3",
+    ]);
+    // A store without a grant never answers any better: gone at once.
+    ledger.open("benchnote0aa4", "agenda-rem-create");
+    ledger.close("benchnote0aa4", ["LEFTOVER_AGENDA_UNVERIFIED"], false);
+    expect(ledger.entries().map((entry) => entry.token)).not.toContain(
+      "benchnote0aa4",
+    );
+    expect([...TRANSIENT_LEFTOVERS].sort()).toEqual([
+      "LEFTOVER_AGENDA_NO_ANSWER",
+      "SWEEP_UNVERIFIED",
+    ]);
+    expect(() => ledger.open("../../etc", "x")).toThrow();
+    expect(() => ledger.open("notatoken", "x")).toThrow();
+    expect([...RETRYABLE_LEFTOVERS].sort()).toEqual([
+      "LEFTOVER_EVENT",
+      "LEFTOVER_FILES",
+      "LEFTOVER_REMINDER",
+      "LEFTOVER_STRAY_FILE",
+    ]);
+    // Under ~/Library, where the stray-file sweep never looks.
+    const home = "/Users/someone";
+    expect(tokenLedgerDir(home)).toBe(
+      "/Users/someone/Library/Caches/open-assist/bench-tokens",
+    );
+    expect(
+      strayAction(
+        join(tokenLedgerDir(home), "benchnote0aa1"),
+        "benchnote0aa1",
+        home,
+        () => ({ kind: "file", born: 2000 }),
+        1000,
+      ),
+    ).toBe("ignore");
+  });
+
+  it("sweeps what a crashed attempt left, dated by the ledger once its folder is gone", async () => {
+    const home = mkdtempSync(join(scratch, "home-"));
+    const ledger = fileTokenLedger(tokenLedgerDir(home));
+    const crashed = "benchnote1aa1";
+    const older = "benchnote1aa2";
+    const start = Date.now() - 60_000;
+    ledger.open(crashed, "text-new-doc-save");
+    ledger.started(crashed, start);
+    const docs = join(home, "Documents");
+    mkdirSync(docs, { recursive: true });
+    // Saved in the wrong place during the attempt: the sweep's to delete.
+    const stray = join(docs, `${crashed}.txt`);
+    writeFileSync(stray, "x");
+    // A person's file the model renamed to the token: older than the attempt.
+    const theirs = join(docs, `${crashed}-list.txt`);
+    writeFileSync(theirs, "y");
+    const past = new Date(start - 3_600_000);
+    utimesSync(theirs, past, past);
+    // An older harness's folder with no ledger entry.
+    mkdirSync(join(home, "OpenAssistBench", older, "sub"), { recursive: true });
+    writeFileSync(join(home, "OpenAssistBench", older, "sub", "a.txt"), "z");
+    mkdirSync(join(home, "OpenAssistBench", ".quarantine"), {
+      recursive: true,
+    });
+    expect(benchRootTokens(home)).toEqual([older]);
+    expect(benchRootDirty(home, ledger.entries())).toBe(true);
+    const found = [stray, theirs];
+    const swept = await sweepTokens({
+      home,
+      ledger,
+      tasks: allById,
+      options: {
+        exec: async (file, args) => {
+          if (file !== "mdfind") throw new Error(`unexpected ${file}`);
+          const token = /"(benchnote[0-9a-z]{4})\*"/.exec(
+            args.at(-1) ?? "",
+          )?.[1];
+          return found
+            .filter((path) => token && path.split("/").pop()!.startsWith(token))
+            .join("\n");
+        },
+      },
+    });
+    expect(swept).toEqual([
+      { token: crashed, leftovers: ["LEFTOVER_FOREIGN_FILE"] },
+      { token: older, leftovers: [] },
+    ]);
+    expect(existsSync(stray)).toBe(false);
+    expect(existsSync(theirs)).toBe(true);
+    expect(existsSync(join(home, "OpenAssistBench", older))).toBe(false);
+    // Nothing a sweep can clear is left, so the ledger lets both go.
+    expect(ledger.entries()).toEqual([]);
+    expect(benchRootDirty(home, ledger.entries())).toBe(false);
+    expect(await sweepTokens({ home, ledger, tasks: allById })).toEqual([]);
+  });
+
+  it("says what is still on the Mac after the final sweep", () => {
+    expect(
+      remainingLeftovers(
+        [{ leftovers: ["LEFTOVER_STRAY_FILE", "LEFTOVER_FOREIGN_FILE"] }, {}],
+        [{ token: "benchnote1aa1", leftovers: ["LEFTOVER_EVENT"] }],
+      ),
+    ).toEqual(["LEFTOVER_EVENT", "LEFTOVER_FOREIGN_FILE"]);
+    // A row's retryable or unanswered leftover is the sweep's to answer.
+    expect(
+      remainingLeftovers(
+        [{ leftovers: ["LEFTOVER_STRAY_FILE", "LEFTOVER_AGENDA_NO_ANSWER"] }],
+        [],
+      ),
+    ).toEqual([]);
+    // No sweep answered anything: every row's code stands, and says why.
+    expect(
+      remainingLeftovers(
+        [
+          { leftovers: ["LEFTOVER_EVENT"] },
+          { leftovers: ["LEFTOVER_STRAY_FILE", "LEFTOVER_FOREIGN_FILE"] },
+          {},
+        ],
+        undefined,
+      ),
+    ).toEqual([
+      "LEFTOVER_EVENT",
+      "LEFTOVER_FOREIGN_FILE",
+      "LEFTOVER_STRAY_FILE",
+      "SWEEP_FAILED",
+    ]);
+    expect(remainingLeftovers([], undefined)).toEqual(["SWEEP_FAILED"]);
+  });
+
+  it("keeps a file task's token until Spotlight has had time to index what the attempt saved", async () => {
+    const home = mkdtempSync(join(scratch, "lag-home-"));
+    const token = "benchnote7qq1";
+    const task = allById.get("text-new-doc-save")!;
+    expect(sweepsStrayFiles(task)).toBe(true);
+    let clock = Date.now();
+    const slept: number[] = [];
+    const ledger = fileTokenLedger(tokenLedgerDir(home), () => clock);
+    const docs = join(home, "Documents");
+    mkdirSync(docs, { recursive: true });
+    const stray = join(docs, `${token}.rtf`);
+    // Spotlight indexes the save only after the attempt's own cleanup ran.
+    let indexed = false;
+    const exec = async (file: string) => {
+      if (file !== "mdfind") throw new Error(`unexpected ${file}`);
+      return indexed && existsSync(stray) ? stray : "";
+    };
+    const readers = createReaders({ exec, home });
+    const { controller } = fakeController({ appId: TEXTEDIT });
+    const { deps } = attemptDeps(controller, {
+      benchRoot: join(home, "OpenAssistBench"),
+      token: () => token,
+      tokens: ledger,
+      // The model saved in the wrong place seconds before it said done.
+      cleanupAttempt: async (t, ctx) => {
+        writeFileSync(stray, "list");
+        return readers.cleanupAttempt(t, ctx);
+      },
+    });
+    const result = await runAttempt(deps, CELL, task, 1, caps);
+    // The attempt's cleanup looked before Spotlight had the file: clean.
+    expect(result.leftovers ?? []).toEqual([]);
+    expect(existsSync(stray)).toBe(true);
+    // ...so its token stays for the final sweep, with the time it looked.
+    expect(ledger.entries()).toEqual([
+      expect.objectContaining({ token, taskId: task.id, cleanedAt: clock }),
+    ]);
+    indexed = true;
+    const swept = await sweepTokens({
+      home,
+      ledger,
+      tasks: allById,
+      options: { exec },
+      now: () => clock,
+      sleep: async (ms) => {
+        slept.push(ms);
+        clock += ms;
+      },
+    });
+    // It waited out the lag, then found the file and deleted it.
+    expect(slept).toEqual([SPOTLIGHT_SETTLE_MS]);
+    expect(swept).toEqual([{ token, leftovers: [] }]);
+    expect(existsSync(stray)).toBe(false);
+    expect(ledger.entries()).toEqual([]);
+  });
+
+  it("keeps the token when a sweep had to run before the lag was out, without moving its time", async () => {
+    const home = mkdtempSync(join(scratch, "early-home-"));
+    let clock = 5_000_000;
+    const ledger = fileTokenLedger(tokenLedgerDir(home), () => clock);
+    const token = "benchnote7qq2";
+    ledger.open(token, "text-append-line");
+    ledger.started(token, clock - 60_000);
+    ledger.close(token, [], false, true);
+    expect(settleDelay(ledger.entries(), clock)).toBe(SPOTLIGHT_SETTLE_MS);
+    expect(settleDelay(ledger.entries(), clock + 10_000)).toBe(20_000);
+    expect(settleDelay(ledger.entries(), clock + 40_000)).toBe(0);
+    expect(settleDelay([{ token }], clock)).toBe(0);
+    const exec = async () => "";
+    const waits: number[] = [];
+    // A second Ctrl-C cut the wait short, ten seconds in.
+    await sweepTokens({
+      home,
+      ledger,
+      tasks: allById,
+      options: { exec },
+      now: () => clock,
+      sleep: async () => {
+        clock += 10_000;
+      },
+      onWait: (ms) => waits.push(ms),
+    });
+    expect(waits).toEqual([SPOTLIGHT_SETTLE_MS]);
+    expect(ledger.entries()).toEqual([
+      expect.objectContaining({ token, cleanedAt: 5_000_000 }),
+    ]);
+    clock = 5_000_000 + SPOTLIGHT_SETTLE_MS;
+    await sweepTokens({
+      home,
+      ledger,
+      tasks: allById,
+      options: { exec },
+      now: () => clock,
+      sleep: async () => {},
+    });
+    expect(ledger.entries()).toEqual([]);
+  });
+
+  it("asks the agenda helper again when it gave no answer, and stops asking after MAX_CLEANUPS", async () => {
+    const home = mkdtempSync(join(scratch, "agenda-home-"));
+    const ledger = fileTokenLedger(tokenLedgerDir(home));
+    const token = "benchnote7qq3";
+    const granted = { calendar: "granted", reminders: "granted" };
+    let removeFails = true;
+    const exec = async (_file: string, args: string[]) => {
+      if (args[0] === "remove") {
+        if (removeFails) throw new Error("timed out");
+        return JSON.stringify({ removed: 1, foreign: 0 });
+      }
+      return JSON.stringify({ access: granted, items: [] });
+    };
+    // The event may be syncing to other people's calendars: a timeout is
+    // not a clean answer, and the token stays for the final sweep.
+    ledger.open(token, "agenda-cal-create-tomorrow");
+    ledger.close(token, ["LEFTOVER_AGENDA_NO_ANSWER"], false);
+    const first = await sweepTokens({
+      home,
+      ledger,
+      tasks: allById,
+      options: { exec },
+    });
+    expect(first).toEqual([
+      { token, leftovers: ["LEFTOVER_AGENDA_NO_ANSWER"] },
+    ]);
+    expect(ledger.entries().map((entry) => entry.token)).toEqual([token]);
+    removeFails = false;
+    const second = await sweepTokens({
+      home,
+      ledger,
+      tasks: allById,
+      options: { exec },
+    });
+    expect(second).toEqual([{ token, leftovers: [] }]);
+    expect(ledger.entries()).toEqual([]);
+    // A helper that never answers: the attempt, the final sweep and one
+    // --cleanup-only, then the person is told and the nights go on.
+    removeFails = true;
+    ledger.open(token, "agenda-cal-create-tomorrow");
+    ledger.close(token, ["LEFTOVER_AGENDA_NO_ANSWER"], false);
+    for (let sweep = 2; sweep <= MAX_CLEANUPS; sweep++)
+      expect(
+        await sweepTokens({ home, ledger, tasks: allById, options: { exec } }),
+      ).toEqual([{ token, leftovers: ["LEFTOVER_AGENDA_NO_ANSWER"] }]);
+    expect(ledger.entries()).toEqual([]);
+  });
+
+  it("prints what cleanup left behind in the summary", () => {
+    const totals = aggregate([
+      row({ leftovers: ["LEFTOVER_FILES", "LEFTOVER_FILES"] }),
+      row({ leftovers: ["LEFTOVER_EVENT"], cleanupFailed: true }),
+      row(),
+    ]);
+    expect(totals.leftovers).toEqual({ LEFTOVER_FILES: 1, LEFTOVER_EVENT: 1 });
+    expect(totals.cleanupFailed).toBe(1);
+    expect(renderSummary(totals)).toContain(
+      "Leftovers  LEFTOVER_EVENT 1  LEFTOVER_FILES 1  cleanup failed 1",
+    );
+    expect(leftoversLine(aggregate([row()]))).toBeUndefined();
+    expect(renderSummary(aggregate([row()]))).not.toContain("Leftovers");
+  });
+});
+
+describe("the fixture server as a child process", () => {
+  type Child = FixtureHandle & {
+    pid: number;
+    flush(): Promise<void>;
+    alive(): boolean;
+    close(): Promise<void>;
+  };
+  const load = async () =>
+    (await import(
+      /* @vite-ignore */ pathToFileURL(join(root, "scripts/bench-fixtures.mjs"))
+        .href
+    )) as {
+      spawnFixtureServer: (options?: {
+        port?: number;
+        timeoutMs?: number;
+      }) => Promise<Child>;
+    };
+
+  it("serves on a free loopback port, mirrors each token's log, and ends on close", async () => {
+    const { spawnFixtureServer } = await load();
+    const server = await spawnFixtureServer({ port: 0 });
+    try {
+      expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      const token = "benchnote2aa1";
+      const base = server.register(token, {
+        orders: pages.orders(token, drawOrders(seeded(1))),
+      });
+      expect(base).toBe(`${server.url}/${token}`);
+      await server.flush();
+      const page = await fetch(`${base}/orders`, {
+        headers: { accept: "text/html" },
+      });
+      expect(page.status).toBe(200);
+      await page.text();
+      await server.flush();
+      expect(server.read(token)).toEqual({
+        port: server.port,
+        visits: [`/${token}/orders`],
+        submissions: [],
+      });
+      server.reset(token);
+      expect(server.read(token).visits).toEqual([]);
+      // The terminal's Ctrl-C reaches the whole process group: the child
+      // waits for its parent to finish the attempt it is stopping.
+      process.kill(server.pid, "SIGINT");
+      await new Promise((done) => setTimeout(done, 300));
+      expect(server.alive()).toBe(true);
+      const again = await fetch(`${base}/orders`, {
+        headers: { accept: "text/html" },
+      });
+      expect(again.status).toBe(200);
+      await again.text();
+    } finally {
+      await server.close();
+    }
+    expect(server.alive()).toBe(false);
+    expect(alive(server.pid)).toBe(false);
+  });
+
+  it("reports a taken port as FIXTURE_PORT", async () => {
+    const { spawnFixtureServer } = await load();
+    const holder = createServer();
+    await new Promise<void>((done) => holder.listen(0, "127.0.0.1", done));
+    const { port } = holder.address() as AddressInfo;
+    try {
+      await expect(spawnFixtureServer({ port })).rejects.toMatchObject({
+        code: "FIXTURE_PORT",
+      });
+    } finally {
+      await new Promise((done) => holder.close(done));
+    }
+  });
+
+  it("ends with its parent, however the parent ends", async () => {
+    const dir = mkdtempSync(join(scratch, "orphan-"));
+    const script = join(dir, "parent.mjs");
+    writeFileSync(
+      script,
+      `const { spawnFixtureServer } = await import(${JSON.stringify(pathToFileURL(join(root, "scripts/bench-fixtures.mjs")).href)});
+const server = await spawnFixtureServer({ port: 0 });
+console.log(String(server.pid));
+setInterval(() => {}, 1000);
+`,
+    );
+    const parent = spawn(process.execPath, [script], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const pid = await new Promise<number>((done, fail) => {
+      parent.stdout.once("data", (data) => done(Number(String(data).trim())));
+      parent.once("exit", () => fail(new Error("parent exited early")));
+    });
+    expect(alive(pid)).toBe(true);
+    // No exit handler runs after SIGKILL: only the closed channel ends it.
+    parent.kill("SIGKILL");
+    const deadline = Date.now() + 10_000;
+    while (alive(pid) && Date.now() < deadline)
+      await new Promise((done) => setTimeout(done, 50));
+    expect(alive(pid)).toBe(false);
+  });
+});
+
+describe("the readers in a dry run", () => {
+  it("run nothing and write nothing when imported", async () => {
+    vi.resetModules();
+    const ran = vi.fn();
+    const wrote = vi.fn();
+    vi.doMock("node:child_process", async (original) => ({
+      ...(await original<typeof import("node:child_process")>()),
+      execFile: ran,
+      spawn: ran,
+      exec: ran,
+    }));
+    vi.doMock("node:fs", async (original) => ({
+      ...(await original<typeof import("node:fs")>()),
+      writeFileSync: wrote,
+      mkdirSync: wrote,
+      rmSync: wrote,
+      unlinkSync: wrote,
+      renameSync: wrote,
+    }));
+    try {
+      const readers = await import("../src/gym/bench/readers");
+      expect(typeof readers.createReaders).toBe("function");
+      expect(typeof readers.cleanupAttempt).toBe("function");
+      expect(ran).not.toHaveBeenCalled();
+      expect(wrote).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("node:child_process");
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
+  });
+});
+
+describe("harness-cycle.mjs with the suites", () => {
+  const home = () => mkdtempSync(join(scratch, "script-home-"));
+
+  it("--dry-run --suite long plans the long suite and loads nothing paid", () => {
+    const { child, loaded } = traced(
+      ["scripts/harness-cycle.mjs", "--dry-run", "--suite", "long"],
+      { HOME: home() },
+    );
+    expect(child.status, child.stderr).toBe(0);
+    for (const module of [...PAID, "scripts/bench-fixtures.mjs"])
+      expect(loaded, module).not.toContain(module);
+    expect(child.stdout).toContain(
+      `long suite: ${LONG_CATALOGUE.length} task(s)`,
+    );
+    // The long suite does not fit one 4 h night: it is cut into nights
+    // that do, with the seed the other nights must reuse.
+    expect(child.stdout).toMatch(/needs \d+ nights to fit the time box/);
+    expect(child.stdout).toMatch(/--shard 2\/\d+ --seed \d+/);
+  });
+
+  it("selects suites by --suite or by name in --tasks, and keeps --tasks all the suite's", () => {
+    const run = (...args: string[]) =>
+      spawnSync(
+        process.execPath,
+        ["scripts/harness-cycle.mjs", "--dry-run", ...args],
+        {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 60000,
+          env: { ...process.env, HOME: home() },
+        },
+      );
+    const bare = run();
+    expect(bare.status, bare.stderr).toBe(0);
+    expect(bare.stdout).toContain(
+      `smoke suite: ${CATALOGUE.length} task(s) x 1 model(s) x 3`,
+    );
+    expect(run("--tasks", "all").stdout).toContain(
+      `smoke suite: ${CATALOGUE.length} task(s)`,
+    );
+    expect(run("--tasks", "long").stdout).toContain(
+      `long suite: ${LONG_CATALOGUE.length} task(s)`,
+    );
+    const files = run("--suite", "all", "--tasks", "files");
+    expect(files.stdout).toContain("all suite: 5 task(s)");
+    const bad = run("--suite", "huge");
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toContain("--suite takes smoke, long or all");
+    const unknown = run("--suite", "long", "--tasks", "calculator-open");
+    expect(unknown.status).toBe(2);
+    expect(unknown.stderr).toContain("Unknown task or category");
+  });
+
+  it("--cleanup-only sweeps under the lock and runs no task", () => {
+    const where = home();
+    const token = "benchnote3aa1";
+    mkdirSync(join(where, "OpenAssistBench", token), { recursive: true });
+    writeFileSync(join(where, "OpenAssistBench", token, "a.txt"), "x");
+    let result = traced(["scripts/harness-cycle.mjs", "--cleanup-only"], {
+      HOME: where,
+    });
+    // Another test's harness process can be up for a moment; the sweep
+    // rightly refuses while one is, so it is simply asked again.
+    for (
+      let tries = 0;
+      tries < 5 && result.child.stderr.includes("HARNESS_RUNNING");
+      tries++
+    ) {
+      spawnSync("sleep", ["1"]);
+      result = traced(["scripts/harness-cycle.mjs", "--cleanup-only"], {
+        HOME: where,
+      });
+    }
+    const { child, loaded } = result;
+    for (const module of PAID) expect(loaded, module).not.toContain(module);
+    expect(child.stdout).toContain(token);
+    expect(existsSync(join(where, "OpenAssistBench", token))).toBe(false);
+    // The lock was taken in this home and given back.
+    expect(
+      existsSync(join(where, "Library/Caches/open-assist/desktop.lock")),
+    ).toBe(false);
+    if (child.status !== 0) expect(child.stdout).toContain("SWEEP_UNVERIFIED");
+    const empty = traced(["scripts/harness-cycle.mjs", "--cleanup-only"], {
+      HOME: where,
+    });
+    expect(empty.child.stdout).toContain("Nothing to sweep");
+  });
+
+  it("wires the suite's readers, cleanup, agenda, ledger and fixture into a real start", () => {
+    const cycle = readFileSync(join(root, "scripts/harness-cycle.mjs"), "utf8");
+    const paid = cycle.indexOf(
+      "// Nothing below this line is loaded by --dry-run",
+    );
+    expect(cycle).not.toMatch(/readEvidence: null|cleanupAttempt: null/);
+    expect(cycle).toContain("cleanupAttempt: readers.cleanupAttempt");
+    expect(cycle).toContain("agendaFor: readers.agendaFor");
+    expect(cycle).not.toMatch(/\n\s+agenda:/);
+    expect(cycle).toContain("tokens: tokenLedger");
+    expect(cycle).toContain(
+      'createReaders({ music: process.env[MUSIC_READER_ENV] === "1" })',
+    );
+    // The fixture child starts inside the try whose finally closes it, and
+    // the final sweep runs before the lock is given back.
+    const tryAt = cycle.indexOf("try {\n  // The fixture server runs");
+    const spawnAt = cycle.indexOf("spawnFixtureServer({ port: FIXTURE_PORT })");
+    const finallyAt = cycle.indexOf(
+      "} finally {\n  try {\n    await fixture?.close();",
+    );
+    const sweepAt = cycle.indexOf("swept = await sweepTokens(", finallyAt);
+    const releaseAt = cycle.indexOf(
+      "releaseDesktopLock(lockFile, process.pid);\n}",
+      finallyAt,
+    );
+    expect(paid).toBeGreaterThan(0);
+    expect(tryAt).toBeGreaterThan(paid);
+    expect(spawnAt).toBeGreaterThan(tryAt);
+    expect(finallyAt).toBeGreaterThan(spawnAt);
+    expect(sweepAt).toBeGreaterThan(finallyAt);
+    expect(releaseAt).toBeGreaterThan(sweepAt);
+    // --cleanup-only takes the lock before it sweeps, and exits before the
+    // plan, the dry run and every paid import.
+    const only = cycle.indexOf('if (values["cleanup-only"]) {');
+    expect(only).toBeGreaterThan(0);
+    expect(cycle.indexOf("acquireDesktopLock(lockFile", only)).toBeLessThan(
+      cycle.indexOf("await sweepTokens(", only),
+    );
+    expect(only).toBeLessThan(cycle.indexOf('if (values["dry-run"]) {'));
+    // Every recount of the skips sees every fact so far: the fixture server
+    // failing must not forget what the agenda helper's setup said, nor the
+    // re-read after a gate pass what either said.
+    expect(cycle.match(/startSkips\(tasks, facts\)/g)).toHaveLength(4);
+    expect(cycle).not.toMatch(/startSkips\(tasks, \{/);
+    // setup (which writes) runs only after the dry run and preflight exits.
+    expect(cycle.indexOf('run(AGENDA_BINARY, ["setup"])')).toBeGreaterThan(
+      cycle.indexOf('if (!values["i-know-this-drives-my-mac"])'),
+    );
+    const bench = readFileSync(join(root, "scripts/bench.mjs"), "utf8");
+    expect(bench).not.toMatch(/readEvidence: null|cleanupAttempt: null/);
+    expect(bench).toContain("cleanupAttempt: readers.cleanupAttempt");
+    expect(bench).toContain("agendaFor: readers.agendaFor");
+    expect(bench).toContain("await fixture?.close();");
+    expect(bench.indexOf("spawnFixtureServer")).toBeGreaterThan(
+      bench.indexOf('if (!values["i-know-this-drives-my-mac"])'),
+    );
+  });
+
+  it("refuses --cleanup-only with --dry-run or --preflight, and deletes nothing", () => {
+    const where = home();
+    const token = "benchnote9zz1";
+    const folder = join(where, "OpenAssistBench", token);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "a.txt"), "x");
+    for (const flag of ["--dry-run", "--preflight"]) {
+      const { child, loaded } = traced(
+        ["scripts/harness-cycle.mjs", "--cleanup-only", flag],
+        { HOME: where },
+      );
+      expect(child.status, flag).toBe(2);
+      expect(child.stderr).toContain("does not combine with --dry-run");
+      expect(existsSync(join(folder, "a.txt")), flag).toBe(true);
+      for (const module of PAID) expect(loaded, module).not.toContain(module);
+    }
+    // No lock was taken, so none is left.
+    expect(
+      existsSync(join(where, "Library/Caches/open-assist/desktop.lock")),
+    ).toBe(false);
+  });
+
+  it("fails the final sweep closed, and re-reads the open applications after the gate", () => {
+    const cycle = readFileSync(join(root, "scripts/harness-cycle.mjs"), "utf8");
+    const finallyAt = cycle.indexOf(
+      "} finally {\n  try {\n    await fixture?.close();",
+    );
+    const sweep = cycle.slice(
+      cycle.indexOf("swept = await sweepTokens(", finallyAt),
+      cycle.indexOf("releaseDesktopLock(lockFile, process.pid);\n}", finallyAt),
+    );
+    // A sweep that threw answered nothing: not an empty answer.
+    expect(sweep).toMatch(/catch \{\s+swept = undefined;\s+\}/);
+    expect(sweep).toContain("onWait: spotlightWait");
+    expect(cycle).toContain("remainingLeftovers(results, swept)");
+    // The start's ps can be hours old by the first attempt.
+    const after = cycle.slice(cycle.indexOf("afterGate: async (pass) => {"));
+    expect(after.indexOf("openedByPerson(")).toBeGreaterThan(0);
+    expect(after.indexOf("openedByPerson(")).toBeLessThan(
+      after.indexOf("attempt: async (entry, maxCost, gateWaitSeconds)"),
+    );
+    expect(after).toContain("skips.set(id, code)");
+    // Durations from any slice; the baseline the dry run names is the
+    // slice-aware one the end of the cycle picks.
+    expect(cycle).toContain("const timing = baselineFor(draft, timingCycles);");
+    expect(cycle).toMatch(
+      /const baseline = baselineFor\(\{\s+\.\.\.draft,\s+designHash: design,\s+\.\.\.\(shardText \? \{ shard: shardText \} : \{\}\),\s+\}\);/,
+    );
+    // What an attempt leaves open is the benchmark's, read after each one.
+    const attempt = cycle.slice(
+      cycle.indexOf("attempt: async (entry, maxCost, gateWaitSeconds)"),
+    );
+    expect(
+      attempt.indexOf("runningAfterLast = await readRunning();"),
+    ).toBeGreaterThan(attempt.indexOf("await runAttempt("));
+  });
+
+  it("gives bench.mjs the cycle's task preflight and final sweep for the long suite", () => {
+    const bench = readFileSync(join(root, "scripts/bench.mjs"), "utf8");
+    const exit = bench.indexOf('process.exit(0);\n}\n\nif (!values["i-know');
+    const preflightAt = bench.indexOf("await readStartFacts(tasks, {");
+    const fixtureAt = bench.indexOf(
+      "spawnFixtureServer({ port: FIXTURE_PORT })",
+    );
+    const lockAt = bench.indexOf("acquireDesktopLock(lockFile");
+    // Read-only facts, after the dry run's exit, under the lock, once the
+    // fixture server's fate is known.
+    expect(preflightAt).toBeGreaterThan(exit);
+    expect(preflightAt).toBeGreaterThan(lockAt);
+    expect(preflightAt).toBeGreaterThan(fixtureAt);
+    expect(bench).toContain(
+      'if (tasks.some((task) => task.suite === "long")) {',
+    );
+    expect(bench).toContain("skips = startSkips(tasks, facts);");
+    expect(bench).not.toMatch(/\["setup"\]/);
+    // Every attempt asks the gate first; a skip is a row, not a run.
+    const loop = bench.slice(
+      bench.indexOf("for (const [planIndex, { task, attempt }]"),
+    );
+    const skipAt = loop.indexOf("const skip = gate.skip({ taskId: task.id });");
+    expect(skipAt).toBeGreaterThan(0);
+    expect(skipAt).toBeLessThan(loop.indexOf("await runAttempt("));
+    expect(loop).toContain("gate.observe(result);");
+    // The final sweep under the lock, answering the leftovers and the exit.
+    const finallyAt = bench.indexOf("} finally {");
+    const sweepAt = bench.indexOf("swept = await sweepTokens({", finallyAt);
+    expect(sweepAt).toBeGreaterThan(finallyAt);
+    expect(bench.slice(sweepAt, sweepAt + 800)).toMatch(
+      /catch \{\s+swept = undefined;\s+\}/,
+    );
+    expect(bench).toContain("remainingLeftovers(results, swept)");
+    expect(bench).toContain("tokens: tokenLedger,");
   });
 });

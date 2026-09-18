@@ -250,7 +250,7 @@ describe("grader helpers", () => {
   it("reads the journal for launches, typing and opened files", () => {
     const j = journal({
       steps: [
-        { type: "open_app", launchedAppId: "com.apple.Calculator" },
+        { type: "open_app", launchedAppId: "com.apple.calculator" },
         { type: "type_text", appId: "com.apple.Notes", textLength: 14 },
         {
           type: "open_file",
@@ -259,7 +259,7 @@ describe("grader helpers", () => {
         },
       ],
     });
-    expect(launchedApp(j, "com.apple.Calculator")).toBe(true);
+    expect(launchedApp(j, "com.apple.calculator")).toBe(true);
     expect(launchedApp(j, "com.apple.Notes")).toBe(false);
     expect(typedAtLeast(j, 13, ["com.apple.Notes"])).toBe(true);
     expect(typedAtLeast(j, 13, ["com.apple.Safari"])).toBe(false);
@@ -564,7 +564,7 @@ describe("graders against end-state fixtures", () => {
   it("passes an app launch only when that app is frontmost", () => {
     const open = task("calculator-open");
     expect(
-      gradeTask(open, evidence({ appId: "com.apple.Calculator" })).status,
+      gradeTask(open, evidence({ appId: "com.apple.calculator" })).status,
     ).toBe("passed");
     const missed = gradeTask(open, evidence({ appId: "com.apple.Finder" }));
     expect(missed.status).toBe("failed");
@@ -820,7 +820,7 @@ describe("graders against end-state fixtures", () => {
   it("needs both halves of the multi-application task", () => {
     const multi = task("multi-calculator-browser");
     const launched = journal({
-      steps: [{ type: "open_app", launchedAppId: "com.apple.Calculator" }],
+      steps: [{ type: "open_app", launchedAppId: "com.apple.calculator" }],
     });
     expect(
       gradeTask(
@@ -842,7 +842,7 @@ describe("graders against end-state fixtures", () => {
       gradeTask(
         multi,
         evidence({
-          appId: "com.apple.Calculator",
+          appId: "com.apple.calculator",
           journal: launched,
         }),
       ).reason,
@@ -1643,13 +1643,13 @@ const fixture = [
   line("2026-09-10T10:00:03.000Z", "PolicyConfirmationRequested", {
     runId: RUNS.completed,
     actionType: "click",
-    appId: "com.apple.Calculator",
+    appId: "com.apple.calculator",
     reason: `Activate ${MARK}?`,
   }),
   line("2026-09-10T10:00:04.000Z", "ActionExecuted", {
     runId: RUNS.completed,
     actionType: "open_app",
-    launchedAppId: "com.apple.Calculator",
+    launchedAppId: "com.apple.calculator",
   }),
   line("2026-09-10T10:00:05.000Z", "ProviderResponse", {
     runId: RUNS.completed,

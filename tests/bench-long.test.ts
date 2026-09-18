@@ -2652,7 +2652,49 @@ describe("cleanupAttempt", () => {
         throw new Error("no helper");
       },
     }).cleanupAttempt(task, attemptContext(a));
-    expect(broken).toEqual(["LEFTOVER_AGENDA_UNVERIFIED"]);
+    // No answer at all (a timeout, a missing helper): a later sweep asks again.
+    expect(broken).toEqual(["LEFTOVER_AGENDA_NO_ANSWER"]);
+  });
+
+  it("tells a helper that gave no answer from a store it has no grant for", async () => {
+    const task = byId("agenda-cal-move");
+    const a = await prepare(task);
+    const run = (remove: string | Error, find?: string) =>
+      createReaders({
+        home: a.home,
+        exec: async (_file, args) => {
+          if (args[0] === "remove") {
+            if (remove instanceof Error) throw remove;
+            return remove;
+          }
+          return (
+            find ??
+            JSON.stringify({
+              access: { calendar: "granted", reminders: "granted" },
+              items: [],
+            })
+          );
+        },
+      }).cleanupAttempt(task, attemptContext(a));
+    const status = (calendar: string) =>
+      JSON.stringify({
+        access: { calendar, reminders: "granted" },
+        error: "REMOVE_FAILED",
+      });
+    // The removal failed with the grant in place: it may not next time.
+    expect(await run(status("granted"))).toEqual(["LEFTOVER_AGENDA_NO_ANSWER"]);
+    // It failed because Calendar was never granted: no retry changes that.
+    expect(await run(status("notDetermined"))).toEqual([
+      "LEFTOVER_AGENDA_UNVERIFIED",
+    ]);
+    // Nothing readable, from remove or from the verifying find.
+    expect(await run("")).toEqual(["LEFTOVER_AGENDA_NO_ANSWER"]);
+    expect(
+      await run(JSON.stringify({ removed: 0, foreign: 0 }), "Killed: 9"),
+    ).toEqual(["LEFTOVER_AGENDA_NO_ANSWER"]);
+    expect(await run(new Error("ETIMEDOUT"))).toEqual([
+      "LEFTOVER_AGENDA_NO_ANSWER",
+    ]);
   });
 
   it("reports a stray bundle it will not delete, and runs the task's own cleanup", async () => {

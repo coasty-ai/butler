@@ -59,6 +59,12 @@ export interface AttemptResult {
   approvals: number;
   approvalsDeclined: number;
   retries: number;
+  /**
+   * Retries on a surface that reported no accessibility at all (the
+   * analyzer's BLIND_SURFACE): an ide attempt whose every retry was blind
+   * closes the category for the night (IDE_BLIND).
+   */
+  blindRetries?: number;
   /** Hand-offs by who caused them: real input on this Mac, or the runner. */
   handoffs: { manual: number; agent: number };
   takeovers: number;
@@ -93,12 +99,33 @@ export interface Honesty {
  * attempt never got a fair run, so it is reported apart and never counted
  * against success.
  */
-export const HARNESS_CODES = new Set([
+/**
+ * Task-level preflight skips (src/gym/bench/preflight.ts): this Mac could
+ * not run the task tonight (no agenda grant, no local calendar source, the
+ * hour around midnight, an application missing or already open, the fixture
+ * port taken, leftovers from a crashed cycle, an editor the helper cannot
+ * see). None of them says anything about the model, and a resume retries
+ * every one of them.
+ */
+export const TASK_SKIPS = [
+  "NO_AGENDA_ACCESS",
+  "NO_LOCAL_SOURCE",
+  "DAY_BOUNDARY",
+  "APP_NOT_INSTALLED",
+  "IDE_BLIND",
+  "FIXTURE_PORT",
+  "APPS_OPEN",
+  "BENCH_ROOT_DIRTY",
+] as const;
+export type TaskSkip = (typeof TASK_SKIPS)[number];
+
+export const HARNESS_CODES = new Set<string>([
   "NO_PREPARED_TARGET",
   "BUDGET_EXHAUSTED",
   "SKIPPED",
   "MANUAL_TAKEOVER",
   "MANUAL_INPUT_UNSEEN",
+  ...TASK_SKIPS,
 ]);
 
 /**
@@ -252,6 +279,10 @@ export interface Aggregate extends CellTotals {
   noProgress: number;
   /** Failure codes summed over every attempt. */
   failures: Record<string, number>;
+  /** Cleanup codes, by the attempts that left each behind. */
+  leftovers: Record<string, number>;
+  /** Attempts whose cleanup threw. */
+  cleanupFailed: number;
   byCategory: Record<string, CellTotals>;
   /** Keyed by cell (`provider:model`). */
   byModel: Record<string, CellTotals>;
@@ -332,6 +363,10 @@ function groupBy(
 export function aggregate(results: AttemptResult[]): Aggregate {
   const failures: Record<string, number> = {};
   for (const result of results) tally(failures, result.failures);
+  const leftovers: Record<string, number> = {};
+  for (const result of results)
+    for (const code of new Set(result.leftovers ?? []))
+      leftovers[code] = (leftovers[code] ?? 0) + 1;
   const sum = (pick: (r: AttemptResult) => number) =>
     results.reduce((total, result) => total + pick(result), 0);
   const totalsOf = (groups: Record<string, AttemptResult[]>) =>
@@ -349,6 +384,8 @@ export function aggregate(results: AttemptResult[]): Aggregate {
     loops: sum((r) => r.loops),
     noProgress: sum((r) => r.noProgress),
     failures,
+    leftovers,
+    cleanupFailed: results.filter((r) => r.cleanupFailed).length,
     byCategory: totalsOf(groupBy(results, (r) => r.category)),
     byModel: totalsOf(byCell),
     byModelCategory: Object.fromEntries(
@@ -420,6 +457,29 @@ export function renderTable(results: AttemptResult[]): string {
   ].join("\n");
 }
 
+/**
+ * "Leftovers LEFTOVER_FILES 1  LEFTOVER_EVENT 2  cleanup failed 1": what
+ * cleanup could not remove, by the attempts that left it, or undefined when
+ * every attempt cleaned up after itself. Codes only.
+ */
+export function leftoversLine(
+  totals: Pick<Aggregate, "leftovers" | "cleanupFailed">,
+): string | undefined {
+  const codes = Object.entries(totals.leftovers).sort((a, b) =>
+    a[0] < b[0] ? -1 : 1,
+  );
+  if (!codes.length && !totals.cleanupFailed) return undefined;
+  return (
+    "Leftovers  " +
+    [
+      ...codes.map(([code, count]) => `${code} ${count}`),
+      ...(totals.cleanupFailed
+        ? [`cleanup failed ${totals.cleanupFailed}`]
+        : []),
+    ].join("  ")
+  );
+}
+
 /** The aggregate block printed under the table. */
 export function renderSummary(totals: Aggregate): string {
   const percent = (value: number) => (value * 100).toFixed(0) + "%";
@@ -443,6 +503,8 @@ export function renderSummary(totals: Aggregate): string {
       "failure codes  " +
         failures.map(([code, count]) => `${code} ${count}`).join("  "),
     );
+  const line = leftoversLine(totals);
+  if (line) lines.push(line);
   const byName = (a: [string, unknown], b: [string, unknown]) =>
     a[0] < b[0] ? -1 : 1;
   const cells = (groups: Record<string, CellTotals>) =>

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { FIXTURE_PORT, TOKEN_RE } from "./graders";
+import { FIXTURE_HOST, FIXTURE_PORT, TOKEN_RE } from "./graders";
 import type { FixtureEvidence, FixtureHandle } from "./types";
 
 /**
@@ -15,8 +15,8 @@ import type { FixtureEvidence, FixtureHandle } from "./types";
  * cannot pass.
  */
 
-/** Dotted, so the instruction's "127.0.0.1:<port>/<token>" passes normalizeHost. */
-export const FIXTURE_HOST = "127.0.0.1";
+// Defined beside the port in graders.ts, which the approval rule reads too.
+export { FIXTURE_HOST };
 
 const escape = (text: string) =>
   text

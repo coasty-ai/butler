@@ -7,7 +7,7 @@ import {
   type GateReport,
   type GateState,
 } from "./presence";
-import type { AttemptResult } from "./report";
+import { TASK_SKIPS, type AttemptResult } from "./report";
 import type { BenchTask } from "./types";
 
 /**
@@ -373,6 +373,37 @@ export function fitsTimeBox(estimate: number, timeBoxSeconds: number): boolean {
   return estimate <= 0.8 * timeBoxSeconds;
 }
 
+/**
+ * The fewest nights a plan needs: the smallest n for which every shard i/n
+ * fits the box, or undefined when even a night per (task, repeat) group
+ * would not (one group alone outlasts the box). Every night must run the
+ * same seed, or the shards would slice different plans.
+ */
+export function shardsNeeded(
+  plan: PlanEntry[],
+  tasks: Map<string, Pick<BenchTask, "maxSeconds" | "maxActions">>,
+  cooldownSeconds: number,
+  timeBoxSeconds: number,
+  medians: Record<string, number> = {},
+): number | undefined {
+  const groups = new Set(plan.map((e) => `${e.attempt}|${e.taskId}`)).size;
+  for (let count = 1; count <= groups; count++) {
+    let fits = true;
+    for (let index = 1; fits && index <= count; index++)
+      fits = fitsTimeBox(
+        estimateSeconds(
+          shardOf(plan, { index, count }),
+          tasks,
+          cooldownSeconds,
+          medians,
+        ),
+        timeBoxSeconds,
+      );
+    if (fits) return count;
+  }
+  return undefined;
+}
+
 /* ---------------------------------------------------------------- ledger */
 
 export type LedgerLine =
@@ -426,7 +457,11 @@ export function parseLedger(text: string): LedgerLine[] {
  * result and stays.
  */
 export const rerunnable = (row: Pick<AttemptResult, "reason">) =>
-  row.reason === "SKIPPED" || row.reason === "BUDGET_EXHAUSTED";
+  row.reason === "SKIPPED" ||
+  row.reason === "BUDGET_EXHAUSTED" ||
+  // A task this Mac could not run that night: a resume after the grant, the
+  // cleanup or the hour past midnight runs it.
+  (TASK_SKIPS as readonly string[]).includes(row.reason ?? "");
 
 /** A rerunnable row that never started a run, so it cost nothing. */
 const neverStarted = (row: Pick<AttemptResult, "runStatus" | "reason">) =>
@@ -558,8 +593,24 @@ export interface CycleLoopDeps {
     maxCost: number,
     gateWaitSeconds: number,
   ) => Promise<AttemptResult>;
-  /** A row for an attempt the caps kept from starting. */
-  skipped: (entry: QueueEntry, reason: "BUDGET_EXHAUSTED") => AttemptResult;
+  /** A row for an attempt the caps or a task skip kept from starting. */
+  skipped: (entry: QueueEntry, reason: string) => AttemptResult;
+  /**
+   * Why this Mac cannot run the attempt now (preflight.ts taskGate): asked
+   * before the gate, so a skip never waits five minutes for idle, and again
+   * after it, because the clock may have crossed into DAY_BOUNDARY meanwhile.
+   */
+  skipFor?: (entry: QueueEntry) => string | undefined;
+  /**
+   * After a gate pass, before skipFor is asked again and the attempt starts:
+   * a chance to read this Mac again. `first` is this process's first pass
+   * (nothing of the harness's has run on the desktop yet); `sawInput` says
+   * the wait saw a person (HID_ACTIVE). The harness re-reads the open
+   * applications here, since the start's reading can be hours old.
+   */
+  afterGate?: (pass: { first: boolean; sawInput: boolean }) => Promise<void>;
+  /** Every row the loop records, for rules that learn from results (IDE_BLIND). */
+  observe?: (row: AttemptResult) => void;
   /** Appends one ledger line. */
   write: (line: LedgerLine) => void;
   now: () => number;
@@ -599,6 +650,7 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
   const record = (row: AttemptResult) => {
     results.push(row);
     d.write({ kind: "attempt", at: new Date(d.now()).toISOString(), ...row });
+    d.observe?.(row);
     d.onResult?.(results);
   };
   const capFor = (entry: QueueEntry) => {
@@ -620,7 +672,7 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
   /** Polls until the gate passes; a wait is one ledger line and one tally. */
   const waitForGate = async (
     taskSeconds: number,
-  ): Promise<{ seconds: number; stop?: StopReason }> => {
+  ): Promise<{ seconds: number; stop?: StopReason; sawInput: boolean }> => {
     const started = d.now();
     const reasons = new Set<string>();
     let last: string | undefined;
@@ -643,9 +695,10 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
       });
       return seconds;
     };
+    const sawInput = () => reasons.has("HID_ACTIVE");
     for (;;) {
       const stop = halted();
-      if (stop) return { seconds: close(), stop };
+      if (stop) return { seconds: close(), stop, sawInput: sawInput() };
       const report = await d.readGate();
       const now = d.now();
       gate.lastAgentInputAt = d.state.lastAgentInputAt;
@@ -658,11 +711,12 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
       });
       if (decision.ok) {
         gatePassed(gate);
-        return { seconds: close() };
+        return { seconds: close(), sawInput: sawInput() };
       }
       last = decision.reason;
       if (decision.reason) reasons.add(decision.reason);
-      if (decision.stop) return { seconds: close(), stop: "time box" };
+      if (decision.stop)
+        return { seconds: close(), stop: "time box", sawInput: sawInput() };
       // A refusal for input needs no "person seen" flag: the tap's clock
       // then trails the time since the agent's last step for good, so the
       // rule keeps refusing until that clock reaches the full --idle.
@@ -679,6 +733,7 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
   };
 
   let stoppedBecause: StopReason | undefined;
+  let passes = 0;
   while (queue.length) {
     stoppedBecause = halted();
     if (stoppedBecause) break;
@@ -695,12 +750,24 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
       record(d.skipped(entry, cap.skip));
       continue;
     }
+    const early = d.skipFor?.(entry);
+    if (early) {
+      queue.shift();
+      record(d.skipped(entry, early));
+      continue;
+    }
     const wait = await waitForGate(d.tasks.get(entry.taskId)?.maxSeconds ?? 0);
     if (wait.stop) {
       stoppedBecause = wait.stop;
       break;
     }
     queue.shift();
+    await d.afterGate?.({ first: passes++ === 0, sawInput: wait.sawInput });
+    const late = d.skipFor?.(entry);
+    if (late) {
+      record(d.skipped(entry, late));
+      continue;
+    }
     let result: AttemptResult;
     try {
       result = await d.attempt(entry, cap.maxCost, Math.round(wait.seconds));

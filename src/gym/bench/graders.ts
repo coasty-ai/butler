@@ -28,7 +28,10 @@ export const TEXTEDIT = "com.apple.TextEdit";
 export const CALENDAR = "com.apple.iCal";
 export const REMINDERS = "com.apple.reminders";
 export const SETTINGS = "com.apple.systempreferences";
-export const CALCULATOR = "com.apple.Calculator";
+// Lowercase: Calculator's own Info.plist says com.apple.calculator, which is
+// what the helper reports as the frontmost bundle id and what the policy's
+// Calculator rules compare against. Frontmost checks compare exactly.
+export const CALCULATOR = "com.apple.calculator";
 export const NOTES = "com.apple.Notes";
 export const MUSIC = "com.apple.Music";
 export const VSCODE_APPS = [
@@ -38,6 +41,12 @@ export const VSCODE_APPS = [
 ];
 /** The loopback fixture server's port; instructions name 127.0.0.1:<port>. */
 export const FIXTURE_PORT = 47831;
+/**
+ * The one host the fixture server answers on. Dotted, so the instruction's
+ * "127.0.0.1:<port>/<token>" passes normalizeHost, and the only web host an
+ * unattended approval may be given on.
+ */
+export const FIXTURE_HOST = "127.0.0.1";
 /** The marker namespace. Nothing of the user's is ever named this way. */
 export const TOKEN_RE = /^benchnote[0-9a-z]{4}$/;
 
@@ -558,6 +567,90 @@ export function approvesPrompt(
     task.approve.includes(reason) &&
     !SENSITIVE_PROMPT.test(reason)
   );
+}
+
+/**
+ * What the attempt saw when the policy asked: bundle ids, a flag and web
+ * hosts, never screen text.
+ */
+export interface ApprovalView {
+  /** Frontmost bundle id from the surface the proposed action was checked on. */
+  appId?: string;
+  /** Frontmost bundle id of the frame the action was proposed on. */
+  frameAppId?: string;
+  /** The application owning the element under the pointer (Surface.targetAppId). */
+  targetAppId?: string;
+  /** A sheet, dialog or alert was focused or held the target (Surface.modal). */
+  modal?: boolean;
+  /** Host of the page the frontmost window shows (Surface.domain). */
+  domain?: string;
+  /** Host of the page holding the pointer target (Surface.targetWebHost). */
+  targetWebHost?: string;
+}
+
+/**
+ * The policy's question for the Find bar's Replace button and for a Save
+ * panel's "already exists, replace it?" alike (policy.ts consequentialReason).
+ */
+export const REPLACE_REASON = "Replace the existing item?";
+/**
+ * The policy's catch-all for a consequential control with no more specific
+ * word: a loopback form's Submit, and just as well a real site's Authorize,
+ * Confirm, Join or Block (policy.ts consequentialReason).
+ */
+export const SUBMIT_REASON = "Submit or authorize this change?";
+
+/**
+ * Where each routine question may be answered yes, whatever else a task
+ * lists: a Save or a Replace only in TextEdit, whose documents in these
+ * tasks are the bench folder's, and a Submit only in a browser (on the
+ * fixture host, below). A task listing browsers and TextEdit together must
+ * not have a browser's Save approved, and a reason with no entry here is
+ * never approved.
+ */
+export const APPROVAL_APPS: Readonly<Record<string, readonly string[]>> = {
+  "Save these changes?": [TEXTEDIT],
+  [REPLACE_REASON]: [TEXTEDIT],
+  [SUBMIT_REASON]: BROWSER_APPS,
+};
+
+/**
+ * The second half of an unattended yes, on top of approvesPrompt: the prompt
+ * must have come up in one of the task's own applications that the reason is
+ * scoped to (APPROVAL_APPS), on no web page but the fixture server's, and a
+ * Replace only with no sheet or dialog in front. An allow-listed reason is a
+ * question shape, not a place: "Save these changes?" asked while some other
+ * application is frontmost would save that application's document, the
+ * policy asks "Submit or authorize this change?" for a real site's OAuth
+ * Authorize as for the loopback form's Submit, and the Save panel asks its
+ * overwrite question as a sheet, which the Find bar never is. Unknown means
+ * no: a view without a frontmost application, or a browser with no known
+ * host, approves nothing.
+ */
+export function approvalInContext(
+  task: Pick<BenchTask, "apps">,
+  reason: string,
+  view: ApprovalView,
+): boolean {
+  const scope = APPROVAL_APPS[reason] ?? [];
+  const allowed = (id: string | undefined) =>
+    !!id && (task.apps ?? []).includes(id) && scope.includes(id);
+  if (!allowed(view.appId)) return false;
+  if (view.frameAppId !== undefined && !allowed(view.frameAppId)) return false;
+  // Every host known must be the fixture's, and a browser in front or under
+  // the pointer must show one. The pointer's own application is held to
+  // nothing more: another process can draw the front application's own
+  // panels (a sandboxed TextEdit's Save panel is served out of process).
+  const hosts = [view.domain, view.targetWebHost].filter(
+    (host): host is string => host !== undefined,
+  );
+  if (hosts.some((host) => host.toLowerCase() !== FIXTURE_HOST)) return false;
+  const browser = [view.appId, view.frameAppId, view.targetAppId].some(
+    (id) => !!id && BROWSER_APPS.includes(id),
+  );
+  if (browser && !hosts.length) return false;
+  if (reason === REPLACE_REASON && view.modal !== false) return false;
+  return true;
 }
 
 /** Fills `{name}` placeholders in a task instruction. */

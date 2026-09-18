@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { noteFor, ownerOf, type AnalysisReport } from "./analyze";
 import {
   compareModels,
+  type ProbeReason,
+  type ProbeVerdict,
   type Comparison,
   type ClassRate,
   type ComparableCycle,
@@ -10,6 +12,7 @@ import {
   type StoredClass,
 } from "./compare";
 import {
+  TASK_SKIPS,
   aggregate,
   median,
   ran,
@@ -90,6 +93,10 @@ export interface CycleInfo {
   };
   stoppedBecause?: string;
   gateWaits: GateWaits;
+  /** smoke, long or all; absent on cycles from before suites. */
+  suite?: string;
+  /** A probe cycle: the class it tests and the baseline it answers to. */
+  probe?: { code: string; baseline: string };
 }
 
 export interface FailureClass {
@@ -132,6 +139,36 @@ export interface CycleResults {
   comparison?: Comparison;
   regressions: Regression[];
   modelComparison: ModelPair[];
+  /** A probe cycle's verdict against its baseline (compare.ts compareProbe). */
+  probe?: {
+    code: string;
+    pass: boolean;
+    reasons: ProbeReason[];
+    before: { k: number; n: number; rate: number };
+    after: { k: number; n: number; rate: number };
+    p: number;
+  };
+}
+
+/**
+ * The source files a task set's grades depend on, relative to the checkout:
+ * the grader primitives for any task, each suite's catalogue for its own
+ * tasks, and for the long suite the readers that produce its evidence and
+ * the fixture pages it reads. A smoke cycle's hash then moves with smoke
+ * code only, and a smoke, a long and a mixed cycle never share a hash, so a
+ * baseline never crosses suites.
+ */
+export function graderFiles(tasks: Pick<BenchTask, "suite">[]): string[] {
+  const files = ["src/gym/bench/graders.ts"];
+  if (tasks.some((task) => (task.suite ?? "smoke") === "smoke"))
+    files.push("src/gym/bench/catalogue.ts");
+  if (tasks.some((task) => task.suite === "long"))
+    files.push(
+      "src/gym/bench/catalogue-long.ts",
+      "src/gym/bench/fixtures.ts",
+      "src/gym/bench/readers.ts",
+    );
+  return files;
 }
 
 /** The metric's identity: task templates and grader source, hashed. */
@@ -247,6 +284,53 @@ export function classRates(
       ran: executed,
     }))
     .filter((row) => row.attempts > 0);
+}
+
+/**
+ * Class rates for a probe (compare.ts compareProbe). Every class comes from
+ * the rows, on both sides alike, except the class under test, which keeps
+ * its stored count: the analyzer's frictions (BLIND_SURFACE and the like)
+ * live only in a cycle's stored classes. A stored per-model count cannot be
+ * cut down to the probe's tasks, but a probe runs every category the class
+ * appeared in, so all of the class's attempts are inside it.
+ */
+export function probeClassRates(code: string) {
+  return (
+    cycle: Pick<ComparableCycle, "results" | "failureClasses">,
+    cells: string[],
+  ): ClassRate[] => {
+    const fromRows = classRates({ results: cycle.results }, cells);
+    const stored = cycle.failureClasses?.find((row) => row.code === code);
+    if (!stored) return fromRows;
+    const attempts = cells.reduce(
+      (sum, cell) => sum + (stored.byModel[cell]?.attempts ?? 0),
+      0,
+    );
+    const executed = cycle.results.filter(
+      (row) => cells.includes(row.cell) && ran(row),
+    ).length;
+    return [
+      ...fromRows.filter((row) => row.code !== code),
+      ...(attempts ? [{ code, attempts, ran: executed }] : []),
+    ];
+  };
+}
+
+/** Whether a probe's tasks are still the ones its baseline ran, template for template. */
+export function sameTemplates(
+  baseline: CycleTaskInfo[],
+  current: CycleTaskInfo[],
+): boolean {
+  const key = (task: CycleTaskInfo) =>
+    JSON.stringify([
+      task.instruction,
+      task.verifies,
+      task.maxCost,
+      task.maxActions,
+      task.maxSeconds,
+    ]);
+  const before = new Map(baseline.map((task) => [task.id, key(task)]));
+  return current.every((task) => before.get(task.id) === key(task));
 }
 
 /**
@@ -369,6 +453,7 @@ export interface CycleInput {
   results: AttemptResult[];
   analysis?: AnalysisReport;
   baseline?: { cycles: ComparableCycle[]; comparison: Comparison };
+  probe?: ProbeVerdict;
 }
 
 export function comparable(
@@ -382,6 +467,7 @@ export function comparable(
     catalogueHash: cycle.catalogueHash,
     planHash: cycle.planHash,
     designHash: cycle.designHash,
+    ...(cycle.shard ? { shard: cycle.shard } : {}),
     dirty: cycle.dirty,
     startedAt: cycle.startedAt,
     finishedAt: cycle.finishedAt,
@@ -454,6 +540,18 @@ export function buildCycleResults(input: CycleInput): CycleResults {
       : {}),
     regressions: comparison?.regressions ?? [],
     modelComparison: compareModels(results),
+    ...(input.probe
+      ? {
+          probe: {
+            code: input.probe.code,
+            pass: input.probe.pass,
+            reasons: input.probe.reasons,
+            before: input.probe.before,
+            after: input.probe.after,
+            p: input.probe.p,
+          },
+        }
+      : {}),
   };
 }
 
@@ -517,6 +615,7 @@ const UNKNOWN_CODES = [
   "SKIPPED",
   "MANUAL_TAKEOVER",
   "MANUAL_INPUT_UNSEEN",
+  ...TASK_SKIPS,
 ];
 
 const topEntries = (entries: Record<string, { attempts: number }>, limit = 3) =>
@@ -553,6 +652,14 @@ export function renderCycleReport(cycle: CycleResults): string {
         ? ` · baseline ${cycle.baseline.cycleIds.join(", ")} at ${cycle.baseline.gitRev}${cycle.baseline.pooled ? " (pooled)" : ""}`
         : ""),
   );
+  if (cycle.probe)
+    out.push(
+      `probe ${cycle.probe.code} against ${info.probe?.baseline ?? "its baseline"}: ` +
+        `${cycle.probe.pass ? "pass" : "FAIL"} · class ${cycle.probe.before.k}/${cycle.probe.before.n} before, ${cycle.probe.after.k}/${cycle.probe.after.n} now (one-sided p ${pValue(cycle.probe.p)})` +
+        (cycle.probe.reasons.length
+          ? ` · ${cycle.probe.reasons.map((r) => (r.key ? `${r.code} ${r.key}` : r.code)).join(", ")}`
+          : ""),
+    );
   out.push("");
 
   // 2. Matrix

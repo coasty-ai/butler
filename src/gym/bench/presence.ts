@@ -296,12 +296,15 @@ export function gateDecision(
 
 /* -------------------------------------------------------------- preflight */
 
+/**
+ * Refusals of the whole cycle. Conditions that concern only some tasks (the
+ * agenda grant and local source, the fixture port, applications missing or
+ * open) skip those tasks instead: preflight.ts.
+ */
 export type PreflightCode =
   | "APP_RUNNING"
   | "HARNESS_RUNNING"
   | "SCREENSAVER_TOO_SOON"
-  | "NO_LOCAL_SOURCE"
-  | "FIXTURE_PORT"
   | "LOCKED"
   | "DISPLAY_OFF"
   | "DISPLAY_HELD_BY_OTHER"
@@ -320,10 +323,6 @@ export interface PreflightInput {
   /** Seconds; 0 or undefined means the screensaver never starts. */
   screensaverIdleSeconds?: number;
   timeBoxSeconds: number;
-  /** undefined when no selected task needs the agenda helper. */
-  agendaLocalSource?: boolean;
-  /** undefined when no selected task needs the fixture server. */
-  fixturePortFree?: boolean;
   locked: boolean;
   displayAsleep: boolean;
   /** undefined when the app's diagnostics log does not exist. */
@@ -346,8 +345,6 @@ export function preflight(input: PreflightInput): PreflightCode[] {
   // the saver off. Anything shorter than the time box will fire mid-cycle.
   if (saver > 0 && saver < input.timeBoxSeconds)
     codes.push("SCREENSAVER_TOO_SOON");
-  if (input.agendaLocalSource === false) codes.push("NO_LOCAL_SOURCE");
-  if (input.fixturePortFree === false) codes.push("FIXTURE_PORT");
   if (input.locked) codes.push("LOCKED");
   if (input.displayAsleep) codes.push("DISPLAY_OFF");
   // The gate waits while anything else holds the display awake, because a
@@ -359,34 +356,6 @@ export function preflight(input: PreflightInput): PreflightCode[] {
   if ((input.unsettledAppRuns ?? 0) > 0 && input.appPids.length)
     codes.push("APP_RUN_ACTIVE");
   return codes;
-}
-
-/**
- * Whether the agenda helper confirmed a local (never synced) source, from its
- * JSON output: `status` when it reports `localSource`, otherwise `setup`,
- * which makes the benchmark's containers in the local source (idempotent) or
- * fails with NO_LOCAL_SOURCE. Undefined when neither has answered: preflight
- * is read-only and leaves the check to the start.
- */
-export function agendaLocalSource(
-  status: unknown,
-  setup?: unknown,
-): boolean | undefined {
-  const reported = (status as { localSource?: unknown } | undefined)
-    ?.localSource;
-  if (typeof reported === "boolean") return reported;
-  if (setup === undefined) return undefined;
-  if (!setup || typeof setup !== "object") return false;
-  const { error, containers } = setup as {
-    error?: unknown;
-    containers?: unknown;
-  };
-  if (error !== undefined) return false;
-  return (
-    !!containers &&
-    typeof containers === "object" &&
-    Object.keys(containers).length > 0
-  );
 }
 
 /* --------------------------------------------------------------- readers */
