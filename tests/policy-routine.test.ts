@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   actionSchema,
+  controlRole,
   defaultSettings,
   type Action,
   type Surface,
@@ -2090,5 +2091,28 @@ describe("paste on request", () => {
         "model_rewrite",
       ),
     ).toBe(true);
+  });
+});
+
+// Live: role "day cell" made a click_control on a Calendar day invalid.
+describe("click_control roles the model spells its own way", () => {
+  it("maps them to a listed role or drops them", () => {
+    expect(controlRole("day cell")).toBe("cell");
+    expect(controlRole("AXButton")).toBe("button");
+    expect(controlRole("text field")).toBe("textfield");
+    expect(controlRole("Link")).toBe("link");
+    expect(controlRole("calendar thing")).toBeUndefined();
+    expect(controlRole(3)).toBeUndefined();
+  });
+  it("keeps the action valid either way", () => {
+    for (const role of ["day cell", "calendar thing", "AXButton"])
+      expect(
+        actionSchema.safeParse({
+          type: "click_control",
+          frame_id: "f",
+          label: "19",
+          role,
+        }).success,
+      ).toBe(true);
   });
 });

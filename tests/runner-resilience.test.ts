@@ -14,7 +14,12 @@ import {
   type Snapshot,
   type Surface,
 } from "../src/core/schema";
-import { Runner, searchRoute } from "../src/core/runner";
+import {
+  Runner,
+  actionSignature,
+  repetitionPeriod,
+  searchRoute,
+} from "../src/core/runner";
 import type { MemoryAccess } from "../src/core/memory";
 import {
   HelperUnavailableError,
@@ -1397,5 +1402,45 @@ describe("taking the application's own search route", () => {
     expect(
       searchRoute(type, { ...surface, searchCommand: ["Search"] }),
     ).toBeUndefined();
+  });
+});
+
+// Live: "anything on my calendar tomorrow" clicked "Saturday, September 19"
+// thirty times at jittered positions until the action budget ran out; the
+// coordinate-based signature never repeated, so the loop was never seen.
+describe("loop detection by the control an action hits", () => {
+  const click = (x: number) =>
+    ({ type: "click", frame_id: "f", x, y: 0.434, button: "left" }) as const;
+  const day = { role: "AXList", label: "Saturday, September 19" };
+  it("sees jittered clicks on one identified control as one action", () => {
+    const signatures = [0.961, 0.989, 0.994, 0.961].map((x) =>
+      actionSignature(click(x), day),
+    );
+    expect(new Set(signatures).size).toBe(1);
+    expect(repetitionPeriod(signatures)).toBe(1);
+  });
+  it("keeps different controls and unidentified targets apart", () => {
+    expect(actionSignature(click(0.5), day)).not.toBe(
+      actionSignature(click(0.5), { role: "AXButton", label: "Today" }),
+    );
+    expect(actionSignature(click(0.1), {})).not.toBe(
+      actionSignature(click(0.9), {}),
+    );
+  });
+  it("counts named targets and menu paths it used to ignore", () => {
+    const named = (label: string) =>
+      ({ type: "click_control", frame_id: "f", label }) as const;
+    expect(actionSignature(named("Search"))).not.toBe(
+      actionSignature(named("Play")),
+    );
+    const menu = (path: string[]) =>
+      ({ type: "menu_item", frame_id: "f", path }) as const;
+    expect(actionSignature(menu(["Edit", "Search"]))).not.toBe(
+      actionSignature(menu(["Playback", "Play"])),
+    );
+    const same = Array.from({ length: 4 }, () =>
+      actionSignature(menu(["Edit", "Search"])),
+    );
+    expect(repetitionPeriod(same)).toBe(1);
   });
 });

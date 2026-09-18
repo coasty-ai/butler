@@ -695,6 +695,23 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     }
     phraseCache.set(key, chunks);
   }
+  /**
+   * Starts the worker and waits for the model to load, without synthesizing.
+   * The idle timer is armed afterwards, so a preload nobody uses still stops.
+   */
+  async function preload(options?: KokoroSynthesisOptions) {
+    const { voice } = resolve(options);
+    if (disposed || !installedFor(voice) || now() < cooldownUntil) return;
+    if (live && !live.exited) return;
+    try {
+      const target = ensureWorker(voice);
+      await target.ready;
+    } catch {
+      // A failed load is traced where it happens; the next request retries.
+    } finally {
+      scheduleIdle();
+    }
+  }
   async function* run(
     text: string,
     signal?: AbortSignal,
@@ -1038,6 +1055,10 @@ export function createKokoroVoice(options: KokoroVoiceOptions): KokoroVoice {
     download,
     remove,
     async warm(phrases: readonly string[] = [], options?) {
+      // Load the model first. After an idle stop every warm phrase is already
+      // cached, and a cached phrase never starts the worker, so without this
+      // the first real reply paid the whole load (live: 1.0 s of a 2.9 s wait).
+      await preload(options);
       for await (const _chunk of run(
         kokoroDefaults.warmText,
         undefined,

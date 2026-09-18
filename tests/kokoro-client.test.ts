@@ -1106,6 +1106,28 @@ describe("Kokoro worker lifecycle", () => {
     voice.dispose();
   });
 
+  // Live: after an idle stop, the wake-word warm-up found every phrase cached
+  // and never restarted the engine, so the first reply waited for the load.
+  it("warm() restarts the worker after an idle stop even when every phrase is cached", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const voice = create();
+    // The warm-up text is itself one of the assistant's phrases ("Okay."), so
+    // after the first warm every text warm() speaks is served from the cache.
+    const phrases = ["On it.", kokoroDefaults.warmText];
+    await voice.warm(phrases);
+    expect(workers.length).toBe(1);
+    vi.advanceTimersByTime(kokoroDefaults.idleMs);
+    expect(workers[0].killed).toBe(true);
+    await Promise.resolve();
+    await voice.warm(phrases);
+    expect(workers.length).toBe(2);
+    expect(workers[1].killed).toBe(false);
+    // Nobody spoke: the preloaded worker still stops when idle.
+    vi.advanceTimersByTime(kokoroDefaults.idleMs);
+    expect(workers[1].killed).toBe(true);
+    voice.dispose();
+  });
+
   it("does not idle-kill while a request is streaming, but stops a stalled worker", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const voice = create((worker, message) => {

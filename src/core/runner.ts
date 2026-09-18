@@ -190,14 +190,34 @@ const repeatable = new Set([
   "BACKSPACE",
   "DELETE",
 ]);
-/** In-memory identity of an executed action for loop detection; never journaled. */
-export function actionSignature(action: Action): string {
+/**
+ * In-memory identity of an executed action for loop detection; never
+ * journaled. A pointer action that hit an identified control is identified by
+ * that control, not its coordinates: live, eight clicks on "Saturday,
+ * September 19" at x 0.961, 0.989 and 0.994 were three different signatures
+ * and the loop was never seen.
+ */
+export function actionSignature(
+  action: Action,
+  target?: { role?: string; label?: string },
+): string {
   const a = action as Record<string, unknown>;
   const parts: unknown[] = [action.type];
+  const label = normalizeLabel(target?.label ?? "");
+  const pointer = ["click", "double_click", "right_click", "move"].includes(
+    action.type,
+  );
+  if (pointer && label) {
+    parts.push("target", normalizeRole(target?.role ?? ""), label);
+    if (typeof a.button === "string") parts.push("button", a.button);
+    return JSON.stringify(parts);
+  }
   for (const f of numericEcho) {
     const v = a[f];
     if (typeof v === "number") parts.push(f, Math.round(v * 100) / 100);
   }
+  if (typeof a.label === "string") parts.push("label", normalizeLabel(a.label));
+  if (Array.isArray(a.path)) parts.push("path", a.path.join(">"));
   if (typeof a.key === "string") parts.push("key", a.key);
   if (Array.isArray(a.keys)) parts.push("keys", a.keys.join("+"));
   if (typeof a.text === "string")
@@ -622,8 +642,14 @@ export class Runner {
    * form a short cycle for the first time and "stuck" when the cycle continued
    * for four more actions after the warning.
    */
-  private trackLoop(action: Action): "warn" | "stuck" | undefined {
-    this.signatures = [...this.signatures.slice(-3), actionSignature(action)];
+  private trackLoop(
+    action: Action,
+    target?: { role?: string; label?: string },
+  ): "warn" | "stuck" | undefined {
+    this.signatures = [
+      ...this.signatures.slice(-3),
+      actionSignature(action, target),
+    ];
     const period = repetitionPeriod(this.signatures);
     if (!period) {
       this.loopWarned = false;
@@ -1950,7 +1976,10 @@ export class Runner {
               }
             : {}),
         });
-        const loop = this.trackLoop(action);
+        const loop = this.trackLoop(action, {
+          role: actionSurface.targetRole,
+          label: actionSurface.targetLabel,
+        });
         const thrashing = this.trackAppSwitch(action, launched?.appId);
         // Compared against the next capture; no extra native call is made.
         this.progress = {

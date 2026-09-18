@@ -25,6 +25,48 @@ export const supportedKeys = [
 const key = z.enum(supportedKeys);
 const base = { frame_id: z.string().min(1).max(100) };
 const point = { x: unit, y: unit };
+/** Roles context.controls reports (native role names, lowercased, no "AX"). */
+export const CONTROL_ROLES: ReadonlySet<string> = new Set([
+  "button",
+  "link",
+  "textfield",
+  "textarea",
+  "combobox",
+  "checkbox",
+  "radiobutton",
+  "popupbutton",
+  "menubutton",
+  "menuitem",
+  "tab",
+  "cell",
+  "row",
+  "list",
+  "table",
+  "outline",
+  "group",
+  "image",
+  "statictext",
+  "heading",
+  "slider",
+  "incrementor",
+  "disclosuretriangle",
+  "toolbar",
+  "tabgroup",
+  "searchfield",
+]);
+/** A model-written role as a listed role, or undefined when it names none. */
+export function controlRole(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const words = value
+    .toLowerCase()
+    .replace(/^ax/, "")
+    .split(/[^a-z]+/)
+    .filter(Boolean);
+  const joined = words.join("");
+  if (CONTROL_ROLES.has(joined)) return joined;
+  const last = words[words.length - 1];
+  return last && CONTROL_ROLES.has(last) ? last : undefined;
+}
 export const actionSchema = z.discriminatedUnion("type", [
   z.object({ ...base, type: z.literal("capture") }).strict(),
   z
@@ -104,12 +146,11 @@ export const actionSchema = z.discriminatedUnion("type", [
       ...base,
       type: z.literal("click_control"),
       label: z.string().trim().min(1).max(120),
-      role: z
-        .string()
-        .trim()
-        .max(20)
-        .regex(/^[a-z]+$/, "Use a role name from context.controls.")
-        .optional(),
+      // Only a filter: a role the model spells its own way ("day cell",
+      // "AXButton") is mapped to a listed role or dropped, which widens the
+      // match instead of rejecting the whole action (the label still has to
+      // match). Live: role "day cell" made the action invalid.
+      role: z.preprocess(controlRole, z.string().optional()),
       ...{ x: unit.optional(), y: unit.optional() },
     })
     .strict(),
