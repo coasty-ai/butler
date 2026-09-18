@@ -15,3 +15,6 @@ output/
 .env.*
 !.env.example
 .DS_Store
+
+# Temporary agent worktrees
+.claude/worktrees/
