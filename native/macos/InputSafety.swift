@@ -6,6 +6,10 @@ let browserAppIDs = ["com.apple.Safari", "com.google.Chrome", "com.google.Chrome
 func independentNavigationShortcut(_ action:[String:Any], appId:String) -> Bool {
     // open_app launches a natively verified bundle; it does not target pixels.
     if action["type"] as? String == "open_app" {return true}
+    // A scroll moves what is under the pointer and commits nothing, and the
+    // pages people scroll (feeds, articles with video) never hold still; the
+    // same-application and same-window checks still apply.
+    if action["type"] as? String == "scroll" {return true}
     if action["type"] as? String == "key" {return action["key"] as? String == "ESC"}
     guard action["type"] as? String == "hotkey",let keys=action["keys"] as? [String] else{return false}
     let chord=keys.sorted().joined(separator:"+")

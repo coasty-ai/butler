@@ -92,6 +92,8 @@ import CoreGraphics
         pointerJitterChecks(check)
         check(!pointerTakeover(previous:nil,current:cursor,deltaX:5,deltaY:0,graceActive:false), "unknown previous pointer only seeds the anchor")
         check(independentNavigationShortcut(["type":"open_app","name":"Notes"],appId:"com.apple.finder"), "open_app skips pixel revalidation")
+        check(independentNavigationShortcut(["type":"scroll","delta_x":0,"delta_y":300],appId:"com.google.Chrome"), "scroll skips pixel revalidation")
+        check(!independentNavigationShortcut(["type":"click","x":0.5,"y":0.5],appId:"com.google.Chrome"), "a click keeps pixel revalidation")
         check(!framePixelsChanged(original, original, window: window, points: [target]), "identical rendered pixels")
         check(!framePixelsChanged(original, edited(CGRect(x: 501, y: 290, width: 2, height: 24)), window: window, points: [target]), "blinking caret at input target")
         check(!framePixelsChanged(original, edited(CGRect(x: 780, y: 5, width: 90, height: 20)), window: window, points: [target]), "menu clock outside active window")
