@@ -611,7 +611,34 @@ function namedControlRefusal(
       reason:
         "No input was sent. That control could not be resolved. Name a control from context.controls.",
     };
+  // The named control was found, but the element under its centre is
+  // something else (live: a Chrome tab's centre landed in a ChatGPT window in
+  // front of it). Clicking there would act on whatever covers the control.
+  if (!namedTargetUnderPointer(surface))
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. ${quote(action.label)} is covered by something else right now. Bring its window to the front first, or choose another route.`,
+    };
   return undefined;
+}
+/**
+ * Whether the pointer hit test at a resolved named control's centre found that
+ * control: the resolved name and the name the hit walk collected agree (equal,
+ * or one starting with the other, or contained in the joined hit text). With
+ * nothing named at the point there is no contrary evidence.
+ */
+function namedTargetUnderPointer(surface: Surface): boolean {
+  const named = normalizeControlLabel(surface.controlLabel ?? "");
+  const hit = normalizeControlLabel(surface.targetLabel ?? "");
+  const text = normalizeControlLabel(surface.targetText ?? "");
+  if (!named || (!hit && !text)) return true;
+  const agrees = (a: string, b: string) =>
+    !!a && !!b && (a === b || a.startsWith(b) || b.startsWith(a));
+  return (
+    agrees(named, hit) ||
+    (!!text && text.includes(named)) ||
+    agrees(named, text)
+  );
 }
 export function evaluate(
   action: Action,

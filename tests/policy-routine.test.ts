@@ -1859,6 +1859,41 @@ describe("named targets: menus and controls the agent can name", () => {
       }),
     ).toEqual({ kind: "ALLOW", reason: "Focus a known input control." });
   });
+  // Live: click_control on the "(9) midwest safety - YouTube" tab resolved,
+  // but the element under its centre was a ChatGPT window in front of it, and
+  // the click was allowed and landed there.
+  it("refuses a named click when something else is under the pointer", () => {
+    const covered = decide(named("(9) midwest safety - YouTube"), {
+      ...chrome,
+      controlStatus: "resolved",
+      controlLabel: "(9) midwest safety - YouTube - Memory usage - 371 MB",
+      targetRole: "AXGroup",
+      targetLabel:
+        "OpenCode business model - Google Chrome - Nitish (Person 1)",
+    });
+    expect(covered.kind).toBe("RETRY");
+    expect(covered.reason).toContain("covered by something else");
+    // The same control under the pointer, or text that contains its name.
+    expect(
+      decide(named("Midwest Safety"), {
+        ...chrome,
+        controlStatus: "resolved",
+        controlLabel: "Midwest Safety Verified @MidwestSafety",
+        targetRole: "AXLink",
+        targetLabel: "Midwest Safety Verified @MidwestSafety•4.73M subscribers",
+        targetURL: "https://www.youtube.com/@MidwestSafety",
+      }).kind,
+    ).toBe("ALLOW");
+    expect(
+      decide(named("Play"), {
+        controlStatus: "resolved",
+        controlLabel: "Play",
+        targetRole: "AXButton",
+        targetLabel: "",
+        targetText: "",
+      }).reason,
+    ).not.toContain("covered by something else");
+  });
   it("explains a name that is gone or shared by several controls", () => {
     const missing = decide(named("After Hours"), { controlStatus: "missing" });
     expect(missing.kind).toBe("RETRY");
