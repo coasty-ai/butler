@@ -183,6 +183,10 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       return ["MALFORMED_RESPONSE"];
     case "ProviderUnavailable":
       return ["PROVIDER_UNAVAILABLE"];
+    // Advice the runner gives itself: same-type actions that changed nothing
+    // on screen. It never ends a run, so a cycle report counts it as friction.
+    case "NoProgressDetected":
+      return ["NO_PROGRESS"];
     case "ProviderFailed": {
       if (d.cancelled === true) return ["MODEL_CALL_ABORTED"];
       if (d.timedOut === true) return ["PROVIDER_TIMEOUT"];
@@ -271,6 +275,15 @@ export interface AnalysisReport {
   };
   endings: PatternRow[];
   frictions: PatternRow[];
+  /**
+   * One row per run: its ending and the friction codes it saw, keyed by the
+   * run id a cycle's attempt rows carry. Codes and counts only.
+   */
+  perRun: {
+    runId: string;
+    ending: string;
+    frictions: Record<string, number>;
+  }[];
   fixNext: {
     rank: number;
     code: string;
@@ -318,8 +331,15 @@ function median(values: number[]): number {
     : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-/** Who can fix a pattern, which is what makes the ranking actionable. */
-const OWNER: Record<string, string> = {
+/**
+ * Who can fix a pattern, which is what makes the ranking actionable. A
+ * benchmark cycle adds two owners the app log never needs: "grader" for an
+ * attempt whose end state could not be read (debt in the graders, not a
+ * model failure) and "harness" for an attempt the harness itself did not
+ * give the model (a skip, a cap, a time box). Anything unlisted is the
+ * agent's.
+ */
+export const OWNER: Record<string, string> = {
   COMPLETED: "none",
   USER_CANCELLED: "user",
   STOPPED_AFTER_MANUAL_TAKEOVER: "user",
@@ -336,7 +356,26 @@ const OWNER: Record<string, string> = {
   PROVIDER_TRANSPORT_RETRYABLE: "environment",
   PROVIDER_TRANSPORT_FATAL: "environment",
   PROVIDER_UNAVAILABLE: "environment",
+  NO_ACCESSIBILITY: "grader",
+  NO_END_STATE: "grader",
+  NO_BROWSER_ADDRESS: "grader",
+  NO_FRONTMOST_INFO: "grader",
+  NO_OPERANDS: "grader",
+  NO_MARKER: "grader",
+  NO_TARGET_FILE: "grader",
+  RUN_NOT_SETTLED: "grader",
+  GRADER_ERROR: "grader",
+  NO_PREPARED_TARGET: "harness",
+  BUDGET_EXHAUSTED: "harness",
+  TIME_BOX: "harness",
+  SKIPPED: "harness",
+  INTERRUPTED: "harness",
+  MANUAL_INPUT_UNSEEN: "user",
 };
+/** The owner of a code: listed, or the agent's. */
+export function ownerOf(code: string): string {
+  return OWNER[code] ?? "agent";
+}
 /** Authored one-line explanations. None of this comes from the log. */
 const NOTE: Record<string, string> = {
   ACTION_BUDGET: "The run used its whole action budget without finishing.",
@@ -406,8 +445,42 @@ const NOTE: Record<string, string> = {
     "The screen moved after the screenshot and the app re-aimed the same control by itself, saving a model call.",
   USER_CORRECTION: "The user corrected the run while it was running.",
   ACTION_FAILED: "A step failed with a code this analyzer does not name yet.",
+  NO_PROGRESS:
+    "Same-type actions changed nothing on screen; the run was told and kept going.",
+  MODEL_FAILED:
+    "The model gave up honestly with fail instead of claiming done.",
+  FALSE_DONE:
+    "The model said done and the verified end state was wrong: a claim it did not earn.",
+  NO_ACCESSIBILITY:
+    "The frontmost window reported no accessibility text, so the grader could not read the result.",
+  NO_END_STATE: "The end state could not be read back after the run.",
+  NO_BROWSER_ADDRESS: "The browser reported no committed page address.",
+  NO_FRONTMOST_INFO:
+    "The controller did not say which application was in front.",
+  GRADER_ERROR:
+    "The task's grader threw on the evidence it was given (a reader left something out); the run still counts, its result is unknown.",
+  NO_PREPARED_TARGET:
+    "prepare() found nothing to work on; the attempt was skipped, not run.",
+  BUDGET_EXHAUSTED:
+    "The cycle or model cost cap left too little for a fair attempt; skipped, not run.",
+  TIME_BOX: "The time box ended the cycle before this attempt.",
+  SKIPPED:
+    "A stop reached the harness before this attempt's run started, or cut the run short; a resume runs it again.",
+  INTERRUPTED: "The harness stopped the run from the terminal.",
+  HANDOFF_REQUEST_USER: "The model asked the user to act (request_user).",
+  HANDOFF_TARGET:
+    "The runner handed off after repeated targets it could not identify.",
+  HANDOFF_POLICY: "The policy handed control to the user.",
+  HANDOFF_SURFACE:
+    "The frontmost surface could not be driven (secure input, a protected app), so the run handed off.",
+  MANUAL_INPUT_UNSEEN:
+    "The tap saw real input around the attempt that no event reported; the attempt is the environment's.",
   UNCLASSIFIED: "The run ended without a recognizable reason in the log.",
 };
+/** The authored note for a code, or the unclassified one. */
+export function noteFor(code: string): string {
+  return NOTE[code] ?? NOTE.UNCLASSIFIED;
+}
 
 /** Classifies why one run ended, from its statuses and its tail of events. */
 export function endingCode(run: RunState): string {
@@ -588,12 +661,17 @@ export function analyze(
         code: row.code,
         endedRuns: row.endedRuns ?? row.runs,
         events: frictions.get(row.code)?.count ?? 0,
-        owner: OWNER[row.code] ?? "agent",
+        owner: ownerOf(row.code),
         contributors: top(inside, 3),
-        note: NOTE[row.code] ?? NOTE.UNCLASSIFIED,
+        note: noteFor(row.code),
       };
     });
   const runList = [...runs.values()];
+  const perRun = runList.map((run) => ({
+    runId: run.runId,
+    ending: run.ending ?? "NOT_SETTLED",
+    frictions: Object.fromEntries(run.frictions),
+  }));
   return {
     files: options.files ?? 1,
     lines: lines.length,
@@ -613,6 +691,7 @@ export function analyze(
     },
     endings: endingRows,
     frictions: rows(frictions, false),
+    perRun,
     fixNext,
   };
 }

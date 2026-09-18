@@ -1512,7 +1512,8 @@ describe("bench --dry-run", () => {
       "electron/controller.ts",
       "electron/credentials.ts",
       "src/providers/http.ts",
-      "src/core/runner.ts",
+      // The attempt module is what loads the runner.
+      "src/gym/bench/attempt.ts",
       "src/memory/store.ts",
     ])
       expect(source.indexOf(module), module).toBeGreaterThan(exit);
@@ -1558,65 +1559,27 @@ describe("bench --dry-run", () => {
 
 /**
  * bench.mjs drives the real desktop and a paid model, so it is never run by a
- * test. These rules read its source, the way the import-order check does:
- * each one pins a behaviour the graders depend on.
+ * test. The attempt itself lives in src/gym/bench/attempt.ts, shared with
+ * harness-cycle.mjs, and tests/harness-cycle.test.ts drives it through the
+ * real Runner with a fake controller. These rules read what stays in the
+ * script: the loop around the attempts.
  */
 describe("bench.mjs harness rules", () => {
   const source = readFileSync(join(root, "scripts/bench.mjs"), "utf8");
-  const attemptStart = source.indexOf("async function runAttempt(");
-  const body = source.slice(attemptStart);
-  it("stops the run outright on real input, even while confirming", () => {
-    expect(source).toContain('runner?.stop("Manual input during benchmark.")');
-    // manualTakeover() only interrupts a pending prompt while the run is
-    // confirming; the queued approval would then let the run continue.
+  it("runs every attempt through the shared attempt module", () => {
+    expect(source).toContain('await import("../src/gym/bench/attempt.ts")');
+    expect(source).toContain("await runAttempt(deps, attemptCell, task");
+    expect(source).not.toContain("async function runAttempt(");
+    expect(source).not.toContain("new Runner(");
+  });
+  it("wires the controller to the shared stop callbacks", () => {
+    const callbacks = source.slice(source.indexOf("new NativeController("));
+    expect(callbacks).toContain("onEmergencyStop(state)");
+    expect(callbacks).toContain("onManualInput(state)");
     expect(source).not.toContain("manualTakeover()");
-  });
-  it("ends the whole benchmark on the native emergency stop", () => {
-    const callback = source.slice(
-      source.indexOf("new NativeController("),
-      source.indexOf("// Executed steps"),
+    expect(source).toContain(
+      'state.emergency ? "emergency stop" : "interrupted"',
     );
-    expect(callback).toContain("emergency = true;");
-    expect(callback).toContain("stopped = true;");
-    expect(source).toContain('emergency ? "emergency stop" : "interrupted"');
-  });
-  it("resumes the helper before the grading capture and reads manual input after it", () => {
-    expect(attemptStart).toBeGreaterThan(0);
-    const start = body.indexOf("await runner.start(");
-    const resume = body.indexOf("await controller.resume()");
-    const capture = body.indexOf("await controller.capture()");
-    const latch = body.indexOf("controller.stop();");
-    const flag = body.indexOf("manualTakeover: manualInput");
-    expect(start).toBeGreaterThan(0);
-    expect(resume).toBeGreaterThan(start);
-    expect(capture).toBeGreaterThan(resume);
-    expect(latch).toBeGreaterThan(capture);
-    expect(flag).toBeGreaterThan(latch);
-  });
-  it("skips an attempt a stop reached before its run started", () => {
-    // Escape or Ctrl-C during the settle or prepare finds only a terminal
-    // runner to stop; starting would resume the helper and undo the latch.
-    const prepare = body.indexOf("task.prepare(");
-    const check = body.indexOf('if (stopped) return neverRan(base, "SKIPPED")');
-    const reset = body.indexOf("manualInput = false;");
-    const start = body.indexOf("await runner.start(");
-    expect(prepare).toBeGreaterThan(0);
-    expect(check).toBeGreaterThan(prepare);
-    expect(reset).toBeGreaterThan(check);
-    expect(start).toBeGreaterThan(reset);
-  });
-  it("grades real input before a missing end state, and reads none after it", () => {
-    // Input during the grading read makes the capture refuse: the attempt is
-    // the environment's, never a grader unknown counted against the model.
-    const manual = body.indexOf('unverifiable("MANUAL_TAKEOVER")');
-    const graded = body.indexOf("gradeTask(task, evidence)");
-    const noEndState = body.indexOf('"NO_END_STATE"');
-    expect(manual).toBeGreaterThan(0);
-    expect(graded).toBeGreaterThan(manual);
-    expect(noEndState).toBeGreaterThan(graded);
-    const guard = body.indexOf("if (!manualInput) {");
-    expect(guard).toBeGreaterThan(0);
-    expect(body.indexOf("await controller.resume()")).toBeGreaterThan(guard);
   });
   it("stops the benchmark on real input whatever the flags", () => {
     const loop = source.slice(
@@ -1626,7 +1589,9 @@ describe("bench.mjs harness rules", () => {
         source.indexOf("const result = await runAttempt("),
       ),
     );
-    const manual = loop.indexOf("if (result.manualTakeover) {");
+    const manual = loop.indexOf(
+      'if (result.manualTakeover || result.reason === "MANUAL_INPUT_UNSEEN") {',
+    );
     const flag = loop.indexOf('values["continue-on-takeover"]');
     expect(manual).toBeGreaterThan(0);
     expect(flag).toBeGreaterThan(manual);
@@ -1635,39 +1600,9 @@ describe("bench.mjs harness rules", () => {
     );
     expect(source).toContain("Real input on this Mac always stops.");
   });
-  it("starts every run as a bench run", () => {
-    expect(body).toContain('origin: "bench"');
-  });
-  it("approves through the per-task allow-list and nothing else", () => {
-    expect(body).toContain("approvesPrompt(");
-    expect(source).not.toContain("sensitive.test(");
-    // UserDenied never carries source "approval"; the harness counts its own declines.
-    expect(source).not.toContain('d.source === "approval"');
-    expect(body).toContain("counters.approvalsDeclined++");
-  });
-  it("brings the Finder forward before prepare so no target app is frontmost", () => {
-    expect(source).toContain('execFile("open", ["-a", "Finder"]');
-    const neutral = body.indexOf("await neutralStart()");
-    const prepare = body.indexOf("task.prepare(");
-    expect(neutral).toBeGreaterThan(0);
-    expect(prepare).toBeGreaterThan(neutral);
-  });
-  it("records hand-off sources, honest fails, no-progress and the ending", () => {
-    for (const text of [
-      "counters.takeoverSources[source]++",
-      'd.action?.type === "fail"',
-      'event.type === "NoProgressDetected"',
-      "endingCode({",
-      "modelFailed: counters.modelFailed",
-      "modelFailed: journal.modelFailed",
-      // The pause cause comes from the runner's phrase on the paused snapshot;
-      // the event before RunPaused never names it.
-      "pausedAfterCode(snapshot.message)",
-      "markersIn(action.text, markers)",
-      "schema_version: 2",
-    ])
-      expect(source, text).toContain(text);
-    expect(source).not.toContain("pausedAfterCode(lastEvent)");
+  it("passes the per-task approval switch and writes schema 2", () => {
+    expect(source).toContain('approveRoutine: values["approve-routine"]');
+    expect(source).toContain("schema_version: 2");
   });
 });
 

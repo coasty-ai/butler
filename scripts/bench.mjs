@@ -12,7 +12,6 @@
 // Screenshots stay in memory, and nothing this script writes contains screen
 // text, window titles, URLs or file paths: results hold task ids, counts,
 // durations, cost and fixed reason codes.
-import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,24 +27,10 @@ const root = resolve(here, "..");
 // `node scripts/bench.mjs` works on its own.
 const { register } = await import("tsx/esm/api");
 register();
-const { CATALOGUE, CATEGORIES, benchToken, selectTasks } =
+const { CATALOGUE, CATEGORIES, selectTasks } =
   await import("../src/gym/bench/catalogue.ts");
-const {
-  approvesPrompt,
-  fillInstruction,
-  gradeTask,
-  markerValues,
-  markersIn,
-  unverifiable,
-} = await import("../src/gym/bench/graders.ts");
-const {
-  aggregate,
-  endingCode,
-  honesty,
-  pausedAfterCode,
-  renderSummary,
-  renderTable,
-} = await import("../src/gym/bench/report.ts");
+const { aggregate, renderSummary, renderTable } =
+  await import("../src/gym/bench/report.ts");
 
 const { values } = parseArgs({
   options: {
@@ -171,10 +156,17 @@ const { HttpProvider } = await import("../src/providers/http.ts");
 const { selectProvider } = await import("../src/providers/catalog.ts");
 const { defaultSettings, settingsSchema } =
   await import("../src/core/schema.ts");
-const { Runner, terminal } = await import("../src/core/runner.ts");
-const { nullRecorder } = await import("../src/core/recorder.ts");
 const { MemoryStore } = await import("../src/memory/store.ts");
 const { createMemoryAccess } = await import("../src/memory/access.ts");
+// The attempt itself (neutral start, prepare, run, grading read, cleanup) is
+// shared with harness-cycle.mjs; it loads the runner.
+const {
+  createHarnessState,
+  launchServices,
+  onEmergencyStop,
+  onManualInput,
+  runAttempt,
+} = await import("../src/gym/bench/attempt.ts");
 
 if (!["openai", "anthropic", "google"].includes(values.provider)) {
   console.error("--provider must be openai, anthropic or google.");
@@ -208,77 +200,49 @@ console.warn(
     "it also stops at the first agent hand-off unless --continue-on-takeover.\n",
 );
 
-let stopped = false;
-let emergency = false;
-let runner;
-let controller;
-const interrupt = () => {
-  stopped = true;
-  try {
-    runner?.stop("Benchmark interrupted from the terminal.");
-  } catch {}
-};
-process.on("SIGINT", () => {
-  if (stopped) process.exit(130);
-  interrupt();
+// One agent on this desktop at a time: the lock every cycle and bench on
+// this Mac takes, from any checkout. Each harness's helper marks its own
+// input, so neither's tap could see the other.
+const { acquireDesktopLock, desktopLockPath, releaseDesktopLock } =
+  await import("../src/gym/bench/presence.ts");
+const lockFile = desktopLockPath();
+const lock = acquireDesktopLock(lockFile, {
+  pid: process.pid,
+  script: "bench",
+  startedAt: new Date().toISOString(),
 });
+if (!lock.ok) {
+  console.error(
+    lock.holder
+      ? `Refusing to start: ${lock.holder.script}${lock.holder.cycle ? " " + lock.holder.cycle : ""} is driving this desktop (pid ${lock.holder.pid}).`
+      : `Refusing to start: the desktop lock ${lockFile} cannot be read. Remove it if no cycle or bench is running.`,
+  );
+  process.exit(2);
+}
+process.on("exit", () => releaseDesktopLock(lockFile, process.pid));
 
-let manualInput = false;
-controller = new NativeController(
+// Shared with the controller's callbacks: Escape stops everything, real input
+// stops the run outright (see attempt.ts for why not a manual takeover).
+const state = createHarnessState();
+process.on("SIGINT", () => {
+  if (state.stopped) process.exit(130);
+  state.stopped = true;
+  try {
+    state.runner?.stop("Benchmark interrupted from the terminal.");
+  } catch {}
+});
+const controller = new NativeController(
   binary,
-  () => {
-    // Escape means stop everything, not just this attempt.
-    emergency = true;
-    manualInput = true;
-    stopped = true;
-    runner?.stop("Native emergency stop activated.");
-  },
-  () => {
-    // Real input stops the run outright. Asking the runner for a manual
-    // takeover would not: while the run is confirming it only interrupts the
-    // prompt, and the approval this harness has already queued would let the
-    // run continue after a person touched the Mac.
-    manualInput = true;
-    runner?.stop("Manual input during benchmark.");
-  },
+  onEmergencyStop(state),
+  onManualInput(state),
 );
-
-// Executed steps, captured where the controller already has the action, the
-// frame and the native result. Stays in memory; never written to the report.
-let steps = [];
-let markers = [];
-const execute = controller.execute.bind(controller);
-controller.execute = async (action, frame, signal) => {
-  const result = await execute(action, frame, signal);
-  steps.push({
-    type: action.type,
-    appId: frame?.appId,
-    textLength:
-      typeof action.text === "string" ? action.text.length : undefined,
-    // Which attempt parameters the text carried, never the text itself.
-    markers:
-      typeof action.text === "string"
-        ? markersIn(action.text, markers)
-        : undefined,
-    menuLeaf:
-      action.type === "menu_item" && Array.isArray(action.path)
-        ? String(action.path.at(-1) ?? "").toLowerCase()
-        : undefined,
-    launchedAppId: result?.launched?.appId,
-    launchedFrontmost: result?.launched?.frontmost,
-    openedPath: result?.opened?.path,
-    openedAppId: result?.opened?.appId,
-  });
-  return result;
-};
 
 let memoryStore;
 let memoryAccess;
-let memoryDir;
 if (values.memory) {
   // A scratch store with its own random key, like the live harness: the
   // benchmark learns across its own attempts without touching a real profile.
-  memoryDir = resolve(
+  const memoryDir = resolve(
     values["memory-dir"] ?? join(tmpdir(), "open-assist-bench-memory"),
   );
   mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
@@ -295,327 +259,31 @@ if (values.memory) {
   );
 }
 
+const deps = {
+  controller,
+  clients: { [cell]: client },
+  state,
+  memoryAccess,
+  // The suite's end-state readers and cleanup arrive with the long suite; the
+  // smoke tasks read nothing beyond the grading capture.
+  readEvidence: null,
+  cleanupAttempt: null,
+  launch: launchServices(),
+};
+const attemptCell = {
+  provider: baseSettings.provider,
+  model: baseSettings.model,
+  cell,
+  settings: settingsSchema.parse(baseSettings),
+};
+
 const results = [];
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-
-/**
- * Brings the Finder forward through LaunchServices before every attempt, so
- * no task's target application is frontmost when it starts: "Open Calculator"
- * must not pass because the previous attempt left Calculator in front. An
- * activation is not input, needs no frame and cannot trip the tap.
- */
-async function neutralStart() {
-  await new Promise((done) =>
-    execFile("open", ["-a", "Finder"], (error) => {
-      if (error) console.log(JSON.stringify({ neutralStartError: true }));
-      done();
-    }),
-  );
-  await sleep(1500);
-}
-
-const noSources = () => ({
-  manual_input: 0,
-  request_user: 0,
-  policy: 0,
-  surface: 0,
-  handoff: 0,
-});
-
-/**
- * A row for an attempt that never started: no run, no cost, nothing claimed.
- * The ending still says whether a stop, rather than the plan, kept it from
- * starting.
- */
-function neverRan(base, reason) {
-  return {
-    ...base,
-    status: "unknown",
-    reason,
-    checks: {},
-    runStatus: "skipped",
-    endingCode: endingCode({
-      runStatus: "skipped",
-      manualTakeover: false,
-      agentHandoffs: 0,
-      paused: false,
-      emergencyStop: emergency,
-      interrupted: stopped,
-      modelFailed: false,
-    }),
-    ...honesty("skipped", { status: "unknown", checks: {}, reason }),
-    actions: 0,
-    seconds: 0,
-    cost: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    modelCalls: 0,
-    approvals: 0,
-    approvalsDeclined: 0,
-    retries: 0,
-    handoffs: { manual: 0, agent: 0 },
-    takeovers: 0,
-    takeoverSources: noSources(),
-    manualTakeover: false,
-    modelFailed: false,
-    loops: 0,
-    noProgress: 0,
-    failures: {},
-  };
-}
-
-/** One attempt: run the task, read the end state back, grade it. */
-async function runAttempt(task, attempt, planIndex) {
-  const startedAt = new Date().toISOString();
-  const base = {
-    taskId: task.id,
-    category: task.category,
-    difficulty: task.difficulty,
-    attempt,
-    provider: baseSettings.provider,
-    model: baseSettings.model,
-    cell,
-    planIndex,
-    requeued: 0,
-    startedAt,
-    expectedSteps: task.steps,
-    gateWaitSeconds: 0,
-  };
-  const counters = {
-    approvals: 0,
-    approvalsDeclined: 0,
-    retries: 0,
-    takeovers: 0,
-    takeoverSources: noSources(),
-    loops: 0,
-    noProgress: 0,
-    modelCalls: 0,
-    modelFailed: false,
-    paused: false,
-    pausedAfter: undefined,
-    failures: {},
-  };
-  // The neutral start comes before prepare: a task's wrong-start setup opens
-  // things on purpose and must not be undone.
-  await neutralStart();
-  let parameters = {};
-  if (task.prepare) {
-    // The bench folder, fixture and agenda members arrive with the attempt
-    // module; no smoke task needs them.
-    const resolved = await task.prepare({
-      index: (query) => controller.request("index", { query }),
-      token: () => benchToken(),
-      now: () => new Date(),
-    });
-    if (!resolved) return neverRan(base, "NO_PREPARED_TARGET");
-    parameters = resolved;
-  }
-  // An Escape or Ctrl-C during the settle or prepare found no run to stop:
-  // the previous runner was already terminal. Starting now would resume the
-  // helper, undoing the latch the Escape set, and drive the desktop until the
-  // person pressed it again. Skip instead; the loop then ends the benchmark.
-  if (stopped) return neverRan(base, "SKIPPED");
-  const spent = results.reduce((total, result) => total + result.cost, 0);
-  const settings = settingsSchema.parse({
-    ...baseSettings,
-    maxActions: task.maxActions,
-    maxSeconds: task.maxSeconds,
-    maxCost: Math.max(0.01, Math.min(task.maxCost, budget - spent)),
-  });
-  let run = null;
-  let message;
-  let printed = 0;
-  let lastPending;
-  let held;
-  const recorder = {
-    ...nullRecorder(),
-    begin: (r) => {
-      run = r;
-    },
-    save: (r) => {
-      run = r;
-    },
-  };
-  const emit = (snapshot) => {
-    for (const event of snapshot.events.slice(printed)) {
-      const d = event.data ?? {};
-      if (event.type === "ModelRequestStarted") counters.modelCalls++;
-      if (event.type === "ActionRetargetRequested") counters.retries++;
-      if (event.type === "PolicyConfirmationRequested") counters.approvals++;
-      if (event.type === "UserTakeoverStarted") {
-        counters.takeovers++;
-        const source = typeof d.source === "string" ? d.source : "handoff";
-        if (source in counters.takeoverSources)
-          counters.takeoverSources[source]++;
-      }
-      if (event.type === "ActionLoopDetected") counters.loops++;
-      if (event.type === "NoProgressDetected") counters.noProgress++;
-      if (event.type === "ActionProposed" && d.action?.type === "fail")
-        counters.modelFailed = true;
-      if (event.type === "RunPaused") counters.paused = true;
-      if (event.type === "ActionFailed" && typeof d.code === "string")
-        counters.failures[d.code] = (counters.failures[d.code] ?? 0) + 1;
-    }
-    printed = snapshot.events.length;
-    message = snapshot.message;
-    const status = snapshot.run?.status;
-    // The runner publishes RunPaused before it sets the pause message, so the
-    // cause is read from the first snapshot that carries the paused status.
-    if (status === "paused")
-      counters.pausedAfter ??= pausedAfterCode(snapshot.message);
-    if (
-      status === "confirming" &&
-      snapshot.pending &&
-      snapshot.pending !== lastPending
-    ) {
-      lastPending = snapshot.pending;
-      const approve = approvesPrompt(
-        task,
-        snapshot.pending.reason,
-        values["approve-routine"],
-      );
-      if (!approve) counters.approvalsDeclined++;
-      setTimeout(() => runner.confirm(approve), 0);
-    }
-    if (status !== "confirming") lastPending = undefined;
-    if (status === "paused" || status === "takeover") {
-      if (held === status) return;
-      held = status;
-      // Nobody is there to say continue during an unattended benchmark.
-      setTimeout(() => runner.stop(`Benchmark stopped at ${status}.`), 0);
-    }
-  };
-  steps = [];
-  markers = markerValues(parameters);
-  manualInput = false;
-  runner = new Runner(
-    controller,
-    client,
-    recorder,
-    settings,
-    emit,
-    [],
-    memoryAccess,
-  );
-  const started = Date.now();
-  try {
-    await runner.start(fillInstruction(task.instruction, parameters), {
-      origin: "bench",
-    });
-  } catch (error) {
-    // A thrown start is already recorded in the run status; keep going.
-  }
-  const seconds = (Date.now() - started) / 1000;
-  // The end state, read back through the native controller: frontmost bundle
-  // id, the committed page host and the window's accessibility text. No
-  // pixels. The run's own finally latched the helper and capture refuses while
-  // latched, so the helper is resumed first; that also re-arms the tap, so a
-  // person touching the Mac while the grader reads still marks the attempt.
-  // After real input (or Escape) there is nothing to read: the grade is
-  // MANUAL_TAKEOVER whatever the screen shows, and resuming would let the tap
-  // re-arm on whatever the person switched to.
-  let endState;
-  if (!manualInput) {
-    try {
-      await controller.resume();
-      const surface = await controller.surface();
-      const frame = await controller.capture();
-      endState = {
-        appId: frame?.appId ?? surface?.appId,
-        context: frame?.context,
-        domain: surface?.domain,
-      };
-    } catch {
-      endState = undefined;
-    } finally {
-      controller.stop();
-    }
-  }
-  const runStatus = run?.status ?? "failed";
-  const agentHandoffs =
-    counters.takeovers - counters.takeoverSources.manual_input;
-  const journal = {
-    status: runStatus,
-    settled: terminal(runStatus),
-    actions: run?.actions ?? 0,
-    steps,
-    approvals: counters.approvals,
-    approvalsDeclined: counters.approvalsDeclined,
-    retries: counters.retries,
-    takeovers: counters.takeovers,
-    takeoverSources: counters.takeoverSources,
-    // Read after the grading capture, so input during grading counts too.
-    manualTakeover: manualInput,
-    modelFailed: counters.modelFailed,
-    loops: counters.loops,
-    noProgress: counters.noProgress,
-    failures: counters.failures,
-    endingCode: endingCode({
-      runStatus,
-      message,
-      manualTakeover: manualInput,
-      agentHandoffs,
-      paused: counters.paused,
-      emergencyStop: emergency,
-      interrupted: stopped,
-      modelFailed: counters.modelFailed,
-    }),
-    cost: run?.usage?.cost ?? 0,
-    seconds,
-    modelCalls: counters.modelCalls,
-  };
-  const evidence = { journal, parameters, ...endState };
-  // Real input first: when it lands during the grading read the capture
-  // refuses and there is no end state, but the attempt is still the
-  // environment's, not a grader unknown counted against the model.
-  const grade = manualInput
-    ? unverifiable("MANUAL_TAKEOVER")
-    : evidence.appId
-      ? gradeTask(task, evidence)
-      : { status: "unknown", checks: {}, reason: "NO_END_STATE" };
-  return {
-    ...base,
-    runId: run?.id,
-    status: grade.status,
-    reason: grade.reason,
-    checks: grade.checks,
-    partial: grade.partial,
-    runStatus: journal.status,
-    endingCode: journal.endingCode,
-    pausedAfter: counters.pausedAfter,
-    ...honesty(journal.status, grade, task),
-    actions: journal.actions,
-    seconds,
-    cost: journal.cost,
-    inputTokens: run?.usage?.inputTokens ?? 0,
-    outputTokens: run?.usage?.outputTokens ?? 0,
-    modelCalls: journal.modelCalls,
-    approvals: journal.approvals,
-    approvalsDeclined: journal.approvalsDeclined,
-    retries: journal.retries,
-    handoffs: {
-      manual: Math.max(
-        counters.takeoverSources.manual_input,
-        manualInput ? 1 : 0,
-      ),
-      agent: agentHandoffs,
-    },
-    takeovers: journal.takeovers,
-    takeoverSources: journal.takeoverSources,
-    manualTakeover: journal.manualTakeover,
-    modelFailed: journal.modelFailed,
-    loops: journal.loops,
-    noProgress: journal.noProgress,
-    failures: journal.failures,
-  };
-}
-
 let stoppedBecause;
 try {
   await controller.configure(settingsSchema.parse(baseSettings));
   for (const [planIndex, { task, attempt }] of plan.entries()) {
-    if (stopped) {
-      stoppedBecause = emergency ? "emergency stop" : "interrupted";
+    if (state.stopped) {
+      stoppedBecause = state.emergency ? "emergency stop" : "interrupted";
       break;
     }
     const spent = results.reduce((total, result) => total + result.cost, 0);
@@ -623,17 +291,21 @@ try {
       stoppedBecause = "cost budget";
       break;
     }
-    const result = await runAttempt(task, attempt, planIndex);
+    const result = await runAttempt(deps, attemptCell, task, attempt, {
+      maxCost: Math.min(task.maxCost, budget - spent),
+      approveRoutine: values["approve-routine"],
+      planIndex,
+    });
     results.push(result);
     console.log(
       `${result.taskId} #${result.attempt}  ${result.status}${result.reason ? " (" + result.reason + ")" : ""}  ${result.actions} actions  ${result.seconds.toFixed(1)}s  $${result.cost.toFixed(3)}`,
     );
-    if (stopped) continue;
+    if (state.stopped) continue;
     // Someone is at the Mac. Nothing here can tell when they have left, so
     // the next attempt would re-arm the tap 1.5 s later and be cancelled
     // again, one capture and one model call at a time; the flag covers agent
-    // hand-offs only.
-    if (result.manualTakeover) {
+    // hand-offs only. harness-cycle.mjs waits for them to leave instead.
+    if (result.manualTakeover || result.reason === "MANUAL_INPUT_UNSEEN") {
       stoppedBecause = "manual input";
       break;
     }
