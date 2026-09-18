@@ -610,7 +610,8 @@ describe("runner pause, resume and budgets", () => {
     const resuming = runner.resume();
     runner.stop();
     release();
-    await resuming;
+    // A texted "continue" reports this: it must not say the run went on.
+    expect(await resuming).toBe(false);
     await running;
     expect(runner.snapshot.run?.status).toBe("cancelled");
     expect(m.of("UserTakeoverEnded")).toHaveLength(0);
@@ -634,7 +635,7 @@ describe("runner pause, resume and budgets", () => {
     runner.manualTakeover();
     const stops = stop.mock.calls.length;
     release();
-    await resuming;
+    expect(await resuming).toBe(false);
     expect(runner.snapshot.run?.status).toBe("paused");
     expect(stop.mock.calls.length).toBeGreaterThan(stops);
     runner.stop();
@@ -656,7 +657,9 @@ describe("runner pause, resume and budgets", () => {
     runner.pause();
     await new Promise((r) => setTimeout(r, 350));
     expect(runner.snapshot.run?.status).toBe("paused");
-    await runner.resume();
+    expect(await runner.resume()).toBe(true);
+    // Nothing is held any more, so a second resume reports nothing resumed.
+    expect(await runner.resume()).toBe(false);
     await running;
     expect(runner.snapshot.run?.status).toBe("completed");
   });

@@ -1,0 +1,17 @@
+{
+  "configure": { "handle": "+15551234567", "watch": true },
+  "poll": {
+    "rowId": 101,
+    "skipped": 0,
+    "messages": [
+      {
+        "rowId": 101,
+        "handle": "+15551234567",
+        "service": "iMessage",
+        "text": "status",
+        "at": 1700000000
+      }
+    ]
+  },
+  "changed": { "event": "changed" }
+}

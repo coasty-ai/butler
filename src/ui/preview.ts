@@ -182,7 +182,9 @@ export function previewBridge(): Bridge {
       void runner.start(task);
     },
     pause: async () => runner?.pause(),
-    resume: async () => runner?.resume(),
+    resume: async () => {
+      await runner?.resume();
+    },
     stop: async () => runner?.stop(),
     confirm: async (yes) => runner?.approveFromVoice(yes),
     openCommand: async () => {

@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 import CoreServices
 
 // coarena-messages: the only process that touches Messages.
@@ -12,7 +11,13 @@ import CoreServices
 // It sends only to the one configured handle, never writes to the database,
 // never reads a message body until MessageSafety.swift has accepted the row's
 // metadata, and never logs message text. All decisions live in
-// MessageSafety.swift so they can be tested without a Mac session.
+// MessageSafety.swift, and the reading in MessagesDatabase.swift, so both can
+// be tested without a Mac session.
+//
+// Two queues: sends run on the main queue (AppleScript needs its run loop, and
+// a first send can sit in the Automation prompt for minutes); everything that
+// touches the database runs on dbQueue, so a waiting send never holds a poll
+// past the app's 8 s deadline.
 
 let outputLock = NSLock()
 func emit(_ object: [String: Any]) {
@@ -22,191 +27,73 @@ func emit(_ object: [String: Any]) {
     outputLock.unlock()
 }
 
-struct MessageError: Error {
-    let code: String
-    let message: String
-}
+// MARK: - Reading (MessagesDatabase.swift)
 
-// MARK: - Reading
+let messagesDirectory = NSHomeDirectory() + "/Library/Messages"
+let messagesDatabasePath = messagesDirectory + "/chat.db"
 
-/// Codes reported for the database side, mirrored in electron/messages.ts.
-enum DatabaseState: String {
-    case ok, noAccess = "no_access", locked, missing, unsupported, unopened
-}
+// MARK: - Watching for new rows
 
-let messagesDatabasePath = NSHomeDirectory() + "/Library/Messages/chat.db"
-/// At most this many new rows are examined per poll; older extras are skipped.
-let messagePollLimit = 20
+/// Watches ~/Library/Messages for writes to chat.db or its WAL and emits the
+/// content-free "changed" line, so the app polls within a fraction of a second
+/// instead of on its next timer. The app's periodic poll stays the fallback:
+/// FSEvents under the Messages privacy protection is not guaranteed. Watching
+/// the directory, not the files, survives the WAL being deleted and recreated
+/// when Messages quits. All state lives on its own queue.
+final class DatabaseWatch {
+    private let queue = DispatchQueue(label: "ai.coarena.messages.watch")
+    private var stream: FSEventStreamRef?
+    private var throttle = MessageChangeThrottle()
 
-final class MessagesDatabase {
-    private var handle: OpaquePointer?
-    private var columns = Set<String>()
-    private(set) var state = DatabaseState.unopened
+    func set(_ on: Bool) { queue.sync { on ? start() : stop() } }
 
-    deinit { close() }
-
-    func close() {
-        if let handle { sqlite3_close(handle) }
-        handle = nil
+    private func start() {
+        guard stream == nil else { return }
+        // The watch is a process-lifetime global, so an unretained pointer is safe.
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                           retain: nil, release: nil, copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, _, paths, _, _ in
+            guard let info else { return }
+            let names = Unmanaged<CFArray>.fromOpaque(paths).takeUnretainedValue() as? [String] ?? []
+            guard names.contains(where: messageDatabaseFileChanged) else { return }
+            Unmanaged<DatabaseWatch>.fromOpaque(info).takeUnretainedValue().changed()
+        }
+        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagUseCFTypes)
+        guard let created = FSEventStreamCreate(nil, callback, &context, [messagesDirectory] as CFArray,
+                                                FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05, flags)
+        else { return }
+        FSEventStreamSetDispatchQueue(created, queue)
+        guard FSEventStreamStart(created) else {
+            FSEventStreamInvalidate(created)
+            FSEventStreamRelease(created)
+            return
+        }
+        stream = created
     }
 
-    /// Opens the database read-only. Distinguishes "Messages was never used"
-    /// from "macOS refused the read", which is almost always Full Disk Access.
-    @discardableResult func open() throws -> OpaquePointer {
-        if let handle { return handle }
-        guard FileManager.default.fileExists(atPath: messagesDatabasePath) else {
-            state = .missing
-            throw MessageError(code: "DATABASE_MISSING",
-                               message: "No Messages database on this Mac. Open Messages and sign in to iMessage first.")
-        }
-        var db: OpaquePointer?
-        // mode=ro is belt and braces with SQLITE_OPEN_READONLY: nothing this
-        // helper does may ever modify the user's message history.
-        let url = "file:" + messagesDatabasePath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)! + "?mode=ro"
-        let status = sqlite3_open_v2(url, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil)
-        guard status == SQLITE_OK, let opened = db else {
-            if let db { sqlite3_close(db) }
-            state = .noAccess
-            throw MessageError(code: "FULL_DISK_ACCESS", message: fullDiskAccessMessage)
-        }
-        sqlite3_busy_timeout(opened, 1000)
-        handle = opened
-        do {
-            columns = try tableColumns("message")
-            let required = ["ROWID", "text", "date", "is_from_me", "handle_id"]
-            let joins = try tableColumns("chat_message_join"), chats = try tableColumns("chat")
-            guard required.allSatisfy({ columns.contains($0) }), joins.contains("message_id"),
-                  chats.contains("style"), !(try tableColumns("handle")).isEmpty
-            else {
-                state = .unsupported
-                throw MessageError(code: "DATABASE_UNSUPPORTED",
-                                   message: "This macOS version stores messages differently. Texting control is unavailable.")
+    private func stop() {
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        self.stream = nil
+    }
+
+    /// On `queue`. At most one line per 250 ms; a burst ends with one trailing
+    /// line so the last write is never missed.
+    private func changed() {
+        switch throttle.signal(now: ProcessInfo.processInfo.systemUptime) {
+        case .emit: emit(messageChangedEvent)
+        case .schedule(let delay):
+            queue.asyncAfter(deadline: .now() + delay) { [self] in
+                throttle.fire(now: ProcessInfo.processInfo.systemUptime)
+                // Switched off meanwhile: the app asked for silence.
+                if stream != nil { emit(messageChangedEvent) }
             }
-            state = .ok
-            return opened
-        } catch {
-            close()
-            throw error
+        case .absorbed: break
         }
-    }
-
-    private func tableColumns(_ table: String) throws -> Set<String> {
-        var found = Set<String>()
-        // PRAGMA takes no bindings; the table names here are literals.
-        try each("PRAGMA table_info(\(table))") { statement in
-            if let name = sqlite3_column_text(statement, 1) { found.insert(String(cString: name)) }
-        }
-        // sqlite_master always exists: an empty result means no such table.
-        return found
-    }
-
-    /// Runs a statement, calling `row` for each result row.
-    private func each(_ sql: String, bind: (OpaquePointer) -> Void = { _ in }, row: (OpaquePointer) -> Void) throws {
-        guard let db = handle else { throw MessageError(code: "DATABASE_UNAVAILABLE", message: "The Messages database is not open.") }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let prepared = statement else {
-            let code = sqlite3_errcode(db)
-            sqlite3_finalize(statement)
-            throw failure(code)
-        }
-        defer { sqlite3_finalize(prepared) }
-        bind(prepared)
-        while true {
-            let step = sqlite3_step(prepared)
-            if step == SQLITE_ROW { row(prepared); continue }
-            if step == SQLITE_DONE { return }
-            throw failure(step)
-        }
-    }
-
-    private func failure(_ code: Int32) -> MessageError {
-        switch code {
-        case SQLITE_PERM, SQLITE_AUTH, SQLITE_CANTOPEN:
-            state = .noAccess
-            return MessageError(code: "FULL_DISK_ACCESS", message: fullDiskAccessMessage)
-        case SQLITE_READONLY, SQLITE_BUSY, SQLITE_LOCKED:
-            // A read-only connection cannot create the write-ahead index, so a
-            // closed Messages app can leave the newest messages unreadable.
-            state = .locked
-            return MessageError(code: "DATABASE_LOCKED",
-                                message: "Messages is not running, so its database cannot be read. Open the Messages app and leave it running.")
-        default:
-            state = .unsupported
-            return MessageError(code: "DATABASE_UNAVAILABLE", message: "The Messages database could not be read.")
-        }
-    }
-
-    /// The newest stored row. Commands are only ever read after this baseline,
-    /// so a backlog can never run when the feature is switched on.
-    func latestRowId() throws -> Int64 {
-        try open()
-        var latest: Int64 = 0
-        try each("SELECT COALESCE(MAX(ROWID), 0) FROM message") { latest = sqlite3_column_int64($0, 0) }
-        return latest
-    }
-
-    private func optional(_ name: String) -> String {
-        columns.contains(name) ? "COALESCE(m.\(name), 0)" : "0"
-    }
-
-    /// New rows from the configured handle. Two passes on purpose: the first
-    /// reads metadata and the text *length* only, and only a row that every
-    /// rule accepts has its body read at all.
-    func poll(handle owner: String, since: Int64, now: Double) throws -> (rowId: Int64, messages: [(rowId: Int64, text: String, at: Double)], skipped: Int) {
-        try open()
-        let balloon = columns.contains("balloon_bundle_id") ? "COALESCE(m.balloon_bundle_id, '')" : "''"
-        let sql = """
-        SELECT m.ROWID, COALESCE(h.id, ''), COALESCE(LENGTH(TRIM(m.text)), 0), COALESCE(m.date, 0), \
-        COALESCE(m.is_from_me, 0), \(optional("cache_has_attachments")), \(optional("item_type")), \
-        \(optional("associated_message_type")), \(balloon), \
-        (SELECT COUNT(*) FROM chat_message_join j JOIN chat c ON c.ROWID = j.chat_id \
-         WHERE j.message_id = m.ROWID AND COALESCE(c.style, 0) <> 45) \
-        FROM message m LEFT JOIN handle h ON h.ROWID = m.handle_id \
-        WHERE m.ROWID > ? ORDER BY m.ROWID ASC LIMIT ?
-        """
-        var rows: [(Int64, Bool)] = []
-        var highest = since
-        try each(sql, bind: { statement in
-            sqlite3_bind_int64(statement, 1, since)
-            sqlite3_bind_int(statement, 2, Int32(messagePollLimit))
-        }) { statement in
-            let rowId = sqlite3_column_int64(statement, 0)
-            highest = max(highest, rowId)
-            let sender = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
-            let length = sqlite3_column_int64(statement, 2)
-            let row = MessageRow(
-                rowId: rowId,
-                handle: sender,
-                // The body is not read here: only whether there is one.
-                text: length > 0 ? "?" : "",
-                appleDate: sqlite3_column_int64(statement, 3),
-                fromMe: sqlite3_column_int64(statement, 4) != 0,
-                groupChats: Int(sqlite3_column_int64(statement, 9)),
-                attachments: Int(sqlite3_column_int64(statement, 5)),
-                itemType: Int(sqlite3_column_int64(statement, 6)),
-                associatedType: Int(sqlite3_column_int64(statement, 7)),
-                balloon: sqlite3_column_text(statement, 8).map { String(cString: $0) } ?? "")
-            rows.append((rowId, messageRowAccepted(row, handle: owner, sinceRowId: since, now: now)))
-        }
-        var messages: [(rowId: Int64, text: String, at: Double)] = []
-        for (rowId, accepted) in rows where accepted {
-            var text = "", date: Int64 = 0
-            try each("SELECT COALESCE(text, ''), COALESCE(date, 0) FROM message WHERE ROWID = ?", bind: { statement in
-                sqlite3_bind_int64(statement, 1, rowId)
-            }) { statement in
-                if let value = sqlite3_column_text(statement, 0) { text = String(cString: value) }
-                date = sqlite3_column_int64(statement, 1)
-            }
-            let command = normalizeMessageText(text)
-            guard !command.isEmpty else { continue }
-            messages.append((rowId: rowId, text: command, at: appleDateSeconds(date)))
-        }
-        // A full page means more may be waiting; the caller polls again.
-        return (rowId: highest, messages: messages, skipped: rows.count == messagePollLimit ? rows.count : 0)
     }
 }
-
-let fullDiskAccessMessage = "Open Assist cannot read Messages. Give it Full Disk Access in System Settings › Privacy & Security, then reopen the app."
 
 // MARK: - Sending
 
@@ -264,20 +151,31 @@ func sendMessage(handle: String, text: String) throws {
 
 // MARK: - Request handling
 
-var configuredHandle = ""
-let database = MessagesDatabase()
+/// Sends read the handle on the main queue while configure writes it on
+/// dbQueue, so it sits behind a lock.
+let handleLock = NSLock()
+var storedHandle = ""
+var configuredHandle: String {
+    get { handleLock.lock(); defer { handleLock.unlock() }; return storedHandle }
+    set { handleLock.lock(); storedHandle = newValue; handleLock.unlock() }
+}
+let dbQueue = DispatchQueue(label: "ai.coarena.messages.db")
+let database = MessagesDatabase(path: messagesDatabasePath)
+let databaseWatch = DatabaseWatch()
 
-func statusResult() -> [String: Any] {
+/// On dbQueue. `configure` reports the baseline it just took; `status` reads
+/// the newest row for information only.
+func statusResult(baseline: Bool = false) -> [String: Any] {
     var latest: Int64 = 0
-    var databaseState = database.state
-    if !configuredHandle.isEmpty {
-        do { latest = try database.latestRowId(); databaseState = database.state } catch {
-            databaseState = database.state
-        }
+    if baseline {
+        latest = database.baseline ?? 0
+    } else if !configuredHandle.isEmpty {
+        latest = (try? database.latestRowId()) ?? 0
     }
     return [
         "automation": automationState(),
-        "database": databaseState.rawValue,
+        // "ok" only after a good read: the app takes its baseline from this.
+        "database": database.state.rawValue,
         "configured": !configuredHandle.isEmpty,
         "latestRowId": latest,
     ]
@@ -293,27 +191,32 @@ func handle(_ command: [String: Any]) {
     case "status":
         emit(["id": id, "result": statusResult()])
     case "configure":
-        let requested = (command["handle"] as? String) ?? ""
-        if requested.isEmpty {
+        let requested = messageConfigureOptions(command)
+        if requested.handle.isEmpty {
             configuredHandle = ""
-            database.close()
+            databaseWatch.set(false)
+            database.reset()
             emit(["id": id, "result": statusResult()])
             return
         }
-        guard messageHandleUsable(requested) else {
-            emit(["id": id, "error": "That is not a phone number or iMessage address.", "code": "BAD_HANDLE"])
+        guard messageHandleUsable(requested.handle) else {
+            emit(["id": id, "error": "That is not a phone number with its country code or an iMessage address.", "code": "BAD_HANDLE"])
             return
         }
-        configuredHandle = requested
-        emit(["id": id, "result": statusResult()])
+        configuredHandle = requested.handle
+        database.rebaseline()
+        databaseWatch.set(requested.watch)
+        emit(["id": id, "result": statusResult(baseline: true)])
     case "send":
-        guard !configuredHandle.isEmpty else {
+        // One read: a configure on dbQueue may change the handle meanwhile.
+        let recipient = configuredHandle
+        guard !recipient.isEmpty else {
             emit(["id": id, "error": "No handle is configured.", "code": "NOT_CONFIGURED"])
             return
         }
         let text = String(((command["text"] as? String) ?? "").prefix(600))
         do {
-            try sendMessage(handle: configuredHandle, text: text)
+            try sendMessage(handle: recipient, text: text)
             emit(["id": id, "result": ["sent": true]])
         } catch { fail(error) }
     case "poll":
@@ -324,11 +227,7 @@ func handle(_ command: [String: Any]) {
         let since = (command["sinceRowId"] as? NSNumber)?.int64Value ?? 0
         do {
             let result = try database.poll(handle: configuredHandle, since: since, now: Date().timeIntervalSince1970)
-            emit(["id": id, "result": [
-                "rowId": result.rowId,
-                "skipped": result.skipped,
-                "messages": result.messages.map { ["rowId": $0.rowId, "text": $0.text, "at": $0.at] },
-            ]])
+            emit(["id": id, "result": result.object])
         } catch { fail(error) }
     default:
         emit(["id": id, "error": "Unknown messages method.", "code": "BAD_REQUEST"])
@@ -352,15 +251,22 @@ func handle(_ command: [String: Any]) {
                 guard let bytes = line.data(using: .utf8),
                       let command = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any]
                 else { continue }
-                // AppleScript needs the main thread and its run loop; requests
-                // are handled one at a time in arrival order.
-                DispatchQueue.main.async { handle(command) }
+                // AppleScript needs the main thread and its run loop, and a first
+                // send can wait minutes on the Automation prompt, so sends queue
+                // there and everything else on dbQueue. Each queue answers in
+                // arrival order.
+                if command["method"] as? String == "send" {
+                    DispatchQueue.main.async { handle(command) }
+                } else {
+                    dbQueue.async { handle(command) }
+                }
             }
             // The app closed the pipe or died. Requests already queued still
-            // answer (the main queue is first in, first out), and a hard
-            // deadline covers a main thread stuck in an AppleScript prompt.
+            // answer (database requests first, then the main queue, both first
+            // in, first out), and a hard deadline covers a main thread stuck in
+            // an AppleScript prompt.
             DispatchQueue.global().asyncAfter(deadline: .now() + 2) { _exit(0) }
-            DispatchQueue.main.async { exit(0) }
+            dbQueue.async { DispatchQueue.main.async { exit(0) } }
         }
         RunLoop.main.run()
     }

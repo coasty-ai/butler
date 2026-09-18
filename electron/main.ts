@@ -87,6 +87,7 @@ import {
   MessagesChannel,
   createMessagesHelper,
   importEnvHandle,
+  resumeFromText,
   validateMessageSettings,
 } from "./messages";
 import { createSpeechOutput, selectSpeechEngine } from "./speech-output";
@@ -414,7 +415,8 @@ function messagesBinary() {
  */
 const messages = new MessagesChannel({
   settings: () => settings,
-  helper: () => createMessagesHelper(messagesBinary(), { diagnostics: debug }),
+  helper: (onChanged) =>
+    createMessagesHelper(messagesBinary(), { diagnostics: debug, onChanged }),
   startTask: async (task) => {
     ensureIdle();
     try {
@@ -433,9 +435,10 @@ const messages = new MessagesChannel({
       voiceHeld = false;
       runner?.stop();
     },
-    resume: async () => {
+    resume: () => {
       voiceHeld = false;
-      if (runHeld()) await resumeHeldRun(runHeld);
+      // The texted reply says "Continuing." only when this is true.
+      return resumeFromText(runHeld, resumeHeldRun);
     },
   },
   trace: debug,
@@ -959,7 +962,8 @@ function lastSequence() {
 /**
  * Re-activates the remembered app and resumes a held run, unless anything
  * happened to the run (a new pause, takeover, stop or voice capture) while the
- * native restore was in flight. Returns whether the run was resumed.
+ * native restore or the runner's own resume was in flight. Returns whether
+ * the run was resumed.
  */
 async function resumeHeldRun(held: () => boolean) {
   const current = runner,
@@ -979,8 +983,7 @@ async function resumeHeldRun(held: () => boolean) {
       return false;
     }
   }
-  await current.resume();
-  return true;
+  return current.resume();
 }
 /**
  * Undoes the hold of an untouched text-entry pill that a tap opened while the

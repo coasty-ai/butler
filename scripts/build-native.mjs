@@ -72,6 +72,7 @@ const messages = spawnSync(
     "-o",
     "native/bin/coarena-messages",
     "native/macos/Messages.swift",
+    "native/macos/MessagesDatabase.swift",
     "native/macos/MessageSafety.swift",
     "-framework",
     "AppKit",

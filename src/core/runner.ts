@@ -756,8 +756,13 @@ export class Runner {
     this.event("RunCancelled");
     this.status("cancelled", reason);
   }
-  async resume() {
-    if (!this.active()) return;
+  /**
+   * Resumes a held run. True only when the run is going again: callers that
+   * report the outcome (a texted "continue") must not claim a resume that a
+   * pause, takeover or stop landing mid-flight undid.
+   */
+  async resume(): Promise<boolean> {
+    if (!this.active()) return false;
     if (
       this.voiceApproval &&
       this.snapshot.pending &&
@@ -774,18 +779,18 @@ export class Runner {
         interrupts !== this.interrupts
       ) {
         this.controller.stop();
-        return;
+        return false;
       }
       this.voiceApproval = false;
-      return;
+      return false;
     }
-    if (!this.held) return;
+    if (!this.held) return false;
     const epoch = this.epoch;
     await this.controller.resume();
     // A pause, takeover or stop that landed during the native round-trip wins.
     if (!this.active() || epoch !== this.epoch) {
       this.controller.stop();
-      return;
+      return false;
     }
     this.held = false;
     this.resetCounters();
@@ -795,6 +800,7 @@ export class Runner {
     this.event("UserTakeoverEnded");
     this.status("capturing", "Resuming with a fresh screenshot.");
     this.wake?.();
+    return true;
   }
   confirm(yes: boolean) {
     this.approval?.(yes);

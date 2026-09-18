@@ -7,8 +7,10 @@
  * they stay on the Mac, where the pill and the screen are.
  *
  * Everything the native helper cannot decide alone is decided here, and the
- * rules that matter are mirrored from native/macos/MessageSafety.swift so both
- * sides refuse the same things. The two test suites share fixture strings.
+ * row rules that matter (handle, freshness, service) are re-checked against
+ * native/macos/MessageSafety.swift so both sides refuse the same things. The
+ * command vocabulary and the rate limits live only here. The wire contract is
+ * tests/fixtures/messages-poll.json, which both test suites read.
  */
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -50,9 +52,10 @@ export const MESSAGE_APPROVAL_REPLY =
 // MARK: handles
 
 /**
- * Canonical handle: "user@example.com" for an address, digits only for a
- * number. "" when the value cannot be a handle. Mirrors
- * normalizeMessageHandle in MessageSafety.swift.
+ * Canonical handle: "user@example.com" for an address, the E.164 digits for a
+ * number. "" when the value cannot be a handle, which includes a number
+ * without its country code. Mirrors normalizeMessageHandle in
+ * MessageSafety.swift.
  */
 export function normalizeHandle(raw: string): string {
   const trimmed = (raw ?? "").trim().toLowerCase();
@@ -65,32 +68,40 @@ export function normalizeHandle(raw: string): string {
       return "";
     return trimmed;
   }
+  // A number must carry its country code. A national number is somebody
+  // else in another country: "8123456789" saved in India is not the US number
+  // +1 812 345 6789, yet the digits agree. Messages stores senders in E.164.
   let body = trimmed.startsWith("tel:") ? trimmed.slice(4) : trimmed;
   if (body.startsWith("00")) body = "+" + body.slice(2);
+  if (!/^\+[()\-. \u00a00-9]+$/.test(body)) return "";
   const digits = body.replace(/\D/g, "");
-  if (!/^[+()\-. \u00a00-9]+$/.test(body)) return "";
   if (digits.length < 5 || digits.length > 16) return "";
   return digits;
 }
 
 /**
- * Same person? Numbers compare digit by digit; a bare ten-digit North
- * American number also matches its +1 form. Nothing else is fuzzy.
+ * Same person: the same address, or the same number with its country code.
+ * Nothing is fuzzy.
  */
 export function handlesMatch(a: string, b: string): boolean {
-  const left = normalizeHandle(a),
-    right = normalizeHandle(b);
-  if (!left || !right) return false;
-  if (left === right) return true;
-  if (left.includes("@") || right.includes("@")) return false;
-  const [short, long] =
-    left.length <= right.length ? [left, right] : [right, left];
-  return (
-    short.length === 10 &&
-    long.length === 11 &&
-    long.startsWith("1") &&
-    long.endsWith(short)
-  );
+  const left = normalizeHandle(a);
+  return !!left && left === normalizeHandle(b);
+}
+
+/**
+ * How far a row's delivery service is trusted. Only iMessage authenticates the
+ * sender (Apple ties it to the account); an SMS or RCS caller ID can be
+ * spoofed, so those never act, even from the owner's number. The helper
+ * already drops them; this is the second check. "" means the database has no
+ * service column at all: the sender cannot be vouched for, so such a row may
+ * only ask for "status", which changes nothing and is texted to the owner's
+ * own handle anyway.
+ */
+export function messageServiceTrust(
+  service: string,
+): "full" | "status" | "none" {
+  if (service === "iMessage") return "full";
+  return service === "" ? "status" : "none";
 }
 
 // MARK: vocabulary
@@ -141,7 +152,6 @@ export function normalizeMessageText(raw: string): string {
 /**
  * The strict vocabulary: status, stop, pause, continue (or resume) alone, and
  * "do <task>". Everything else is unknown and earns at most one line back.
- * Mirrors parseMessageCommand in MessageSafety.swift.
  */
 export function parseMessageCommand(raw: string): MessageCommand {
   const text = normalizeMessageText(raw);
@@ -183,7 +193,7 @@ export const defaultRateLimits: MessageRateLimits = {
 };
 /**
  * Sliding-window admission plus an unknown-command cooldown, so a confused or
- * automated sender cannot start a text ping-pong. Mirrors MessageRateState.
+ * automated sender cannot start a text ping-pong.
  */
 export class MessageRate {
   private accepted: number[] = [];
@@ -232,10 +242,19 @@ export type MessageSettings = Pick<
  */
 export function validateMessageSettings(s: MessageSettings): void {
   if (!s.messages) return;
-  if (!normalizeHandle(s.messagesHandle))
+  if (normalizeHandle(s.messagesHandle)) return;
+  // Digits without a leading "+": a number missing its country code.
+  if (
+    /^(tel:)?[()\-. \u00a00-9]*[0-9][()\-. \u00a00-9]*$/i.test(
+      s.messagesHandle.trim(),
+    )
+  )
     throw new Error(
-      "Add the phone number or iMessage address to text before turning messages on.",
+      "Add the country code to your number, for example +1 555 123 4567.",
     );
+  throw new Error(
+    "Add the phone number or iMessage address to text before turning messages on.",
+  );
 }
 /** The live view of the settings, or undefined when the channel is off. */
 export function messageTarget(
@@ -379,6 +398,20 @@ export function statusLine(s: Snapshot | undefined): string {
     `Working on ${taskLine(run.task)} — ${run.actions} step${run.actions === 1 ? "" : "s"} so far.`,
   );
 }
+/**
+ * The reply to "continue" when nothing resumed, from the live state. An
+ * approval is not a pause, and "continue" by text never approves.
+ */
+export function notResumedLine(s: Snapshot | undefined): string {
+  const status = s?.run?.status;
+  if (!status || ["completed", "cancelled", "failed"].includes(status))
+    return "Nothing is running.";
+  if (status === "confirming")
+    return "It’s waiting for your approval on the Mac, not paused. Approve or decline it there.";
+  if (status === "paused" || status === "takeover")
+    return "It’s still paused: something changed on the Mac. Text “status” to check.";
+  return "It’s already working.";
+}
 
 // MARK: the native helper
 
@@ -421,10 +454,28 @@ const offStatus = (s: MessageSettings): MessagesStatus => ({
   database: "off",
   listening: false,
 });
+/**
+ * Classifies an unsolicited helper line. The only one is the content-free
+ * {"event":"changed"} hint (chat.db or its WAL was written); any other event
+ * is swallowed rather than mistaken for a reply.
+ */
+export function helperEvent(line: unknown): "changed" | "other" | undefined {
+  if (!line || typeof line !== "object" || !("event" in line)) return undefined;
+  return (line as { event: unknown }).event === "changed" ? "changed" : "other";
+}
 /** The coarena-messages helper as a restartable JSON-lines process. */
 export function createMessagesHelper(
   binary: string,
-  options: { diagnostics?: DiagnosticSink; hooks?: HelperHooks } = {},
+  options: {
+    diagnostics?: DiagnosticSink;
+    hooks?: HelperHooks;
+    /**
+     * The database changed: poll now rather than on the next tick. Required,
+     * so a caller that forgets it does not compile: the poll timer would hide
+     * the loss, and texts would wait up to 4 s again.
+     */
+    onChanged: () => void;
+  },
 ): MessagesHelper {
   const helper = new HelperProcess(binary, {
     name: "Messages",
@@ -443,8 +494,12 @@ export function createMessagesHelper(
         (error as Error & { code?: string }).code = data.code;
       return error;
     },
-    // The helper never speaks unless spoken to.
-    event: () => false,
+    // Unprompted, the helper only ever says "look again".
+    event: (line) => {
+      const kind = helperEvent(line);
+      if (kind === "changed") options.onChanged();
+      return kind !== undefined;
+    },
   });
   return {
     call: (method, data = {}) =>
@@ -462,10 +517,26 @@ export function createMessagesHelper(
   };
 }
 
+/**
+ * What a texted "continue" does in main: resume only a held run, and report
+ * true only when the resume itself says the run is going again. An approval
+ * waiting on the Mac is not held, so it is never touched.
+ */
+export async function resumeFromText(
+  held: () => boolean,
+  resumeHeld: (held: () => boolean) => Promise<boolean>,
+): Promise<boolean> {
+  if (!held()) return false;
+  return (await resumeHeld(held)) === true;
+}
+
 export interface MessagesChannelOptions {
   settings: () => MessageSettings;
-  /** Created lazily, only once the channel is switched on. */
-  helper: () => MessagesHelper;
+  /**
+   * Created lazily, only once the channel is switched on. `onChanged` is the
+   * helper's "changed" hint; the channel answers it with an immediate poll.
+   */
+  helper: (onChanged: () => void) => MessagesHelper;
   /**
    * Starts a task the way a typed command does, including the pill. Rejects
    * with a readable message (for example when a run is already active).
@@ -474,7 +545,8 @@ export interface MessagesChannelOptions {
   control: {
     pause: () => void;
     stop: () => void;
-    resume: () => Promise<void>;
+    /** True only when a held run actually resumed (see resumeFromText). */
+    resume: () => Promise<boolean>;
   };
   now?: () => number;
   trace?: DiagnosticSink;
@@ -490,8 +562,20 @@ export class MessagesChannel {
   private helper?: MessagesHelper;
   private timer?: unknown;
   private lastRowId = 0;
-  private baselineHandle = "";
+  /**
+   * The handle and watch flag the helper was last configured with, set only
+   * once that configure read the database: until then there is no baseline
+   * row and nothing is polled.
+   */
+  private baseline = "";
+  private configuring?: { key: string; done: Promise<any> };
   private polling = false;
+  /** A "changed" hint arrived mid-poll: poll once more when it ends. */
+  private again = false;
+  /** Texts go out one at a time, in order, and nothing waits for them. */
+  private outbox: Promise<void> = Promise.resolve();
+  /** Quitting: a text still in line must not spawn a fresh helper. */
+  private closed = false;
   private snapshot?: Snapshot;
   private sentKeys: string[] = [];
   private runCounts = new Map<string, number>();
@@ -522,13 +606,13 @@ export class MessagesChannel {
       this.stopPolling();
       this.helper?.close();
       this.helper = undefined;
-      this.baselineHandle = "";
+      this.baseline = "";
       this.state = offStatus(settings);
       return;
     }
     try {
       const result =
-        (await this.ensureConfigured(target.handle)) ??
+        (await this.ensureConfigured(target)) ??
         (await this.use().call("status"));
       this.state = {
         ...this.state,
@@ -582,21 +666,53 @@ export class MessagesChannel {
     if (count >= MESSAGE_RUN_LIMIT) return;
     this.remember(moment.key);
     this.runCounts.set(run.id, count + 1);
-    void this.send(moment.text, `moment:${run.status}`);
+    this.send(moment.text, `moment:${run.status}`);
   }
-  /** Reads new messages once. The poll timer calls this; so do tests. */
+  /**
+   * The helper saw chat.db change: poll now instead of on the next tick. A
+   * hint during a poll earns exactly one more poll after it, so a burst of
+   * hints never stacks up requests. The timer keeps running as the fallback.
+   */
+  kick(): void {
+    if (!this.state.listening) return;
+    if (this.polling) {
+      this.again = true;
+      return;
+    }
+    void this.pollOnce();
+  }
+  /** Resolves once every text queued so far has been handed to the helper. */
+  settled(): Promise<void> {
+    return this.outbox;
+  }
+  /**
+   * Reads new messages once. The poll timer and kick() call this; so do tests.
+   * Replies are queued, never awaited, so a send stuck on the Automation
+   * prompt cannot hold up the next poll.
+   */
   async pollOnce(): Promise<void> {
     const target = messageTarget(this.options.settings());
     if (!target || !target.commands || this.polling) return;
     this.polling = true;
+    this.again = false;
     try {
-      await this.ensureConfigured(target.handle);
+      const configured = await this.ensureConfigured(target);
+      if (configured)
+        this.state = {
+          ...this.state,
+          database: databaseOf(configured.database),
+        };
+      // No baseline yet (Messages closed, no grant): reading now would start
+      // from row 0 and run whatever is stored. The next poll configures again.
+      if (this.baseline !== configuredKey(target)) return;
       const result = await this.use().call("poll", {
         sinceRowId: this.lastRowId,
       });
       const rowId = Number(result?.rowId ?? 0);
-      if (Number.isFinite(rowId) && rowId > this.lastRowId)
-        this.lastRowId = rowId;
+      const advanced = Number.isFinite(rowId) && rowId > this.lastRowId;
+      if (advanced) this.lastRowId = rowId;
+      // A full page means more rows are waiting: read them now, not in 4 s.
+      if (advanced && Number(result?.skipped) > 0) this.again = true;
       this.state = {
         ...this.state,
         ...(typeof result?.database === "string"
@@ -615,13 +731,17 @@ export class MessagesChannel {
     } finally {
       this.polling = false;
     }
+    if (this.again) {
+      this.again = false;
+      await this.pollOnce();
+    }
   }
   /** Settings' "Send a test message". Rejects with a readable message. */
   async sendTest(): Promise<void> {
     const target = messageTarget(this.options.settings());
     if (!target)
       throw new Error("Turn on texting and add your number to send a test.");
-    await this.ensureConfigured(target.handle);
+    await this.ensureConfigured(target);
     await this.use().call("send", {
       text: "Open Assist is set up. Text “status”, “stop”, “pause”, “continue” or “do <task>”.",
     });
@@ -634,7 +754,7 @@ export class MessagesChannel {
     if (!target) return this.status();
     try {
       const result =
-        (await this.ensureConfigured(target.handle)) ??
+        (await this.ensureConfigured(target)) ??
         (await this.use().call("status"));
       this.state = {
         ...this.state,
@@ -647,6 +767,7 @@ export class MessagesChannel {
     return this.status();
   }
   close(): void {
+    this.closed = true;
     this.stopPolling();
     this.helper?.close();
     this.helper = undefined;
@@ -655,28 +776,58 @@ export class MessagesChannel {
   // internals
 
   private use(): MessagesHelper {
-    this.helper ??= this.options.helper();
+    this.helper ??= this.options.helper(() => this.kick());
     return this.helper;
   }
   /**
-   * Makes sure the helper knows the handle before anything is sent or read.
-   * A new handle (or a restarted helper) starts from the newest stored row, so
-   * a backlog of texts can never execute. Returns the configure result, or
-   * undefined when the helper was already configured for this handle.
+   * Makes sure the helper knows the handle before anything is sent or read,
+   * and watches the database only while replies are read. A new handle (or a
+   * restarted helper) starts from the newest stored row, so a backlog of texts
+   * can never execute. That row only counts when the helper read it: a
+   * configure while the database is locked, missing or refused reports row 0,
+   * which is no baseline at all, so the key stays unset and the next call
+   * configures again. Returns the configure result, or undefined when the
+   * helper was already configured this way. Polls and sends now run side by
+   * side, so they share one configure call: two would each move the baseline,
+   * and the second could jump past a row the first poll has not read yet.
    */
-  private async ensureConfigured(handle: string): Promise<any | undefined> {
-    if (this.baselineHandle === handle) return undefined;
-    const result = await this.use().call("configure", { handle });
-    const latest = Number(result?.latestRowId ?? 0);
-    this.baselineHandle = handle;
-    this.lastRowId = Number.isFinite(latest) ? latest : 0;
-    this.rate = new MessageRate();
-    return result;
+  private async ensureConfigured(target: {
+    handle: string;
+    commands: boolean;
+  }): Promise<any | undefined> {
+    const key = configuredKey(target);
+    if (this.baseline === key) return undefined;
+    if (this.configuring?.key === key) {
+      await this.configuring.done;
+      return undefined;
+    }
+    const done = this.use().call("configure", {
+      handle: target.handle,
+      watch: target.commands,
+    });
+    this.configuring = { key, done };
+    try {
+      const result = await done;
+      const latest = Number(result?.latestRowId);
+      const read =
+        result?.database === "ok" &&
+        Number.isSafeInteger(latest) &&
+        latest >= 0;
+      // Without texted control nothing is ever read, so no baseline is needed.
+      if (read || !target.commands) {
+        this.baseline = key;
+        this.lastRowId = read ? latest : 0;
+        this.rate = new MessageRate();
+      }
+      return result;
+    } finally {
+      if (this.configuring?.done === done) this.configuring = undefined;
+    }
   }
   /** A restarted helper has forgotten the handle; configure it again next time. */
   private forget(error: unknown) {
     if ((error as { code?: string })?.code === "NOT_CONFIGURED")
-      this.baselineHandle = "";
+      this.baseline = "";
   }
   private trace(event: string, data: Record<string, unknown> = {}) {
     trace(this.options.trace, event, data);
@@ -721,8 +872,12 @@ export class MessagesChannel {
     this.timer = undefined;
     this.state = { ...this.state, listening: false };
   }
-  /** One outgoing text, inside the hourly budget. Never throws. */
-  private async send(text: string, reason: string): Promise<void> {
+  /**
+   * Queues one outgoing text inside the hourly budget and returns at once.
+   * The budget is charged now, in arrival order; the helper call waits its
+   * turn behind earlier texts. Never throws.
+   */
+  private send(text: string, reason: string): void {
     const target = messageTarget(this.options.settings());
     if (!target || !text.trim()) return;
     const now = this.now();
@@ -732,8 +887,14 @@ export class MessagesChannel {
       return;
     }
     this.outgoing.push(now);
+    this.outbox = this.outbox.then(() => this.deliver(text, reason));
+  }
+  private async deliver(text: string, reason: string): Promise<void> {
+    // Switched off, or quitting, while this waited in line.
+    const target = messageTarget(this.options.settings());
+    if (!target || this.closed) return;
     try {
-      await this.ensureConfigured(target.handle);
+      await this.ensureConfigured(target);
       await this.use().call("send", { text: text.slice(0, MESSAGE_MAX_SEND) });
       this.trace("MessageSent", { reason, length: text.length });
       this.state = { ...this.state, error: undefined };
@@ -743,32 +904,54 @@ export class MessagesChannel {
       this.trace("MessageSendFailed", { reason, ...errorDetails(error) });
     }
   }
-  /** One candidate row from the helper, re-checked here before it can act. */
+  /**
+   * One candidate row from the helper, re-checked here before it can act.
+   * Defence in depth: the helper already filtered by handle, freshness and
+   * service. A row that does not match the contract in
+   * tests/fixtures/messages-poll.json is dropped, and traced, never guessed at.
+   */
   private async receive(
     row: unknown,
     target: { handle: string; commands: boolean },
   ): Promise<void> {
-    if (!row || typeof row !== "object") return;
-    const value = row as { handle?: unknown; text?: unknown; at?: unknown };
-    // Defence in depth: the helper already filtered by handle and freshness.
-    if (typeof value.handle !== "string" || typeof value.text !== "string")
+    const value = (row && typeof row === "object" ? row : {}) as {
+      rowId?: unknown;
+      handle?: unknown;
+      service?: unknown;
+      text?: unknown;
+      at?: unknown;
+    };
+    if (
+      typeof value.rowId !== "number" ||
+      typeof value.handle !== "string" ||
+      typeof value.service !== "string" ||
+      typeof value.text !== "string" ||
+      typeof value.at !== "number"
+    ) {
+      this.trace("MessageIgnored", { cause: "shape" });
       return;
+    }
     if (!handlesMatch(target.handle, value.handle)) {
       this.trace("MessageIgnored", { cause: "sender" });
       return;
     }
-    const at = typeof value.at === "number" ? value.at * 1000 : 0;
+    const at = value.at * 1000;
     const now = this.now();
     if (!at || at < now - MESSAGE_MAX_AGE_MS || at > now + 60000) {
       this.trace("MessageIgnored", { cause: "stale" });
       return;
     }
     const command = parseMessageCommand(value.text);
+    const trust = messageServiceTrust(value.service);
+    if (trust === "none" || (trust === "status" && command.kind !== "status")) {
+      this.trace("MessageIgnored", { cause: "service", kind: command.kind });
+      return;
+    }
     const admission = this.rate.admit(now);
     if (!admission.accepted) {
       this.trace("MessageIgnored", { cause: "rate", kind: command.kind });
       if (admission.reply)
-        await this.send(
+        this.send(
           "That’s a lot of messages at once. I’ll pick up again in a minute.",
           "throttled",
         );
@@ -784,17 +967,17 @@ export class MessagesChannel {
     const now = this.now();
     switch (command.kind) {
       case "status":
-        await this.send(statusLine(this.snapshot), "status");
+        this.send(statusLine(this.snapshot), "status");
         return;
       case "approval":
         if (this.rate.answerUnknown(now))
-          await this.send(MESSAGE_APPROVAL_REPLY, "approval");
+          this.send(MESSAGE_APPROVAL_REPLY, "approval");
         return;
       case "unknown":
       case "empty":
       case "too_long":
         if (this.rate.answerUnknown(now))
-          await this.send(
+          this.send(
             command.kind === "too_long"
               ? "That message is too long for me. " + MESSAGE_VOCABULARY
               : MESSAGE_VOCABULARY,
@@ -803,20 +986,20 @@ export class MessagesChannel {
         return;
       case "stop": {
         if (!this.active()) {
-          await this.send("Nothing is running.", "stop");
+          this.send("Nothing is running.", "stop");
           return;
         }
         this.options.control.stop();
-        await this.send("Stopped.", "stop");
+        this.send("Stopped.", "stop");
         return;
       }
       case "pause": {
         if (!this.active()) {
-          await this.send("Nothing is running.", "pause");
+          this.send("Nothing is running.", "pause");
           return;
         }
         this.options.control.pause();
-        await this.send(
+        this.send(
           "Paused. Text “continue” when you want it to go on.",
           "pause",
         );
@@ -824,14 +1007,19 @@ export class MessagesChannel {
       }
       case "resume": {
         if (!this.active()) {
-          await this.send("Nothing is running.", "continue");
+          this.send("Nothing is running.", "continue");
           return;
         }
         try {
-          await this.options.control.resume();
-          await this.send("Continuing.", "continue");
+          const resumed = await this.options.control.resume();
+          // Only a run that really resumed earns "Continuing."; otherwise say
+          // why from the state as it is now.
+          this.send(
+            resumed ? "Continuing." : notResumedLine(this.snapshot),
+            "continue",
+          );
         } catch (error) {
-          await this.send(
+          this.send(
             `I couldn’t continue: ${readable(error)}`.slice(
               0,
               MESSAGE_MAX_SEND,
@@ -844,7 +1032,7 @@ export class MessagesChannel {
       case "start": {
         if (!target.commands) return;
         if (scanText(command.task).some((f) => f.action === "BLOCK_UPLOAD")) {
-          await this.send(
+          this.send(
             "I can’t take passwords or keys by message. Enter those on the Mac.",
             "refused",
           );
@@ -857,7 +1045,7 @@ export class MessagesChannel {
           await this.options.startTask(command.task);
         } catch (error) {
           this.pendingStart = undefined;
-          await this.send(
+          this.send(
             `I couldn’t start that: ${readable(error)}`.slice(
               0,
               MESSAGE_MAX_SEND,
@@ -875,6 +1063,9 @@ export class MessagesChannel {
   }
 }
 
+function configuredKey(target: { handle: string; commands: boolean }) {
+  return `${target.handle}\n${target.commands}`;
+}
 function readable(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   return message || "The Messages helper failed.";

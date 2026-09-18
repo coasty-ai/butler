@@ -44,6 +44,7 @@ const messages = spawnSync(
     "-module-cache-path",
     "tmp/swift-cache",
     "native/macos/MessageSafety.swift",
+    "native/macos/MessagesDatabase.swift",
     "tests/native/MessageSafetyTests.swift",
     "-o",
     "tmp/message-safety-tests",
