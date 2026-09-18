@@ -27,6 +27,7 @@ import { z } from "zod";
 import {
   defaultSettings,
   settingsSchema,
+  type Frame,
   type Run,
   type RunOrigin,
   type Settings,
@@ -109,6 +110,7 @@ import {
   APPROVAL_MIN_CONFIDENCE,
   planVoiceTurn,
   type TurnPlan,
+  type TurnPlanKind,
 } from "../src/voice/turns";
 import { runView, statusLine } from "../src/assistant/run-view";
 import type { Channel, ProgressSink } from "../src/assistant/types";
@@ -116,6 +118,10 @@ import { PRESENCE_REFRESH_MS, createPresenceService } from "./presence";
 import { ProgressReporter, createProgressSummarizer } from "./progress";
 import { KeepAwake } from "./power";
 import { textSettings } from "../src/providers/text";
+import { RemoteServer } from "./remote/server";
+import { createTailscaleProvider } from "./remote/tailscale";
+import { remoteApprovalTier, validateRemoteSettings } from "../src/remote/auth";
+import { remoteReply } from "../src/remote/protocol";
 import { TASK_QUEUE_MAX, TaskQueue } from "./task-queue";
 import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
@@ -537,20 +543,147 @@ const power = new KeepAwake({
   blocker: () => powerSaveBlocker,
   trace: debug,
 });
+/** The sanitized view of the run every channel answers from. */
+function currentRunView() {
+  const now = Date.now();
+  return runView(snapshot, {
+    queued: taskQueue.list(now),
+    watches: [],
+    lastFinished,
+    now,
+    // The activation that asked paused the run to listen; it goes on once
+    // answered, so the answer must not call it paused.
+    heldByVoice: voiceHoldResumable(),
+  });
+}
 /** The fixed status line every channel answers "how's it going?" with. */
 function statusText() {
-  const now = Date.now();
-  return statusLine(
-    runView(snapshot, {
-      queued: taskQueue.list(now),
-      watches: [],
-      lastFinished,
-      now,
-      // The activation that asked paused the run to listen; it goes on once
-      // answered, so the answer must not call it paused.
-      heldByVoice: voiceHoldResumable(),
-    }),
-  );
+  return statusLine(currentRunView());
+}
+/**
+ * The phone remote over the user's own tailnet (docs/REMOTE.md): plain
+ * lines and controls from a phone the user allowed in Settings, and routine
+ * approvals only from a phone armed for them, never for restricted questions.
+ * Every callback is lazy: root and master exist by the time it configures.
+ */
+const remote = new RemoteServer({
+  settings: () => settings,
+  persist: (patch) => {
+    settings = { ...settings, ...patch };
+    saveConfig();
+    updateTray();
+    refreshSettingsView();
+  },
+  identity: createTailscaleProvider({ trace: debug }),
+  // The page's certificate, sealed with the vault key like the config.
+  certStore: {
+    load: () => {
+      const path = join(root, "remote-cert.enc");
+      return existsSync(path)
+        ? unseal(master, readFileSync(path), "remote-cert").toString()
+        : undefined;
+    },
+    save: (record) => {
+      const path = join(root, "remote-cert.enc");
+      writeFileSync(
+        path + ".tmp",
+        seal(master, Buffer.from(record), "remote-cert"),
+        { mode: 0o600 },
+      );
+      renameSync(path + ".tmp", path);
+    },
+  },
+  converse: steerFromRemote,
+  control: {
+    pause: () => {
+      voiceHeld = false;
+      runner?.pause();
+    },
+    stop: () => {
+      cancelVoiceCapture();
+      void conversation.stopSpeaking();
+      voiceHeld = false;
+      taskQueue.clear();
+      runner?.stop();
+    },
+    resume: () => {
+      voiceHeld = false;
+      return resumeFromText(runHeld, resumeHeldRun);
+    },
+    approve: approveFromRemote,
+    gate: () => currentGate(),
+  },
+  presence: () => presence.current(),
+  runView: currentRunView,
+  snapshot: () => snapshot,
+  thumbnail: remoteThumbnail,
+  trace: debug,
+});
+progressSinks.push(remote);
+/**
+ * A phone's line, routed like typed text with nobody at the screen: the
+ * router never approves from it, and a "no" only pauses. The reply is the
+ * fixed line for the plan; status answers come from the run view.
+ */
+async function steerFromRemote(
+  text: string,
+): Promise<{ plan: TurnPlanKind; reply?: string; error?: string }> {
+  const gate = currentGate();
+  const plan = planVoiceTurn({
+    text,
+    confidence: 1,
+    source: "remote",
+    gateMatches: !!gate,
+    now: Date.now(),
+    run: planRun(),
+  });
+  debug("TurnPlanned", {
+    plan: plan.kind,
+    source: "remote",
+    textLength: text.length,
+  });
+  const ctx: PlanCtx = {
+    origin: "remote",
+    channel: "remote",
+    taskSource: "user_words",
+    ...(plan.kind === "status" ? { replyText: statusText() } : {}),
+  };
+  const outcome = await executePlan(plan, ctx);
+  if (!outcome.ok) return { plan: plan.kind, error: outcome.error };
+  const reply =
+    plan.kind === "status"
+      ? ctx.replyText
+      : plan.kind === "clarify"
+        ? remoteReply("clarify", { question: plan.question })
+        : plan.kind === "needClick"
+          ? remoteReply("needClick", { reason: plan.reason })
+          : undefined;
+  return { plan: plan.kind, ...(reply ? { reply } : {}) };
+}
+/**
+ * The runner's answer for a phone's verdict. The server applied every rule
+ * (device switches, tier, presence, nonce); the gate and the tier are checked
+ * once more here so nothing but a routine question can be approved from a
+ * phone even if the server were wrong.
+ */
+async function approveFromRemote(yes: boolean): Promise<boolean> {
+  if (!currentGate() || !snapshot.pending) return false;
+  if (yes && remoteApprovalTier(snapshot.pending) !== "routine") return false;
+  void conversation.stopSpeaking();
+  void voice?.call("endFollowUp").catch(() => {});
+  await runner!.approveFromVoice(yes, "remote");
+  return true;
+}
+/** A 24-pixel mosaic of the frame scaled back up: layout and colour, no text. */
+function remoteThumbnail(frame: Frame): Buffer | undefined {
+  const match = /^data:image\/(?:png|jpeg);base64,(.+)$/.exec(frame.image);
+  if (!match) return undefined;
+  const image = nativeImage.createFromBuffer(Buffer.from(match[1], "base64"));
+  if (image.isEmpty()) return undefined;
+  return image
+    .resize({ width: 24, quality: "good" })
+    .resize({ width: 360, quality: "good" })
+    .toJPEG(50);
 }
 /** How an approval answered through a channel is journaled. */
 function approvalSource(channel: Channel): ApprovalSource {
@@ -929,6 +1062,13 @@ function updateTray() {
       },
       { label: "Settings…", click: () => showSettings() },
       { label: "Review local runs…", click: () => showSettings("review") },
+      ...(settings.remoteEnabled
+        ? [
+            { type: "separator" as const },
+            // Cuts every phone off at once; the setting turns off with it.
+            { label: "Lock phone remote", click: () => remote.lock() },
+          ]
+        : []),
       { type: "separator" },
       { label: "Quit Open Assist", click: () => app.quit() },
     ]),
@@ -1718,7 +1858,13 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       }
       show({
         phase: "working",
-        label: active ? "Got it." : "On it.",
+        // The pill says where a task came from, never what the phone sent.
+        label:
+          ctx.channel === "remote"
+            ? "From your phone."
+            : active
+              ? "Got it."
+              : "On it.",
         transcript: "",
         canApprove: false,
         closing: false,
@@ -1816,6 +1962,7 @@ function emit(s: Snapshot) {
   messages.onSnapshot(s);
   reporter.onSnapshot(s);
   power.onSnapshot(s);
+  remote.onSnapshot(s);
   trackRun(s);
   if (window && !window.isDestroyed()) window.webContents.send("snapshot", s);
   // Decides what to say about this moment; it never speaks while listening.
@@ -1984,8 +2131,12 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     }
     case "saveSettings": {
       const next = settingsSchema.parse(args[0]);
+      // The phone list is edited only through setRemoteDevice and
+      // forgetRemoteDevice, so a save never carries a stale copy of it.
+      next.remoteDevices = settings.remoteDevices;
       validateProviderEndpoint(next);
       validateMessageSettings(next);
+      validateRemoteSettings(next);
       const nextCredentials =
         args[1] !== undefined
           ? withProviderKey(credentials, next, args[1])
@@ -2035,6 +2186,9 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       await messages.configure().catch((error) => {
         debug("MessagesSetupFailed", errorDetails(error));
         messagesError = error;
+      });
+      await remote.configure().catch((error) => {
+        debug("RemoteSetupFailed", errorDetails(error));
       });
       let applyError: unknown;
       if (live) {
@@ -2270,6 +2424,49 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     }
     case "messagesStatus":
       return messages.refresh();
+    case "remoteStatus":
+      return remote.status();
+    case "setRemoteDevice": {
+      const id = z.string().min(1).max(64).parse(args[0]);
+      const patch = z
+        .object({
+          control: z.boolean().optional(),
+          approve: z.boolean().optional(),
+        })
+        .strict()
+        .parse(args[1]);
+      // Consent takes effect at once, and approve never outlives control.
+      settings = {
+        ...settings,
+        remoteDevices: settings.remoteDevices.map((d) => {
+          if (d.id !== id) return d;
+          const control = patch.control ?? d.control;
+          return {
+            ...d,
+            control,
+            approve: control && (patch.approve ?? d.approve),
+          };
+        }),
+      };
+      saveConfig();
+      if (patch.control === false) remote.revokeDevice(id);
+      refreshSettingsView();
+      return remote.status();
+    }
+    case "forgetRemoteDevice": {
+      const id = z.string().min(1).max(64).parse(args[0]);
+      settings = {
+        ...settings,
+        remoteDevices: settings.remoteDevices.filter((d) => d.id !== id),
+      };
+      saveConfig();
+      remote.revokeDevice(id);
+      refreshSettingsView();
+      return remote.status();
+    }
+    case "lockRemote":
+      remote.lock();
+      return remote.status();
     case "agendaStatus":
       return getAgenda().status();
     case "requestAgendaAccess":
@@ -2976,6 +3173,9 @@ app
     void messages.configure().catch((error) => {
       debug("MessagesSetupFailed", errorDetails(error));
     });
+    void remote.configure().catch((error) => {
+      debug("RemoteSetupFailed", errorDetails(error));
+    });
     try {
       await launchCommand(process.argv);
     } catch (error) {
@@ -3010,6 +3210,7 @@ app.on("before-quit", () => {
   if (shuttingDown) return;
   shuttingDown = true;
   messages.close();
+  remote.close();
   debug("AppStopping");
   clearInterval(diagnosticHeartbeat);
   stopPresenceRefresh();

@@ -179,7 +179,11 @@ test.skipIf(!existsSync(helperBinary))(
         "presence",
         "index",
       ]);
-      expect(presenceMs).toBeLessThan(500);
+      // The order above is the property; this bound only catches presence
+      // falling back behind a multi-second capture. It is loose because the
+      // suite often runs while Swift builds and other suites load the Mac
+      // (738 ms was seen at a load average of 10 with the order still right).
+      expect(presenceMs).toBeLessThan(2000);
       // The live reply is the contract shape exactly, flags included.
       expect(report).toEqual({
         hidIdleSeconds: expect.any(Number),

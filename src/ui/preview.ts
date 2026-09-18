@@ -1,4 +1,10 @@
-import type { Bridge, KokoroUiStatus, MessagesInfo, SetupStatus } from "./api";
+import type {
+  Bridge,
+  KokoroUiStatus,
+  MessagesInfo,
+  RemoteStatus,
+  SetupStatus,
+} from "./api";
 import {
   defaultSettings,
   type Frame,
@@ -34,6 +40,17 @@ const messagesUnavailable = {
 } satisfies MessagesInfo;
 const messagesMessage =
   "Text updates come from the macOS app. This preview never reads or sends messages.";
+/** The browser preview never listens on a network. */
+const remoteUnavailable: RemoteStatus = {
+  enabled: false,
+  state: "off",
+  reason: "The phone remote runs in the macOS app. This preview never listens.",
+  tailscale: "none",
+  https: false,
+  devices: [],
+  connected: [],
+  locked: false,
+};
 /**
  * The browser preview detects nothing: no permission read, no Ollama probe and
  * no provider request. tests/e2e/app.spec.ts asserts that no request ever
@@ -372,6 +389,10 @@ export function previewBridge(): Bridge {
     checkProviderKey: async () => ({ ok: false, message: setupMessage }),
     completeSetup: async () => {},
     messagesStatus: async () => ({ ...messagesUnavailable }),
+    remoteStatus: async () => ({ ...remoteUnavailable }),
+    setRemoteDevice: async () => ({ ...remoteUnavailable }),
+    forgetRemoteDevice: async () => ({ ...remoteUnavailable }),
+    lockRemote: async () => ({ ...remoteUnavailable }),
     agendaStatus: async () => ({ calendar: "unknown", reminders: "unknown" }),
     requestAgendaAccess: async () => ({
       calendar: "unknown",

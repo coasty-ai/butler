@@ -8,6 +8,8 @@ import type {
 import type { Bundle, Review } from "../contribution/bundle";
 import type { PillState } from "../voice/router";
 import type { MemoryData } from "../memory/types";
+import type { RemoteStatus } from "../remote/protocol";
+export type { RemoteStatus };
 /** macOS access for the agenda helper, as the Settings window shows it. */
 export interface AgendaAccessInfo {
   calendar: string;
@@ -466,6 +468,20 @@ export interface Bridge {
   ): Promise<ProviderKeyResult>;
   /** Settings window only. Marks first-run setup done; the view stays reachable. */
   completeSetup(): Promise<void>;
+  /** Settings window only. The phone remote's state: never a token or content. */
+  remoteStatus(): Promise<RemoteStatus>;
+  /**
+   * Settings window only. What one phone may do; applied and saved at once,
+   * since allowing a phone is consent, not a form field. Approve needs control.
+   */
+  setRemoteDevice(
+    id: string,
+    patch: { control?: boolean; approve?: boolean },
+  ): Promise<RemoteStatus>;
+  /** Settings window only. Forgets a phone and revokes its sessions now. */
+  forgetRemoteDevice(id: string): Promise<RemoteStatus>;
+  /** Settings window only. Cuts every phone off and turns the remote off. */
+  lockRemote(): Promise<RemoteStatus>;
   subscribePill(fn: (state: PillState) => void): () => void;
   subscribeView(fn: (view: string) => void): () => void;
   /** Download progress and install changes for the natural voice. */

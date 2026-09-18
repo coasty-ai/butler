@@ -322,6 +322,45 @@ export const settingsSchema = z
     /** "detailed" lets progress texts quote window titles and screen text. */
     messagesDetail: z.enum(["brief", "detailed"]).default("brief"),
     /**
+     * The phone remote over the user's own Tailscale network (docs/REMOTE.md).
+     * Off until the user turns it on; the page is served only on this node's
+     * tailnet address, never on the internet, and Funnel is never enabled.
+     */
+    remoteEnabled: z.boolean().default(false),
+    /** The listening port on the tailnet address; never Tailscale's 41641. */
+    remotePort: z.number().int().min(1024).max(65535).default(41680),
+    /**
+     * The one Tailscale login allowed to connect; "" means this Mac's own,
+     * captured the first time the remote starts so a later re-login on the
+     * Mac cannot silently widen the allow-list.
+     */
+    remoteUser: z.string().trim().max(200).default(""),
+    /**
+     * What the phone may see of the screen: nothing, or a content-free
+     * thumbnail (a 24-pixel mosaic scaled up: layout and colour, no text).
+     */
+    remoteScreenshots: z.enum(["off", "thumbnail"]).default("off"),
+    /**
+     * Phones that have connected, each with what it may do. A row is added
+     * with both switches off; only Settings on the Mac flips them. Bounded
+     * and pruned least-recently-seen first.
+     */
+    remoteDevices: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(64),
+            name: z.string().max(64),
+            control: z.boolean(),
+            approve: z.boolean(),
+            firstSeen: z.number().int().nonnegative(),
+            lastSeen: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .max(12)
+      .default([]),
+    /**
      * First-run setup was finished or dismissed. False opens the setup view on
      * launch, so quitting to apply a Screen Recording grant comes back to it.
      * Defaults to false for a fresh install; electron/main.ts treats a stored
@@ -387,8 +426,15 @@ export const defaultSettings: Settings = {
   messagesUpdates: "texted",
   messagesConversation: true,
   messagesDetail: "brief",
+  remoteEnabled: false,
+  remotePort: 41680,
+  remoteUser: "",
+  remoteScreenshots: "off",
+  remoteDevices: [],
   setupComplete: false,
 };
+/** One phone the remote knows about (settings.remoteDevices). */
+export type RemoteDevice = Settings["remoteDevices"][number];
 export interface Geometry {
   display_id: number;
   x: number;

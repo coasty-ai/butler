@@ -1,0 +1,31 @@
+{
+  "_note": "tailscaled ServeConfig shapes (ipn/serve.go) the remote must refuse to share a port with. Keys are cases; docs/REMOTE.md.",
+  "empty": {},
+  "null": null,
+  "tcp": { "TCP": { "41680": { "TCPForward": "127.0.0.1:3000" } } },
+  "web": {
+    "Web": {
+      "mac.tail1234.ts.net:41680": {
+        "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } }
+      }
+    }
+  },
+  "funnel": { "AllowFunnel": { "mac.tail1234.ts.net:41680": true } },
+  "foregroundFunnel": {
+    "Foreground": {
+      "12345": { "AllowFunnel": { "mac.tail1234.ts.net:41680": true } }
+    }
+  },
+  "foregroundTcp": {
+    "Foreground": { "777": { "TCP": { "41680": { "HTTPS": true } } } }
+  },
+  "otherPort": {
+    "TCP": { "8443": { "HTTPS": true } },
+    "Web": {
+      "mac.tail1234.ts.net:443": {
+        "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } }
+      }
+    },
+    "AllowFunnel": { "mac.tail1234.ts.net:443": true }
+  }
+}

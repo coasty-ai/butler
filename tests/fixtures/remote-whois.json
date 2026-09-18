@@ -1,0 +1,21 @@
+{
+  "_note": "A LocalAPI whois answer (client/tailscale/apitype WhoIsResponse) for the owner's phone; tests derive tagged, shared and foreign-user variants from it.",
+  "Node": {
+    "ID": 123456,
+    "StableID": "nPHONE123CNTRL",
+    "Name": "iphone.tail1234.ts.net.",
+    "ComputedName": "iphone",
+    "User": 654321,
+    "Key": "nodekey:0000000000000000000000000000000000000000000000000000000000000000",
+    "Addresses": ["100.64.0.5/32", "fd7a:115c:a1e0::5/128"],
+    "Hostinfo": { "OS": "iOS", "Hostname": "iPhone" },
+    "Tags": null,
+    "Sharer": 0
+  },
+  "UserProfile": {
+    "ID": 654321,
+    "LoginName": "nitish@example.com",
+    "DisplayName": "Nitish"
+  },
+  "CapMap": {}
+}

@@ -130,6 +130,12 @@ const fields = new Set([
   "fallback",
   "utteranceId",
   "remainingMs",
+  // The phone remote: route names, verdict and tier codes, and a hashed
+  // device code. Never a login, an address, a token or a line of text.
+  "route",
+  "verdict",
+  "tier",
+  "device",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -179,6 +185,10 @@ const codeFields = new Set([
   "phase",
   "code",
   "status",
+  "route",
+  "verdict",
+  "tier",
+  "device",
 ]);
 const memoryEvents = new Set([
   "MemoryRecalled",

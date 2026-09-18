@@ -46,6 +46,10 @@ const bridge: Bridge = {
   detectOllama: () => invoke("detectOllama"),
   checkProviderKey: (...a) => invoke("checkProviderKey", ...a),
   completeSetup: () => invoke("completeSetup"),
+  remoteStatus: () => invoke("remoteStatus"),
+  setRemoteDevice: (...a) => invoke("setRemoteDevice", ...a),
+  forgetRemoteDevice: (...a) => invoke("forgetRemoteDevice", ...a),
+  lockRemote: () => invoke("lockRemote"),
   subscribePill: (fn) => {
     const handler = (_e: unknown, s: any) => fn(s);
     ipcRenderer.on("pill", handler);

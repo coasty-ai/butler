@@ -435,6 +435,16 @@ const RESTRICTED_APPROVAL = new RegExp(
   "i",
 );
 /**
+ * Whether a policy question names something that must never be approved
+ * without the person at the screen (the list above). The phone remote uses
+ * it beside followUpApprovalAllowed, so its "never by phone" tier is the same
+ * rule the follow-up window applies.
+ */
+export function restrictedApproval(reason: string | undefined): boolean {
+  return RESTRICTED_APPROVAL.test((reason ?? "").trim());
+}
+
+/**
  * Follow-up approvals are allowed only for questions shown to be benign
  * navigation or opening. Every CONFIRM reason in src/core/policy.ts is
  * enumerated in tests/voice-turns.test.ts.

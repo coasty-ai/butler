@@ -60,6 +60,7 @@ import {
 } from "../providers/catalog";
 import { idlePill, type PillState } from "../voice/router";
 import { previewBridge } from "./preview";
+import { SettingsRemote } from "./settings-remote";
 import "@fontsource-variable/space-grotesk";
 import "./styles.css";
 import "./motion.css";
@@ -2183,6 +2184,13 @@ function SettingsPanel({
             {messages.error && <p role="alert">{messages.error}</p>}
           </div>
         </details>
+        <SettingsRemote
+          s={s}
+          set={set}
+          api={api}
+          busy={busy}
+          refreshKey={info}
+        />
         <details className="setting-group">
           <summary>
             <span>
