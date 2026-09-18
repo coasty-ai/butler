@@ -60,6 +60,19 @@ struct NamedControl {
     let y: Double
     let enabled: Bool
 }
+// Words that name a kind of control rather than a control: the model sometimes
+// writes the role where the label belongs ("link" with the right x,y).
+let placeholderControlNames: Set<String> = [
+    "link", "button", "textfield", "text field", "textarea", "checkbox", "radiobutton",
+    "popupbutton", "menubutton", "tab", "cell", "row", "image", "control", "item",
+    "element", "result", "thumbnail", "video", "field",
+]
+func placeholderControlName(_ label: String) -> Bool {
+    placeholderControlNames.contains(normalizeTargetTitle(label).lowercased())
+}
+// How far a copied position may be from a listed control's centre, as a screen
+// fraction: positions in context.controls are rounded to three decimals.
+let namedControlPositionTolerance = 0.006
 enum ControlMatch: Equatable {
     case matched(Int)
     // Several controls share the name and no position told them apart: the
@@ -89,7 +102,20 @@ func matchNamedControl(_ controls: [NamedControl], label: String, role: String?,
     let exact = eligible.filter { normalizeTargetTitle($0.element.label).lowercased() == wanted }
     let prefixed = eligible.filter { targetTitleMatches(request: label, title: $0.element.label) }
     let tier = !exact.isEmpty ? exact : prefixed
-    guard !tier.isEmpty else { return .missing }
+    guard !tier.isEmpty else {
+        // The name matched nothing, but the position is one the model copied
+        // from the same list (live: label "link" with the exact x,y of the
+        // video it meant). A single listed control at that spot is the one it
+        // chose; its real name still goes through policy after the hit test.
+        // Only for a placeholder name: a specific name that is not on screen
+        // means the screen moved on, and whatever sits at that spot now is
+        // not what was asked for.
+        guard let hintX, let hintY, placeholderControlName(label) else { return .missing }
+        let close = eligible.filter {
+            abs($0.element.x - hintX) <= namedControlPositionTolerance && abs($0.element.y - hintY) <= namedControlPositionTolerance
+        }
+        return close.count == 1 ? .matched(close[0].offset) : .missing
+    }
     if tier.count == 1 { return .matched(tier[0].offset) }
     guard let hintX, let hintY else { return .ambiguous(tier.count) }
     let distance = { (control: NamedControl) -> Double in

@@ -36,6 +36,19 @@ func namedTargetChecks(_ check: (Bool, String) -> Void) {
           "a name that is not on screen is missing, never the nearest control")
     check(matchNamedControl([], label: "Play", role: nil, hintX: nil, hintY: nil) == .missing,
           "an empty screen matches nothing")
+    // Live: label "link", role "link" and the exact position of the video link.
+    let page = [
+        NamedControl(label: "YouTube Home", role: "link", x: 0.082, y: 0.156, enabled: true),
+        NamedControl(label: "Midwest Safety Verified @MidwestSafety", role: "link", x: 0.73, y: 0.324, enabled: true),
+    ]
+    check(matchNamedControl(page, label: "link", role: "link", hintX: 0.73, hintY: 0.324) == .matched(1),
+          "a position copied from the list identifies the control when the name does not")
+    check(matchNamedControl(page, label: "link", role: "link", hintX: 0.5, hintY: 0.5) == .missing,
+          "a position between controls identifies nothing")
+    check(matchNamedControl(page, label: "link", role: "button", hintX: 0.73, hintY: 0.324) == .missing,
+          "the role still has to agree")
+    check(matchNamedControl(page, label: "Blinding Lights", role: "link", hintX: 0.73, hintY: 0.324) == .missing,
+          "a specific name that is gone never takes whatever sits at its old position")
 
     // menuPathRefused
     check(menuPathRefused(["Apple", "System Settings"]), "the system menu is never pressed")

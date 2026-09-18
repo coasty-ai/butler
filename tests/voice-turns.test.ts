@@ -920,6 +920,20 @@ describe("a new request while a run is stalled", () => {
     expect(plan("actually play Blinding Lights").kind).toBe("revise");
     expect(plan("use the search box").kind).toBe("revise");
   });
+  // Live: "Go to YouTube and play a safety video" said instead of answering
+  // Spotify's approval was merged into the Spotify run.
+  it("starts an unrelated request said instead of answering an approval", () => {
+    const confirming = {
+      ...stuck,
+      status: "confirming",
+      pendingReason: "Activate this control? It may submit or change content.",
+    };
+    expect(plan("Go to YouTube and play a safety video", confirming).kind).toBe(
+      "replace",
+    );
+    expect(plan("yes", confirming).kind).not.toBe("replace");
+    expect(plan("play after hours instead", confirming).kind).toBe("revise");
+  });
   it("never replaces a run that asked a question or is still working", () => {
     expect(
       plan("Go to Notes and write a note for me", { ...stuck, stalled: false })

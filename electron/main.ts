@@ -1240,11 +1240,13 @@ function planRun() {
     held: runHeld(),
     pendingReason: snapshot.pending?.reason,
     task: run.task,
-    // Stuck, handed back or paused, rather than waiting on its own question.
+    // Stuck, handed back, paused or waiting on an approval, rather than
+    // waiting on its own question.
     stalled:
-      runHeld() &&
-      !snapshot.pending &&
-      (run.status === "paused" || snapshot.message === TARGET_HANDOFF_MESSAGE),
+      run.status === "confirming" ||
+      (runHeld() &&
+        (run.status === "paused" ||
+          snapshot.message === TARGET_HANDOFF_MESSAGE)),
   };
 }
 async function command(

@@ -844,7 +844,9 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
     return { kind: "acknowledge" };
   // A run that stalled is waiting for a hint; a request about something else
   // entirely is the user moving on, not a hint.
-  if (run?.stalled && !pending && startsNewTask(task, run.task))
+  // One waiting on an approval is waiting for yes or no, which were handled
+  // above; a request about something else is the user moving on.
+  if (run?.stalled && startsNewTask(task, run.task))
     return { kind: "replace", text: task };
   return run ? { kind: "revise", text: task } : { kind: "start", text: task };
 }
