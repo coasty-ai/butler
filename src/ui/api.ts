@@ -8,6 +8,11 @@ import type {
 import type { Bundle, Review } from "../contribution/bundle";
 import type { PillState } from "../voice/router";
 import type { MemoryData } from "../memory/types";
+/** macOS access for the agenda helper, as the Settings window shows it. */
+export interface AgendaAccessInfo {
+  calendar: string;
+  reminders: string;
+}
 export interface ReviewData {
   run: Run;
   frames: Frame[];
@@ -422,6 +427,10 @@ export interface Bridge {
   removeKokoro(): Promise<void>;
   /** Settings window only. Re-reads the two macOS permissions for texting. */
   messagesStatus(): Promise<MessagesInfo>;
+  /** Settings window only. Which of Calendar and Reminders access is granted. */
+  agendaStatus(): Promise<AgendaAccessInfo>;
+  /** Settings window only. Asks macOS for Calendar and Reminders access. */
+  requestAgendaAccess(): Promise<AgendaAccessInfo>;
   /**
    * Settings window only. Texts the saved handle once so the user can see it
    * arrive; rejects with the macOS setup step that is missing.

@@ -79,4 +79,32 @@ const messages = spawnSync(
   ],
   { stdio: "inherit" },
 );
-process.exit(messages.status ?? 1);
+if (messages.status !== 0) process.exit(messages.status ?? 1);
+// The agenda helper: calendar and reminders through EventKit. Its own embedded
+// Info.plist carries the usage strings, so its grant is separate from the
+// controller's Screen Recording and Accessibility.
+const agenda = spawnSync(
+  "swiftc",
+  [
+    "-O",
+    "-parse-as-library",
+    "-module-cache-path",
+    "tmp/swift-cache",
+    "-o",
+    "native/bin/coarena-agenda",
+    "native/macos/Agenda.swift",
+    "native/macos/AgendaRules.swift",
+    "-framework",
+    "EventKit",
+    "-Xlinker",
+    "-sectcreate",
+    "-Xlinker",
+    "__TEXT",
+    "-Xlinker",
+    "__info_plist",
+    "-Xlinker",
+    "native/macos/Agenda-Info.plist",
+  ],
+  { stdio: "inherit" },
+);
+process.exit(agenda.status ?? 1);

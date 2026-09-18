@@ -24,6 +24,7 @@ import CoreGraphics
         electronAccessibilityChecks(check)
         namedTargetChecks(check)
         workspaceChecks(check)
+        agendaRulesChecks(check)
         // Blind surfaces: Spotify (Chromium/CEF) publishes a real window and
         // nothing inside it; a loading window or an empty desktop must not be
         // reported blind, and a tree too large to finish is never blind.

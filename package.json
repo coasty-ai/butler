@@ -62,6 +62,10 @@
       {
         "from": "native/bin/coarena-messages",
         "to": "coarena-messages"
+      },
+      {
+        "from": "native/bin/coarena-agenda",
+        "to": "coarena-agenda"
       }
     ],
     "mac": {

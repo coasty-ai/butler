@@ -62,6 +62,7 @@ import {
 import { workflowCandidate } from "../src/gym/workflow";
 import { MemoryStore, forgetRunIn } from "../src/memory/store";
 import { createMemoryAccess } from "../src/memory/access";
+import { createAgenda, withAgenda } from "./agenda";
 import type { MemoryAccess, SystemIndex } from "../src/core/memory";
 import {
   privacyPanes,
@@ -391,6 +392,16 @@ const speech = createSpeechOutput({
     synthesize: (text, signal) => getKokoro().synthesize(text, signal),
   },
 });
+/** Calendar and Reminders, read by their own helper with the user's permission. */
+let agendaClient: ReturnType<typeof createAgenda> | undefined;
+function getAgenda() {
+  agendaClient ??= createAgenda(
+    app.isPackaged
+      ? join(process.resourcesPath, "coarena-agenda")
+      : join(app.getAppPath(), "native/bin/coarena-agenda"),
+  );
+  return agendaClient;
+}
 /** The iMessage helper binary, packaged beside the other helpers. */
 function messagesBinary() {
   return app.isPackaged
@@ -574,6 +585,9 @@ function nativePid() {
  * the setting off, even for a run that already started.
  */
 function runMemory(): MemoryAccess | undefined {
+  return withAgenda(learnedMemory(), settings.agenda ? getAgenda() : undefined);
+}
+function learnedMemory(): MemoryAccess | undefined {
   if (!memory || !settings.memory) return undefined;
   const index = async (query?: string): Promise<SystemIndex | undefined> => {
     try {
@@ -1848,6 +1862,10 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     }
     case "messagesStatus":
       return messages.refresh();
+    case "agendaStatus":
+      return getAgenda().status();
+    case "requestAgendaAccess":
+      return getAgenda().request();
     case "sendTestMessage":
       await messages.sendTest();
       return;

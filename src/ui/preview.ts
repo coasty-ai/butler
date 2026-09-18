@@ -370,6 +370,11 @@ export function previewBridge(): Bridge {
     checkProviderKey: async () => ({ ok: false, message: setupMessage }),
     completeSetup: async () => {},
     messagesStatus: async () => ({ ...messagesUnavailable }),
+    agendaStatus: async () => ({ calendar: "unknown", reminders: "unknown" }),
+    requestAgendaAccess: async () => ({
+      calendar: "unknown",
+      reminders: "unknown",
+    }),
     sendTestMessage: async () => {
       throw new Error(messagesMessage);
     },

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>ai.coarena.openassist.agenda</string>
+<key>CFBundleName</key><string>Open Assist Agenda</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Open Assist reads the titles and times of your upcoming events so it knows what is on your plate. Nothing is changed.</string>
+<key>NSCalendarsUsageDescription</key><string>Open Assist reads the titles and times of your upcoming events so it knows what is on your plate. Nothing is changed.</string>
+<key>NSRemindersFullAccessUsageDescription</key><string>Open Assist reads your open reminders so it knows what you need to get done. Nothing is changed.</string>
+<key>NSRemindersUsageDescription</key><string>Open Assist reads your open reminders so it knows what you need to get done. Nothing is changed.</string>
+</dict></plist>

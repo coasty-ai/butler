@@ -217,6 +217,11 @@ export const settingsSchema = z
      */
     notifications: z.boolean().default(true),
     /**
+     * Read upcoming events and open reminders so a task knows what is on the
+     * user's plate. Needs Calendar and Reminders access, asked for in Settings.
+     */
+    agenda: z.boolean().default(false),
+    /**
      * Spoken replies: "voice" only for turns the user started by voice,
      * "always" also for typed tasks (never typed acknowledgements).
      */
@@ -288,6 +293,7 @@ export const defaultSettings: Settings = {
   handsFree: false,
   memory: true,
   notifications: true,
+  agenda: false,
   voiceReplies: "voice",
   voiceEngine: "system",
   voiceId: "",
@@ -447,6 +453,11 @@ export interface MemoryContext {
   folders?: { name: string; path: string }[];
   /** Outline of a known plan (skill or built-in intent) for the model. */
   plan?: { source: "skill" | "intent"; note: string; steps: string[] };
+  /**
+   * What the user has to get done: upcoming calendar events and pressing
+   * reminders ("To do: …"), read with their permission (docs/PRIVACY.md).
+   */
+  agenda?: string[];
 }
 export interface ProviderResult {
   action: unknown;

@@ -28,6 +28,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import type {
+  AgendaAccessInfo,
   AppInfo,
   KokoroUiStatus,
   MemorySummary,
@@ -79,6 +80,17 @@ const providers = {
   google: "Google Gemini",
   compatible: "Custom compatible",
 };
+/** What the Settings window says about Calendar and Reminders access. */
+export function agendaAccessNote(access: AgendaAccessInfo): string {
+  const granted = (value: string) => value === "granted";
+  if (granted(access.calendar) && granted(access.reminders))
+    return "Reading your calendar and reminders.";
+  if (granted(access.calendar))
+    return "Reading your calendar. Allow Reminders in System Settings › Privacy & Security to include them.";
+  if (granted(access.reminders))
+    return "Reading your reminders. Allow Calendars in System Settings › Privacy & Security to include events.";
+  return "No access yet. Allow Open Assist in System Settings › Privacy & Security › Calendars and Reminders.";
+}
 function Core({
   phase = "idle",
   level = 0,
@@ -1094,6 +1106,7 @@ function SettingsPanel({
     [touched, setTouched] = useState(false),
     [saved, setSaved] = useState(false),
     [learned, setLearned] = useState<MemorySummary | null>(null),
+    [agendaAccess, setAgendaAccess] = useState<AgendaAccessInfo | null>(null),
     [forgetting, setForgetting] = useState(false),
     [voiceList, setVoiceList] = useState<VoiceList | null>(null),
     [kokoro, setKokoro] = useState<KokoroUiStatus>(
@@ -1159,6 +1172,17 @@ function SettingsPanel({
     api
       .messagesStatus()
       .then((status) => current && setMessages(status))
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [info]);
+  useEffect(() => {
+    if (!info.settings.agenda) return;
+    let current = true;
+    api
+      .agendaStatus()
+      .then((access) => current && setAgendaAccess(access))
       .catch(() => {});
     return () => {
       current = false;
@@ -2199,6 +2223,30 @@ function SettingsPanel({
               />
               <span>Read my notifications</span>
             </label>
+            <p>
+              With your permission it can also read the titles and times of your
+              upcoming events and your open reminders, so it knows what is on
+              your plate. It never changes them.
+            </p>
+            <label className="consent">
+              <input
+                type="checkbox"
+                checked={s.agenda}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  set("agenda", on);
+                  if (on)
+                    api
+                      .requestAgendaAccess()
+                      .then(setAgendaAccess)
+                      .catch(() => {});
+                }}
+              />
+              <span>Use my Calendar and Reminders</span>
+            </label>
+            {s.agenda && agendaAccess && (
+              <p role="status">{agendaAccessNote(agendaAccess)}</p>
+            )}
             {learned && (
               <p role="status">
                 {learned.counts.episodes} tasks · {learned.counts.preferences}{" "}
