@@ -249,8 +249,10 @@ func normalizeChord(_ keys: [String]) -> String {
 func searchCommandTitle(_ title: String) -> Bool {
     let words = normalizeTargetTitle(title).lowercased()
     guard !words.isEmpty, !words.contains("replace") else { return false }
-    let openers = ["search", "find", "filter", "quick open", "go to file", "go to symbol",
-                   "jump to", "command palette", "quick switcher", "quick search", "open quickly", "switch to"]
+    // Not a command palette or Quick Open: text entered there runs editor
+    // commands (VS Code's "Terminal: Create New Terminal"), not a search.
+    let openers = ["search", "find", "filter", "go to symbol",
+                   "jump to", "quick switcher", "quick search", "switch to"]
     return openers.contains { opener in
         words == opener || words.hasPrefix(opener + " ") || words.hasSuffix(" " + opener)
             || words.contains(" " + opener + " ")

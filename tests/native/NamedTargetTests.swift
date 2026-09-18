@@ -86,10 +86,10 @@ func namedTargetChecks(_ check: (Bool, String) -> Void) {
 }
 
 func searchCommandChecks(_ check: (Bool, String) -> Void) {
-    for title in ["Search", "Find…", "Find in Files", "Quick Open", "Jump to…", "Command Palette…", "Filter", "Go to File…", "Quick Search"] {
+    for title in ["Search", "Find…", "Find in Files", "Jump to…", "Filter", "Quick Search"] {
         check(searchCommandTitle(title), "\(title) opens a search field")
     }
-    for title in ["Replace", "Find and Replace…", "Play", "New Playlist", "Save", "Searchlight Settings", ""] {
+    for title in ["Replace", "Find and Replace…", "Play", "New Playlist", "Save", "Searchlight Settings", "", "Command Palette…", "Quick Open", "Go to File…"] {
         check(!searchCommandTitle(title), "\(title) does not open a search field")
     }
     check(searchCommandCurrent(commandPid: 7, commandAt: 100, pid: 7, now: 130), "a search opened moments ago in this app is current")

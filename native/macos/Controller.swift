@@ -1428,7 +1428,10 @@ func execute(_ action:[String:Any]) throws {
     func mouse(_ type:CGEventType,_ p:CGPoint,_ button:CGMouseButton = .left,_ count:Int64 = 1) throws { try ensureRunning();guard let e = CGEvent(mouseEventSource:nil, mouseType:type, mouseCursorPosition:p, mouseButton:button) else { throw ControlError("Input event failed.") };e.setIntegerValueField(.mouseEventClickState,value:count);postInput(e) }
     switch action["type"] as? String {
     case "type_text", "menu_item": break
-    case "key": if action["key"] as? String == "ESC" { withState { searchCommand = nil } }
+    // Enter submits and Tab leaves the field: after either, focus may be
+    // somewhere else entirely (a palette command can open a terminal), so the
+    // search allowance ends with them, as it does with Escape.
+    case "key": if ["ESC", "ENTER", "TAB"].contains(action["key"] as? String ?? "") { withState { searchCommand = nil } }
     case "hotkey":
         if let names = action["keys"] as? [String], let app = inputApplication() {
             let menus = menuMap(AXUIElementCreateApplication(app.processIdentifier), pid: app.processIdentifier)
