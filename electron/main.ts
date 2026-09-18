@@ -15,7 +15,7 @@ import {
   powerSaveBlocker,
 } from "electron";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -26,6 +26,7 @@ import {
 import { z } from "zod";
 import {
   defaultSettings,
+  kokoroVoices,
   settingsSchema,
   type Frame,
   type Run,
@@ -88,7 +89,15 @@ import {
   pausedLabel,
   type VoiceEvent,
 } from "./voice";
-import { Conversation, ANSWER_WINDOW } from "./conversation";
+import { Conversation, ANSWER_WINDOW, type ReplyHandle } from "./conversation";
+import { AssistantSession, DIALOG_LIMITS } from "./assistant";
+import {
+  dialogEligible,
+  fastStart,
+  fastStartLine,
+  looksLikeQuestion,
+} from "../src/assistant/arbitrate";
+import { textSettings } from "../src/providers/text";
 import {
   MessagesChannel,
   createMessagesHelper,
@@ -96,28 +105,40 @@ import {
   resumeFromText,
   validateMessageSettings,
 } from "./messages";
-import { createSpeechOutput, selectSpeechEngine } from "./speech-output";
+import {
+  createSpeechOutput,
+  kokoroSpeed,
+  selectSpeechEngine,
+  type KokoroSpeakOptions,
+} from "./speech-output";
 import { desktopTransport } from "./provider";
 import {
   createKokoroVoice,
   kokoroSupported,
   pickKokoroStatus,
+  type KokoroChunk,
   type KokoroStatus,
   type KokoroVoice,
 } from "./kokoro/client";
 import { credentialScope, providerDefaults } from "../src/providers/catalog";
 import {
   APPROVAL_MIN_CONFIDENCE,
+  isWakePhraseOnly,
   planVoiceTurn,
   type TurnPlan,
   type TurnPlanKind,
 } from "../src/voice/turns";
 import { runView, statusLine } from "../src/assistant/run-view";
-import type { Channel, ProgressSink } from "../src/assistant/types";
+import type {
+  Channel,
+  ProgressReport,
+  ProgressSink,
+  RunView,
+  TurnDecision,
+} from "../src/assistant/types";
 import { PRESENCE_REFRESH_MS, createPresenceService } from "./presence";
 import { ProgressReporter, createProgressSummarizer } from "./progress";
 import { KeepAwake } from "./power";
-import { textSettings } from "../src/providers/text";
 import { RemoteServer } from "./remote/server";
 import { createTailscaleProvider } from "./remote/tailscale";
 import { remoteApprovalTier, validateRemoteSettings } from "../src/remote/auth";
@@ -183,6 +204,8 @@ let diagnosticHeartbeat: ReturnType<typeof setInterval> | undefined;
 // paused; only dismissing an untouched text-entry pill undoes this hold.
 let voiceHeld = false;
 let voiceHeldSequence = 0;
+/** The latest partial transcript, for the early dialog request. */
+let lastPartial = "";
 // A short acknowledgement shown under the working pill.
 let notice = { text: "", until: 0 };
 /** How long a status or queue answer stays on the working pill. */
@@ -258,14 +281,43 @@ function sendKokoroStatus(status?: KokoroStatus) {
   if (window && !window.isDestroyed())
     window.webContents.send("kokoro-status", kokoroUiStatus(status));
 }
+/** The Kokoro voice pack and speed the settings ask for. */
+function kokoroOptions(): KokoroSpeakOptions {
+  return {
+    voice: settings.kokoroVoice,
+    speed: kokoroSpeed(settings.voiceRate),
+  };
+}
+/**
+ * The Kokoro client as increment 3B widens it: synthesize() and warm() take
+ * the voice and speed. Until it lands the extra argument is simply ignored.
+ */
+function kokoroClient() {
+  const voice = getKokoro();
+  return {
+    status: () => voice.status(),
+    warm: voice.warm.bind(voice) as (
+      phrases?: readonly string[],
+      o?: KokoroSpeakOptions,
+    ) => Promise<void>,
+    synthesize: voice.synthesize.bind(voice) as (
+      text: string,
+      signal?: AbortSignal,
+      o?: KokoroSpeakOptions,
+    ) => AsyncIterable<KokoroChunk>,
+  };
+}
 /** Starts the natural voice worker ahead of a reply when it is the engine. */
 function warmKokoro() {
   if (settings.voiceEngine !== "kokoro" || !kokoroSupported()) return;
-  const voice = getKokoro();
+  const voice = kokoroClient();
   if (!voice.status().installed) return;
   void voice
     // Only the short fixed replies are worth pre-synthesizing.
-    .warm(allAssistantPhrases().filter((phrase) => phrase.length <= 28))
+    .warm(
+      allAssistantPhrases().filter((phrase) => phrase.length <= 28),
+      kokoroOptions(),
+    )
     .catch((error) => debug("KokoroWarmFailed", errorDetails(error)));
 }
 let kokoroDownload: AbortController | undefined;
@@ -431,7 +483,7 @@ const speech = createSpeechOutput({
   trace: debug,
   kokoro: {
     status: () => getKokoro().status(),
-    synthesize: (text, signal) => getKokoro().synthesize(text, signal),
+    synthesize: (text, signal, o) => kokoroClient().synthesize(text, signal, o),
   },
 });
 /** Calendar and Reminders, read by their own helper with the user's permission. */
@@ -496,7 +548,69 @@ const conversation = new Conversation({
   voiceCall,
   trace: debug,
   onChange: () => refreshSpeechPill(),
+  // The user took the floor: a reply still being written must not speak,
+  // and a turn still being decided must not act.
+  onInterrupted: () => {
+    abortTurn();
+    assistant.interrupt();
+  },
+  // With "model" set but no usable model, narration and fixed lines stay.
+  modelActive: () => assistant.available("voice"),
 });
+/** The turn whose decision is in flight; aborted when the user takes the floor. */
+let turnAbort: AbortController | undefined;
+function abortTurn() {
+  turnAbort?.abort();
+  turnAbort = undefined;
+}
+/**
+ * The dialog model behind free-form turns. It sees the sanitized run view,
+ * the short thread and, when the user asks about them, recent
+ * notifications; never a screenshot, never an approval's action.
+ */
+const assistant = new AssistantSession({
+  settings: () => settings,
+  providerKey: () => providerKey(credentials, textSettings(settings)),
+  fetch: desktopTransport(debug),
+  view: currentRunView,
+  context: dialogContext,
+  heldByVoice: () => voiceHoldResumable(),
+  // A dialog turn during a run spends that run's budget.
+  addUsage: (usage) => runner?.addUsage(usage),
+  trace: debug,
+});
+/** The agenda as last read, refreshed off the critical path at activation. */
+let agendaLines: string[] | undefined;
+function warmAgenda() {
+  if (!settings.agenda) {
+    agendaLines = undefined;
+    return;
+  }
+  void getAgenda()
+    .read()
+    .then((lines) => {
+      agendaLines = lines;
+    })
+    .catch(() => {});
+}
+/** Screen context from the last frame, only while it is recent. */
+function frameContext() {
+  const context = snapshot.frame?.context;
+  if (!context) return undefined;
+  const last = snapshot.events.at(-1)?.wall_clock_timestamp;
+  const at = last ? Date.parse(last) : NaN;
+  return Number.isFinite(at) && Date.now() - at < 10 * 60_000
+    ? context
+    : undefined;
+}
+function dialogContext() {
+  const context = settings.notifications ? frameContext() : undefined;
+  return {
+    agenda: settings.agenda ? agendaLines : undefined,
+    notifications: context?.notifications,
+    openApps: context?.openApps,
+  };
+}
 /**
  * Who is at the Mac. Asks the helper only while one exists (a run needed it
  * already), and treats a helper without the method as "unknown".
@@ -695,6 +809,15 @@ function approvalSource(channel: Channel): ApprovalSource {
         ? "message"
         : "remote";
 }
+/**
+ * "Call me …" must be a name, never a word the voice routers act on or the
+ * wake phrase: the assistant says it out loud.
+ */
+function validateAddressAs(name: string) {
+  if (!name.trim()) return;
+  if (voiceIntent(name).kind !== "command" || isWakePhraseOnly(name))
+    throw new Error("Choose a name that is not a command word.");
+}
 /** Mirrors speaking and follow-up state onto the pill without re-layout. */
 function refreshSpeechPill() {
   const speaking = conversation.speaking,
@@ -744,6 +867,7 @@ function getNative() {
         if (shuttingDown) return;
         if (!snapshot.run || terminal(snapshot.run.status)) return;
         cancelVoiceCapture();
+        abortTurn();
         void conversation.stopSpeaking();
         voiceHeld = false;
         taskQueue.clear();
@@ -1108,6 +1232,7 @@ function getVoice() {
           if (!listening) return;
           listening = false;
           voiceInvocation += 1;
+          abortTurn();
           showFailure("Voice restarted. Try again.");
         },
         onRestart: () => {
@@ -1358,8 +1483,10 @@ async function receiveVoice(event: VoiceEvent) {
     ) {
       // The helper already latched input and stopped playback.
       conversation.onVoiceEvent(event);
-      // A reply is likely soon: have the natural voice ready.
+      lastPartial = "";
+      // A reply is likely soon: have the natural voice and the agenda ready.
       warmKokoro();
+      warmAgenda();
       voiceGate =
         event.event === "followup_detected" && event.kind === "approval"
           ? conversation.windowGate
@@ -1385,17 +1512,24 @@ async function receiveVoice(event: VoiceEvent) {
       listening = false;
       await showCommand();
     } else if (event.event === "shortcut_up") {
-      if (listening)
+      if (listening) {
         setPill({
           phase: "working",
           label: "One moment…",
           inputLevel: 0,
           closing: false,
         });
+        // The words are almost certainly final: start the model on them.
+        assistant.preempt(lastPartial, "voice");
+      }
     } else if (event.event === "endpoint_near") {
       if (listening && !pill.closing) setPill({ closing: true });
+      if (listening) assistant.preempt(lastPartial, "voice");
     } else if (event.event === "transcript_partial") {
-      if (listening) setPill({ transcript: event.text ?? "", closing: false });
+      if (listening) {
+        lastPartial = event.text ?? "";
+        setPill({ transcript: lastPartial, closing: false });
+      }
     } else if (event.event === "audio_level") {
       pill.inputLevel = event.level ?? 0;
       indicator.webContents.send("pill", pill);
@@ -1411,6 +1545,8 @@ async function receiveVoice(event: VoiceEvent) {
     } else if (event.event === "voice_cancelled") {
       listening = false;
       voiceInvocation += 1;
+      // A decision still in flight for the cancelled words must not act.
+      abortTurn();
       voiceHeld = false;
       taskQueue.clear();
       runner?.stop("Stopped.");
@@ -1515,13 +1651,17 @@ async function command(
   text = z.string().trim().min(1).max(2000).parse(text);
   const context = conversation.planContext(fromVoice);
   const gate = currentGate();
-  const plan = planVoiceTurn({
+  // The deterministic plan comes first, exactly as before: control words,
+  // approval answers (a "yes" may accept the assistant's open offer),
+  // fragments and status questions never reach the model.
+  const base = planVoiceTurn({
     text,
     confidence,
     segments: extra.segments,
     gateMatches: fromVoice ? !!voiceGate && voiceGate === gate : !!gate,
     now: Date.now(),
     run: planRun(),
+    proposal: assistant.proposal(),
     ...context,
   });
   debug("Command", {
@@ -1532,7 +1672,7 @@ async function command(
     activeRun: snapshot.run?.status,
   });
   debug("TurnPlanned", {
-    plan: plan.kind,
+    plan: base.kind,
     source: context.source,
     window: context.window,
     segments: extra.segments,
@@ -1542,25 +1682,121 @@ async function command(
   // Typed text keeps the pill visible until a run actually starts or resumes,
   // so a rejected command stays readable.
   if (!fromVoice) cancelVoiceCapture();
+  const channel: Channel = fromVoice ? "voice" : "app";
+  // Typed words are the user's; speech counts only when heard clearly.
+  const heard: TaskSource =
+    fromVoice && confidence < APPROVAL_MIN_CONFIDENCE
+      ? "user_words_unsure"
+      : "user_words";
+  // A "yes" the router turned into the open offer is settled: the task runs
+  // exactly as offered, with the offer's provenance, and the model is not
+  // asked (it would re-ground the offer against "yes" and offer it again).
+  const accepted =
+    (base.kind === "start" || base.kind === "queue") &&
+    base.taskSource === "proposal";
+  if (accepted) assistant.noteUser(text, channel);
+  let plan: TurnPlan = base;
+  let decision: TurnDecision | undefined;
+  let reply: ReplyHandle | undefined;
+  let replyText: string | undefined;
+  if (!accepted && dialogEligible(base) && assistant.available(channel)) {
+    const turnId = randomUUID();
+    // One abort per turn: a new activation, a cancel or the emergency stop
+    // ends the decision, and a decision that ends that way never acts.
+    abortTurn();
+    const turn = new AbortController();
+    turnAbort = turn;
+    const invocation = voiceInvocation;
+    const fast = fastStart(base, text);
+    // A voice turn gets a filler if the model is slow; a fast start speaks
+    // its own fixed line the instant the run is dispatched.
+    if (fromVoice)
+      reply = conversation.expectReply(turnId, {
+        voiceTurn: true,
+        filler: fast
+          ? undefined
+          : looksLikeQuestion(text)
+            ? "thinking"
+            : base.kind === "start"
+              ? "ackStart"
+              : "ackCorrection",
+        fillerAfterMs: DIALOG_LIMITS.fillerAfterMs,
+      });
+    decision = await assistant.decide({
+      turnId,
+      text,
+      base,
+      run: planRun(),
+      view: currentRunView(),
+      channel,
+      confidence,
+      signal: turn.signal,
+    });
+    if (turnAbort === turn) turnAbort = undefined;
+    if (
+      turn.signal.aborted ||
+      decision.code === "interrupted" ||
+      (fromVoice && invocation !== voiceInvocation)
+    ) {
+      // The user took the floor (or cancelled) while the model was
+      // thinking: the plan is stale and nothing runs.
+      debug("TurnDecided", { plan: base.kind, code: "interrupted" });
+      reply?.cancel();
+      return;
+    }
+    plan = decision.plan;
+    debug("TurnDecided", { plan: plan.kind, code: decision.code });
+    if (reply)
+      reply.attach(decision.sentences, {
+        acting: decision.acting,
+        cannedIfEmpty: base.kind === "start" ? "ackStart" : "ackCorrection",
+        line: decision.code === "fast_start" ? fastStartLine(text) : undefined,
+      });
+    // Typed turns read the reply on the pill instead.
+    else if (decision.sentences)
+      replyText = await collectReply(decision.sentences);
+  }
   const ctx: PlanCtx = {
     origin: fromVoice ? "voice" : "typed",
-    channel: fromVoice ? "voice" : "app",
-    // Typed words are the user's; speech counts only when heard clearly.
-    taskSource:
-      fromVoice && confidence < APPROVAL_MIN_CONFIDENCE
-        ? "user_words_unsure"
-        : "user_words",
-    // Built before the plan runs: answering may resume the run.
-    ...(plan.kind === "status" ? { replyText: statusText() } : {}),
+    channel,
+    // The model may confirm the user's own words but never make them surer
+    // than they were heard.
+    taskSource: accepted
+      ? "proposal"
+      : decision?.taskSource === "user_words" && heard === "user_words_unsure"
+        ? heard
+        : (decision?.taskSource ?? heard),
+    // Built before the plan runs: answering may resume the run. The status
+    // template always reaches the pill; it is spoken only when the model
+    // did not answer itself.
+    replyText: plan.kind === "status" ? statusText() : replyText,
   };
   const outcome = await executePlan(plan, ctx);
-  if (!outcome.ok) throw new Error(outcome.error);
+  if (!outcome.ok) {
+    reply?.cancel();
+    throw new Error(outcome.error);
+  }
   conversation.acknowledge(plan, {
     source: context.source,
     handsFree: settings.handsFree,
     activationAt: context.activationAt,
     text: ctx.replyText,
+    reply,
   });
+  // The spoken answer, once it is known, replaces the placeholder card.
+  if (reply && plan.kind === "reply")
+    void reply.spoken.then((spoken) => {
+      if (spoken && !listening && !runActive() && pill.phase === "done")
+        setPill({ label: spoken });
+    });
+}
+/** A typed turn's reply, collected for the pill (bounded by the session). */
+async function collectReply(sentences: AsyncIterable<string>) {
+  const parts: string[] = [];
+  try {
+    for await (const sentence of sentences) parts.push(sentence);
+  } catch {}
+  return parts.join(" ") || undefined;
 }
 /** What a turn plan runs as: where it came from and whose words it carries. */
 type PlanCtx = {
@@ -1700,6 +1936,17 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       await resumeHeldRun(runHeld);
       return;
     case "acknowledge":
+      // With the dialog on and able to answer, an "okay" or "thanks" said by
+      // voice lets the run this very activation paused carry on. Any other
+      // hold (the user's own pause, a takeover, a helper restart) stays
+      // exactly as it was.
+      if (
+        settings.conversation === "model" &&
+        assistant.available("voice") &&
+        ctx.channel === "voice" &&
+        (await resumeVoiceHold())
+      )
+        return;
       voiceHeld = false;
       // A held run stays paused and keeps showing why.
       if (runActive()) render();
@@ -2135,6 +2382,9 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       // forgetRemoteDevice, so a save never carries a stale copy of it.
       next.remoteDevices = settings.remoteDevices;
       validateProviderEndpoint(next);
+      // The dialog model shares the endpoint, so the same privacy gate holds.
+      if (next.dialogModel) validateProviderEndpoint(textSettings(next));
+      validateAddressAs(next.addressAs);
       validateMessageSettings(next);
       validateRemoteSettings(next);
       const nextCredentials =
@@ -2171,6 +2421,16 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         (key) => next[key] !== settings[key],
       );
       const voiceEngineChanged = next.voiceEngine !== settings.voiceEngine;
+      // The dialog thread belongs to one provider, model and privacy mode.
+      if (
+        next.provider !== settings.provider ||
+        next.endpoint !== settings.endpoint ||
+        next.model !== settings.model ||
+        next.privacy !== settings.privacy ||
+        next.dialogModel !== settings.dialogModel ||
+        next.conversation !== settings.conversation
+      )
+        assistant.reset();
       credentials = nextCredentials;
       settings = next;
       saveConfig();
@@ -2479,13 +2739,20 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     case "downloadKokoro": {
       if (!kokoroSupported())
         throw new Error("The natural voice needs a Mac with Apple Silicon.");
+      const pack = z.enum(kokoroVoices).optional().parse(args[0]);
       kokoroDownload ??= new AbortController();
       const controller = kokoroDownload;
       try {
-        await getKokoro().download(
-          (status) => sendKokoroStatus(status),
-          controller.signal,
-        );
+        // Increment 3B's client takes the voice pack to fetch; until it
+        // lands the base install is the only pack and the argument is moot.
+        const client = getKokoro();
+        await (
+          client.download.bind(client) as (
+            onProgress: (status: KokoroStatus) => void,
+            signal: AbortSignal,
+            voice?: string,
+          ) => Promise<void>
+        )((status) => sendKokoroStatus(status), controller.signal, pack);
       } catch (error) {
         const status = kokoroUiStatus();
         sendKokoroStatus();

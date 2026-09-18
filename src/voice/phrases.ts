@@ -28,12 +28,20 @@ export type PhraseKind =
   | "approvalGeneric"
   | "budgetStop"
   | "queued"
+  | "thinking"
+  | "welcome"
   | "previewSample";
 
 export const PHRASES: Record<PhraseKind, readonly string[]> = {
   // "Sure." and "Sure thing." approve a pending action, so they are not acks.
-  ackStart: ["On it.", "Okay, on it.", "Got it.", "Will do.", "Right away."],
-  ackCorrection: ["Got it.", "Okay, switching.", "Understood.", "Okay."],
+  ackStart: [
+    "On it.",
+    "Right away.",
+    "Leave it with me.",
+    "Straight away.",
+    "Working on it.",
+  ],
+  ackCorrection: ["Got it.", "Understood.", "Changing course.", "Noted."],
   ackResume: ["Continuing.", "Picking back up.", "Okay, continuing."],
   ackPause: ["Paused.", "Holding here.", "Okay, holding."],
   ackStop: ["Stopped.", "Okay, stopped."],
@@ -77,6 +85,11 @@ export const PHRASES: Record<PhraseKind, readonly string[]> = {
     "Queued for after this one.",
     "Got it, that’s next.",
   ],
+  // The filler before a model reply to a question, while the answer is
+  // still being written. Never "One moment", which is a pause phrase.
+  thinking: ["Let me check.", "Let me see.", "Checking now."],
+  // A reply to thanks when the model is off or late.
+  welcome: ["Anytime.", "Happy to help.", "My pleasure."],
   previewSample: ["Hi. I’ll speak up when I need you."],
 };
 

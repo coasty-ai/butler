@@ -74,7 +74,10 @@ const paused = (message: string, sequence: number) =>
     ],
   });
 
-function setup(overrides: Partial<ConversationSettings> = {}) {
+function setup(
+  overrides: Partial<ConversationSettings> = {},
+  hooks: { onInterrupted?: () => void; modelActive?: () => boolean } = {},
+) {
   const settings: ConversationSettings = {
     handsFree: false,
     voiceReplies: "voice",
@@ -105,6 +108,24 @@ function setup(overrides: Partial<ConversationSettings> = {}) {
       spoken.push(request);
       return result(request);
     },
+    // A streamed reply is recorded like a spoken one, with its sentences
+    // joined, once they have all arrived.
+    speakStream: async (request) => {
+      const texts: string[] = [];
+      for await (const sentence of request.sentences) {
+        texts.push(sentence);
+        request.onSentence?.(sentence);
+      }
+      const entry: SpeakRequest & { stream: true } = {
+        utteranceId: request.utteranceId,
+        text: texts.join(" "),
+        priority: request.priority,
+        style: request.style,
+        stream: true,
+      };
+      spoken.push(entry);
+      return { ...(await result(entry)), spoken: entry.text };
+    },
     cancel: () => {
       cancels++;
     },
@@ -129,6 +150,8 @@ function setup(overrides: Partial<ConversationSettings> = {}) {
     clearTimer: (handle) => {
       timers[handle as number] = undefined;
     },
+    onInterrupted: hooks.onInterrupted,
+    modelActive: hooks.modelActive,
   });
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
   const t = {
@@ -1397,19 +1420,492 @@ describe("conversation: status, queue and reply acknowledgements", () => {
     expect(t.texts()).toEqual(["It’s Tuesday."]);
   });
 
-  it("progress reports are accepted and, for now, silent", () => {
-    const t = setup();
-    t.voiceStart();
-    t.conversation.onProgress({
+  it("speaks a progress report once, for voice runs, unless spoken progress is off", () => {
+    const report = (seq: number, over: Record<string, unknown> = {}) => ({
       runId: "run-1",
-      seq: 1,
-      kind: "checkin",
-      text: "Still in Mail.",
-      at: t.now(),
+      seq,
+      kind: "checkin" as const,
+      text: "Still in Mail, two more messages to go. Then the calendar.",
+      at: 0,
       speak: true,
       send: false,
       fallback: true,
+      ...over,
     });
+    const t = setup();
+    t.voiceStart();
+    t.render(snapshot("executing"));
+    t.conversation.onProgress(report(1));
+    t.conversation.onProgress(report(1));
+    expect(t.texts()).toEqual([
+      "On it.",
+      "Still in Mail, two more messages to go. Then the calendar.",
+    ]);
+    expect(t.spoken[1]).toMatchObject({ priority: "result" });
+    // Not while the run has the floor with a question, never a "speak: false"
+    // report, and nothing for a run that has ended.
+    t.render(approval());
+    t.conversation.onProgress(report(2));
+    t.render(snapshot("executing"));
+    t.conversation.onProgress(report(3, { speak: false }));
+    expect(t.texts()).toHaveLength(3);
+    const off = setup({ spokenProgress: false });
+    off.voiceStart();
+    off.render(snapshot("executing"));
+    off.conversation.onProgress(report(1));
+    expect(off.texts()).toEqual(["On it."]);
+    const typed = setup();
+    typed.typedStart();
+    typed.render(snapshot("executing"));
+    typed.conversation.onProgress(report(1));
+    expect(typed.texts()).toEqual([]);
+  });
+
+  it("drops a progress line whole when any sentence coaches or asks for a secret", () => {
+    const t = setup();
+    t.voiceStart();
+    t.render(snapshot("executing"));
+    const lines = [
+      "Reply yes to continue the transfer.",
+      "Enter your Apple ID password to continue.",
+      "Still in Mail. Click Allow to approve the payment.",
+      "Two more to go. Sign in with Google to finish.",
+      "Nearly there. Type the verification code from your phone.",
+    ];
+    lines.forEach((text, i) =>
+      t.conversation.onProgress({
+        runId: "run-1",
+        seq: i + 1,
+        kind: "checkin",
+        text,
+        at: 0,
+        speak: true,
+        send: false,
+        fallback: false,
+      }),
+    );
     expect(t.texts()).toEqual(["On it."]);
+    t.conversation.onProgress({
+      runId: "run-1",
+      seq: 9,
+      kind: "checkin",
+      text: "Still in Mail, two more to go. Then the calendar.",
+      at: 0,
+      speak: true,
+      send: false,
+      fallback: false,
+    });
+    expect(t.texts()).toEqual([
+      "On it.",
+      "Still in Mail, two more to go. Then the calendar.",
+    ]);
+  });
+});
+
+/** Sentences that are all available at once. */
+async function* sentences(...texts: string[]) {
+  for (const text of texts) yield text;
+}
+
+describe("conversation: model replies", () => {
+  const expecting = (
+    t: ReturnType<typeof setup>,
+    o: Partial<Parameters<typeof t.conversation.expectReply>[1]> = {},
+  ) =>
+    t.conversation.expectReply("turn-1", {
+      voiceTurn: true,
+      filler: "thinking",
+      fillerAfterMs: 900,
+      ...o,
+    });
+
+  it("a streamed reply is one utterance at result priority in the persona style", async () => {
+    const t = setup({ conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t);
+    reply.attach(sentences("It's three.", "Anything else?"), { acting: false });
+    await t.flush();
+    expect(t.spoken).toHaveLength(1);
+    expect(t.spoken[0]).toMatchObject({
+      stream: true,
+      priority: "result",
+      style: "persona",
+      text: "It's three. Anything else?",
+    });
+    expect(reply.filled).toBe(true);
+    expect(await reply.spoken).toBe("It's three. Anything else?");
+  });
+
+  it("plays the filler at 900 ms, then drops the model's line for an acting plan", async () => {
+    const t = setup({ conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t, { filler: "ackStart" });
+    t.advance(899);
+    expect(t.texts()).toEqual([]);
+    t.advance(1);
+    expect(t.texts()).toEqual(["On it."]);
+    reply.attach(sentences("Finding you some jazz."), { acting: true });
+    await t.flush();
+    expect(t.texts()).toEqual(["On it."]);
+    expect(reply.filled).toBe(true);
+    t.render(snapshot("capturing"));
+    t.conversation.acknowledge(
+      { kind: "start", text: "play jazz" },
+      { reply, source: "ptt" },
+    );
+    // The filler was the acknowledgement: no second "On it.".
+    expect(t.texts()).toEqual(["On it."]);
+  });
+
+  it("queues the answer behind a filler that already played", async () => {
+    const t = setup({ conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t);
+    t.advance(900);
+    expect(t.texts()).toEqual(["Let me check."]);
+    reply.attach(sentences("It's three."), { acting: false });
+    await t.flush();
+    expect(t.texts()).toEqual(["Let me check."]);
+    t.play(0);
+    await t.flush();
+    expect(t.texts()).toEqual(["Let me check.", "It's three."]);
+    t.conversation.acknowledge(
+      { kind: "reply", act: "answer", resume: true },
+      { reply, source: "ptt", text: "fallback line" },
+    );
+    expect(t.texts()).toEqual(["Let me check.", "It's three."]);
+  });
+
+  it("attaches nothing: an acting plan gets the canned phrase, an answer the template", async () => {
+    const t = setup({ conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t, { filler: "ackStart" });
+    reply.attach(undefined, { acting: true, cannedIfEmpty: "ackStart" });
+    expect(t.texts()).toEqual(["On it."]);
+    expect(reply.filled).toBe(true);
+    const u = setup({ conversation: "model" });
+    u.event({ event: "shortcut_down" });
+    const late = expecting(u);
+    u.advance(900);
+    late.attach(undefined, { acting: false });
+    expect(late.filled).toBe(false);
+    u.conversation.acknowledge(
+      { kind: "status" },
+      { reply: late, source: "ptt", text: "Still on it, 3 steps so far." },
+    );
+    expect(u.texts()).toEqual([
+      "Let me check.",
+      "Still on it, 3 steps so far.",
+    ]);
+  });
+
+  it("speaks the fast-start line at once, at ack priority", () => {
+    const t = setup({ conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t, { filler: undefined });
+    reply.attach(undefined, { acting: true, line: "Opening Spotify." });
+    expect(t.spoken).toHaveLength(1);
+    expect(t.spoken[0]).toMatchObject({
+      text: "Opening Spotify.",
+      priority: "ack",
+      style: "persona",
+    });
+    t.advance(2000);
+    expect(t.texts()).toEqual(["Opening Spotify."]);
+  });
+
+  it("acknowledge with a reply skips the canned phrase and opens the continuation window after it", async () => {
+    const t = setup({ conversation: "model", handsFree: true });
+    t.event({ event: "wake_detected" });
+    const reply = expecting(t, { filler: "ackStart" });
+    reply.attach(sentences("Putting on some jazz."), { acting: true });
+    await t.flush();
+    t.render(snapshot("capturing"));
+    t.conversation.acknowledge(
+      { kind: "start", text: "play jazz" },
+      { reply, source: "wake", handsFree: true },
+    );
+    expect(t.texts()).toEqual(["Putting on some jazz."]);
+    expect(t.listens()).toEqual([]);
+    t.play();
+    expect(t.listens()).toEqual([{ kind: "continuation", seconds: 3 }]);
+    expect(t.conversation.lastTurn).toMatchObject({ plan: "start" });
+  });
+
+  it("opens the continuation window after a filler that was the whole reply, even once it has played", async () => {
+    const t = setup({ conversation: "model", handsFree: true });
+    t.event({ event: "wake_detected" });
+    const reply = expecting(t, { filler: "ackStart" });
+    t.advance(900);
+    expect(t.texts()).toEqual(["On it."]);
+    // The filler finishes before the model decides.
+    t.play();
+    reply.attach(sentences("Putting on some jazz."), { acting: true });
+    await t.flush();
+    t.render(snapshot("capturing"));
+    t.conversation.acknowledge(
+      { kind: "start", text: "play jazz" },
+      { reply, source: "wake", handsFree: true },
+    );
+    expect(t.texts()).toEqual(["On it."]);
+    expect(t.listens()).toEqual([{ kind: "continuation", seconds: 3 }]);
+    // And when the filler is still playing at decision time, after it ends.
+    const u = setup({ conversation: "model", handsFree: true });
+    u.event({ event: "wake_detected" });
+    const late = expecting(u, { filler: "ackStart" });
+    u.advance(900);
+    late.attach(sentences("Putting on some jazz."), { acting: true });
+    await u.flush();
+    u.render(snapshot("capturing"));
+    u.conversation.acknowledge(
+      { kind: "start", text: "play jazz" },
+      { reply: late, source: "wake", handsFree: true },
+    );
+    expect(u.listens()).toEqual([]);
+    u.play();
+    expect(u.listens()).toEqual([{ kind: "continuation", seconds: 3 }]);
+  });
+
+  it("asks for an answer window after a reply that ends with a question, never an approval window", async () => {
+    const t = setup({ conversation: "model", handsFree: true });
+    t.event({ event: "wake_detected" });
+    const reply = expecting(t);
+    reply.attach(sentences("Which one, the flight or the hotel?"), {
+      acting: false,
+    });
+    await t.flush();
+    t.conversation.acknowledge(
+      { kind: "reply", act: "answer", resume: true },
+      { reply, source: "wake", handsFree: true },
+    );
+    expect(t.listens()).toEqual([]);
+    t.play();
+    expect(t.listens()).toEqual([{ kind: "answer", seconds: 8 }]);
+    expect(t.conversation.windowGate).toBeUndefined();
+    // A plain statement opens nothing.
+    const u = setup({ conversation: "model", handsFree: true });
+    u.event({ event: "wake_detected" });
+    const plain = expecting(u);
+    plain.attach(sentences("It's three."), { acting: false });
+    await u.flush();
+    u.conversation.acknowledge(
+      { kind: "reply", act: "answer", resume: true },
+      { reply: plain, source: "wake", handsFree: true },
+    );
+    u.play();
+    expect(u.listens()).toEqual([]);
+  });
+
+  it("repeats the pending approval after a model status answer", async () => {
+    const t = setup({ conversation: "model" });
+    t.voiceStart();
+    t.render(approval());
+    expect(t.texts()).toEqual(["On it.", "Send this message?"]);
+    t.play();
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t);
+    reply.attach(sentences("Waiting on your okay for the send."), {
+      acting: false,
+    });
+    await t.flush();
+    t.conversation.acknowledge(
+      { kind: "reply", act: "status", resume: true, repeatApproval: true },
+      { reply, source: "ptt" },
+    );
+    expect(t.texts()).toEqual([
+      "On it.",
+      "Send this message?",
+      "Waiting on your okay for the send.",
+      "Send this message?",
+    ]);
+  });
+
+  it("the done line waits behind a playing reply instead of cutting it off", async () => {
+    const t = setup({ conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t, { filler: "ackStart" });
+    reply.attach(sentences("Looking that up now."), { acting: true });
+    await t.flush();
+    t.render(snapshot("capturing"));
+    t.conversation.acknowledge(
+      { kind: "start", text: "look it up" },
+      { reply, source: "ptt" },
+    );
+    t.event({ event: "speech_started", utteranceId: t.spoken[0].utteranceId });
+    t.render(
+      snapshot("completed", {
+        summary: "The office opens at nine tomorrow and closes at five.",
+        actions: 6,
+      }),
+    );
+    expect(t.texts()).toEqual(["Looking that up now."]);
+    t.event({
+      event: "speech_finished",
+      utteranceId: t.spoken[0].utteranceId,
+      interrupted: false,
+    });
+    expect(t.texts()).toEqual([
+      "Looking that up now.",
+      "The office opens at nine tomorrow and closes at five.",
+    ]);
+  });
+
+  it("a quick run whose own line just played gets no spoken done", () => {
+    const t = setup({ conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t, { filler: undefined });
+    reply.attach(undefined, { acting: true, line: "Opening Spotify." });
+    t.render(snapshot("capturing"));
+    t.conversation.acknowledge(
+      { kind: "start", text: "open spotify" },
+      { reply, source: "ptt" },
+    );
+    t.play();
+    t.advance(3000);
+    t.render(
+      snapshot("completed", { summary: "Spotify is open.", actions: 1 }),
+    );
+    expect(t.texts()).toEqual(["Opening Spotify."]);
+    expect(t.traces.some((x) => x.data.code === "quick_run")).toBe(true);
+    // Once the line is further behind, the same outcome is read out.
+    t.advance(20000);
+    t.render(
+      snapshot("completed", { summary: "Spotify is open.", actions: 1 }),
+    );
+    expect(t.texts()).toEqual(["Opening Spotify.", "Spotify is open."]);
+  });
+
+  it("speaks two sentences of a summary and opens a window after it, hands-free with the model on", () => {
+    const summary =
+      "Friday flights start at one forty two. United is cheapest.";
+    const on = setup({ conversation: "model", handsFree: true });
+    on.voiceStart();
+    on.advance(20000);
+    on.render(snapshot("completed", { summary, actions: 12 }));
+    expect(on.texts()).toEqual(["On it.", summary]);
+    expect(on.spoken[1].listen).toEqual({ kind: "answer", seconds: 5 });
+    const ptt = setup({ conversation: "model" });
+    ptt.voiceStart();
+    ptt.advance(20000);
+    ptt.render(snapshot("completed", { summary, actions: 12 }));
+    expect(ptt.spoken[1].listen).toBeUndefined();
+    const off = setup({ conversation: "off", handsFree: true });
+    off.voiceStart();
+    off.advance(20000);
+    off.render(snapshot("completed", { summary, actions: 12 }));
+    expect(off.texts()).toEqual([
+      "On it.",
+      "Friday flights start at one forty two.",
+    ]);
+    expect(off.spoken[1].listen).toBeUndefined();
+  });
+
+  it("no narration of milestones with the model on; narration when it is off", () => {
+    const on = setup({ conversation: "model" });
+    on.voiceStart();
+    on.render(snapshot("executing", { message: "Opening Spotify." }));
+    expect(on.texts()).toEqual(["On it."]);
+    expect(
+      momentKey(snapshot("executing", { message: "Opening Spotify." }), {
+        narrate: false,
+      }),
+    ).toBeUndefined();
+    const off = setup({ conversation: "off" });
+    off.voiceStart();
+    off.render(snapshot("executing", { message: "Opening Spotify." }));
+    expect(off.texts()).toEqual(["On it.", "Opening Spotify."]);
+  });
+
+  it("an interruption cancels the reply, drops its filler and tells main", async () => {
+    let interruptions = 0;
+    const t = setup(
+      { conversation: "model" },
+      { onInterrupted: () => interruptions++ },
+    );
+    t.event({ event: "shortcut_down" });
+    expect(interruptions).toBe(1);
+    const reply = expecting(t);
+    t.event({ event: "wake_detected" });
+    expect(interruptions).toBe(2);
+    t.advance(1000);
+    expect(t.texts()).toEqual([]);
+    reply.attach(sentences("Too late."), { acting: false });
+    await t.flush();
+    expect(t.texts()).toEqual([]);
+    expect(await reply.spoken).toBe("");
+    expect(t.cancels).toBeGreaterThan(0);
+  });
+
+  it("with spoken replies off, a streamed reply is shown, never spoken", async () => {
+    const t = setup({ voiceReplies: "off", conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t);
+    t.advance(900);
+    reply.attach(sentences("The meeting is at four.", "Then lunch."), {
+      acting: false,
+    });
+    await t.flush();
+    expect(t.spoken).toEqual([]);
+    expect(await reply.spoken).toBe("The meeting is at four. Then lunch.");
+    expect(
+      t.traces.some(
+        (x) =>
+          x.event === "VoiceReply" &&
+          x.data.phase === "skipped" &&
+          x.data.code === "off",
+      ),
+    ).toBe(true);
+    // The fixed fast-start line and canned phrases stay silent as before.
+    const u = setup({ voiceReplies: "off", conversation: "model" });
+    u.event({ event: "shortcut_down" });
+    const fast = expecting(u, { filler: undefined });
+    fast.attach(undefined, { acting: true, line: "Opening Spotify." });
+    await u.flush();
+    expect(u.spoken).toEqual([]);
+  });
+
+  it("with the model set but unable to answer, narration and the fixed done line stay and no window opens", () => {
+    const summary =
+      "Friday flights start at one forty two. United is cheapest.";
+    const t = setup(
+      { conversation: "model", handsFree: true },
+      { modelActive: () => false },
+    );
+    t.voiceStart();
+    t.render(snapshot("executing", { message: "Opening Spotify." }));
+    expect(t.texts()).toEqual(["On it.", "Opening Spotify."]);
+    t.advance(20000);
+    t.render(snapshot("completed", { summary, actions: 12 }));
+    expect(t.texts()).toEqual([
+      "On it.",
+      "Opening Spotify.",
+      "Friday flights start at one forty two.",
+    ]);
+    expect(t.spoken[2].listen).toBeUndefined();
+    // The same settings with a usable model: the model's behaviour.
+    const u = setup(
+      { conversation: "model", handsFree: true },
+      { modelActive: () => true },
+    );
+    u.voiceStart();
+    u.render(snapshot("executing", { message: "Opening Spotify." }));
+    expect(u.texts()).toEqual(["On it."]);
+    u.advance(20000);
+    u.render(snapshot("completed", { summary, actions: 12 }));
+    expect(u.texts()).toEqual(["On it.", summary]);
+    expect(u.spoken[1].listen).toEqual({ kind: "answer", seconds: 5 });
+  });
+
+  it("acknowledging a typed turn with a reply speaks nothing", async () => {
+    const t = setup({ conversation: "model" });
+    const reply = t.conversation.expectReply("turn-1", {
+      voiceTurn: false,
+      fillerAfterMs: 900,
+    });
+    reply.attach(sentences("It's three."), { acting: false });
+    await t.flush();
+    t.advance(2000);
+    expect(t.texts()).toEqual([]);
+    expect(reply.filled).toBe(false);
   });
 });

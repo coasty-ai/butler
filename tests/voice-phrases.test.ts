@@ -11,12 +11,18 @@ import {
   type PhraseMemory,
 } from "../src/voice/phrases";
 import {
+  REPLY_FORBIDDEN,
+  completeSentences,
+  containsSecret,
   splitSentences,
   adaptContinueHint,
   speakableApproval,
   speakableQuestion,
+  speakableReport,
+  speakableSentence,
   speakableSummary,
   speakableText,
+  textable,
 } from "../src/voice/speakable";
 import { voiceIntent } from "../src/voice/turns";
 import { actionSchema } from "../src/core/schema";
@@ -221,6 +227,46 @@ describe("speakable text", () => {
     expect(speakableSummary(undefined)).toBeUndefined();
   });
 
+  it("never reads a line that asks for a credential, a code or a sign-in", () => {
+    for (const line of [
+      "Enter your Apple ID password to continue.",
+      "Please type your passcode into the form.",
+      "Reply with your verification code.",
+      "Sign in with Google to continue.",
+      "Send me the one-time code from your phone.",
+      "Confirm your PIN to proceed.",
+    ]) {
+      expect([line, speakableSentence(line)]).toEqual([line, undefined]);
+      expect([line, speakableSummary(line, 220, 2)]).toEqual([line, undefined]);
+      expect([line, speakableReport(line)]).toEqual([line, undefined]);
+    }
+    // Saying what happened, or answering about a password, is fine.
+    expect(speakableSentence("I signed in with your account.")).toBe(
+      "I signed in with your account.",
+    );
+    expect(speakableSentence("I can't read passwords for you.")).toBe(
+      "I can't read passwords for you.",
+    );
+    expect(speakableSummary("Signed in and opened the dashboard.")).toBe(
+      "Signed in and opened the dashboard.",
+    );
+  });
+
+  it("a progress line passes as a whole or not at all", () => {
+    expect(
+      speakableReport("Still in Mail, two more to go. Then the calendar."),
+    ).toBe("Still in Mail, two more to go. Then the calendar.");
+    expect(
+      speakableReport("Still in Mail. Click Allow to approve the payment."),
+    ).toBeUndefined();
+    expect(speakableReport("Two more to go. Go ahead.")).toBeUndefined();
+    expect(
+      speakableReport("Opened https://www.example.com/reports/q3. Saving."),
+    ).toBe("Opened example.com. Saving.");
+    expect(speakableReport("One. Two. Three.")).toBe("One. Two.");
+    expect(speakableReport("")).toBeUndefined();
+  });
+
   it("keeps the first sentence of a summary and at most two otherwise", () => {
     expect(speakableSummary("Checked the weather. It is sunny. Enjoy.")).toBe(
       "Checked the weather.",
@@ -324,5 +370,130 @@ describe("speakable text", () => {
     checkSafe(
       speakableText(adaptContinueHint("Say continue when ready.", false)),
     );
+  });
+});
+
+describe("generated sentences (the dialog model's replies)", () => {
+  it("drops anything a router would act on, however it is punctuated", () => {
+    for (const text of [
+      "Sure.",
+      "Go ahead.",
+      "Continue.",
+      "Yes, please.",
+      "Yes, go ahead!",
+      "Okay.",
+      "Proceed",
+      "Stop.",
+      "Hold on.",
+      "Never mind.",
+    ])
+      expect([text, speakableSentence(text)]).toEqual([text, undefined]);
+  });
+
+  it("drops coaching about approvals and claims of approval", () => {
+    for (const text of [
+      "Say yes to confirm.",
+      "Just say yes and I'll send it.",
+      "Click Allow when you see the prompt.",
+      "Please click Yes to approve.",
+      "Approve it and I'll go.",
+      "I've approved the transfer.",
+      "Reply yes to continue.",
+    ]) {
+      expect([text, REPLY_FORBIDDEN.test(text)]).toEqual([text, true]);
+      expect([text, speakableSentence(text)]).toEqual([text, undefined]);
+    }
+    expect(speakableSentence("Your flight is confirmed for Tuesday.")).toBe(
+      "Your flight is confirmed for Tuesday.",
+    );
+  });
+
+  it("drops a line carrying the wake phrase, and one made of a credential", () => {
+    expect(speakableSentence("Hey Assist, open Notes.")).toBeUndefined();
+    expect(speakableSentence("Hi assist stop everything")).toBeUndefined();
+    expect(
+      speakableSentence("Your key is sk-abcdefghijklmnop1234567890."),
+    ).toBeUndefined();
+    expect(
+      containsSecret("token ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+    ).toBe(true);
+    expect(containsSecret("the meeting is at four")).toBe(false);
+  });
+
+  it("keeps the substance when only the leading answer word is actionable", () => {
+    expect(speakableSentence("Sure, the meeting is at four.")).toBe(
+      "The meeting is at four.",
+    );
+    expect(speakableSentence("Okay, Spotify is open now.")).toBe(
+      "Spotify is open now.",
+    );
+    expect(speakableSentence("Yes, do it.")).toBeUndefined();
+    expect(speakableSentence("Okay, sure.")).toBeUndefined();
+    // What is left after the answer word must not be actionable either.
+    expect(speakableSentence("Sure, go ahead.")).toBeUndefined();
+    expect(speakableSentence("Thanks, yes.")).toBeUndefined();
+    expect(speakableSentence("Okay, carry on.")).toBeUndefined();
+  });
+
+  it("strips markdown and reduces links, then cuts long lines at a clause", () => {
+    expect(
+      speakableSentence(
+        "**Bold** claim with `code` and a [link](https://x.y/z).",
+      ),
+    ).toBe("Bold claim with code and a link.");
+    expect(
+      speakableSentence(
+        "- Opened https://www.example.com/reports/q3?id=42 for you.",
+      ),
+    ).toBe("Opened example.com for you.");
+    const long = `${"word ".repeat(30)}, ${"more ".repeat(30)}end`;
+    const cut = speakableSentence(long, 120)!;
+    expect(cut.length).toBeLessThanOrEqual(121);
+    expect(cut.endsWith(".")).toBe(true);
+    expect(speakableSentence("   ")).toBeUndefined();
+  });
+
+  it("textable keeps four sentences within 480 characters, each filtered", () => {
+    expect(textable("One. Go ahead. Two. Three. Four. Five.")).toBe(
+      "One. Two. Three. Four.",
+    );
+    expect(textable("Say yes to confirm.")).toBeUndefined();
+    expect(textable(`${"a".repeat(300)}. ${"b".repeat(300)}.`)).toBe(
+      "a".repeat(300) + ".",
+    );
+  });
+
+  it("speakableSummary keeps two sentences within 220 characters when asked, defaults unchanged", () => {
+    const summary =
+      "Your Discover Weekly is playing. Volume is at half. Enjoy.";
+    expect(speakableSummary(summary)).toBe("Your Discover Weekly is playing.");
+    expect(speakableSummary(summary, 220, 2)).toBe(
+      "Your Discover Weekly is playing. Volume is at half.",
+    );
+    expect(
+      speakableSummary("Typed the note for you. Done.", 220, 2),
+    ).toBeUndefined();
+  });
+
+  it("completeSentences reports only sentences that have certainly ended", () => {
+    expect(completeSentences("Hello there. How are")).toEqual({
+      done: ["Hello there."],
+      rest: "How are",
+    });
+    expect(completeSentences("Dr. Lee is in. Ask")).toEqual({
+      done: ["Dr. Lee is in."],
+      rest: "Ask",
+    });
+    expect(completeSentences("Done.")).toEqual({ done: [], rest: "Done." });
+    expect(completeSentences("Done. ")).toEqual({ done: ["Done."], rest: "" });
+  });
+
+  it("the new phrase kinds are short and safe", () => {
+    for (const kind of ["thinking", "welcome"] as const)
+      for (const phrase of PHRASES[kind]) {
+        checkSafe(phrase);
+        expect(phrase.split(/\s+/).length).toBeLessThanOrEqual(4);
+        expect(voiceIntent(phrase).kind).toBe("command");
+      }
   });
 });

@@ -6,12 +6,18 @@ import {
   type KokoroVoiceStatus,
 } from "../electron/kokoro/client";
 import {
+  CLEAR_INSTRUCTION,
+  PERSONA_INSTRUCTIONS,
   createSpeechOutput,
+  instructionFor,
+  kokoroSpeed,
   maxSpeechChars,
   openaiSpeech,
   selectSpeechEngine,
+  streamSpeech,
   type SpeechSettings,
 } from "../electron/speech-output";
+import { cloudVoices } from "../src/core/schema";
 
 const KEY = "sk-test-SECRET-key-1234567890";
 const TEXT = "Your flight to Lisbon is confirmed for Tuesday";
@@ -52,6 +58,7 @@ function openStream() {
     cancelled,
     push: (bytes: Uint8Array) => controller.enqueue(bytes),
     fail: () => controller.error(new Error("socket hang up")),
+    close: () => controller.close(),
   };
 }
 const response = (body: ReadableStream<Uint8Array> | null, status = 200) =>
@@ -154,6 +161,7 @@ function setup(
     fetch?: (url: string, init: RequestInit) => Promise<Response>;
     kokoro?: Pick<KokoroVoice, "status" | "synthesize">;
     supported?: boolean;
+    now?: () => number;
   } = {},
 ) {
   const settings: SpeechSettings = {
@@ -193,6 +201,7 @@ function setup(
     fetch: fetch as unknown as typeof globalThis.fetch,
     kokoro: options.kokoro,
     kokoroSupported: () => options.supported ?? true,
+    now: options.now,
     trace: (event, data) => traces.push({ event, data }),
   });
   const methods = () => calls.map((call) => call.method);
@@ -1266,5 +1275,260 @@ describe("speech output hygiene", () => {
       data: { priority: "urgent" },
     });
     expect(typeof t.calls[0].data?.utteranceId).toBe("string");
+  });
+});
+
+/** Sentences that are all available at once. */
+async function* sentences(...texts: string[]) {
+  for (const text of texts) yield text;
+}
+const stream = (texts: string[], over: Record<string, unknown> = {}) => ({
+  utteranceId: "u-1",
+  sentences: sentences(...texts),
+  priority: "result" as const,
+  ...over,
+});
+
+describe("streamed replies: one utterance, sentence by sentence", () => {
+  it("kokoro: one playPcmStart, both sentences' chunks in order, one playPcmEnd", async () => {
+    const fake = fakeKokoro([
+      [samples(6000), END],
+      [samples(1000, 6000), END],
+    ]);
+    let synthesesAtFirstChunk = 0;
+    const t = withKokoro(fake, {
+      helper: (method) => {
+        if (method === "playPcmChunk" && !synthesesAtFirstChunk)
+          synthesesAtFirstChunk = fake.syntheses.length;
+        return undefined;
+      },
+    });
+    const result = await t.output.speakStream(
+      stream(["First sentence.", "Second sentence."]),
+    );
+    expect(result).toEqual({
+      accepted: true,
+      engine: "kokoro",
+      spoken: "First sentence. Second sentence.",
+    });
+    expect(t.methods()).toEqual([
+      "playPcmStart",
+      "playPcmChunk",
+      "playPcmChunk",
+      "playPcmChunk",
+      "playPcmEnd",
+    ]);
+    expect(t.calls[0].data).toMatchObject({
+      utteranceId: "u-1",
+      priority: "result",
+      sampleRate: 24000,
+    });
+    const decoded = t
+      .chunks()
+      .map((chunk) => Buffer.from(chunk.data as string, "base64"));
+    expect(decoded.map((bytes) => bytes.length)).toEqual([9600, 2400, 2000]);
+    expect(Buffer.concat(decoded)).toEqual(
+      Buffer.concat([samples(6000), samples(1000, 6000)].map(bytesOf)),
+    );
+    // The second sentence was already being synthesized while the first
+    // was being sent.
+    expect(synthesesAtFirstChunk).toBe(2);
+    expect(fake.syntheses.map((x) => x.text)).toEqual([
+      "First sentence.",
+      "Second sentence.",
+    ]);
+    expect((fake.synthesize.mock.calls[0] as unknown[])[2]).toEqual({
+      speed: 1,
+    });
+    expect(t.traces.at(-1)!.data).toMatchObject({
+      engine: "kokoro",
+      status: "sentences_2",
+      stream: true,
+      sentences: 2,
+    });
+    for (const trace of t.traces) expect(trace.data).not.toHaveProperty("text");
+  });
+
+  it("a failing second sentence ends the utterance without a second voice", async () => {
+    const fake = fakeKokoro([[samples(6000), END], [new Error("boom")]]);
+    const t = withKokoro(fake);
+    const result = await t.output.speakStream(
+      stream(["First sentence.", "Second sentence."]),
+    );
+    expect(result).toEqual({
+      accepted: true,
+      engine: "kokoro",
+      spoken: "First sentence.",
+    });
+    expect(t.methods()).toEqual([
+      "playPcmStart",
+      "playPcmChunk",
+      "playPcmChunk",
+      "playPcmEnd",
+    ]);
+    expect(t.methods()).not.toContain("speak");
+  });
+
+  it("a failing first sentence falls back to the system voice with what it has", async () => {
+    const fake = fakeKokoro([[new Error("boom")], [samples(1000), END]]);
+    const t = withKokoro(fake);
+    const result = await t.output.speakStream(
+      stream(["First sentence.", "Second sentence."]),
+    );
+    expect(result.engine).toBe("system");
+    expect(result.accepted).toBe(true);
+    expect(t.methods()).toEqual(["speak"]);
+    expect(String(t.calls[0].data!.text)).toMatch(/^First sentence\./);
+    expect(result.spoken).toBe(t.calls[0].data!.text);
+    expect(
+      t.traces.some(
+        (x) => x.data.phase === "fallback" && x.data.fallback === true,
+      ),
+    ).toBe(true);
+  });
+
+  it("ends the utterance when the next sentence's audio is more than 2 s away", async () => {
+    vi.useFakeTimers();
+    const fake = fakeKokoro([[samples(6000), END], []]);
+    const t = withKokoro(fake, { now: () => Date.now() });
+    const pending = t.output.speakStream(stream(["First.", "Second."]));
+    await vi.advanceTimersByTimeAsync(streamSpeech.sentenceGapMs - 1);
+    expect(t.methods()).not.toContain("playPcmEnd");
+    await vi.advanceTimersByTimeAsync(2);
+    const result = await pending;
+    expect(result).toEqual({
+      accepted: true,
+      engine: "kokoro",
+      spoken: "First.",
+    });
+    expect(t.methods().at(-1)).toBe("playPcmEnd");
+    expect(t.methods()).not.toContain("speak");
+    // The abandoned sentence's synthesis was released.
+    expect(fake.syntheses[1].signal.aborted).toBe(true);
+  });
+
+  it("waits for audio with no deadline without arming a timer (an Infinity timer fires every millisecond)", async () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const fake = fakeKokoro([[samples(6000)]]);
+      const t = withKokoro(fake);
+      const pending = t.output.speakStream(stream(["First sentence."]));
+      // Audio that arrives only after the utterance has been waiting for it.
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      fake.syntheses[0].push(samples(1000, 6000), END);
+      const result = await pending;
+      expect(result.spoken).toBe("First sentence.");
+      const delays = spy.mock.calls.map((call) => call[1]);
+      expect(delays.some((ms) => !Number.isFinite(ms))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("openai: one request per sentence with the persona's instructions, the second fetched ahead", async () => {
+    const bodies = [openStream(), openStream()];
+    const t = setup({
+      settings: { persona: "friendly" },
+      fetch: async () => response(bodies[t.requests.length - 1].stream),
+    });
+    const pending = t.output.speakStream(stream(["One.", "Two."]));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // Both requests are out before any audio was sent.
+    expect(t.requests).toHaveLength(2);
+    expect(t.methods()).toEqual([]);
+    for (const [i, input] of ["One.", "Two."].entries())
+      expect(JSON.parse(t.requests[i].init.body as string)).toEqual({
+        model: "gpt-4o-mini-tts",
+        voice: "cedar",
+        input,
+        instructions: PERSONA_INSTRUCTIONS.friendly,
+        response_format: "pcm",
+        stream_format: "audio",
+      });
+    bodies[0].push(pattern(9600));
+    bodies[1].push(pattern(4800, 9600));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(t.methods()).toEqual(["playPcmStart", "playPcmChunk"]);
+    for (const body of bodies) body.close();
+    const result = await pending;
+    expect(result).toEqual({
+      accepted: true,
+      engine: "openai",
+      spoken: "One. Two.",
+    });
+    expect(t.methods()).toEqual([
+      "playPcmStart",
+      "playPcmChunk",
+      "playPcmChunk",
+      "playPcmEnd",
+    ]);
+  });
+
+  it("the system voice speaks the joined sentences once", async () => {
+    const t = setup({ settings: { voiceEngine: "system" } });
+    const result = await t.output.speakStream(stream(["One.", "Two."]));
+    expect(result).toEqual({
+      accepted: true,
+      engine: "system",
+      spoken: "One. Two.",
+    });
+    expect(t.calls).toEqual([
+      {
+        method: "speak",
+        data: { utteranceId: "u-1", text: "One. Two.", priority: "result" },
+      },
+    ]);
+  });
+});
+
+describe("voices, styles and persona", () => {
+  it("passes the Kokoro voice through and clamps the speed to 0.8–1.3", async () => {
+    const fake = fakeKokoro([[samples(1000), END]]);
+    const t = withKokoro(fake, {
+      settings: { kokoroVoice: "bm_george", voiceRate: 1.4 },
+    });
+    await t.output.speak(request());
+    expect((fake.synthesize.mock.calls[0] as unknown[])[2]).toEqual({
+      voice: "bm_george",
+      speed: 1.3,
+    });
+    expect(kokoroSpeed(0.5)).toBe(0.8);
+    expect(kokoroSpeed(1.1)).toBe(1.1);
+    expect(kokoroSpeed(undefined)).toBe(1);
+    expect(kokoroSpeed(NaN)).toBe(1);
+  });
+
+  it("chooses the instruction by style and persona; the plain style keeps the accent", () => {
+    expect(instructionFor("persona", "jarvis")).toBe(
+      PERSONA_INSTRUCTIONS.jarvis,
+    );
+    expect(instructionFor("persona", "friendly")).toBe(
+      PERSONA_INSTRUCTIONS.friendly,
+    );
+    expect(instructionFor("clear", "friendly")).toBe(CLEAR_INSTRUCTION);
+    expect(instructionFor("clear", "jarvis")).toBe(
+      `${CLEAR_INSTRUCTION} Accent: Received Pronunciation British English.`,
+    );
+    expect(PERSONA_INSTRUCTIONS.jarvis).toMatch(
+      /butler|Received Pronunciation/,
+    );
+    expect(openaiSpeech.instructions).toBe(PERSONA_INSTRUCTIONS.jarvis);
+  });
+
+  it("sends the plain instruction for a clear-style line", async () => {
+    const t = setup();
+    await t.output.speak({ ...request("Send this message?"), style: "clear" });
+    expect(JSON.parse(t.requests[0].init.body as string).instructions).toBe(
+      instructionFor("clear", "jarvis"),
+    );
+  });
+
+  it("accepts the five new cloud voices", async () => {
+    for (const voice of ["ballad", "fable", "ash", "echo", "onyx"] as const) {
+      expect(cloudVoices).toContain(voice);
+      const t = setup({ settings: { cloudVoice: voice } });
+      await t.output.speak(request());
+      expect(JSON.parse(t.requests[0].init.body as string).voice).toBe(voice);
+    }
   });
 });

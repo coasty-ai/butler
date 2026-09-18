@@ -18,6 +18,7 @@ import {
   adaptContinueHint,
   speakableApproval,
   speakableQuestion,
+  speakableReport,
   speakableSummary,
   speakableText,
 } from "../src/voice/speakable";
@@ -29,7 +30,7 @@ import {
   type VoiceSource,
 } from "../src/voice/turns";
 import type { ProgressReport } from "../src/assistant/types";
-import type { SpeakPriority, SpeechOutput } from "./speech-output";
+import type { SpeakPriority, SpeechOutput, SpeechStyle } from "./speech-output";
 import type { VoiceEvent } from "./voice";
 
 export type VoiceReplies = "off" | "voice" | "always";
@@ -39,10 +40,28 @@ export interface ConversationSettings {
   voiceReplies?: VoiceReplies;
   followUpListening?: boolean;
   voiceRate?: number;
+  /**
+   * "model": replies are written by the dialog model, step narration
+   * ("Opening Spotify.") gives way to its replies and progress lines, and a
+   * result is followed by a short listening window. "off": today's fixed
+   * phrases and narration.
+   */
+  conversation?: "model" | "off";
+  /** Spoken progress lines from the shared reporter during long runs. */
+  spokenProgress?: boolean;
 }
 export interface ConversationOptions {
   settings: () => ConversationSettings;
   speech: SpeechOutput;
+  /** The user took the floor: abort dialog streams still being written. */
+  onInterrupted?: () => void;
+  /**
+   * Whether the dialog model can answer right now (main: the session is
+   * available for voice). With conversation "model" but no usable model (no
+   * key, local mode without a dialog model, over budget), narration and the
+   * fixed done lines stay and no window opens after a result.
+   */
+  modelActive?: () => boolean;
   /** NativeVoice.call, for listen and endFollowUp. */
   voiceCall: (
     method: string,
@@ -70,6 +89,36 @@ export interface SayOptions {
   voiceTurn?: boolean;
   /** gateOf(snapshot) for an approval listen window. */
   gate?: string;
+  /** What a free-text line is (reply, status, clarify); decides its style. */
+  kind?: string;
+}
+/**
+ * A model reply that main expects for a voice turn, created before the
+ * decision is in so a filler can bridge a slow model. Once decided, the
+ * reply's sentences (already filtered) are attached and spoken as one
+ * utterance; an acting plan whose filler already played drops them, since
+ * the filler was the acknowledgement.
+ */
+export interface ReplyHandle {
+  readonly id: string;
+  /** Something was, or is being, spoken for this turn. */
+  readonly filled: boolean;
+  attach(
+    sentences: AsyncIterable<string> | undefined,
+    o: {
+      acting: boolean;
+      /** Said when nothing else will be, for an acting plan. */
+      cannedIfEmpty?: PhraseKind;
+      /** A fixed line spoken at once instead of any stream (fast start). */
+      line?: string;
+    },
+  ): void;
+  cancel(): void;
+  /**
+   * The text the engine was handed, once the reply has been sent; with
+   * spoken replies off, the text to show instead.
+   */
+  readonly spoken: Promise<string>;
 }
 export interface AcknowledgeContext {
   source?: VoiceSource;
@@ -88,6 +137,8 @@ export interface AcknowledgeContext {
    * turns read it on the pill.
    */
   text?: string;
+  /** The model reply expected for this turn, when there was one. */
+  reply?: ReplyHandle;
 }
 export interface PlanContext {
   source: VoiceSource;
@@ -112,6 +163,36 @@ interface Utterance {
   startedAt?: number;
   /** Snapshot moments stop when the run moves on. */
   valid?: (s: Snapshot | undefined) => boolean;
+  /** A streamed reply: spoken sentence by sentence as one utterance. */
+  stream?: AsyncIterable<string>;
+  /** The reply this utterance belongs to (its filler or its stream). */
+  reply?: Reply;
+}
+interface Reply {
+  id: string;
+  voiceTurn: boolean;
+  filler?: PhraseKind;
+  fillerTimer?: unknown;
+  /** The filler, once it was requested. */
+  fillerUtterance?: Utterance;
+  /** The filler has finished playing. */
+  fillerDone?: boolean;
+  /** The streamed reply or fixed line, once attached. */
+  utterance?: Utterance;
+  attached: boolean;
+  acting: boolean;
+  cancelled: boolean;
+  /** Set by acknowledge(): opened once the reply has finished playing. */
+  listen?: Listen;
+  handsFree: boolean;
+  /** Runs when the reply's own utterance has finished or was never sent. */
+  afterSpeech?: () => void;
+  /** What the engine was handed. */
+  spokenText: string;
+  resolveSpoken: (text: string) => void;
+  spoken: Promise<string>;
+  /** speech_finished (or nothing to play) for the reply's utterance. */
+  done: boolean;
 }
 interface Moment {
   key: string;
@@ -140,6 +221,16 @@ interface Fragment {
 export const ANSWER_WINDOW: Listen = { kind: "answer", seconds: 8 };
 export const APPROVAL_WINDOW: Listen = { kind: "approval", seconds: 8 };
 export const CONTINUATION_WINDOW: Listen = { kind: "continuation", seconds: 3 };
+/** After a spoken result, hands-free with the model on: no wake word needed. */
+export const AFTER_RESULT_WINDOW: Listen = { kind: "answer", seconds: 5 };
+/** A filler that already played gives the streamed answer this long to wait for it. */
+export const FILLER_TAIL_MS = 1200;
+/** A short run whose fast-start line just played gets no spoken "Done." on top. */
+export const QUICK_RUN_MS = 10000;
+const QUICK_RUN_ACTIONS = 3;
+const QUICK_RUN_WORDS = 8;
+/** Progress lines longer than this are cut to two sentences. */
+const PROGRESS_MAX_CHARS = 220;
 /** Hands-free fragments wait this long for the rest before asking. */
 export const FRAGMENT_GRACE: Listen = { kind: "answer", seconds: 3 };
 export const FRAGMENT_TTL_MS = 20000;
@@ -191,9 +282,15 @@ function pauseSequence(s: Snapshot | undefined) {
 }
 /**
  * The dedupe key of the run moment worth saying in this snapshot (section
- * 3.1), or undefined when there is nothing to say.
+ * 3.1), or undefined when there is nothing to say. Narration of milestones
+ * ("Opening Spotify.") is a moment only while the dialog model is off: with
+ * it on, the model's own reply and the progress reporter say what is
+ * happening, so `narrate: false` leaves the executing state silent.
  */
-export function momentKey(s: Snapshot | undefined): string | undefined {
+export function momentKey(
+  s: Snapshot | undefined,
+  o: { narrate?: boolean } = {},
+): string | undefined {
   const run = s?.run;
   if (!s || !run) return undefined;
   switch (run.status) {
@@ -207,7 +304,7 @@ export function momentKey(s: Snapshot | undefined): string | undefined {
         : `paused:${run.id}:${pauseSequence(s)}`;
     case "executing":
       // Brief narration of visible milestones ("Opening Spotify.").
-      return /^Opening .{1,80}\.$/.test(s.message)
+      return o.narrate !== false && /^Opening .{1,80}\.$/.test(s.message)
         ? `narrate:${run.id}:${s.message}`
         : undefined;
     case "completed":
@@ -266,6 +363,12 @@ export class Conversation {
   private confirmAgain = { key: "", count: 0 };
   private lastPause?: { runId: string; message: string; at: number };
   private done?: { runId: string; shownAt: number; finishedAt?: number };
+  /** The model reply expected for the turn being decided. */
+  private reply?: Reply;
+  /** Each handle's record, for acknowledge() after the reply has played. */
+  private replies = new WeakMap<ReplyHandle, Reply>();
+  /** When a reply or acknowledgement last finished playing. */
+  private lastReplyEndedAt?: number;
 
   constructor(private readonly options: ConversationOptions) {
     this.now = options.now ?? Date.now;
@@ -408,11 +511,49 @@ export class Conversation {
     const newerTurn = !!this.activation;
     // The user just acted on whatever the run was showing; reading that
     // moment out now would talk over the result of their own turn.
-    const shown = momentKey(s);
+    const shown = this.keyOf(s);
     if (shown && !PASSIVE_PLANS.has(plan.kind)) this.remember(shown);
 
+    // A model reply that is speaking (or spoke, as the filler) for this turn
+    // replaces the canned phrase; the listening window that phrase would
+    // have carried opens once the reply has finished playing instead.
+    const model = ctx.reply ? this.replyOf(ctx.reply) : undefined;
+    const spokenByModel = !!model && !model.cancelled && this.filled(model);
+    const afterReply = (listen: Listen | undefined) => {
+      if (!model) return;
+      model.listen =
+        listen && this.windowsAllowed(handsFree) ? listen : undefined;
+      model.handsFree = handsFree;
+      if (model.done) this.finishReply(model);
+    };
     // Typed turns are answered on the pill only.
-    if (voice) {
+    if (voice && spokenByModel) {
+      switch (plan.kind) {
+        case "start":
+        case "replace":
+          afterReply(ptt ? undefined : CONTINUATION_WINDOW);
+          break;
+        case "revise":
+        case "queue":
+          afterReply(CONTINUATION_WINDOW);
+          break;
+        case "pause":
+          afterReply(ANSWER_WINDOW);
+          break;
+        case "status":
+          afterReply(undefined);
+          this.repeatApproval(s);
+          break;
+        case "reply":
+          // A reply that asks something waits for the answer.
+          afterReply(undefined);
+          if (plan.repeatApproval) this.repeatApproval(s);
+          break;
+        default:
+          afterReply(undefined);
+      }
+    } else if (voice) {
+      if (model) afterReply(undefined);
       const reply = (
         kind: PhraseKind,
         priority: SpeakPriority,
@@ -489,7 +630,7 @@ export class Conversation {
           if (ctx.text?.trim())
             this.say(
               { text: ctx.text },
-              { priority: "result", voiceTurn: true },
+              { priority: "result", voiceTurn: true, kind: "status" },
             );
           else reply(run ? "stillWorking" : "nothingRunning", "result", true);
           this.repeatApproval(s);
@@ -498,7 +639,7 @@ export class Conversation {
           if (ctx.text?.trim())
             this.say(
               { text: ctx.text },
-              { priority: "result", voiceTurn: true },
+              { priority: "result", voiceTurn: true, kind: "reply" },
             );
           if (plan.repeatApproval) this.repeatApproval(s);
           break;
@@ -506,10 +647,239 @@ export class Conversation {
         case "acknowledge":
           break;
       }
-    }
+    } else if (model) afterReply(undefined);
     // Listening has ended: a prompt held back while capturing may speak now,
     // unless a newer turn is already capturing (its end re-evaluates).
     if (s && !newerTurn) this.onSnapshot(s, { listening: false });
+  }
+
+  /**
+   * Expects a model reply for the turn `turnId`, which main is about to
+   * decide. With a filler, the filler plays if nothing has been attached by
+   * `fillerAfterMs`, so a slow model never leaves a silence.
+   */
+  expectReply(
+    turnId: string,
+    o: { voiceTurn: boolean; filler?: PhraseKind; fillerAfterMs: number },
+  ): ReplyHandle {
+    if (this.reply && !this.reply.cancelled) this.cancelReply(this.reply);
+    let resolveSpoken: (text: string) => void = () => {};
+    const spoken = new Promise<string>((resolve) => (resolveSpoken = resolve));
+    const reply: Reply = {
+      id: turnId,
+      voiceTurn: o.voiceTurn,
+      filler: o.filler,
+      attached: false,
+      acting: false,
+      cancelled: false,
+      handsFree: this.options.settings().handsFree,
+      spokenText: "",
+      resolveSpoken,
+      spoken,
+      done: false,
+    };
+    this.reply = reply;
+    if (o.voiceTurn && o.filler)
+      reply.fillerTimer = this.setTimer(() => {
+        reply.fillerTimer = undefined;
+        if (reply.cancelled || reply.attached) return;
+        const u = this.say(o.filler!, { priority: "ack", voiceTurn: true });
+        if (u) {
+          u.reply = reply;
+          reply.fillerUtterance = u;
+        }
+        this.trace("DialogReply", { phase: "filler", kind: o.filler });
+      }, o.fillerAfterMs);
+    const self = this;
+    const handle: ReplyHandle = {
+      id: turnId,
+      get filled() {
+        return self.filled(reply);
+      },
+      attach: (sentences, a) => this.attachReply(reply, sentences, a),
+      cancel: () => this.cancelReply(reply),
+      spoken,
+    };
+    this.replies.set(handle, reply);
+    return handle;
+  }
+
+  private replyOf(handle: ReplyHandle): Reply | undefined {
+    return this.replies.get(handle);
+  }
+
+  /** Something plays, or played, for this turn: no canned phrase needed. */
+  private filled(reply: Reply): boolean {
+    return !!reply.utterance || (!!reply.fillerUtterance && reply.acting);
+  }
+
+  private attachReply(
+    reply: Reply,
+    sentences: AsyncIterable<string> | undefined,
+    o: { acting: boolean; cannedIfEmpty?: PhraseKind; line?: string },
+  ) {
+    if (reply.cancelled || reply.attached) {
+      void this.release(sentences);
+      return;
+    }
+    reply.attached = true;
+    reply.acting = o.acting;
+    if (reply.fillerTimer !== undefined) {
+      this.clearTimer(reply.fillerTimer);
+      reply.fillerTimer = undefined;
+    }
+    const settle = (text: string) => {
+      reply.spokenText = text;
+      reply.resolveSpoken(text);
+    };
+    if (o.line) {
+      // The fixed fast-start line: spoken this instant, no model involved.
+      void this.release(sentences);
+      const u = reply.voiceTurn
+        ? this.say(
+            { text: o.line },
+            { priority: "ack", voiceTurn: true, kind: "reply" },
+          )
+        : undefined;
+      if (u) {
+        u.reply = reply;
+        reply.utterance = u;
+        settle(o.line);
+      } else this.noReplySpeech(reply, "");
+      return;
+    }
+    if (!sentences || !reply.voiceTurn) {
+      void this.release(sentences);
+      if (
+        o.acting &&
+        o.cannedIfEmpty &&
+        !reply.fillerUtterance &&
+        reply.voiceTurn
+      ) {
+        const u = this.say(o.cannedIfEmpty, {
+          priority: "ack",
+          voiceTurn: true,
+        });
+        if (u) {
+          u.reply = reply;
+          reply.utterance = u;
+          settle(u.text);
+          return;
+        }
+      }
+      this.noReplySpeech(reply, "");
+      return;
+    }
+    if ((this.options.settings().voiceReplies ?? "voice") === "off") {
+      // Spoken replies are off: the same rule deliver() applies to every
+      // phrase. The answer goes to the pill instead, like a typed turn's.
+      this.trace("VoiceReply", {
+        phase: "skipped",
+        kind: "reply",
+        priority: "result",
+        code: "off",
+      });
+      void this.collect(sentences).then((text) =>
+        this.noReplySpeech(reply, text),
+      );
+      return;
+    }
+    const stream = () => {
+      if (reply.cancelled) {
+        void this.release(sentences);
+        return;
+      }
+      const u: Utterance = {
+        id: this.newId(),
+        kind: "reply",
+        text: "",
+        priority: "result",
+        key: "",
+        requestedAt: this.now(),
+        stream: sentences,
+        reply,
+      };
+      reply.utterance = u;
+      this.request(u);
+    };
+    if (!reply.fillerUtterance) {
+      stream();
+      return;
+    }
+    if (o.acting) {
+      // The filler was the acknowledgement; the model's line would repeat it.
+      // Its window opens once the filler has played (now, if it already has).
+      void this.release(sentences);
+      this.trace("DialogReply", { phase: "dropped", code: "filler_spoke" });
+      settle("");
+      if (reply.fillerDone) this.finishReply(reply);
+      return;
+    }
+    // An answer waits for its filler to end, briefly.
+    const filler = reply.fillerUtterance;
+    if (this.current !== filler) {
+      stream();
+      return;
+    }
+    let timer: unknown;
+    reply.afterSpeech = () => {
+      reply.afterSpeech = undefined;
+      if (timer !== undefined) this.clearTimer(timer);
+      stream();
+    };
+    timer = this.setTimer(() => {
+      timer = undefined;
+      reply.afterSpeech?.();
+    }, FILLER_TAIL_MS);
+  }
+
+  /** The reply has nothing of its own to play: settle and open its window. */
+  private noReplySpeech(reply: Reply, spoken: string) {
+    reply.spokenText = spoken;
+    reply.resolveSpoken(spoken);
+    reply.done = true;
+    if (reply.listen !== undefined || reply.attached) this.finishReply(reply);
+  }
+
+  /** The reply's utterance ended (or never played): its window may open. */
+  private finishReply(reply: Reply) {
+    reply.done = true;
+    const listen =
+      reply.listen ??
+      (/\?\s*$/.test(reply.spokenText) && this.windowsAllowed(reply.handsFree)
+        ? ANSWER_WINDOW
+        : undefined);
+    reply.listen = undefined;
+    if (listen && !reply.cancelled) void this.listen(listen);
+    if (this.reply === reply && reply.attached) this.reply = undefined;
+  }
+
+  private cancelReply(reply: Reply | undefined) {
+    if (!reply || reply.cancelled) return;
+    reply.cancelled = true;
+    if (reply.fillerTimer !== undefined) this.clearTimer(reply.fillerTimer);
+    reply.fillerTimer = undefined;
+    reply.afterSpeech = undefined;
+    reply.listen = undefined;
+    reply.resolveSpoken(reply.spokenText);
+    if (this.reply === reply) this.reply = undefined;
+  }
+
+  /** A reply's sentences as one line (the session bounds them). */
+  private async collect(sentences: AsyncIterable<string>): Promise<string> {
+    const parts: string[] = [];
+    try {
+      for await (const sentence of sentences) parts.push(sentence);
+    } catch {}
+    return parts.join(" ");
+  }
+
+  /** Lets a stream nobody will read end its model call. */
+  private async release(sentences: AsyncIterable<string> | undefined) {
+    const iterator = sentences?.[Symbol.asyncIterator]?.();
+    try {
+      await iterator?.return?.();
+    } catch {}
   }
 
   /**
@@ -552,25 +922,31 @@ export class Conversation {
       return;
     }
     this.markAsked();
-    this.say({ text }, { priority: "urgent", listen: ANSWER_WINDOW });
+    this.say(
+      { text },
+      { priority: "urgent", listen: ANSWER_WINDOW, kind: "clarify" },
+    );
   }
 
   /**
    * Speaks a phrase or text now (subject to voiceReplies, priority and the
    * queue). A listen window follows when hands-free follow-up is on.
    */
-  say(what: PhraseKind | { text: string }, options: SayOptions = {}) {
-    const kind = typeof what === "string" ? what : "text";
+  say(
+    what: PhraseKind | { text: string },
+    options: SayOptions = {},
+  ): Utterance | undefined {
+    const kind = typeof what === "string" ? what : (options.kind ?? "text");
     const text =
       typeof what === "string"
         ? pickPhrase(what, this.memory, this.random)
         : what.text.trim();
-    if (!text) return;
+    if (!text) return undefined;
     if (options.key) {
-      if (this.said.has(options.key)) return;
+      if (this.said.has(options.key)) return undefined;
       this.remember(options.key);
     }
-    this.deliver(
+    return this.deliver(
       {
         key: options.key ?? "",
         kind,
@@ -599,7 +975,7 @@ export class Conversation {
     if (this.current?.valid && !this.current.valid(s)) this.stale(this.current);
     if (this.queued?.valid && !this.queued.valid(s)) this.queued = undefined;
     if (state.listening || !this.active.has(run.id)) return;
-    const key = momentKey(s);
+    const key = this.keyOf(s);
     if (!key || this.said.has(key)) return;
     const handsFree = state.handsFree ?? this.options.settings().handsFree;
     const moment = this.moment(s, key, handsFree);
@@ -609,11 +985,50 @@ export class Conversation {
   }
 
   /**
-   * Progress updates from the shared reporter (increment 4B). Spoken progress
-   * lands with the streamed replies in increment 3A; until then nothing is
-   * said, and run moments still come from onSnapshot.
+   * Progress updates from the shared reporter (increment 4B): spoken once
+   * each, for runs the user started by voice, while nothing more pressing (an
+   * approval, a takeover) has the floor, and never while listening. A line
+   * waits behind a reply that is still playing rather than cutting it off.
    */
-  onProgress(_report: ProgressReport): void {}
+  onProgress(report: ProgressReport): void {
+    if (!report.speak || this.options.settings().spokenProgress === false)
+      return;
+    const s = this.snapshot;
+    const run = s?.run;
+    if (!run || run.id !== report.runId || TERMINAL.has(run.status)) return;
+    if (!this.active.has(run.id)) return;
+    if (run.status === "confirming" || run.status === "takeover") return;
+    const key = `progress:${report.runId}:${report.seq}`;
+    if (this.said.has(key)) return;
+    // Built from screen or panel text: every sentence under the reply rules
+    // (no coaching, no asking for a code), or nothing.
+    const text = speakableReport(report.text, PROGRESS_MAX_CHARS);
+    if (!text) return;
+    this.remember(key);
+    this.deliver(
+      {
+        key,
+        kind: report.kind === "final" ? "recap" : "progress",
+        text,
+        priority: "result",
+        valid: (x) => x?.run?.id === run.id && !TERMINAL.has(x.run.status),
+      },
+      this.runs.get(run.id)?.voice === true,
+    );
+  }
+
+  /** momentKey with narration only while the dialog model is off. */
+  private keyOf(s: Snapshot | undefined) {
+    return momentKey(s, { narrate: !this.modelOn() });
+  }
+
+  /** The dialog model is on and can actually answer. */
+  private modelOn(): boolean {
+    return (
+      this.options.settings().conversation === "model" &&
+      (this.options.modelActive?.() ?? true)
+    );
+  }
 
   /** Speech and follow-up events from the voice helper. */
   onVoiceEvent(e: VoiceEvent) {
@@ -648,7 +1063,10 @@ export class Conversation {
         if (!u || u.id !== e.utteranceId) return;
         this.current = undefined;
         if (u.key.startsWith("done:") && this.done) this.done.finishedAt = now;
+        if (u.kind === "reply" || u.kind.startsWith("ack"))
+          this.lastReplyEndedAt = now;
         const error = e.event === "speech_error";
+        this.replyEnded(u, error || e.interrupted === true);
         this.trace("VoiceReply", {
           phase: error ? "error" : "finished",
           kind: u.kind,
@@ -742,9 +1160,37 @@ export class Conversation {
     this.current = undefined;
     this.queued = undefined;
     this.cancelClarify();
+    // A model reply still being written must not start, or fall back, later.
+    this.cancelReply(this.reply);
+    try {
+      this.options.onInterrupted?.();
+    } catch {}
     // A cloud reply still being fetched must not start, or fall back, later.
     this.cancelSpeech();
     if (had) this.changed();
+  }
+
+  /** The utterance of a reply (filler, line or stream) ended. */
+  private replyEnded(u: Utterance, interrupted: boolean) {
+    const reply = u.reply;
+    if (!reply) return;
+    if (u === reply.fillerUtterance) {
+      reply.fillerDone = true;
+      if (reply.afterSpeech && !interrupted) {
+        reply.afterSpeech();
+        return;
+      }
+      // For an acting plan the filler was the whole reply.
+      if (reply.attached && !reply.utterance) {
+        if (interrupted) this.cancelReply(reply);
+        else this.finishReply(reply);
+      }
+      return;
+    }
+    if (u === reply.utterance) {
+      if (interrupted) this.cancelReply(reply);
+      else this.finishReply(reply);
+    }
   }
 
   /**
@@ -760,6 +1206,7 @@ export class Conversation {
     this.activation = undefined;
     this.cancelledFragment = undefined;
     this.cancelClarify();
+    this.cancelReply(this.reply);
     this.cancelSpeech();
     this.changed();
   }
@@ -770,6 +1217,7 @@ export class Conversation {
     this.current = undefined;
     this.queued = undefined;
     this.cancelClarify();
+    this.cancelReply(this.reply);
     if (had) this.changed();
     try {
       await this.options.speech.stop();
@@ -885,14 +1333,38 @@ export class Conversation {
           valid: (x) => x?.run?.id === id && !TERMINAL.has(x.run.status),
         };
       }
-      case "completed":
+      case "completed": {
+        const model = this.modelOn();
+        const summary = run.summary || s.message;
+        const text =
+          (model
+            ? speakableSummary(summary, 220, 2)
+            : speakableSummary(summary)) ?? phrase("doneGeneric");
+        // A short run whose own start line ("Opening Spotify.") just played
+        // has said enough: the pill shows the outcome.
+        if (
+          model &&
+          this.lastReplyEndedAt !== undefined &&
+          this.now() - this.lastReplyEndedAt < QUICK_RUN_MS &&
+          run.actions <= QUICK_RUN_ACTIONS &&
+          text.split(/\s+/).length <= QUICK_RUN_WORDS
+        ) {
+          this.trace("VoiceReply", {
+            phase: "skipped",
+            kind: "done",
+            priority: "result",
+            code: "quick_run",
+          });
+          return undefined;
+        }
         return {
           key,
           kind: "done",
-          text:
-            speakableSummary(run.summary || s.message) ?? phrase("doneGeneric"),
+          text,
           priority: "result",
+          ...(model ? { listen: AFTER_RESULT_WINDOW } : {}),
         };
+      }
       case "failed":
         return {
           key,
@@ -911,7 +1383,11 @@ export class Conversation {
     return undefined;
   }
 
-  private deliver(moment: Moment, voiceTurn: boolean, handsFree?: boolean) {
+  private deliver(
+    moment: Moment,
+    voiceTurn: boolean,
+    handsFree?: boolean,
+  ): Utterance | undefined {
     const settings = this.options.settings();
     const replies = settings.voiceReplies ?? "voice";
     const speak = replies === "always" || (replies === "voice" && voiceTurn);
@@ -928,7 +1404,7 @@ export class Conversation {
         code: replies === "off" ? "off" : "typed",
       });
       if (listen) void this.listen(listen);
-      return;
+      return undefined;
     }
     let text = moment.text;
     if (moment.suffix) {
@@ -937,7 +1413,7 @@ export class Conversation {
     }
     if (listen?.kind === "approval" && moment.gate)
       this.approvalGate = moment.gate;
-    this.request({
+    const u: Utterance = {
       id: this.newId(),
       kind: moment.kind,
       text,
@@ -947,7 +1423,9 @@ export class Conversation {
       gate: moment.gate,
       requestedAt: this.now(),
       valid: moment.valid,
-    });
+    };
+    this.request(u);
+    return u;
   }
 
   private request(u: Utterance) {
@@ -958,7 +1436,13 @@ export class Conversation {
       u.requestedAt - current.requestedAt > STUCK_MS
     )
       this.current = undefined;
-    if (this.current && rank[u.priority] < rank[this.current.priority]) {
+    if (
+      this.current &&
+      (rank[u.priority] < rank[this.current.priority] ||
+        // A result never cuts a streamed reply short: the done line and
+        // progress wait for it to finish. Urgent questions still preempt.
+        (this.current.stream && u.priority !== "urgent"))
+    ) {
       // One slot: a newer lower-priority reply replaces an older one.
       this.queued = u;
       this.trace("VoiceReply", {
@@ -991,15 +1475,30 @@ export class Conversation {
       this.next();
       this.changed();
     };
-    let request: Promise<{ accepted: boolean; reason?: string }>;
+    let request: Promise<{
+      accepted: boolean;
+      reason?: string;
+      spoken?: string;
+    }>;
     try {
       request = Promise.resolve(
-        this.options.speech.speak({
-          utteranceId: u.id,
-          text: u.text,
-          priority: u.priority,
-          ...(u.listen ? { listen: u.listen } : {}),
-        }),
+        u.stream
+          ? this.options.speech.speakStream({
+              utteranceId: u.id,
+              sentences: u.stream,
+              priority: u.priority,
+              style: styleFor(u.kind),
+              onSentence: (text) => {
+                u.text = u.text ? `${u.text} ${text}` : text;
+              },
+            })
+          : this.options.speech.speak({
+              utteranceId: u.id,
+              text: u.text,
+              priority: u.priority,
+              style: styleFor(u.kind),
+              ...(u.listen ? { listen: u.listen } : {}),
+            }),
       );
     } catch {
       skip("error");
@@ -1007,9 +1506,23 @@ export class Conversation {
     }
     request.then(
       (result) => {
-        if (!result?.accepted) skip(result?.reason ?? "rejected");
+        const reply = u.reply;
+        if (reply && u === reply.utterance) {
+          reply.spokenText = result?.spoken ?? u.text;
+          reply.resolveSpoken(reply.spokenText);
+        }
+        if (!result?.accepted) {
+          skip(result?.reason ?? "rejected");
+          if (reply && u === reply.utterance && !reply.cancelled)
+            this.finishReply(reply);
+        }
       },
-      () => skip("error"),
+      () => {
+        skip("error");
+        const reply = u.reply;
+        if (reply && u === reply.utterance && !reply.cancelled)
+          this.finishReply(reply);
+      },
     );
   }
 
@@ -1051,7 +1564,7 @@ export class Conversation {
     this.markAsked();
     this.say(
       { text: pending.text },
-      { priority: "urgent", listen: ANSWER_WINDOW },
+      { priority: "urgent", listen: ANSWER_WINDOW, kind: "clarify" },
     );
   }
 
@@ -1189,6 +1702,29 @@ export class Conversation {
       this.options.trace?.(event, data);
     } catch {}
   }
+}
+
+/**
+ * How the cloud voice reads each kind of line: the persona for replies and
+ * results, plainly for anything the user must catch every word of.
+ */
+export function styleFor(kind: string): SpeechStyle {
+  return [
+    "approval",
+    "question",
+    "confirmAgain",
+    "needClick",
+    "failed",
+    "didntCatch",
+    "clarify",
+    "goOn",
+    "repeatReason",
+    "needHelp",
+    "approvalGeneric",
+    "text",
+  ].includes(kind)
+    ? "clear"
+    : "persona";
 }
 
 function defaultPriority(kind: string): SpeakPriority {

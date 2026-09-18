@@ -801,3 +801,50 @@ describe("local diagnostic stream", () => {
     }
   });
 });
+
+describe("dialog and streamed-speech fields", () => {
+  it("keeps the act, timings, flags and counts of a dialog turn, never its words", () =>
+    fixture((log) => {
+      log.write("DialogTurn", {
+        phase: "decided",
+        act: "answer",
+        code: "model",
+        channel: "voice",
+        actMs: 612,
+        firstAudioMs: 900,
+        preempt: true,
+        stream: true,
+        sentences: 2,
+        dropped: 1,
+        plan: "reply",
+        text: "what time is it",
+        user: "what time is it",
+        say: "It is three.",
+        task: "Open Mail",
+      });
+      const event = JSON.parse(readFileSync(log.file, "utf8"));
+      expect(event.data).toEqual({
+        phase: "decided",
+        act: "answer",
+        code: "model",
+        channel: "voice",
+        actMs: 612,
+        firstAudioMs: 900,
+        preempt: true,
+        stream: true,
+        sentences: 2,
+        dropped: 1,
+        plan: "reply",
+      });
+      // A sentence smuggled into a code or count field is dropped.
+      log.write("DialogTurn", {
+        act: "send the deck to dana",
+        channel: "voice channel",
+        actMs: "fast",
+        sentences: "two",
+        preempt: "yes",
+      });
+      const lines = readFileSync(log.file, "utf8").trim().split("\n");
+      expect(JSON.parse(lines[1]).data).toEqual({});
+    }));
+});

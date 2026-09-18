@@ -152,8 +152,16 @@ export interface TurnDecision {
   /** Already filtered: speakableSentence for voice, textable for texts. */
   sentences?: AsyncIterable<string>;
   proposal?: { id: string; text: string; until: number };
+  /** "interrupted": the user took the floor meanwhile; nothing runs. */
   code:
-    "model" | "fast_start" | "timeout" | "invalid" | "error" | "off" | "budget";
+    | "model"
+    | "fast_start"
+    | "timeout"
+    | "invalid"
+    | "error"
+    | "off"
+    | "budget"
+    | "interrupted";
 }
 
 /** Implemented by electron/assistant.ts in increment 3A. */

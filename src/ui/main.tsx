@@ -59,6 +59,7 @@ import {
   selectProvider,
 } from "../providers/catalog";
 import { idlePill, type PillState } from "../voice/router";
+import { VoiceSettings } from "./settings-voice";
 import { previewBridge } from "./preview";
 import { SettingsRemote } from "./settings-remote";
 import "@fontsource-variable/space-grotesk";
@@ -929,6 +930,8 @@ const voiceKeys = [
   "voiceEngine",
   "voiceId",
   "cloudVoice",
+  "kokoroVoice",
+  "persona",
   "voiceRate",
   "voiceSounds",
 ] as const satisfies readonly (keyof Settings)[];
@@ -1810,6 +1813,7 @@ function SettingsPanel({
                 )}
               </>
             )}
+            <VoiceSettings s={s} set={set} ids={ids} engine={engine} />
             <label className="consent">
               <input
                 type="checkbox"

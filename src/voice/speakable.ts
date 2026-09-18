@@ -6,7 +6,7 @@
  */
 import type { Action } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
-import { voiceIntent, type VoiceIntentKind } from "./turns";
+import { intentKey, voiceIntent, type VoiceIntentKind } from "./turns";
 
 const ACTIONABLE: ReadonlySet<VoiceIntentKind> = new Set([
   "stop",
@@ -16,6 +16,7 @@ const ACTIONABLE: ReadonlySet<VoiceIntentKind> = new Set([
   "decline",
 ]);
 const QUOTES = /["“”«»‘]|(?<!\p{L})['’]|['’](?!\p{L})/gu;
+const WAKE_PHRASE = /\b(?:hey|hay|hi)[\s,]+(?:open\s+)?assist\b/i;
 const LINK_END = /[.,;:!?)\]]+$/;
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -170,11 +171,17 @@ const ABBREVIATIONS = new Set([
   "approx",
 ]);
 /**
- * Sentences split at . ! ? followed by space, except after an initial or
- * initialism ("Y.C.", "U.S.") or a common abbreviation ("Dr.", "e.g.").
+ * The sentences that have certainly ended: . ! ? followed by whitespace,
+ * except after an initial or initialism ("Y.C.", "U.S.") or a common
+ * abbreviation ("Dr.", "e.g."). `rest` is whatever is still being written,
+ * so a streaming reply can be spoken sentence by sentence while the model is
+ * still producing the next one.
  */
-export function splitSentences(text: string): string[] {
-  const parts: string[] = [];
+export function completeSentences(text: string): {
+  done: string[];
+  rest: string;
+} {
+  const done: string[] = [];
   let start = 0;
   const boundary = /[.!?]+\s+/g;
   for (let m = boundary.exec(text); m; m = boundary.exec(text)) {
@@ -186,11 +193,17 @@ export function splitSentences(text: string): string[] {
       (/^(?:[a-z]\.)*[a-z]$/.test(bare) || ABBREVIATIONS.has(bare))
     )
       continue;
-    parts.push(text.slice(start, m.index + m[0].trimEnd().length));
+    done.push(text.slice(start, m.index + m[0].trimEnd().length));
     start = m.index + m[0].length;
   }
-  if (start < text.length) parts.push(text.slice(start));
-  return parts;
+  return { done, rest: text.slice(start) };
+}
+
+/** Sentences split as completeSentences does, the unfinished tail included. */
+export function splitSentences(text: string): string[] {
+  const { done, rest } = completeSentences(text);
+  if (rest) done.push(rest);
+  return done;
 }
 
 function speakable(
@@ -229,16 +242,145 @@ const QUOTED_CONTENT =
   /["“”«»]|(?<![\p{L}\p{N}])['‘][^'’\n]*['’](?![\p{L}\p{N}])/u;
 
 /**
- * The first sentence of a run summary, up to 120 characters. A summary about
- * typed or entered text, or with anything quoted, is never read aloud: the
- * generic done phrase is used instead.
+ * The first sentence of a run summary, up to 120 characters (or as many
+ * sentences and characters as asked for). A summary about typed or entered
+ * text, or with anything quoted, is never read aloud: the generic done
+ * phrase is used instead.
  */
 export function speakableSummary(
   summary: string | undefined,
+  max = 120,
+  sentences = 1,
 ): string | undefined {
-  if (summary && (TYPED_CONTENT.test(summary) || QUOTED_CONTENT.test(summary)))
+  if (
+    summary &&
+    (TYPED_CONTENT.test(summary) ||
+      QUOTED_CONTENT.test(summary) ||
+      ASKS_FOR_SECRET.test(summary))
+  )
     return undefined;
-  return speakable(summary, 120, 1);
+  return speakable(summary, max, sentences);
+}
+
+/**
+ * A progress line built from screen or panel text, under the reply rules:
+ * every sentence must pass speakableSentence, or the whole line is dropped
+ * (a coaching or phishing sentence never rides in on a harmless first one).
+ */
+export function speakableReport(
+  text: string | undefined,
+  max = 220,
+  sentences = 2,
+): string | undefined {
+  if (!text?.trim() || containsSecret(text)) return undefined;
+  const parts: string[] = [];
+  for (const part of splitSentences(text.replace(/\s+/g, " ").trim())) {
+    if (!part.trim()) continue;
+    const clean = speakableSentence(part, max);
+    if (!clean) return undefined;
+    parts.push(clean);
+  }
+  if (!parts.length) return undefined;
+  let out = parts[0];
+  for (const part of parts.slice(1, sentences)) {
+    if (out.length + 1 + part.length > max) break;
+    out += " " + part;
+  }
+  return out;
+}
+
+/**
+ * Generated replies that tell the user how to answer, or claim an approval
+ * happened. Approvals are asked by the run's own gated question, never by
+ * the dialog model, so a reply that coaches "say yes" or "click Allow" is
+ * dropped whole.
+ */
+export const REPLY_FORBIDDEN =
+  /\b(?:say|text|reply|answer)\s+(?:yes|no|yeah|continue|stop|go ahead)\b|\bclick\s+(?:yes|allow|approve|accept|confirm)\b|\b(?:approve|confirm)\s+(?:it|this|that)\b|\bi(?:['’]ve| have)\s+approved\b/i;
+
+/**
+ * Lines that ask the user for a credential or a code, or to sign in: the
+ * assistant never needs one, so such a line came from a page, a panel or a
+ * notification the model echoed. Dropped whole wherever generated or
+ * summarized text is read out (replies, progress lines, done lines).
+ */
+export const ASKS_FOR_SECRET =
+  /\b(?:enter|type|input|send|text|share|provide|give|tell|paste|confirm|verify|reply with|respond with)\b[^.!?]{0,60}?\b(?:passwords?|passcodes?|passphrases?|pins?|(?:verification|one[- ]time|security|2fa|login|sign[- ]in|auth(?:entication)?)\s+codes?)\b|\bsign(?:ing)? in with\b/i;
+
+/** Whether the text carries anything credential-like. */
+export function containsSecret(text: string): boolean {
+  return redactSecrets(text) !== text;
+}
+
+/** Markdown the model may slip in despite the prompt; the voice reads words. */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_`~]+/g, "")
+    .replace(/^\s*(?:#{1,6}\s+|[-•]\s+|\d+[.)]\s+)/g, "");
+}
+
+/**
+ * One generated sentence, made safe to say: cleaned like run text, dropped
+ * whole when it carries a credential, an actionable phrase (a router would
+ * act on "Go ahead." echoed back) or a REPLY_FORBIDDEN phrase, and cut at a
+ * comma or space when it runs past `max`. Every spoken model sentence goes
+ * through here; nothing else reaches the voice.
+ */
+export function speakableSentence(
+  sentence: string,
+  max = 180,
+): string | undefined {
+  if (!sentence?.trim() || containsSecret(sentence)) return undefined;
+  // A generated line carrying the wake phrase was not written for the
+  // user: it is dropped whole rather than read out with the phrase cut.
+  if (WAKE_PHRASE.test(sentence)) return undefined;
+  let s = clean(stripMarkdown(sentence));
+  if (
+    !s ||
+    ACTIONABLE.has(voiceIntent(s).kind) ||
+    REPLY_FORBIDDEN.test(s) ||
+    ASKS_FOR_SECRET.test(s)
+  )
+    return undefined;
+  // "Sure, the meeting is at four." keeps its substance; "Sure, go ahead."
+  // has none left once the leading answer word goes.
+  for (;;) {
+    const comma = s.indexOf(",");
+    if (comma <= 0) break;
+    const lead = voiceIntent(s.slice(0, comma)).kind;
+    if (!ACTIONABLE.has(lead) && lead !== "acknowledge") break;
+    s = s.slice(comma + 1).trim();
+    if (s) s = s[0].toUpperCase() + s.slice(1);
+  }
+  if (!s || !intentKey(s) || ACTIONABLE.has(voiceIntent(s).kind))
+    return undefined;
+  if (s.length > max) {
+    const head = s.slice(0, max);
+    const at = Math.max(head.lastIndexOf(","), head.lastIndexOf(" "));
+    s = (at >= max * 0.6 ? head.slice(0, at) : head).replace(/[,;:\s]+$/, "");
+    if (!s) return undefined;
+    if (!/[.!?]$/.test(s)) s += ".";
+  }
+  return s;
+}
+
+/**
+ * The same rules as speakableSentence for a texted reply: at most four
+ * sentences and 480 characters, each sentence filtered on its own.
+ */
+export function textable(text: string | undefined): string | undefined {
+  if (!text?.trim() || containsSecret(text)) return undefined;
+  const parts = splitSentences(text.replace(/\s+/g, " ").trim())
+    .map((part) => speakableSentence(part, 480))
+    .filter((part): part is string => !!part);
+  if (!parts.length) return undefined;
+  let out = parts[0];
+  for (const part of parts.slice(1, 4)) {
+    if (out.length + 1 + part.length > 480) break;
+    out += " " + part;
+  }
+  return out;
 }
 
 /**

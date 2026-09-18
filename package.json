@@ -26,6 +26,7 @@
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "test:provider": "node --import tsx scripts/provider-smoke.mjs",
     "test:native-safety": "node scripts/test-native-safety.mjs",
+    "eval:dialog": "node --import tsx scripts/eval-dialog.mjs",
     "test:native-input": "node --import tsx scripts/native-input-smoke.mjs",
     "test:live": "node --import tsx scripts/live-task.mjs",
     "bench": "node scripts/bench.mjs",

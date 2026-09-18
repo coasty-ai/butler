@@ -136,6 +136,17 @@ const fields = new Set([
   "verdict",
   "tier",
   "device",
+  // Dialog turns and streamed replies: the act chosen, timings to the ACT
+  // line and the first audio, fixed decision codes and sentence counts.
+  // The words themselves never appear.
+  "act",
+  "actMs",
+  "firstAudioMs",
+  "preempt",
+  "stream",
+  "sentences",
+  "dropped",
+  "channel",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -147,6 +158,8 @@ const countFields = new Set([
   "skills",
   "index",
   "segments",
+  "sentences",
+  "dropped",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
@@ -162,9 +175,18 @@ const numberFields = new Set([
   "noiseFloor",
   "threshold",
   "rate",
+  "actMs",
+  "firstAudioMs",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
-const flagFields = new Set(["interrupted", "merged", "speaking", "fallback"]);
+const flagFields = new Set([
+  "interrupted",
+  "merged",
+  "speaking",
+  "fallback",
+  "preempt",
+  "stream",
+]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
  * is dropped here: HTTP and exit statuses belong in httpStatus and exitCode.
@@ -189,6 +211,8 @@ const codeFields = new Set([
   "verdict",
   "tier",
   "device",
+  "act",
+  "channel",
 ]);
 const memoryEvents = new Set([
   "MemoryRecalled",

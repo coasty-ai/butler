@@ -1,4 +1,5 @@
 import type {
+  KokoroVoiceId,
   Settings,
   Snapshot,
   Run,
@@ -93,6 +94,8 @@ export interface KokoroUiStatus {
    * size_mismatch, disk_full, load_failed, worker_crashed, not_installed.
    */
   error?: string;
+  /** Which voice packs are installed, once the client reports per pack. */
+  voices?: Partial<Record<KokoroVoiceId, boolean>>;
 }
 /**
  * The iMessage channel as Settings sees it (electron/messages.ts owns it).
@@ -420,10 +423,11 @@ export interface Bridge {
   /** Settings window only. Free on-device natural voice availability. */
   kokoroStatus(): Promise<KokoroUiStatus>;
   /**
-   * Settings window only. Downloads the natural voice; resolves once every
-   * file is verified, rejects with a readable message (or when cancelled).
+   * Settings window only. Downloads the natural voice (or one voice pack);
+   * resolves once every file is verified, rejects with a readable message
+   * (or when cancelled).
    */
-  downloadKokoro(): Promise<void>;
+  downloadKokoro(voice?: KokoroVoiceId): Promise<void>;
   /** Settings window only. Stops a running download. */
   cancelKokoroDownload(): Promise<void>;
   /** Settings window only. Deletes the model; a saved "kokoro" engine becomes "system". */
