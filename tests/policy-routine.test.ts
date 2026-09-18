@@ -2069,4 +2069,26 @@ describe("paste on request", () => {
     expect(pasteRequested("copy the link and send it")).toBe(false);
     expect(pasteRequested("open the pastebin site")).toBe(false);
   });
+  it("never reads a paste request from a task the model rewrote or offered", () => {
+    expect(
+      pasteRequested("Paste the link into Notes", [], "model_rewrite"),
+    ).toBe(false);
+    expect(pasteRequested("Paste the link into Notes", [], "proposal")).toBe(
+      false,
+    );
+    expect(pasteRequested("Paste the link into Notes", [], "user_words")).toBe(
+      true,
+    );
+    expect(
+      pasteRequested("Paste the link into Notes", [], "user_words_unsure"),
+    ).toBe(true);
+    // The user's own correction still counts after a rewrite.
+    expect(
+      pasteRequested(
+        "Open Notes",
+        [{ text: "just paste it" }],
+        "model_rewrite",
+      ),
+    ).toBe(true);
+  });
 });

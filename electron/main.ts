@@ -142,7 +142,7 @@ import { KeepAwake } from "./power";
 import { RemoteServer } from "./remote/server";
 import { createTailscaleProvider } from "./remote/tailscale";
 import { remoteApprovalTier, validateRemoteSettings } from "../src/remote/auth";
-import { remoteReply } from "../src/remote/protocol";
+import { remoteTurnReply } from "../src/remote/protocol";
 import { TASK_QUEUE_MAX, TaskQueue } from "./task-queue";
 import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
@@ -743,35 +743,62 @@ async function steerFromRemote(
   text: string,
 ): Promise<{ plan: TurnPlanKind; reply?: string; error?: string }> {
   const gate = currentGate();
-  const plan = planVoiceTurn({
+  // The same deterministic router first: a phone can never approve (the
+  // router answers needClick "channel"), and a "yes" to the assistant's open
+  // offer is accepted only when no approval is pending.
+  const base = planVoiceTurn({
     text,
     confidence: 1,
     source: "remote",
     gateMatches: !!gate,
     now: Date.now(),
     run: planRun(),
+    proposal: assistant.proposal(),
   });
   debug("TurnPlanned", {
-    plan: plan.kind,
+    plan: base.kind,
     source: "remote",
     textLength: text.length,
   });
+  const accepted =
+    (base.kind === "start" || base.kind === "queue") &&
+    base.taskSource === "proposal";
+  if (accepted) assistant.noteUser(text, "remote");
+  let plan: TurnPlan = base;
+  let decision: TurnDecision | undefined;
+  let modelReply: string | undefined;
+  // Then the conversational core, as for typed text: it answers questions,
+  // grounds tasks in the phone's words and offers what it cannot ground.
+  if (!accepted && dialogEligible(base) && assistant.available("remote")) {
+    decision = await assistant.decide({
+      turnId: randomUUID(),
+      text,
+      base,
+      run: planRun(),
+      view: currentRunView(),
+      channel: "remote",
+      confidence: 1,
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (decision.code !== "interrupted") {
+      plan = decision.plan;
+      if (decision.sentences)
+        modelReply = await collectReply(decision.sentences);
+    }
+  }
   const ctx: PlanCtx = {
     origin: "remote",
     channel: "remote",
-    taskSource: "user_words",
-    ...(plan.kind === "status" ? { replyText: statusText() } : {}),
+    taskSource: accepted ? "proposal" : (decision?.taskSource ?? "user_words"),
+    replyText:
+      plan.kind === "status" ? (modelReply ?? statusText()) : modelReply,
   };
   const outcome = await executePlan(plan, ctx);
   if (!outcome.ok) return { plan: plan.kind, error: outcome.error };
-  const reply =
-    plan.kind === "status"
-      ? ctx.replyText
-      : plan.kind === "clarify"
-        ? remoteReply("clarify", { question: plan.question })
-        : plan.kind === "needClick"
-          ? remoteReply("needClick", { reason: plan.reason })
-          : undefined;
+  const reply = remoteTurnReply(plan, {
+    modelReply,
+    statusLine: plan.kind === "status" ? statusText() : undefined,
+  });
   return { plan: plan.kind, ...(reply ? { reply } : {}) };
 }
 /**

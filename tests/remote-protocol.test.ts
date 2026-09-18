@@ -8,6 +8,7 @@ import {
   parseRoute,
   pendingWhat,
   remoteReply,
+  remoteTurnReply,
   remoteView,
   sayBody,
 } from "../src/remote/protocol";
@@ -275,5 +276,29 @@ describe("events and replies", () => {
     );
     expect(remoteReply("start")).toBe("Starting on the Mac.");
     expect(CREDENTIAL_REFUSAL).toMatch(/on the Mac/);
+  });
+});
+
+describe("what the phone shows after a line it sent", () => {
+  it("prefers the dialog's own answer, then the status line, then fixed lines", () => {
+    expect(
+      remoteTurnReply({ kind: "reply" }, { modelReply: "It's 3 PM in Tokyo." }),
+    ).toBe("It's 3 PM in Tokyo.");
+    expect(
+      remoteTurnReply({ kind: "status" }, { statusLine: "Working on it." }),
+    ).toBe("Working on it.");
+    expect(
+      remoteTurnReply(
+        { kind: "status" },
+        { modelReply: "Nearly done.", statusLine: "Working on it." },
+      ),
+    ).toBe("Nearly done.");
+    expect(remoteTurnReply({ kind: "clarify", question: "Open what?" })).toBe(
+      remoteReply("clarify", { question: "Open what?" }),
+    );
+    expect(remoteTurnReply({ kind: "needClick", reason: "channel" })).toBe(
+      remoteReply("needClick", { reason: "channel" }),
+    );
+    expect(remoteTurnReply({ kind: "start" })).toBeUndefined();
   });
 });

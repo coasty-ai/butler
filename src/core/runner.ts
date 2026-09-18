@@ -379,9 +379,16 @@ export function searchRoute(
 export function pasteRequested(
   task: string,
   corrections?: { text: string }[],
+  taskSource?: TaskSource,
 ): boolean {
+  // A task the model rewrote or offered is not the user's own words, even
+  // after a "yes"; corrections are always the user's.
+  const own =
+    taskSource === undefined ||
+    taskSource === "user_words" ||
+    taskSource === "user_words_unsure";
   return /\bpaste\b/i.test(
-    [task, ...(corrections ?? []).map((c) => c.text)].join("\n"),
+    [own ? task : "", ...(corrections ?? []).map((c) => c.text)].join("\n"),
   );
 }
 export const MANUAL_PAUSE_MESSAGE = "Paused — you’re controlling the computer.";
@@ -1615,7 +1622,13 @@ export class Runner {
           actionSurface,
           this.settings,
           run.synthetic,
-          { pasteRequested: pasteRequested(run.task, run.corrections) },
+          {
+            pasteRequested: pasteRequested(
+              run.task,
+              run.corrections,
+              run.taskSource,
+            ),
+          },
         );
         if (this.held || epoch !== this.epoch) {
           planFail("interrupted");

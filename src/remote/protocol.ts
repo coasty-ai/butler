@@ -311,3 +311,21 @@ export interface RemoteStatus {
   connected: string[];
   locked: boolean;
 }
+/**
+ * What the phone shows after a line it sent: the dialog's own answer when it
+ * gave one, else the fixed status line for a status plan, else the fixed
+ * question or refusal for the plans that need the user. Undefined when the
+ * plan speaks for itself (a started or queued task shows on the status card).
+ */
+export function remoteTurnReply(
+  plan: { kind: TurnPlanKind; question?: string; reason?: string },
+  o: { modelReply?: string; statusLine?: string } = {},
+): string | undefined {
+  if (o.modelReply) return o.modelReply;
+  if (plan.kind === "status") return o.statusLine;
+  if (plan.kind === "clarify")
+    return remoteReply("clarify", { question: plan.question });
+  if (plan.kind === "needClick")
+    return remoteReply("needClick", { reason: plan.reason });
+  return undefined;
+}
