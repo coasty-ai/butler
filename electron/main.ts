@@ -1797,6 +1797,7 @@ async function command(
     // template always reaches the pill; it is spoken only when the model
     // did not answer itself.
     replyText: plan.kind === "status" ? statusText() : replyText,
+    replyPending: !!reply && !!decision?.sentences,
   };
   const outcome = await executePlan(plan, ctx);
   if (!outcome.ok) {
@@ -1832,6 +1833,8 @@ type PlanCtx = {
   taskSource?: TaskSource;
   /** The line to show or speak for a status or reply plan. */
   replyText?: string;
+  /** A spoken reply is on its way and replaces the card once it is known. */
+  replyPending?: boolean;
 };
 /**
  * Runs a turn plan. Never throws: callers that show failures (the voice
@@ -2053,7 +2056,8 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
     case "reply": {
       if (!runActive()) {
         voiceHeld = false;
-        idleCard(ctx.replyText ?? "Okay.");
+        // A spoken answer on its way is not pre-empted by a stock "Okay.".
+        idleCard(ctx.replyText ?? (ctx.replyPending ? "…" : "Okay."));
         return;
       }
       if (ctx.replyText)

@@ -3,6 +3,10 @@
 {"id": "ans-day", "user": "what day is it today", "expect": {"act": "answer"}, "tags": ["answer"]}
 {"id": "ans-agenda", "user": "what's on this afternoon?", "expect": {"act": "answer"}, "agenda": ["3:00 PM–3:30 PM Design review"], "tags": ["answer"]}
 {"id": "ans-agenda-2", "user": "do I have anything tomorrow morning", "expect": {"act": "answer"}, "agenda": ["Tomorrow 9:00 AM Standup", "Tomorrow 11:00 AM Dentist"], "tags": ["answer"]}
+{"id": "start-calendar-noagenda", "user": "anything on my calendar", "expect": {"act": "start", "grounded": true}, "tags": ["start", "calendar"]}
+{"id": "start-calendar-tomorrow", "user": "what do I have on tomorrow", "expect": {"act": "start", "grounded": true}, "tags": ["start", "calendar"]}
+{"id": "start-reminders-noagenda", "user": "what's on my reminders", "expect": {"act": "start", "grounded": true}, "tags": ["start", "calendar"]}
+{"id": "start-notes-look", "user": "do I have a note about the Lisbon trip", "expect": {"act": "start", "grounded": true}, "tags": ["start", "calendar"]}
 {"id": "ans-last", "user": "what did you just do", "expect": {"act": "answer"}, "view": {"running": false, "status": "idle", "recent": [], "lastFinished": {"task": "Find flights to Denver on Friday", "outcome": "completed", "summary": "Friday flights to Denver start at $142 on United.", "minutesAgo": 2}}, "tags": ["answer"]}
 {"id": "ans-last-2", "user": "what did the flights come to", "expect": {"act": "answer"}, "view": {"running": false, "status": "idle", "recent": [], "lastFinished": {"task": "Find flights to Denver on Friday", "outcome": "completed", "summary": "Friday flights to Denver start at $142 on United.", "minutesAgo": 2}}, "tags": ["answer"]}
 {"id": "ans-math", "user": "what's 18 times 4", "expect": {"act": "answer"}, "tags": ["answer"]}

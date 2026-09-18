@@ -173,6 +173,8 @@ export class AssistantSession implements AssistantSessionApi {
   private live?: { id: string; text: string; until: number };
   private previousReply?: string;
   private sequence = 0;
+  /** Bumped whenever an open offer is superseded: a new turn or a reset. */
+  private epoch = 0;
 
   constructor(private readonly options: AssistantOptions) {
     this.now = options.now ?? Date.now;
@@ -277,6 +279,7 @@ export class AssistantSession implements AssistantSessionApi {
     // A new turn supersedes any offer still open; only "yes" accepts one,
     // and that was handled above.
     this.live = undefined;
+    this.epoch++;
     if (i.signal.aborted) return settled("interrupted");
     const ready = this.availability(i.channel);
     if (ready !== "ok" || !dialogEligible(base)) {
@@ -425,7 +428,17 @@ export class AssistantSession implements AssistantSessionApi {
       this.abort(flight);
       return decision;
     }
-    return { ...decision, sentences: this.sentences(flight, i.channel) };
+    // An answer that offers in words to go and look ("I can check it on the
+    // Mac if you like") is held to it: the user's own request, heard
+    // clearly, becomes the offer a "yes" accepts.
+    const offer =
+      head.act === "answer" && a.plan.kind === "reply" && heard === "user_words"
+        ? i.text
+        : undefined;
+    return {
+      ...decision,
+      sentences: this.sentences(flight, i.channel, offer),
+    };
   }
 
   proposal(): { id: string; text: string; until: number } | undefined {
@@ -441,6 +454,7 @@ export class AssistantSession implements AssistantSessionApi {
   noteUser(text: string, channel: Channel): void {
     // The user spoke again: any open offer is answered or superseded.
     this.live = undefined;
+    this.epoch++;
     this.remember({
       role: "user",
       channel,
@@ -478,6 +492,7 @@ export class AssistantSession implements AssistantSessionApi {
     this.interrupt();
     this.turns = [];
     this.live = undefined;
+    this.epoch++;
     this.previousReply = undefined;
   }
 
@@ -736,10 +751,17 @@ export class AssistantSession implements AssistantSessionApi {
   /**
    * The reply's sentences, filtered as they arrive: at most two for voice
    * (three for a text), each through speakableSentence; a credential ends
-   * the reply. Whatever was handed out becomes the assistant's turn.
+   * the reply. Whatever was handed out becomes the assistant's turn; when
+   * it offers in words to go and look, `offer` (the user's own request)
+   * becomes the open offer, unless the user has spoken since.
    */
-  private sentences(flight: Flight, channel: Channel): AsyncIterable<string> {
+  private sentences(
+    flight: Flight,
+    channel: Channel,
+    offer?: string,
+  ): AsyncIterable<string> {
     const session = this;
+    const epoch = this.epoch;
     const spokenChannel = channel === "voice" || channel === "app";
     const max = spokenChannel
       ? DIALOG_LIMITS.voiceSentences
@@ -758,6 +780,15 @@ export class AssistantSession implements AssistantSessionApi {
           finished = true;
           session.abort(flight);
           if (spoken.length) session.noteAssistant(spoken.join(" "), channel);
+          const said = spoken.join(" ");
+          if (offer?.trim() && session.epoch === epoch && offersInWords(said)) {
+            session.live = {
+              id: `p${++session.sequence}`,
+              text: offer.trim(),
+              until: session.now() + DIALOG_LIMITS.proposalTtlMs,
+            };
+            session.log("decided", { code: "offer_in_words" });
+          }
           session.log("spoken", {
             sentences: count,
             dropped,
@@ -820,6 +851,13 @@ export class AssistantSession implements AssistantSessionApi {
 }
 
 type HeadFailure = "timeout" | "invalid" | "error" | "interrupted";
+
+const OFFER_IN_WORDS =
+  /\b(?:if you(?:'d| would)? (?:like|want|wish|prefer)|want me to|would you like me to|shall i|should i|i (?:can|could) (?:go (?:and )?)?(?:check|look|find|open|search|pull|see|take a look|have a look))\b/i;
+/** "If you want, I can check it on the Mac." is an offer; "It's at three." is not. */
+export function offersInWords(text: string): boolean {
+  return OFFER_IN_WORDS.test(text.replace(/[’‘]/g, "'"));
+}
 
 /** "Send the Q3 deck to Dana" → "Want me to send the Q3 deck to Dana?" */
 export function proposalLine(task: string): string | undefined {

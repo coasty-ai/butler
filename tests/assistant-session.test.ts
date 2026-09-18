@@ -6,6 +6,7 @@ import {
   dialogEffort,
   exactOfferLine,
   offerIsExact,
+  offersInWords,
   proposalLine,
 } from "../electron/assistant";
 import { speakableSentence } from "../src/voice/speakable";
@@ -775,6 +776,90 @@ describe("assistant session: what the model may and may not do", () => {
     expect(t.session.proposal()).toBeUndefined();
     expect(proposalLine("Open Mail.")).toBe("Want me to open Mail?");
     expect(proposalLine("")).toBeUndefined();
+  });
+
+  it("an answer that offers in words to go and look becomes a real offer of the user's own request", async () => {
+    const t = setup({
+      bodies: [
+        answer(
+          "I don't have your calendar here. If you want, I can check it on the Mac.",
+        ),
+      ],
+    });
+    const words = "anything on my calendar";
+    const decision = await t.decided(words, start(words));
+    expect(decision.plan).toMatchObject({ kind: "reply", act: "answer" });
+    // Registered once the reply has been handed out, not before.
+    expect(t.session.proposal()).toBeUndefined();
+    expect(await t.collect(decision)).toEqual([
+      "I don't have your calendar here.",
+      "If you want, I can check it on the Mac.",
+    ]);
+    const proposal = t.session.proposal();
+    expect(proposal?.text).toBe(words);
+    expect(
+      planVoiceTurn({
+        text: "yes please",
+        confidence: 0.9,
+        source: "wake",
+        gateMatches: false,
+        now: proposal!.until - 1000,
+        proposal,
+      }),
+    ).toEqual({ kind: "start", text: words, taskSource: "proposal" });
+    // Any other words close it.
+    t.session.noteUser("never mind", "voice");
+    expect(t.session.proposal()).toBeUndefined();
+  });
+
+  it("makes no offer from a plain answer, small talk, unsure hearing, or once the user has spoken again", async () => {
+    const plain = setup({ bodies: [answer("It's three o'clock.")] });
+    await plain.collect(await plain.decided("what time is it", start("what time is it")));
+    expect(plain.session.proposal()).toBeUndefined();
+
+    const chat = setup({
+      bodies: [sse(["ACT: none\n", "SAY: Glad to help. Want me to do anything else?"])],
+    });
+    await chat.collect(await chat.decided("thanks", start("thanks")));
+    expect(chat.session.proposal()).toBeUndefined();
+
+    const offer = answer("I can check your calendar on the Mac if you like.");
+    const unsure = setup({ bodies: [offer] });
+    const words = "anything on my calendar";
+    await unsure.collect(
+      await unsure.decided(words, start(words), { confidence: 0.4 }),
+    );
+    expect(unsure.session.proposal()).toBeUndefined();
+
+    const moved = setup({ bodies: [offer] });
+    const decision = await moved.decided(words, start(words));
+    moved.session.noteUser("open Safari", "voice");
+    await moved.collect(decision);
+    expect(moved.session.proposal()).toBeUndefined();
+  });
+
+  it("tells an offer in words from an answer", () => {
+    for (const line of [
+      "If you want, I can check it on the Mac.",
+      "Want me to look?",
+      "Would you like me to open Calendar?",
+      "Shall I have a look?",
+      "I could go and check your reminders.",
+      "I can take a look if you’d like.",
+    ])
+      expect(offersInWords(line), line).toBe(true);
+    for (const line of [
+      "It's three o'clock.",
+      "Just the design review at three. The rest of the afternoon's clear.",
+      "I can't see your screen from here.",
+      "Opening Calendar now.",
+    ])
+      expect(offersInWords(line), line).toBe(false);
+  });
+
+  it("asks for start, not an offer, when the answer lives on the Mac", () => {
+    expect(DIALOG_SYSTEM).toMatch(/without "agenda", a question about the calendar or reminders is start/);
+    expect(DIALOG_SYSTEM).toMatch(/Never offer in words to check/);
   });
 
   it("never grounds a rewrite on a line the assistant repeated from untrusted text", async () => {
