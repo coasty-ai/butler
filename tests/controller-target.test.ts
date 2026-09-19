@@ -238,4 +238,51 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
       cleanup();
     }
   });
+  it("carries the idle report's target facts as two flags, traced as flags, and drops any other shape", async () => {
+    const { binary, cleanup } = fakeHelper(`
+  if (request.method === 'poke') {
+    reply({event: 'user_input_idle', idleMs: 1000, kinds: ['click'], target: {frontmost: false, lastInside: true}});
+    reply({event: 'user_input_idle', idleMs: 3000, kinds: ['key'], target: {frontmost: 'yes', lastInside: true, x: 12}});
+    reply({event: 'user_input_idle', idleMs: 1000, kinds: ['mouse_move']});
+  }
+  reply({id: request.id, result: {}});`);
+    const inputIdle = vi.fn();
+    const diagnostics = vi.fn();
+    const controller = new NativeController(
+      binary,
+      () => {},
+      () => {},
+      diagnostics,
+      { inputIdle },
+    );
+    try {
+      await controller.request("poke");
+      expect(inputIdle.mock.calls.map(([report]) => report)).toEqual([
+        {
+          idleMs: 1000,
+          kinds: ["click"],
+          target: { frontmost: false, lastInside: true },
+        },
+        { idleMs: 3000, kinds: ["key"] },
+        { idleMs: 1000, kinds: ["mouse_move"] },
+      ]);
+      expect(
+        diagnostics.mock.calls
+          .filter(([event]) => event === "NativeInputIdle")
+          .map(([, data]) => data),
+      ).toEqual([
+        {
+          durationMs: 1000,
+          kind: "click",
+          targetFrontmost: false,
+          lastInsideTarget: true,
+        },
+        { durationMs: 3000, kind: "key" },
+        { durationMs: 1000, kind: "mouse_move" },
+      ]);
+    } finally {
+      controller.close();
+      cleanup();
+    }
+  });
 });

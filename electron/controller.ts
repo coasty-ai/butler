@@ -14,6 +14,7 @@ import {
   type TargetCode,
 } from "../src/core/errors";
 import type { TakeoverScope } from "../src/core/runner";
+import type { InputIdleReport } from "../src/core/resume";
 import {
   errorDetails,
   trace,
@@ -726,8 +727,12 @@ export class NativeController implements Controller {
     private diagnostics?: DiagnosticSink,
     hooks: HelperHooks & {
       timeout?: typeof nativeTimeout;
-      /** Manual input went idle (after 1 s, then 3 s) with the kinds seen. */
-      inputIdle?: (report: { idleMs: number; kinds: string[] }) => void;
+      /**
+       * Manual input went idle (after 1 s, then 3 s) with the kinds seen and,
+       * for a bound run, whether the target is in front and the last input
+       * was aimed at its window.
+       */
+      inputIdle?: (report: InputIdleReport) => void;
       /** A continuous scroll ended, with why and how many ticks it posted. */
       scrollEnded?: (report: ScrollEndReport) => void;
       /** The bound application activated itself and the helper put the user's back. */
@@ -768,11 +773,29 @@ export class NativeController implements Controller {
             : [];
           const idleMs = Number(obj.idleMs);
           if (!Number.isFinite(idleMs)) return true;
+          // Where the hands are relative to a bound window: two flags, or
+          // nothing when the shape is not exactly that.
+          const target =
+            obj.target &&
+            typeof obj.target === "object" &&
+            typeof obj.target.frontmost === "boolean" &&
+            typeof obj.target.lastInside === "boolean"
+              ? {
+                  frontmost: obj.target.frontmost as boolean,
+                  lastInside: obj.target.lastInside as boolean,
+                }
+              : undefined;
           trace(this.diagnostics, "NativeInputIdle", {
             durationMs: idleMs,
             kind: kinds.join("_") || "none",
+            ...(target
+              ? {
+                  targetFrontmost: target.frontmost,
+                  lastInsideTarget: target.lastInside,
+                }
+              : {}),
           });
-          hooks.inputIdle?.({ idleMs, kinds });
+          hooks.inputIdle?.({ idleMs, kinds, ...(target ? { target } : {}) });
           return true;
         }
         if (obj.event === "user_takeover") {

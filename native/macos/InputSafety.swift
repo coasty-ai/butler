@@ -73,10 +73,24 @@ func manualInputKind(type: CGEventType, marked: Bool) -> ManualInputKind? {
     }
 }
 
+// Where the user's hands are relative to a bound window when its run is held
+// (design §3): whether the target application is frontmost now, and whether
+// the episode's last input was aimed at the window. Two flags, so main can
+// tell "still in Slack" from "switched away" without a coordinate.
+struct TargetIdle: Equatable {
+    let frontmost: Bool
+    let lastInside: Bool
+}
+
 struct IdleReport: Equatable {
     let idleMs: Int
     let kinds: [String]
-    var event: [String: Any] { ["event": "user_input_idle", "idleMs": idleMs, "kinds": kinds] }
+    var target: TargetIdle? = nil
+    var event: [String: Any] {
+        var event: [String: Any] = ["event": "user_input_idle", "idleMs": idleMs, "kinds": kinds]
+        if let target { event["target"] = ["frontmost": target.frontmost, "lastInside": target.lastInside] }
+        return event
+    }
 }
 
 // One episode of manual input. The first input opens it; once input has been
@@ -84,23 +98,29 @@ struct IdleReport: Equatable {
 // closes. Input before the 3 s report restarts the timing (both reports are due
 // again) and adds its kind; kinds reset only when the episode closes. Times are
 // monotonic seconds. A late tick past both thresholds reports both, in order.
+// Each input also says whether it was aimed at the bound window; the latest
+// one's answer rides on the report when a target is bound (targetFrontmost
+// given), so the resume rule sees where the hands went last.
 struct ManualInputEpisode {
     static let thresholds: [(seconds: TimeInterval, idleMs: Int)] = [(1.0, 1000), (3.0, 3000)]
     private(set) var lastInputAt: TimeInterval? = nil
     private(set) var kinds = Set<ManualInputKind>()
+    private(set) var lastInTarget = false
     private var reported = 0
     var isOpen: Bool { lastInputAt != nil }
-    mutating func observe(kind: ManualInputKind, at time: TimeInterval) {
+    mutating func observe(kind: ManualInputKind, at time: TimeInterval, inTarget: Bool = false) {
+        if time >= lastInputAt ?? time { lastInTarget = inTarget }
         lastInputAt = max(lastInputAt ?? time, time)
         kinds.insert(kind)
         reported = 0
     }
-    mutating func tick(now: TimeInterval) -> [IdleReport] {
+    mutating func tick(now: TimeInterval, targetFrontmost: Bool? = nil) -> [IdleReport] {
         guard let last = lastInputAt else { return [] }
         let thresholds = ManualInputEpisode.thresholds
+        let target = targetFrontmost.map { TargetIdle(frontmost: $0, lastInside: lastInTarget) }
         var reports = [IdleReport]()
         while reported < thresholds.count && now - last >= thresholds[reported].seconds {
-            reports.append(IdleReport(idleMs: thresholds[reported].idleMs, kinds: kinds.map { $0.rawValue }.sorted()))
+            reports.append(IdleReport(idleMs: thresholds[reported].idleMs, kinds: kinds.map { $0.rawValue }.sorted(), target: target))
             reported += 1
         }
         if reported == thresholds.count { self = ManualInputEpisode() }

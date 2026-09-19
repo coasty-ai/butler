@@ -1330,12 +1330,12 @@ func releaseHeldInputAndExit(signal terminating: Int32? = nil) -> Never {
     if let terminating = terminating { signal(terminating,SIG_DFL);kill(getpid(),terminating) }
     _exit(0)
 }
-// Notes one input event of the user's own; cheap and lock-protected, safe on
-// the event tap path.
-func recordManualInput(_ kind: ManualInputKind?) {
+// Notes one input event of the user's own and whether it was aimed at the
+// bound window; cheap and lock-protected, safe on the event tap path.
+func recordManualInput(_ kind: ManualInputKind?, inTarget: Bool = false) {
     guard let kind = kind else { return }
     let now = ProcessInfo.processInfo.systemUptime
-    idleLock.lock(); manualInputEpisode.observe(kind: kind, at: now); lastManualInputAt = now; idleLock.unlock()
+    idleLock.lock(); manualInputEpisode.observe(kind: kind, at: now, inTarget: inTarget); lastManualInputAt = now; idleLock.unlock()
 }
 // Whether something holds the display awake (conferencing apps sharing the
 // screen, video players, browsers playing media, Keynote, caffeinate). Idle
@@ -1449,7 +1449,11 @@ func startIdleReporting() {
     let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
     timer.schedule(deadline: .now() + .milliseconds(150), repeating: .milliseconds(150), leeway: .milliseconds(30))
     timer.setEventHandler {
-        idleLock.lock(); let reports = manualInputEpisode.tick(now: ProcessInfo.processInfo.systemUptime); idleLock.unlock()
+        // With a target bound the report says whether that application is in
+        // front now, so a hold in its window can end when the user leaves it
+        // (design §3). Read before idleLock: the two locks are never nested.
+        let frontmost = withState { targetBinding }.map { NSWorkspace.shared.frontmostApplication?.processIdentifier == $0.pid }
+        idleLock.lock(); let reports = manualInputEpisode.tick(now: ProcessInfo.processInfo.systemUptime, targetFrontmost: frontmost); idleLock.unlock()
         for report in reports { emit(report.event) }
     }
     idleTimer = timer
@@ -1495,8 +1499,11 @@ func installTap() -> Bool {
             if classified.ignored {return Unmanaged.passUnretained(event)}
             pointerDistance = classified.distance
         }
+        // Where the input landed relative to a bound window, read once for the
+        // episode (the resume rule) and for the scope of a takeover (design §3).
+        let aimed = userInputFacts(type:type, location:event.location)
         // Already stopped: no takeover to report, so skip per-event app lookups,
-        // but note the input so main learns when the user lets go.
+        // but note the input so main learns when the user lets go and where.
         if isStopped() {
             if escape {
                 let now = ProcessInfo.processInfo.systemUptime
@@ -1506,7 +1513,7 @@ func installTap() -> Bool {
             // Our own Command-Space re-posted by Siri is not the user's input;
             // checked by its deadline alone, without the app lookup.
             let echoed = type == .keyDown && withState { forwardedSpotlightEvent(type:type,keyCode:event.getIntegerValueField(.keyboardEventKeycode),flags:event.flags,systemSiri:true,now:ProcessInfo.processInfo.systemUptime,deadline:forwardedSpotlightDeadline) }
-            if !echoed {recordManualInput(manualInputKind(type:type, marked:marked))}
+            if !echoed {recordManualInput(manualInputKind(type:type, marked:marked), inTarget:aimed.inside)}
             return Unmanaged.passUnretained(event)
         }
         let source = NSRunningApplication(processIdentifier:pid_t(event.getIntegerValueField(.eventSourceUnixProcessID)))
@@ -1516,11 +1523,11 @@ func installTap() -> Bool {
         if forwarded {forwardedSpotlightDeadline = 0}
         stateLock.unlock()
         if forwarded {emit(["event":"input_forwarded","source":"spotlight"]);return Unmanaged.passUnretained(event)}
-        recordManualInput(manualInputKind(type:type, marked:marked))
+        recordManualInput(manualInputKind(type:type, marked:marked), inTarget:aimed.inside)
         if escape {latch(true);emit(["event":"emergency_stop"])}
         // The user's own hand ends a spoken scroll before the takeover is reported.
         // With a target bound, only input aimed at that window is a takeover (design §3).
-        else if !isStopped(), let scope = userTakeoverScope(type:type, location:event.location) {endContinuousScroll(.input);latch(true);emit(["event":"user_takeover","source":type == .mouseMoved ? "mouse_move" : type == .keyDown ? "key" : type == .scrollWheel ? "scroll" : "mouse_button_or_drag","scope":scope.rawValue,"delta_x":event.getIntegerValueField(.mouseEventDeltaX),"delta_y":event.getIntegerValueField(.mouseEventDeltaY),"sourcePid":event.getIntegerValueField(.eventSourceUnixProcessID),"eventType":type.rawValue,"flags":event.flags.rawValue,"pointerDistance":pointerDistance])}
+        else if !isStopped(), let scope = takeoverScope(type:type, inside:aimed.inside, bound:aimed.bound, handoff:aimed.handoff) {endContinuousScroll(.input);latch(true);emit(["event":"user_takeover","source":type == .mouseMoved ? "mouse_move" : type == .keyDown ? "key" : type == .scrollWheel ? "scroll" : "mouse_button_or_drag","scope":scope.rawValue,"delta_x":event.getIntegerValueField(.mouseEventDeltaX),"delta_y":event.getIntegerValueField(.mouseEventDeltaY),"sourcePid":event.getIntegerValueField(.eventSourceUnixProcessID),"eventType":type.rawValue,"flags":event.flags.rawValue,"pointerDistance":pointerDistance])}
         return Unmanaged.passUnretained(event)
     }, userInfo:nil)
     guard let tap = tap else { return false }
@@ -2555,13 +2562,17 @@ func targetActivated(_ notification: Notification) {
         emit(["event": "target_self_activated", "token": bound.token])
     }
 }
-// The scope of the user's own input for the tap: today's rule with nothing
-// bound; with a target bound, the hit test against the cached uncovered
-// rectangles and one frontmost compare for a key (no accessibility call here).
-func userTakeoverScope(type: CGEventType, location: CGPoint) -> TakeoverScope? {
+// What the tap knows about one unmarked event and the bound window: whether a
+// target is bound, whether its announced second in front is under way, and
+// whether the input was aimed at the window, from the hit test against the
+// cached uncovered rectangles and one frontmost compare for a key. No
+// accessibility call here, so a hung target cannot stall the tap; nothing
+// bound reads as nothing aimed.
+func userInputFacts(type: CGEventType, location: CGPoint) -> (bound: Bool, handoff: Bool, inside: Bool) {
     let (bound, handoff, uncovered) = withState { (targetBinding, targetHandoff, targetUncovered) }
-    let frontmost = bound != nil && type == .keyDown && NSWorkspace.shared.frontmostApplication?.processIdentifier == bound?.pid
-    return takeoverScope(type: type, location: location, bound: bound != nil, handoff: handoff, uncovered: uncovered, targetFrontmost: frontmost)
+    guard let bound else { return (false, false, false) }
+    let frontmost = type == .keyDown && NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid
+    return (true, handoff, inputInsideTarget(type: type, location: location, uncovered: uncovered, targetFrontmost: frontmost))
 }
 
 // The bound window's tree, walked as the frontmost window's is. Only a focused
@@ -3536,7 +3547,14 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
         if let token = command["token"] as? String, withState({ targetBinding?.token == token }) { releaseTarget() }
         return ["unbound": true]
     case "restore":
+        // A run bound to a background window never took the front, so a hold
+        // in that window ends with nothing to give back: activating the
+        // frame's application here would put the window the user just left
+        // in front again (design §3). Its announced second in front is
+        // closed and restored as every step's screen is.
+        let background = withState { targetBinding != nil && !targetHandoff }
         endTargetHandoff()
+        if background { return ["restored": true] }
         let framePID = getCurrentFrame()?["pid"] as? Int
         let candidate = framePID.flatMap { NSRunningApplication(processIdentifier:pid_t($0)) }
         let target: NSRunningApplication?

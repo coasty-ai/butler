@@ -165,6 +165,28 @@ func backgroundInputChecks(_ check: (Bool, String) -> Void) {
     check(scope(.keyDown, frontmost: true) == .target, "a key while the target is frontmost is the user typing into it")
     check(scope(.keyDown, frontmost: false) == nil, "a key anywhere else is normal life")
     check(scope(.keyUp) == nil && scope(.flagsChanged, frontmost: true) == nil, "releases and modifiers are never a takeover of the target")
+    // Where the input landed, for the resume rule: hovering counts (the pointer is there), the covered half and elsewhere do not, a key follows the frontmost application.
+    let halfCovered = uncoveredRects(of: CGRect(x: 0, y: 0, width: 500, height: 500), above: [CGRect(x: 250, y: 0, width: 250, height: 500)])
+    func inside(_ type: CGEventType, at point: CGPoint = CGPoint(x: 100, y: 100), rects: [CGRect] = visible, frontmost: Bool = false) -> Bool {
+        inputInsideTarget(type: type, location: point, uncovered: rects, targetFrontmost: frontmost)
+    }
+    check(inside(.mouseMoved) && inside(.leftMouseDown) && inside(.rightMouseDown) && inside(.scrollWheel) && inside(.leftMouseDragged), "a pointer event over the visible part of the window, hovering included, is aimed at it")
+    check(inside(.leftMouseDown, rects: halfCovered) && !inside(.leftMouseDown, at: CGPoint(x: 400, y: 100), rects: halfCovered), "a press on the half another window covers is aimed at that window, not at the target")
+    check(!inside(.mouseMoved, at: CGPoint(x: 900, y: 900)) && !inside(.leftMouseDown, rects: []), "a pointer elsewhere, or over a window nothing of which is visible, is outside")
+    check(inside(.keyDown, frontmost: true) && !inside(.keyDown, frontmost: false) && inside(.keyDown, at: CGPoint(x: 900, y: 900), frontmost: true), "a key is aimed at the target exactly when its application is frontmost, wherever the pointer is")
+    check(!inside(.keyUp, frontmost: true) && !inside(.flagsChanged, frontmost: true), "releases and modifiers are aimed at nothing")
+    // The scope from the facts the tap reads once agrees with the scope from the location.
+    check(takeoverScope(type: .leftMouseDown, inside: true, bound: true, handoff: false) == .target && takeoverScope(type: .keyDown, inside: true, bound: true, handoff: false) == .target, "a press or key aimed at the target is a takeover of it")
+    check(takeoverScope(type: .mouseMoved, inside: true, bound: true, handoff: false) == nil, "hovering aimed at the target is still not working in it")
+    check(takeoverScope(type: .leftMouseDown, inside: false, bound: true, handoff: false) == nil && takeoverScope(type: .keyDown, inside: false, bound: true, handoff: false) == nil, "input aimed elsewhere is normal life")
+    check(takeoverScope(type: .leftMouseDown, inside: false, bound: false, handoff: false) == .screen && takeoverScope(type: .mouseMoved, inside: false, bound: true, handoff: true) == .screen, "nothing bound, or the handoff under way, keeps today's rule")
+    for type in [CGEventType.mouseMoved, .leftMouseDown, .rightMouseDown, .leftMouseDragged, .scrollWheel, .keyDown] {
+        for (point, frontmost) in [(CGPoint(x: 250, y: 250), false), (CGPoint(x: 750, y: 250), false), (CGPoint(x: 250, y: 250), true), (CGPoint(x: 900, y: 900), true)] {
+            let byLocation = takeoverScope(type: type, location: point, bound: true, handoff: false, uncovered: visible, targetFrontmost: frontmost)
+            let byFacts = takeoverScope(type: type, inside: inputInsideTarget(type: type, location: point, uncovered: visible, targetFrontmost: frontmost), bound: true, handoff: false)
+            check(byLocation == byFacts, "the scope from the location and from the facts agree for event \(type.rawValue) at \(Int(point.x)),\(Int(point.y)) frontmost \(frontmost)")
+        }
+    }
 
     check(targetActivation(lastManualInputAt: 99.9, now: 100, handoff: false) == .userEntered, "the target coming forward within 0.3 s of the user's input is the user entering it")
     check(targetActivation(lastManualInputAt: 99.75, now: 100, handoff: false) == .userEntered, "a quarter second after the user's input still counts as theirs")
@@ -241,5 +263,26 @@ func backgroundInputChecks(_ check: (Bool, String) -> Void) {
     check(targetSection.components(separatedBy: "emitting: true").count == 2 && section("func refreshTargetRects(", "\n}").contains("targetGone(bound, emitting: true)"), "the target_gone event is emitted only where no reply can carry the code")
     check(section("func targetGone(", "\n}").contains("if emitting { emit("), "a thrown TARGET_GONE carries its code in the reply and emits nothing")
     check(section("func performTargetAction(", "\n}").contains("assertTargetElement(element, bound: bound)") && section("func setTargetAttribute(", "\n}").contains("assertTargetElement(element, bound: bound)"), "every accessibility action and write asserts the element is the bound process's")
-    check(section("func installTap(", "\n}").contains("userTakeoverScope(type:type, location:event.location)") && section("func installTap(", "\n}").contains("\"scope\":scope.rawValue"), "the tap scopes the user's input and reports the scope, never a coordinate")
+    // The tap (design §3): the facts are read once per event, every input's
+    // placement is recorded for the resume rule whether the run is going or
+    // held, the scope comes from the same facts, and Escape is untouched.
+    let tap = section("func installTap(", "\n}")
+    check(tap.components(separatedBy: "userInputFacts(type:type, location:event.location)").count == 2, "the tap reads where the input landed once per event")
+    check(tap.components(separatedBy: "inTarget:aimed.inside)").count == 3, "every unmarked input, held or going, is recorded with its placement")
+    check(tap.contains("takeoverScope(type:type, inside:aimed.inside, bound:aimed.bound, handoff:aimed.handoff)") && tap.contains("\"scope\":scope.rawValue"), "the tap scopes the user's input from the same facts and reports the scope, never a coordinate")
+    check(tap.contains("if escape {latch(true);emit([\"event\":\"emergency_stop\"])}") && tap.contains("emergencyEscape(now: now, lastEscapeAt: lastEscapeAt, watching: watching)"), "Escape is the emergency stop before any scope is read, going or held")
+    let facts = section("func userInputFacts(", "\n}")
+    check(facts.contains("withState { (targetBinding, targetHandoff, targetUncovered) }") && facts.contains("type == .keyDown && NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid") && !facts.contains("AXUIElement"), "the tap's facts come from the cached rectangles and one frontmost compare for a key, with no accessibility call")
+    check(!section("func refreshTargetRects(", "\n}").contains("AXUIElement") && !section("func targetCover(", "\n}").contains("AXUIElement") && section("func targetCover(", "\n}").contains("CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements]"), "the rectangle cache is refreshed from the window server's list alone, so a hung target cannot stall the tap")
+    let tracking = section("func startTargetTracking(", "\n}")
+    check(tracking.contains(".milliseconds(250), repeating: .milliseconds(250)") && tracking.contains("[kAXWindowMovedNotification, kAXWindowResizedNotification]") && tracking.contains("queue: .global(qos: .utility)"), "the cache is refreshed every 250 ms and when the window moves or resizes, off the tap thread")
+    // The idle report carries the target facts, and a hold in the window ends with nothing to give back.
+    let idle = section("func startIdleReporting(", "\n}")
+    check(idle.contains("withState { targetBinding }.map { NSWorkspace.shared.frontmostApplication?.processIdentifier == $0.pid }") && idle.contains("tick(now: ProcessInfo.processInfo.systemUptime, targetFrontmost: frontmost)"), "the idle report says whether the target is in front when one is bound")
+    let restore = section("case \"restore\":", "default:throw")
+    check(restore.contains("let background = withState { targetBinding != nil && !targetHandoff }") && restore.contains("endTargetHandoff()") && restore.contains("if background { return [\"restored\": true] }"), "restore gives nothing back for a bound run outside its announced second: the window the user left stays where it is")
+    // The target's own activation is undone and never the user's.
+    let activated = section("func targetActivated(", "\n}")
+    check(!activated.contains("recordManualInput") && activated.contains("case .selfActivated:") && activated.contains("previous.activate(options: [])") && activated.contains("emit([\"event\": \"target_self_activated\", \"token\": bound.token])"), "a self-activation is undone and reported, and records no input of the user's")
+    check(activated.contains("case .userEntered:") && activated.contains("\"source\": \"target_activated\", \"scope\": TakeoverScope.target.rawValue"), "the target brought forward by the user's hand is a takeover of the target")
 }

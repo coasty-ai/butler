@@ -21,6 +21,7 @@ export {
 export {
   BACKGROUND_NOTE,
   isForegroundRequest,
+  isTargetHold,
   spokenTargets,
 } from "./background";
 

@@ -237,12 +237,17 @@ export const isForegroundRequest = (message: string) =>
 export const foregroundHandoff = (app: string) =>
   `Click into ${app} and I’ll continue.`;
 /**
- * The user's hands are in the bound window (design §3). Until the resume
- * rule reads where they went (lane T), the run continues when they go idle,
- * as every manual hold does today, and the words say exactly that.
+ * The user's hands are in the bound window (design §3). The hold ends on its
+ * own once they have left it: the application no longer in front, or their
+ * last input outside the window (src/core/resume.ts reads both from the
+ * helper's idle report), and the words say exactly that.
  */
 export const targetHold = (app: string) =>
-  `Paused — you’re in ${app}. I’ll continue when your hands are idle.`;
+  `Paused — you’re in ${app}. I’ll continue when you switch away.`;
+export const isTargetHold = (message: string) =>
+  /^Paused — you’re in .+\. I’ll continue when you switch away\.$/.test(
+    message,
+  );
 export const finishInFront = (app: string) =>
   `${app} keeps ignoring background input; I’ll finish this in front.`;
 export const noWindowInFront = (app: string) =>

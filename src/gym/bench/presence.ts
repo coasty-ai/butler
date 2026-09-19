@@ -212,7 +212,12 @@ export interface GateState {
  * How much human idle the next attempt needs. The full --idle at the start,
  * after a resume and after any human input; between attempts only "no input
  * since the agent's last input", because the tap counts unmarked input only
- * and the agent's own events cannot fool it.
+ * and the agent's own events cannot fool it. It counts every unmarked input
+ * whatever its scope: a run the app binds to a background window pauses only
+ * for input aimed at that window (design §3), but the tap records the rest
+ * too, so a person at the Mac is seen here either way. The bench itself never
+ * binds: attempt.ts starts its runs without the background option, so every
+ * unmarked input during an attempt is a takeover of the screen and stops it.
  */
 export function idleRequired(state: GateState, now: number): number {
   if (state.humanSeenAt !== undefined || state.lastAgentInputAt === undefined)

@@ -13,12 +13,14 @@ import {
   foregroundCapReached,
   foregroundRequest,
   isForegroundRequest,
+  isTargetHold,
   missKey,
   routeSkipped,
   spokenTargets,
   targetHold,
 } from "../src/core/background";
 import { cleanScreenContext } from "../src/core/context";
+import { MANUAL_PAUSE_MESSAGE } from "../src/core/runner";
 
 const act = (input: Record<string, unknown>): Action =>
   actionSchema.parse({ frame_id: "f", ...input });
@@ -385,10 +387,19 @@ describe("what the pill and the voice say", () => {
     );
     expect(isForegroundRequest(targetHold("Slack"))).toBe(false);
   });
-  it("says what a hold in the window does today: continues when the hands go idle", () => {
+  it("says what a hold in the window does: continues when the user switches away, and is recognised as that hold", () => {
     expect(targetHold("Slack")).toBe(
-      "Paused — you’re in Slack. I’ll continue when your hands are idle.",
+      "Paused — you’re in Slack. I’ll continue when you switch away.",
     );
+    expect(isTargetHold(targetHold("Slack"))).toBe(true);
+    expect(isTargetHold(targetHold("Visual Studio Code"))).toBe(true);
+    expect(isTargetHold(MANUAL_PAUSE_MESSAGE)).toBe(false);
+    expect(
+      isTargetHold(
+        "Paused — you’re in Slack. I’ll continue when your hands are idle.",
+      ),
+    ).toBe(false);
+    expect(isTargetHold(foregroundRequest("Slack"))).toBe(false);
   });
   it("names a pruned route once in plain words", () => {
     expect(routeSkipped("Slack", "write")).toBe(

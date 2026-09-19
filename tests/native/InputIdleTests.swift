@@ -76,6 +76,30 @@ func inputIdleChecks(_ check: (Bool, String) -> Void) {
     if let data = try? JSONSerialization.data(withJSONObject:event, options:[.sortedKeys]) {
         check(String(decoding:data, as:UTF8.self) == #"{"event":"user_input_idle","idleMs":3000,"kinds":["click","mouse_move"]}"#, "idle event serializes with no coordinates, key codes or characters")
     } else { check(false, "idle event serializes") }
+
+    // Where the hands went, for a hold in a bound window (design §3).
+    idle = ManualInputEpisode()
+    idle.observe(kind:.click, at:0, inTarget:true)
+    check(idle.lastInTarget && idle.tick(now:1) == [IdleReport(idleMs:1000, kinds:["click"])], "with nothing bound the report carries no target facts")
+    idle = ManualInputEpisode()
+    idle.observe(kind:.click, at:0, inTarget:true)
+    check(idle.tick(now:1, targetFrontmost:true) == [IdleReport(idleMs:1000, kinds:["click"], target:TargetIdle(frontmost:true, lastInside:true))], "a click in the window with the target in front reports both flags true")
+    idle.observe(kind:.mouseMove, at:1.5, inTarget:false)
+    check(idle.tick(now:2.5, targetFrontmost:true) == [IdleReport(idleMs:1000, kinds:["click", "mouse_move"], target:TargetIdle(frontmost:true, lastInside:false))], "the latest input decides lastInside: the pointer left the window")
+    idle.observe(kind:.key, at:1.2, inTarget:true)
+    check(idle.tick(now:4.5, targetFrontmost:false).map { $0.target } == [TargetIdle(frontmost:false, lastInside:false), TargetIdle(frontmost:false, lastInside:false)], "an out-of-order input never moves lastInside back, and frontmost is read at report time")
+    check(!idle.isOpen && !idle.lastInTarget, "closing the episode resets where the hands were")
+    idle.observe(kind:.key, at:10, inTarget:false)
+    check(idle.tick(now:11, targetFrontmost:true) == [IdleReport(idleMs:1000, kinds:["key"], target:TargetIdle(frontmost:true, lastInside:false))], "a key typed elsewhere reads as outside even with the target now in front")
+    idle = ManualInputEpisode()
+    idle.observe(kind:.click, at:0)
+    check(idle.tick(now:1, targetFrontmost:false) == [IdleReport(idleMs:1000, kinds:["click"], target:TargetIdle(frontmost:false, lastInside:false))], "an input observed without a placement reads as outside")
+
+    let bound = IdleReport(idleMs:1000, kinds:["click"], target:TargetIdle(frontmost:true, lastInside:false)).event
+    check(Set(bound.keys) == ["event", "idleMs", "kinds", "target"] && (bound["target"] as? [String: Bool]) == ["frontmost": true, "lastInside": false], "a bound report adds exactly the two target flags")
+    if let data = try? JSONSerialization.data(withJSONObject:bound, options:[.sortedKeys]) {
+        check(String(decoding:data, as:UTF8.self) == #"{"event":"user_input_idle","idleMs":1000,"kinds":["click"],"target":{"frontmost":true,"lastInside":false}}"#, "the bound report serializes with flags only, no coordinates or window titles")
+    } else { check(false, "the bound report serializes") }
 }
 
 // Pure AXManualAccessibility eligibility and once-per-process checks.

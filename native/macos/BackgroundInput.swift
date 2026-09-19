@@ -262,6 +262,22 @@ func staleRisk(covered: Bool, appClass: TargetAppClass, webArea: Bool) -> Bool {
 /// Whether the user's pointer is inside the part of the bound window they can see.
 func pointerInsideTarget(_ location: CGPoint, rects: [CGRect]) -> Bool { rects.contains { $0.contains(location) } }
 
+/**
+ Whether one unmarked event of the user's own was aimed at the bound window
+ (design §3): a pointer event, hovering included, over the part of it no other
+ window covers, or a key while the target application is frontmost. Read for
+ every event, going or held, so the resume rule knows where the hands went
+ last; whether it is also a takeover is takeoverScope's question.
+ */
+func inputInsideTarget(type: CGEventType, location: CGPoint, uncovered: [CGRect], targetFrontmost: Bool) -> Bool {
+    switch type {
+    case .keyDown: return targetFrontmost
+    case .mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel:
+        return pointerInsideTarget(location, rects: uncovered)
+    default: return false
+    }
+}
+
 enum TakeoverScope: String { case screen, target }
 /**
  What one unmarked event of the user's own means (design §3). Nothing bound,
@@ -271,14 +287,16 @@ enum TakeoverScope: String { case screen, target }
  takeover of the target; hovering over it and everything elsewhere is the user's
  normal life. The caller has already dropped pointer jitter and echoes.
  */
-func takeoverScope(type: CGEventType, location: CGPoint, bound: Bool, handoff: Bool, uncovered: [CGRect], targetFrontmost: Bool) -> TakeoverScope? {
+func takeoverScope(type: CGEventType, inside: Bool, bound: Bool, handoff: Bool) -> TakeoverScope? {
     guard bound, !handoff else { return .screen }
     switch type {
-    case .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel:
-        return pointerInsideTarget(location, rects: uncovered) ? .target : nil
-    case .keyDown: return targetFrontmost ? .target : nil
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel, .keyDown:
+        return inside ? .target : nil
     default: return nil
     }
+}
+func takeoverScope(type: CGEventType, location: CGPoint, bound: Bool, handoff: Bool, uncovered: [CGRect], targetFrontmost: Bool) -> TakeoverScope? {
+    takeoverScope(type: type, inside: inputInsideTarget(type: type, location: location, uncovered: uncovered, targetFrontmost: targetFrontmost), bound: bound, handoff: handoff)
 }
 
 /// The target came to the front: by the user's hand when their own input was

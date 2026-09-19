@@ -4,6 +4,7 @@ import {
   MANUAL_PAUSE_MESSAGE,
   TARGET_HANDOFF_MESSAGE,
 } from "../src/core/runner";
+import { targetHold } from "../src/core/background";
 
 const manual = (idleMs: number, kinds: string[], extra = {}) =>
   shouldAutoResume({
@@ -59,5 +60,78 @@ describe("auto-resume after the user lets go", () => {
     expect(
       handoff(1000, ["click"], "What would you like me to check for you?"),
     ).toBeUndefined();
+  });
+});
+
+describe("a hold in a bound window (design §3)", () => {
+  const hold = (
+    idleMs: number,
+    kinds: string[],
+    target?: { frontmost: boolean; lastInside: boolean },
+    extra = {},
+  ) =>
+    shouldAutoResume({
+      status: "paused",
+      message: targetHold("Slack"),
+      listening: false,
+      holdSequence: 9,
+      lastSequence: 9,
+      report: { idleMs, kinds, ...(target ? { target } : {}) },
+      ...extra,
+    });
+  it("continues once the user switched away from the window", () => {
+    expect(hold(3000, ["click"], { frontmost: false, lastInside: true })).toBe(
+      "target_hold",
+    );
+    expect(
+      hold(3000, ["click", "key"], { frontmost: false, lastInside: false }),
+    ).toBe("target_hold");
+  });
+  it("continues when the last input landed outside the window, even with it still in front", () => {
+    expect(hold(3000, ["click"], { frontmost: true, lastInside: false })).toBe(
+      "target_hold",
+    );
+    expect(
+      hold(1000, ["mouse_move"], { frontmost: true, lastInside: false }),
+    ).toBe("target_hold");
+  });
+  it("stays held while the hands are in the window, however long", () => {
+    expect(
+      hold(3000, ["click"], { frontmost: true, lastInside: true }),
+    ).toBeUndefined();
+    expect(
+      hold(30000, ["key"], { frontmost: true, lastInside: true }),
+    ).toBeUndefined();
+  });
+  it("still needs the stillness, and a report without the facts keeps it held", () => {
+    expect(
+      hold(1000, ["click"], { frontmost: false, lastInside: false }),
+    ).toBeUndefined();
+    expect(hold(3000, ["click"])).toBeUndefined();
+  });
+  it("never continues when anything else happened, the user is talking, or the hold is another kind", () => {
+    const away = { frontmost: false, lastInside: false };
+    expect(hold(3000, ["click"], away, { lastSequence: 10 })).toBeUndefined();
+    expect(
+      hold(3000, ["click"], away, { holdSequence: undefined }),
+    ).toBeUndefined();
+    expect(hold(3000, ["click"], away, { listening: true })).toBeUndefined();
+    expect(hold(3000, ["click"], away, { status: "takeover" })).toBeUndefined();
+    expect(
+      hold(3000, ["click"], away, {
+        message:
+          "Paused — you’re in Slack. I’ll continue when your hands are idle.",
+      }),
+    ).toBeUndefined();
+    // The facts change nothing for a hold on the screen: it continues as before.
+    expect(
+      manual(3000, ["click"], {
+        report: {
+          idleMs: 3000,
+          kinds: ["click"],
+          target: { frontmost: true, lastInside: true },
+        },
+      }),
+    ).toBe("manual_input");
   });
 });

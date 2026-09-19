@@ -1581,6 +1581,20 @@ describe("bench.mjs harness rules", () => {
       'state.emergency ? "emergency stop" : "interrupted"',
     );
   });
+  it("never binds a run to a background window, so every unmarked input is a takeover of the screen", () => {
+    // A bound run pauses only for input aimed at its window (design §3); the
+    // bench's gate and its MANUAL_TAKEOVER grade rely on the screen rule.
+    const attempt = readFileSync(
+      join(root, "src/gym/bench/attempt.ts"),
+      "utf8",
+    );
+    const at = attempt.indexOf("await runner.start(");
+    expect(at).toBeGreaterThan(0);
+    const start = attempt.slice(at, attempt.indexOf(");", at));
+    expect(start).toContain('origin: "bench"');
+    expect(start).not.toContain("background");
+    expect(attempt).not.toContain("background: true");
+  });
   it("stops the benchmark on real input whatever the flags", () => {
     const loop = source.slice(
       source.indexOf("const result = await runAttempt("),

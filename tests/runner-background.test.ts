@@ -883,6 +883,10 @@ describe("the user's hands (design §3)", () => {
     await tick();
     expect(runner.snapshot.run?.status).toBe("thinking");
     expect(m.of("UserTakeoverStarted")).toHaveLength(0);
+    // Nothing paused and nothing was journaled: the user's hands elsewhere
+    // leave the run exactly as it was.
+    expect(m.of("RunPaused")).toHaveLength(0);
+    expect(runner.snapshot.message).not.toBe(MANUAL_PAUSE_MESSAGE);
     runner.manualTakeover("target");
     expect(runner.snapshot.run?.status).toBe("paused");
     expect(runner.snapshot.message).toBe(targetHold("Slack"));
@@ -1090,6 +1094,29 @@ describe("main.ts wiring", () => {
     );
     expect(native).toContain(
       "targetGone: (_token, code) => runner?.targetGone(code),",
+    );
+  });
+  it("ends a hold in the window by the helper's facts, restores nothing for it, and never lets the run's own steps mask the user's idle", () => {
+    // The idle report goes to the shared rule, whose target_hold branch reads
+    // the two flags (tests/auto-resume.test.ts); the hold is remembered by
+    // sequence whatever its scope.
+    const resume = fn("resumeAfterManualInput");
+    expect(resume).toContain("shouldAutoResume({");
+    expect(resume).toMatch(
+      /holdSequence: manualHold\?\.sequence,[\s\S]*report,/,
+    );
+    expect(fn("getNative")).toMatch(
+      /if \(snapshot\.run\?\.status === "paused"\)\s*manualHold = \{ sequence: lastSequence\(\) \};/,
+    );
+    // The resume still asks the helper to restore; for a bound run outside its
+    // announced second the helper activates nothing (Controller.swift "restore").
+    expect(fn("resumeHeldRun")).toContain(
+      'await getNative().request("restore");',
+    );
+    // Steps delivered by accessibility or posted events never reset the Mac's
+    // idle, so presence is not masked by them (design §3).
+    expect(fn("lastAgentInputAt")).toContain(
+      'if (event.data.rung === "ax" || event.data.rung === "post") continue;',
     );
   });
   it("asks for the background when the setting is on and the user is at the Mac", () => {
