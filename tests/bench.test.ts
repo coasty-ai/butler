@@ -1914,6 +1914,17 @@ describe("run analyzer", () => {
       "approval-codes",
     );
     expect(noteFor("APPROVAL_DECLINED")).toBe("An approval was declined.");
+    // The runner's one check of a done said after a refused step rides on
+    // ActionFailed with its own code, so the class needs no new reader.
+    expect(
+      frictionCodes({
+        event: "ActionFailed",
+        data: { code: "DONE_CHALLENGED", actionType: "done" },
+      }),
+    ).toEqual(["DONE_CHALLENGED"]);
+    expect(ownerOf("DONE_CHALLENGED")).toBe("agent");
+    expect(noteFor("DONE_CHALLENGED")).toContain("fresh screenshot");
+    expect(noteFor("DONE_CHALLENGED")).toContain("MODEL_FAILED");
     // The default allow-list drops this event's source, so a bare hand-off is
     // reported as ambiguous rather than blamed on the agent.
     expect(frictionCodes({ event: "UserTakeoverStarted", data: {} })).toEqual([

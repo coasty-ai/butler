@@ -435,7 +435,19 @@ export const appSwitchWarning =
  * three times running after "choose a different approach" and paused.
  */
 export const declinedResult = (question: string) =>
-  `The user declined: ${question} Do not propose this step again; a step of the same kind asks again. Take a route that needs no approval (a listed control, a menu item from context.menus, the application's own shortcut), or finish: fail and say what needed approval (done only when the objective is already visibly complete).`;
+  `The user declined: ${question} Do not propose this step again; a step of the same kind asks again. Take a route that needs no approval (a listed control, a menu item from context.menus, the application's own shortcut), or finish: fail and say what needed approval. Done only when the objective is already visibly complete: it is checked once more against a fresh screenshot, and its summary must say what on screen shows it.`;
+/**
+ * The history line for a done said after a step of this run was declined or
+ * refused. The runner cannot tell a route taken around the refusal from a
+ * claim made over it (cycle 20260919-0816-a839d34: two rename runs pressed
+ * on after six declined Returns each and said done with the files not
+ * renamed), so the claim is not accepted bare: the model reads the refusal
+ * again with a fresh screenshot and says done again, with what shows it, or
+ * fail. Once per refusal; the run is never failed by the runner's own hand,
+ * which would only move a false done into the honest-failure column.
+ */
+export const doneChallenge = (refusal: string) =>
+  `Not accepted yet. Earlier in this run a step was not allowed (${bound(refusal, 240)}), so this done is checked once against a fresh screenshot. If the outcome the objective asked for is visible on it, say done again with a summary that leads with what on screen shows it. If that step was needed to finish, say fail and name what needed approval; never claim done for work the screen does not show.`;
 /**
  * The history result for an open_app that brought a running application to
  * the front with no window, after its own Window menu showed none either
@@ -1022,6 +1034,13 @@ export class Runner {
   private credentialDenials = 0;
   private declines = 0;
   private targetingRetries = 0;
+  /**
+   * The last step of this run the user declined or the policy refused, and
+   * whether a done since has been checked against it (doneChallenge). Set
+   * for the run, not the streak: a pause, a hint or a correction resets the
+   * counters, but does not make the objective complete.
+   */
+  private refused?: { line: string; checked: boolean };
   /** Applications whose search route the runner already took this run. */
   private searchRoutes = new Set<string>();
   private stateChanges = 0;
@@ -1699,6 +1718,10 @@ export class Runner {
       action: echoAction(action),
       result: declinedResult(question),
     });
+    // A "no" to the user's own spoken undo refuses nothing the objective
+    // needs, so it never puts the run's done under the check
+    // (voice-undo.test.ts: the run goes on as before).
+    if (!this.undoRequest) this.refused = { line: question, checked: false };
     return ++this.declines;
   }
   private recoverStateChange(error: unknown, action?: Action) {
@@ -3039,6 +3062,7 @@ export class Runner {
     this.held = false;
     this.voiceApproval = false;
     this.history = [];
+    this.refused = undefined;
     this.resetCounters();
     this.resetLoop();
     this.resetMemory();
@@ -3939,6 +3963,7 @@ export class Runner {
             action: echoAction(action),
             result: noInput(decision.reason),
           });
+          this.refused = { line: decision.reason, checked: false };
           // Repeated attempts to type or send detected secrets stay fatal.
           if (
             (action.type === "type_text" || action.type === "tool_call") &&
@@ -4125,6 +4150,23 @@ export class Runner {
           continue;
         }
         if (action.type === "done") {
+          // A claim made after a refused step is checked once: the model
+          // reads the refusal again on a fresh screenshot and says done
+          // again or fail. Nothing executes, and no floor moved.
+          const refused = this.refused;
+          if (refused && !refused.checked) {
+            refused.checked = true;
+            this.event("ActionFailed", {
+              code: "DONE_CHALLENGED",
+              actionType: action.type,
+            });
+            history.push({
+              type: "rejected",
+              action: echoAction(action),
+              result: doneChallenge(refused.line),
+            });
+            continue;
+          }
           run.summary = action.summary;
           this.event("RunCompleted");
           this.status("completed", action.summary);

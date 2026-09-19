@@ -839,7 +839,13 @@ describe("runner replay plans", () => {
       { index: 0, reason: "declined" },
     ]);
     expect(m.of("UserDenied")).toHaveLength(1);
-    expect(p.next).toHaveBeenCalledTimes(1);
+    // The model's bare done after the declined step is checked once on a
+    // fresh screenshot (runner-done.test.ts) and, said again, accepted.
+    expect(p.next).toHaveBeenCalledTimes(2);
+    expect(p.observations[1].history.at(-1)).toMatchObject({
+      type: "rejected",
+      action: { type: "done" },
+    });
     expect(p.observations[0].memory?.plan?.note).toContain(
       "interrupted at step 1",
     );

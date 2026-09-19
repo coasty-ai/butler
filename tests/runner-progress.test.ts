@@ -347,7 +347,14 @@ describe("runner no-progress advice", () => {
     const runner = new Runner(c, p, m.recorder, settings, () => {});
     await runner.start("press play");
     expect(c.execute).not.toHaveBeenCalled();
-    expect(warned(p.observations.at(-1)!.history)).toEqual([false, false]);
+    // Two refused clicks, then the runner's one check of the done said
+    // after them (runner-done.test.ts); none carries the advice.
+    expect(warned(p.observations.at(-1)!.history)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    expect(p.observations.at(-1)!.history.at(-1)?.type).toBe("rejected");
     expect(m.of("NoProgressDetected")).toHaveLength(0);
   });
 });

@@ -470,6 +470,8 @@ const NOTE: Record<string, string> = {
   ACTION_FAILED: "A step failed with a code this analyzer does not name yet.",
   NO_PROGRESS:
     "Same-type actions changed nothing on screen; the run was told and kept going.",
+  DONE_CHALLENGED:
+    "The model said done after a step of the run was declined or refused; the runner sent the claim back once with a fresh screenshot. The run's ending says what the model then did: COMPLETED is the claim repeated, MODEL_FAILED is the claim withdrawn.",
   MODEL_FAILED:
     "The model gave up honestly with fail instead of claiming done.",
   FALSE_DONE:

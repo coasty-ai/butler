@@ -339,7 +339,13 @@ describe("a run with a dictation", () => {
     await r.started;
     await until(() => r.runner.settled);
     expect(r.calls).not.toContain("execute(type_text)");
-    expect(r.provider.next).toHaveBeenCalledTimes(1);
+    // The model's bare done over the declined dictation is checked once
+    // against a fresh screenshot (runner-done.test.ts); said again, it stands.
+    expect(r.provider.next).toHaveBeenCalledTimes(2);
+    const check = r.provider.next.mock.calls[1][0].history.at(-1)!;
+    expect(check.type).toBe("rejected");
+    expect(check.action).toEqual({ type: "done" });
+    expect(check.result).toContain("fresh screenshot");
     expect(r.getRun().status).toBe("completed");
     expect(r.getRun().summary).toBe("Done");
   });
@@ -352,7 +358,12 @@ describe("a run with a dictation", () => {
     );
     expect(r.calls).not.toContain("execute(type_text)");
     expect(r.of("UserDenied")).toHaveLength(1);
-    expect(r.provider.next).toHaveBeenCalledTimes(1);
+    // A done after the refused step is checked once, like after a decline.
+    expect(r.provider.next).toHaveBeenCalledTimes(2);
+    expect(r.provider.next.mock.calls[1][0].history.at(-1)).toMatchObject({
+      type: "rejected",
+      action: { type: "done" },
+    });
   });
 
   it("runs as before without a dictation", async () => {
