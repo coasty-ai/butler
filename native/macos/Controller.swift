@@ -113,11 +113,17 @@ func modelControlName(_ element:AXUIElement, role:String) -> String {
 // Interactive elements inside the visible part of a browser's web area, found
 // breadth-first with node and time budgets so capture latency stays bounded.
 // Names only (modelControlName never returns field contents).
+// One listed control with the element behind it, so a bound run can press what
+// the model named without a second hit test.
+struct ControlEntry { let item: [String:Any]; let element: AXUIElement }
 func webControls(_ window: AXUIElement, display: CGRect, limit: Int = 45) -> [[String:Any]] {
+    webControlEntries(window, display: display, limit: limit).map { $0.item }
+}
+func webControlEntries(_ window: AXUIElement, display: CGRect, limit: Int = 45) -> [ControlEntry] {
     let started = ProcessInfo.processInfo.systemUptime
     let interactive: Set<String> = ["AXLink","AXButton","AXTextField","AXTextArea","AXComboBox","AXCheckBox","AXRadioButton","AXPopUpButton","AXMenuButton","AXTab"]
     let visible = (elementRect(window) ?? display).intersection(display)
-    var queue: [(AXUIElement, Int)] = [(window, 0)], index = 0, result = [[String:Any]]()
+    var queue: [(AXUIElement, Int)] = [(window, 0)], index = 0, result = [ControlEntry]()
     while index < queue.count && index < 2500 && result.count < limit {
         if ProcessInfo.processInfo.systemUptime - started > 0.25 { break }
         let (node, depth) = queue[index]; index += 1
@@ -134,7 +140,7 @@ func webControls(_ window: AXUIElement, display: CGRect, limit: Int = 45) -> [[S
                     "y": (Double(rect.midY - display.minY) / Double(display.height) * 1000).rounded() / 1000]
                 if !name.isEmpty { item["label"] = name }
                 if attribute(node, kAXEnabledAttribute) as? Bool == false { item["enabled"] = false }
-                result.append(item)
+                result.append(ControlEntry(item: item, element: node))
             }
         }
         guard depth < 40 else { continue }
@@ -214,16 +220,21 @@ func recognizeScreenText(_ image: CGImage, window: CGRect?, display: CGRect, lim
     }
     return lines.joined(separator: "\n")
 }
-func mergeControls(_ first: [[String:Any]], _ second: [[String:Any]], limit: Int) -> [[String:Any]] {
-    var seen = Set<String>(), merged = [[String:Any]]()
-    for item in first + second where merged.count < limit {
-        let key = "\(item["role"] ?? "")|\(item["x"] ?? "")|\(item["y"] ?? "")"
-        if seen.insert(key).inserted { merged.append(item) }
+// Controls listed once each, by role and position; `item` reads a control's dictionary.
+func mergeControls<Control>(_ first: [Control], _ second: [Control], limit: Int, item: (Control) -> [String:Any]) -> [Control] {
+    var seen = Set<String>(), merged = [Control]()
+    for control in first + second where merged.count < limit {
+        let fields = item(control)
+        let key = "\(fields["role"] ?? "")|\(fields["x"] ?? "")|\(fields["y"] ?? "")"
+        if seen.insert(key).inserted { merged.append(control) }
     }
     return merged
 }
 func groundedControls(_ state: WindowState, display: CGRect, limit: Int = 60) -> [[String:Any]] {
-    var result = [[String:Any]]()
+    groundedControlEntries(state, display: display, limit: limit).map { $0.item }
+}
+func groundedControlEntries(_ state: WindowState, display: CGRect, limit: Int = 60) -> [ControlEntry] {
+    var result = [ControlEntry]()
     for control in state.tracked where result.count < limit {
         let b = control.bounds
         guard b.width >= 2, b.height >= 2, display.width > 0, display.height > 0 else { continue }
@@ -234,7 +245,7 @@ func groundedControls(_ state: WindowState, display: CGRect, limit: Int = 60) ->
                                   "y": (Double(center.y - display.minY) / Double(display.height) * 1000).rounded() / 1000]
         if !control.name.isEmpty { item["label"] = control.name }
         if !control.enabled { item["enabled"] = false }
-        result.append(item)
+        result.append(ControlEntry(item: item, element: control.element))
     }
     return result
 }
@@ -300,8 +311,13 @@ func windowState() -> WindowState {
     let running = inputApplication()
     let pid = running?.processIdentifier ?? 0
     let app = AXUIElementCreateApplication(pid)
-    let window = attribute(app, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
-    let focused = attribute(app, kAXFocusedUIElementAttribute).map { $0 as! AXUIElement }
+    return windowState(pid: pid, appId: running?.bundleIdentifier ?? "",
+                       window: attribute(app, kAXFocusedWindowAttribute).map { $0 as! AXUIElement },
+                       focused: attribute(app, kAXFocusedUIElementAttribute).map { $0 as! AXUIElement })
+}
+// The walk itself, over the window given: the frontmost application's focused
+// window today, a bound window for a background run.
+func windowState(pid: pid_t, appId: String, window: AXUIElement?, focused: AXUIElement?) -> WindowState {
     var controls = [String](), tracked = [TrackedControl](), visited = 0
     func visit(_ node: AXUIElement, _ depth: Int) {
         guard visited < 400, depth < 12 else { return }; visited += 1
@@ -321,11 +337,11 @@ func windowState() -> WindowState {
         for child in children.prefix(100) { visit(child, depth + 1) }
     }
     if let window = window { visit(window, 0) }
-    if running?.bundleIdentifier == "com.apple.Spotlight" {controls.append("Spotlight selection:" + (spotlightState(app)["selectedResult"] ?? ""))}
-    return WindowState(pid: pid, appId: running?.bundleIdentifier ?? "", window: window, bounds: window.flatMap(elementRect),
+    if appId == "com.apple.Spotlight" {controls.append("Spotlight selection:" + (spotlightState(AXUIElementCreateApplication(pid))["selectedResult"] ?? ""))}
+    return WindowState(pid: pid, appId: appId, window: window, bounds: window.flatMap(elementRect),
         document: window.map { String(describing: attribute($0, "AXDocument") ?? attribute($0, "AXURL") ?? "" as CFString) } ?? "",
         focused: focused, focusedValue: focused.map { String(describing: attribute($0, kAXValueAttribute) ?? "" as CFString) } ?? "",
-        focusedSignature:focused.map(focusSignature) ?? "",addressBar:focused.map{browserAddressField($0,appId:running?.bundleIdentifier ?? "")} ?? false,
+        focusedSignature:focused.map(focusSignature) ?? "",addressBar:focused.map{browserAddressField($0,appId:appId)} ?? false,
         controls: SHA256.hash(data: Data(controls.joined(separator: "\u{1}").utf8)).map { String(format: "%02x", $0) }.joined(), tracked: tracked)
 }
 func sameElement(_ a: AXUIElement?, _ b: AXUIElement?) -> Bool {
@@ -349,9 +365,12 @@ func sameWindow(_ a: WindowState, _ b: WindowState, for action: [String:Any]?) -
 func stableWindow(_ a: WindowState, _ b: WindowState) -> Bool {
     sameWindow(a, b, for: nil) && a.controls == b.controls && sameElement(a.focused, b.focused) && a.focusedSignature == b.focusedSignature
 }
-func hitMatches(_ expected: AXUIElement, at point: CGPoint) -> Bool {
+// Whether the expected control is on the path from the element under a point:
+// system-wide (whatever is on top there) for the frontmost window, scoped to
+// one application for a bound window another window may overlap.
+func hitMatches(_ expected: AXUIElement, at point: CGPoint, application: AXUIElement = AXUIElementCreateSystemWide()) -> Bool {
     var hit: AXUIElement?
-    guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success else { return false }
+    guard AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &hit) == .success else { return false }
     for _ in 0..<8 {
         guard let current = hit else { return false }
         if CFEqual(expected, current) { return true }
@@ -682,14 +701,26 @@ func pressEscape() {
  once with its menu open — which is what a person does — and the menu is always
  closed again on failure. A hotkey pressed through its item names its chord,
  which the item must still carry.
+
+ For a bound target the press goes through that application's own menu bar
+ element, which AppKit keeps whether or not the application is in front. Its
+ menu is never opened to re-check a greyed-out item (only the frontmost menu
+ bar can show one), the target's floors stand in for the frontmost surface's,
+ and the return code is advice only: applications report failure from actions
+ they performed, so the postcondition read decides (AXUIElement.h).
  */
-func pressMenuPath(_ path: [String], chord: String? = nil) throws {
+func pressMenuPath(_ path: [String], chord: String? = nil, target: TargetBinding? = nil) throws {
     if let refusal = menuPressRefusal(path: path, chord: chord, item: nil) { throw ControlError(refusal.message, code: refusal.code) }
-    guard let app = inputApplication() else { throw changedScreen("Foreground application changed.") }
-    let element = AXUIElementCreateApplication(app.processIdentifier)
+    let pid: pid_t, appId: String
+    if let target { pid = target.pid; appId = target.appId }
+    else {
+        guard let app = inputApplication() else { throw changedScreen("Foreground application changed.") }
+        pid = app.processIdentifier; appId = app.bundleIdentifier ?? ""
+    }
+    let element = AXUIElementCreateApplication(pid)
     _ = AXUIElementSetMessagingTimeout(element, 2.0)
     var resolved = resolveMenuPath(element, path, chord: chord)
-    if resolved == nil || resolved?.enabled == false {
+    if target == nil, resolved == nil || resolved?.enabled == false {
         if let top = menuBarItem(element, path[0]) {
             try ensureRunning()
             _ = AXUIElementPerformAction(top, kAXPressAction as CFString)
@@ -702,13 +733,17 @@ func pressMenuPath(_ path: [String], chord: String? = nil) throws {
         throw ControlError(refusal.message, code: refusal.code)
     }
     let item = resolved! // a missing item was refused just above
-    try ensureRunning(); try guardSurface()
-    guard AXUIElementPerformAction(item.item, kAXPressAction as CFString) == .success else {
-        pressEscape()
-        throw ControlError("\(menuCommandName(path: path, chord: chord)) could not be chosen.", code: "INPUT_FAILED")
+    try ensureRunning()
+    if let target { try guardTarget(target, typing: false); try performTargetAction(item.item, kAXPressAction, bound: target) }
+    else {
+        try guardSurface()
+        guard AXUIElementPerformAction(item.item, kAXPressAction as CFString) == .success else {
+            pressEscape()
+            throw ControlError("\(menuCommandName(path: path, chord: chord)) could not be chosen.", code: "INPUT_FAILED")
+        }
     }
     withState { menuSnapshot = nil } // menus revalidate after their own command
-    noteCommand(item.title, pid: app.processIdentifier, appId: app.bundleIdentifier ?? "")
+    noteCommand(item.title, pid: pid, appId: appId)
 }
 // How a hotkey reaches the frontmost application now (hotkeyRoute). The step
 // carries the item policy judged it by (the runner sends surface's shortcutLabel
@@ -762,7 +797,7 @@ func currentNamedControls() -> [NamedControl] {
     let state = windowState()
     var items = groundedControls(state, display: display)
     if browserAppIDs.contains(state.appId), let window = state.window {
-        items = mergeControls(items, webControls(window, display: display), limit: 60)
+        items = mergeControls(items, webControls(window, display: display), limit: 60) { $0 }
     }
     return items.map {
         NamedControl(label: $0["label"] as? String ?? "", role: $0["role"] as? String ?? "",
@@ -781,7 +816,9 @@ func resolveNamedControl(_ action: [String:Any]) -> (match: ControlMatch, contro
 // The accessibility level of the frontmost application's own window, as
 // reported on the surface and in the screen context.
 func accessibilityLevel(_ element: AXUIElement, focusedRole: String, hitTarget: Bool) -> SurfaceAccessibility? {
-    let window = attribute(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
+    accessibilityLevel(window: attribute(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }, focusedRole: focusedRole, hitTarget: hitTarget)
+}
+func accessibilityLevel(window: AXUIElement?, focusedRole: String, hitTarget: Bool) -> SurfaceAccessibility? {
     let bounds = window.flatMap(elementRect) ?? .zero
     let walk = window.map { actionableWalk($0) } ?? (found: 0, complete: false)
     return surfaceAccessibility(trusted: AXIsProcessTrusted(), windowWidth: Double(bounds.width), windowHeight: Double(bounds.height),
@@ -854,51 +891,8 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     if addressBar {result["focusedValue"] = focusedValue}
     if app.bundleIdentifier == "com.apple.Spotlight" {result["launcher"] = spotlightState(element)}
     if let a = action, let x = a["x"] as? Double,let y = a["y"] as? Double,x>=0,x<=1,y>=0,y<=1 {
-        let b = CGDisplayBounds(displayID);var target:AXUIElement?
-        if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),Float(b.minX+x*b.width),Float(b.minY+y*b.height),&target) == .success,var target = target {
-            // Every visited element contributes its name, so a label on an
-            // intermediate ancestor (an icon's aria-label) reaches policy.
-            var names = [elementText(target)] + targetNames(target)
-            for _ in 0..<6 {
-                let role=attribute(target,kAXRoleAttribute) as? String ?? ""
-                if hitWalkControlRoles.contains(role) {break}
-                guard hitWalkClimbRoles.contains(role),let parent=attribute(target,kAXParentAttribute),CFGetTypeID(parent) == AXUIElementGetTypeID() else{break}
-                target=parent as! AXUIElement
-                names += targetNames(target)
-                if hitWalkStopsAt(role:attribute(target,kAXRoleAttribute) as? String ?? "",description:attribute(target,kAXDescriptionAttribute) as? String ?? "",actions:actionNames(target)) {break}
-            }
-            // Web thumbnails and cards nest a clickable, unlabelled group inside
-            // the link that carries the name and URL (YouTube results). When the
-            // walk stopped at such a container, prefer the enclosing link/button.
-            if ["AXGroup","AXImage","AXStaticText"].contains(attribute(target,kAXRoleAttribute) as? String ?? "") {
-                var ancestor = attribute(target,kAXParentAttribute).map { $0 as! AXUIElement }
-                for _ in 0..<8 {
-                    guard let current = ancestor else { break }
-                    let role = attribute(current,kAXRoleAttribute) as? String ?? ""
-                    if ["AXWebArea","AXWindow","AXApplication"].contains(role) { break }
-                    if ["AXLink","AXButton"].contains(role) { target = current; names += targetNames(current); break }
-                    ancestor = attribute(current,kAXParentAttribute).map { $0 as! AXUIElement }
-                }
-            }
-            let joined = joinedTargetText(names)
-            if !joined.isEmpty {result["targetText"] = joined}
-            result["targetRole"] = attribute(target,kAXRoleAttribute) as? String ?? ""
-            result["targetSubrole"] = attribute(target,kAXSubroleAttribute) as? String ?? ""
-            var targetPID:pid_t=0
-            if AXUIElementGetPid(target,&targetPID) == .success {result["targetAppId"]=NSRunningApplication(processIdentifier:targetPID)?.bundleIdentifier ?? ""}
-            if let enabled=attribute(target,kAXEnabledAttribute) as? Bool {result["targetEnabled"]=enabled}
-            let title = controlLabel(target)
-            result["targetLabel"] = String(title.prefix(120))
-            if let url=attribute(target,"AXURL") as? URL {result["targetURL"] = String(url.absoluteString.prefix(2000))}
-            else if let url=attribute(target,"AXURL") as? String {result["targetURL"] = String(url.prefix(2000))}
-            if result["targetAppId"] as? String == "com.apple.dock",result["targetSubrole"] as? String == "AXApplicationDockItem",
-               let raw=result["targetURL"] as? String,let url=URL(string:raw),url.isFileURL,url.pathExtension == "app",let bundle=Bundle(url:url)?.bundleIdentifier {
-                result["launcherAppId"]=bundle
-            }
-            if attribute(target,kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole {result["secureInput"] = true}
-            if let host = enclosingWebHost(target) { result["targetWebHost"] = host }
-            if modalContext(window: nil, element: target) { result["modal"] = true }
-        }
+        let b = CGDisplayBounds(displayID)
+        for (key, value) in hitTargetFacts(AXUIElementCreateSystemWide(), at: CGPoint(x: b.minX+x*b.width, y: b.minY+y*b.height)) { result[key] = value }
     }
     if let a = action, a["type"] as? String == "open_app", let name = a["name"] as? String {
         let resolution = resolveLaunch(query:name, candidates:applicationCandidates(), protectedApps:protectedApps)
@@ -949,8 +943,75 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
         }
         stateLock.lock(); fileBinding = cached; stateLock.unlock()
     }
+    for (key, value) in commandFacts(element, pid: app.processIdentifier, action: action) { result[key] = value }
+    if let status = namedControl {
+        result["controlStatus"] = status.status
+        if let label = status.label { result["controlLabel"] = utf16Prefix(label, 120) }
+    }
+    // Computed last: the hit test above is the pointer evidence that this
+    // application publishes something at the requested position.
+    if let level = accessibilityLevel(element, focusedRole: focusedRole ?? "", hitTarget: result["targetRole"] != nil) {
+        result["accessibility"] = level.rawValue
+    }
+    return result
+}
+// The element under a point and the control it belongs to, as surface reports
+// them for policy: hit-tested system-wide for the frontmost window, or within
+// one application for a bound window.
+func hitTargetFacts(_ application: AXUIElement, at point: CGPoint) -> [String:Any] {
+    var result = [String:Any](), target: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &target) == .success, var target = target else { return result }
+    // Every visited element contributes its name, so a label on an
+    // intermediate ancestor (an icon's aria-label) reaches policy.
+    var names = [elementText(target)] + targetNames(target)
+    for _ in 0..<6 {
+        let role=attribute(target,kAXRoleAttribute) as? String ?? ""
+        if hitWalkControlRoles.contains(role) {break}
+        guard hitWalkClimbRoles.contains(role),let parent=attribute(target,kAXParentAttribute),CFGetTypeID(parent) == AXUIElementGetTypeID() else{break}
+        target=parent as! AXUIElement
+        names += targetNames(target)
+        if hitWalkStopsAt(role:attribute(target,kAXRoleAttribute) as? String ?? "",description:attribute(target,kAXDescriptionAttribute) as? String ?? "",actions:actionNames(target)) {break}
+    }
+    // Web thumbnails and cards nest a clickable, unlabelled group inside
+    // the link that carries the name and URL (YouTube results). When the
+    // walk stopped at such a container, prefer the enclosing link/button.
+    if ["AXGroup","AXImage","AXStaticText"].contains(attribute(target,kAXRoleAttribute) as? String ?? "") {
+        var ancestor = attribute(target,kAXParentAttribute).map { $0 as! AXUIElement }
+        for _ in 0..<8 {
+            guard let current = ancestor else { break }
+            let role = attribute(current,kAXRoleAttribute) as? String ?? ""
+            if ["AXWebArea","AXWindow","AXApplication"].contains(role) { break }
+            if ["AXLink","AXButton"].contains(role) { target = current; names += targetNames(current); break }
+            ancestor = attribute(current,kAXParentAttribute).map { $0 as! AXUIElement }
+        }
+    }
+    let joined = joinedTargetText(names)
+    if !joined.isEmpty {result["targetText"] = joined}
+    result["targetRole"] = attribute(target,kAXRoleAttribute) as? String ?? ""
+    result["targetSubrole"] = attribute(target,kAXSubroleAttribute) as? String ?? ""
+    var targetPID:pid_t=0
+    if AXUIElementGetPid(target,&targetPID) == .success {result["targetAppId"]=NSRunningApplication(processIdentifier:targetPID)?.bundleIdentifier ?? ""}
+    if let enabled=attribute(target,kAXEnabledAttribute) as? Bool {result["targetEnabled"]=enabled}
+    let title = controlLabel(target)
+    result["targetLabel"] = String(title.prefix(120))
+    if let url=attribute(target,"AXURL") as? URL {result["targetURL"] = String(url.absoluteString.prefix(2000))}
+    else if let url=attribute(target,"AXURL") as? String {result["targetURL"] = String(url.prefix(2000))}
+    if result["targetAppId"] as? String == "com.apple.dock",result["targetSubrole"] as? String == "AXApplicationDockItem",
+       let raw=result["targetURL"] as? String,let url=URL(string:raw),url.isFileURL,url.pathExtension == "app",let bundle=Bundle(url:url)?.bundleIdentifier {
+        result["launcherAppId"]=bundle
+    }
+    if attribute(target,kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole {result["secureInput"] = true}
+    if let host = enclosingWebHost(target) { result["targetWebHost"] = host }
+    if modalContext(window: nil, element: target) { result["modal"] = true }
+    return result
+}
+// What an application's own commands say about a step: the search its command
+// opened and what was typed there, a menu item's state, a chord's published
+// item. Read from the application element given, frontmost or bound.
+func commandFacts(_ element: AXUIElement, pid: pid_t, action: [String:Any]?) -> [String:Any] {
+    var result = [String:Any]()
     if let command = withState({ searchCommand }),
-       searchCommandCurrent(commandPid: command.pid, commandAt: command.at, pid: app.processIdentifier, now: ProcessInfo.processInfo.systemUptime) {
+       searchCommandCurrent(commandPid: command.pid, commandAt: command.at, pid: pid, now: ProcessInfo.processInfo.systemUptime) {
         result["searchOpenedBy"] = command.title
         // The agent's own typing, never the field's value: ENTER in a palette
         // runs whichever command that text selected. The state says when an
@@ -958,14 +1019,10 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
         if let query = command.query { result["searchQuery"] = query }
         if let state = command.state { result["searchQueryState"] = state.rawValue }
     } else if let type = action?["type"] as? String, ["type_text", "key"].contains(type),
-              let path = menuMap(element, pid: app.processIdentifier).searchPath {
+              let path = menuMap(element, pid: pid).searchPath {
         // Typing with nothing identified to type into: name the application's
         // own way to open a field, so the refusal is a route, not a dead end.
         result["searchCommand"] = path.map { utf16Prefix($0, 60) }
-    }
-    if let status = namedControl {
-        result["controlStatus"] = status.status
-        if let label = status.label { result["controlLabel"] = utf16Prefix(label, 120) }
     }
     if let a = action, a["type"] as? String == "menu_item", let path = a["path"] as? [String] {
         if menuPathRefused(path) { result["menuStatus"] = "refused" }
@@ -978,14 +1035,9 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     // guess: the menu says what it does, so policy can judge it by that name.
     // Bounded like the digest's titles: the label reaches the trace in policy reasons.
     if let a = action, a["type"] as? String == "hotkey", let names = a["keys"] as? [String] {
-        let shortcuts = menuMap(element, pid: app.processIdentifier).shortcuts
+        let shortcuts = menuMap(element, pid: pid).shortcuts
         if let item = publishedShortcutItem(keys: names, shortcuts: shortcuts) { result["shortcutLabel"] = shortcutMenuLabel(item) }
         if let status = shortcutStatus(keys: names, shortcuts: shortcuts) { result["shortcutStatus"] = status }
-    }
-    // Computed last: the hit test above is the pointer evidence that this
-    // application publishes something at the requested position.
-    if let level = accessibilityLevel(element, focusedRole: focusedRole ?? "", hitTarget: result["targetRole"] != nil) {
-        result["accessibility"] = level.rawValue
     }
     return result
 }
@@ -1165,6 +1217,21 @@ func guardSurface() throws {
     if protectedApps.contains(where:{ app.contains($0.lowercased()) }) { throw ControlError("Protected application. Switch applications and resume.", code: "SURFACE_BLOCKED") }
     if let domain = s["domain"] as? String, protectedDomains.contains(where:{ domain == $0 || domain.hasSuffix("."+$0) }) { throw ControlError("Protected domain. Take over manually.", code: "SURFACE_BLOCKED") }
 }
+// The text a window shows, shallow and bounded, never a secure field's.
+func windowVisibleText(_ window: AXUIElement) -> String {
+    var text=[String](),nodes=0,characters=0
+    func visit(_ node:AXUIElement,_ depth:Int) {
+        guard depth<6,nodes<120,characters<4000 else{return};nodes+=1
+        if attribute(node,"AXHidden") as? Bool == true || attribute(node,kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole{return}
+        let role=attribute(node,kAXRoleAttribute) as? String ?? ""
+        let value=(role == "AXStaticText" ? attribute(node,kAXValueAttribute) : attribute(node,kAXTitleAttribute)) as? String ?? ""
+        if !value.isEmpty {let bounded=String(value.prefix(min(300,4000-characters)));text.append(bounded);characters+=bounded.count}
+        let children=(attribute(node,"AXVisibleChildren") ?? attribute(node,kAXChildrenAttribute)) as? [AXUIElement] ?? []
+        for child in children.prefix(30){visit(child,depth+1)}
+    }
+    visit(window,0)
+    return String(text.joined(separator:"\n").prefix(4200))
+}
 func screenContext() -> [String:Any] {
     guard (try? guardSurface()) != nil, let app=inputApplication() else{return [:]}
     let element=AXUIElementCreateApplication(app.processIdentifier)
@@ -1180,17 +1247,7 @@ func screenContext() -> [String:Any] {
             let name=String(url.lastPathComponent.prefix(300));result["documentName"]=name
             recentFiles.removeAll{$0 == name};recentFiles.insert(name,at:0);recentFiles=Array(recentFiles.prefix(8))
         }
-        var text=[String](),nodes=0,characters=0
-        func visit(_ node:AXUIElement,_ depth:Int) {
-            guard depth<6,nodes<120,characters<4000 else{return};nodes+=1
-            if attribute(node,"AXHidden") as? Bool == true || attribute(node,kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole{return}
-            let role=attribute(node,kAXRoleAttribute) as? String ?? ""
-            let value=(role == "AXStaticText" ? attribute(node,kAXValueAttribute) : attribute(node,kAXTitleAttribute)) as? String ?? ""
-            if !value.isEmpty {let bounded=String(value.prefix(min(300,4000-characters)));text.append(bounded);characters+=bounded.count}
-            let children=(attribute(node,"AXVisibleChildren") ?? attribute(node,kAXChildrenAttribute)) as? [AXUIElement] ?? []
-            for child in children.prefix(30){visit(child,depth+1)}
-        }
-        visit(window,0);result["visibleText"]=String(text.joined(separator:"\n").prefix(4200))
+        result["visibleText"]=windowVisibleText(window)
     }
     // In a browser the page is the content, whatever has focus: the find bar,
     // a menu or the address bar are separate windows or chrome around it.
@@ -1249,18 +1306,23 @@ func postInput(_ event:CGEvent?) {
     if pointerEventTypes.contains(event.type) {lastPointerPosition = event.location;pointerGraceUntil = lastInputTime + 0.75}
     // Recorded and posted under the lock: once an exit path has released held
     // input and holds the lock, no later press can be posted.
+    heldInput.targetPid = nil
     heldInput.record(type:event.type,location:event.location,keyCode:CGKeyCode(truncatingIfNeeded:event.getIntegerValueField(.keyboardEventKeycode)))
     event.setIntegerValueField(.eventSourceUserData,value:inputMarker);event.post(tap:.cghidEventTap)
     stateLock.unlock()
 }
 // Releases anything still pressed and ends the process without unlocking, so
 // no request thread can post input afterwards. With a signal, the default
-// action is re-raised so the parent still observes that signal.
+// action is re-raised so the parent still observes that signal. Input posted
+// to a bound process is released to that process, never to the HID stream.
 func releaseHeldInputAndExit(signal terminating: Int32? = nil) -> Never {
     stateLock.lock()
     stopped = true
     let held = heldInput; heldInput = HeldInput()
-    func post(_ event: CGEvent?) { event?.setIntegerValueField(.eventSourceUserData,value:inputMarker);event?.post(tap:.cghidEventTap) }
+    func post(_ event: CGEvent?) {
+        event?.setIntegerValueField(.eventSourceUserData,value:inputMarker)
+        if let pid = held.targetPid { event?.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(pid)); event?.postToPid(pid) } else { event?.post(tap:.cghidEventTap) }
+    }
     if let point = held.leftButton { post(CGEvent(mouseEventSource:nil,mouseType:.leftMouseUp,mouseCursorPosition:point,mouseButton:.left)) }
     if let point = held.rightButton { post(CGEvent(mouseEventSource:nil,mouseType:.rightMouseUp,mouseCursorPosition:point,mouseButton:.right)) }
     for code in held.keys.reversed() { post(CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:false)) }
@@ -1457,7 +1519,8 @@ func installTap() -> Bool {
         recordManualInput(manualInputKind(type:type, marked:marked))
         if escape {latch(true);emit(["event":"emergency_stop"])}
         // The user's own hand ends a spoken scroll before the takeover is reported.
-        else if !isStopped() {endContinuousScroll(.input);latch(true);emit(["event":"user_takeover","source":type == .mouseMoved ? "mouse_move" : type == .keyDown ? "key" : type == .scrollWheel ? "scroll" : "mouse_button_or_drag","delta_x":event.getIntegerValueField(.mouseEventDeltaX),"delta_y":event.getIntegerValueField(.mouseEventDeltaY),"sourcePid":event.getIntegerValueField(.eventSourceUnixProcessID),"eventType":type.rawValue,"flags":event.flags.rawValue,"pointerDistance":pointerDistance])}
+        // With a target bound, only input aimed at that window is a takeover (design §3).
+        else if !isStopped(), let scope = userTakeoverScope(type:type, location:event.location) {endContinuousScroll(.input);latch(true);emit(["event":"user_takeover","source":type == .mouseMoved ? "mouse_move" : type == .keyDown ? "key" : type == .scrollWheel ? "scroll" : "mouse_button_or_drag","scope":scope.rawValue,"delta_x":event.getIntegerValueField(.mouseEventDeltaX),"delta_y":event.getIntegerValueField(.mouseEventDeltaY),"sourcePid":event.getIntegerValueField(.eventSourceUnixProcessID),"eventType":type.rawValue,"flags":event.flags.rawValue,"pointerDistance":pointerDistance])}
         return Unmanaged.passUnretained(event)
     }, userInfo:nil)
     guard let tap = tap else { return false }
@@ -1467,9 +1530,10 @@ func installTap() -> Bool {
     startIdleReporting()
     return true
 }
-func geometry(_ display: SCDisplay, width: Int, height: Int) -> [String:Any] {
-    let b = CGDisplayBounds(display.displayID)
-    return ["display_id":Int(display.displayID),"x":Double(b.origin.x),"y":Double(b.origin.y),"width":Double(b.width),"height":Double(b.height),"native_width":CGDisplayPixelsWide(display.displayID),"native_height":CGDisplayPixelsHigh(display.displayID),"model_width":width,"model_height":height,"scale_factor":Double(CGDisplayPixelsWide(display.displayID))/Double(b.width)]
+func geometry(_ display: SCDisplay, width: Int, height: Int) -> [String:Any] { geometry(display.displayID, width: width, height: height) }
+func geometry(_ id: CGDirectDisplayID, width: Int, height: Int) -> [String:Any] {
+    let b = CGDisplayBounds(id)
+    return ["display_id":Int(id),"x":Double(b.origin.x),"y":Double(b.origin.y),"width":Double(b.width),"height":Double(b.height),"native_width":CGDisplayPixelsWide(id),"native_height":CGDisplayPixelsHigh(id),"model_width":width,"model_height":height,"scale_factor":Double(CGDisplayPixelsWide(id))/Double(b.width)]
 }
 /// The frame's `preview`: the screenshot at most 1024 px wide as a JPEG at
 /// quality 0.6, with its size, for steps whose accessibility context already
@@ -1562,7 +1626,7 @@ func capture() async throws -> [String:Any] {
         var controls = groundedControls(afterWindow, display: bounds)
         // Web pages nest their controls deeper than the safety walk reaches.
         if browserAppIDs.contains(afterWindow.appId), let window = afterWindow.window {
-            controls = mergeControls(controls, webControls(window, display: bounds), limit: 60)
+            controls = mergeControls(controls, webControls(window, display: bounds), limit: 60) { $0 }
         }
         context["controls"] = controls
     }
@@ -2166,6 +2230,991 @@ func focusWatch(token: String) async throws -> [String:Any] {
     withState { lastInputTime = ProcessInfo.processInfo.systemUptime }
     return ["focused": NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid]
 }
+// MARK: target
+/**
+ A background run is bound to one window for its whole life (design §2.2). The
+ token is the only name TypeScript has for it, minted here like a watch's;
+ every posted event, tree read and menu press of the run addresses this
+ process and this window, and nothing else. One target at a time, guarded by
+ stateLock like the watch bindings.
+ */
+struct TargetBinding {
+    let token: String
+    let pid: pid_t
+    let windowID: CGWindowID
+    let appId: String
+    let appName: String
+    let title: String
+    let window: AXUIElement
+    let launchedAt: TimeInterval?
+    let appClass: TargetAppClass
+    var identity: TargetIdentity { TargetIdentity(pid: pid, bundleId: appId, launchedAt: launchedAt) }
+}
+var targetBinding: TargetBinding?
+// The uncovered parts of the bound window's frame, for the tap's hit test:
+// refreshed every 250 ms and when the window moves or resizes, off the tap
+// thread, from the window server's list alone.
+var targetUncovered = [CGRect]()
+// Rung 3 is under way: the target was brought forward on purpose, so its
+// activation is expected and the user's input pauses the run as it does today.
+var targetHandoff = false
+var targetMisses = RungMisses()
+var targetRectTimer: DispatchSourceTimer?
+var targetObserver: AXObserver?
+var targetActivationObserver: NSObjectProtocol?
+// The application in front before the target activated itself, to give the
+// front back to (never Butler or this helper).
+var foregroundBeforeTarget: pid_t?
+// What a delivery did: nothing (no route here), an action, or a text write
+// with the value the field must now read as.
+enum TargetDelivery: Equatable { case none, acted, wrote(String) }
+
+func runningIdentity(_ app: NSRunningApplication) -> TargetIdentity {
+    TargetIdentity(pid: app.processIdentifier, bundleId: app.bundleIdentifier ?? "", launchedAt: app.launchDate?.timeIntervalSince1970)
+}
+// Electron ships its framework inside the bundle; the class decides which
+// posted events are refused and which read-backs are trusted.
+func electronFramework(_ app: NSRunningApplication) -> Bool {
+    guard let url = app.bundleURL else { return false }
+    return FileManager.default.fileExists(atPath: url.appendingPathComponent("Contents/Frameworks/Electron Framework.framework").path)
+}
+// One window as the window server lists it, on screen or not.
+func windowInfo(_ id: CGWindowID) -> (owner: pid_t, bounds: CGRect, onScreen: Bool)? {
+    guard let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String:Any]])?.first,
+          let owner = info[kCGWindowOwnerPID as String] as? Int,
+          let raw = info[kCGWindowBounds as String] as? [String:Any], let rect = CGRect(dictionaryRepresentation: raw as CFDictionary) else { return nil }
+    return (pid_t(owner), rect, info[kCGWindowIsOnscreen as String] as? Bool ?? false)
+}
+// The window server's id of an accessibility window, by its owner and bounds,
+// minimized and other-Space windows included.
+func windowID(of window: AXUIElement, pid: pid_t) -> CGWindowID? {
+    guard let bounds = elementRect(window), let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] else { return nil }
+    for info in list {
+        guard (info[kCGWindowOwnerPID as String] as? Int) == Int(pid), (info[kCGWindowLayer as String] as? Int) == 0,
+              let raw = info[kCGWindowBounds as String] as? [String:Any], let rect = CGRect(dictionaryRepresentation: raw as CFDictionary),
+              let number = info[kCGWindowNumber as String] as? Int, nearly(rect, bounds) else { continue }
+        return CGWindowID(number)
+    }
+    return nil
+}
+// A running application the words name: its display name or bundle identifier, exactly one.
+func runningApplication(named name: String) throws -> NSRunningApplication {
+    let wanted = normalizeAppName(name)
+    guard !wanted.isEmpty else { throw ControlError("Name an application.") }
+    let matches = NSWorkspace.shared.runningApplications.filter { app in
+        app.activationPolicy == .regular && !app.isTerminated
+            && (normalizeAppName(app.localizedName ?? "") == wanted || (app.bundleIdentifier ?? "").lowercased() == wanted)
+    }
+    guard matches.count == 1, let app = matches.first else {
+        throw ControlError(matches.isEmpty ? "That application is not running." : "Several running applications are called that.", code: TargetRefusal.gone.rawValue)
+    }
+    return app
+}
+// The window a bound run works in: the one whose title the words name; else
+// the application's focused window, else its main window, else the largest
+// standard window it shows (the frontmost on ties, the list being in z-order).
+func targetWindow(_ app: NSRunningApplication, element: AXUIElement, title: String?) -> AXUIElement? {
+    let windows = attribute(element, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    if let title { return windows.first { targetTitleMatches(request: title, title: attribute($0, kAXTitleAttribute) as? String ?? "") } }
+    if let window = (attribute(element, kAXFocusedWindowAttribute) ?? attribute(element, kAXMainWindowAttribute)).map({ $0 as! AXUIElement }) { return window }
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] ?? []
+    var largest: (area: Double, rect: CGRect)? = nil
+    for info in list {
+        guard (info[kCGWindowOwnerPID as String] as? Int) == Int(app.processIdentifier), (info[kCGWindowLayer as String] as? Int) == 0,
+              let raw = info[kCGWindowBounds as String] as? [String:Any], let rect = CGRect(dictionaryRepresentation: raw as CFDictionary) else { continue }
+        let area = Double(rect.width * rect.height)
+        if largest.map({ area > $0.area }) ?? true { largest = (area, rect) }
+    }
+    guard let rect = largest?.rect else { return nil }
+    return windows.first { elementRect($0).map { nearly($0, rect) } == true }
+}
+/**
+ Binds the window a background run works in (design §2.2): named by its window
+ id, its process, its application's name or its window title, else the
+ frontmost application's focused window. Refuses what a watch refuses, so a
+ protected application, a terminal, a launcher, Butler itself or a protected
+ page is never a target, and a target is never brought forward by anything
+ but the announced handoff. Binding another target releases the last.
+ */
+func bindTarget(_ spec: [String:Any]) throws -> [String:Any] {
+    guard CGPreflightScreenCaptureAccess() else { throw ControlError("Grant Screen Recording permission and restart the app.") }
+    guard AXIsProcessTrusted() else { throw ControlError("Accessibility permission is required.") }
+    let requestedWindow = (spec["windowId"] as? Int).map { CGWindowID($0) }
+    let app: NSRunningApplication
+    if let id = requestedWindow, let info = windowInfo(id), let owner = NSRunningApplication(processIdentifier: info.owner) { app = owner }
+    else if let pid = spec["pid"] as? Int, let running = NSRunningApplication(processIdentifier: pid_t(pid)) { app = running }
+    else if let name = spec["app"] as? String { app = try runningApplication(named: name) }
+    else if requestedWindow == nil, spec["pid"] == nil, let frontmost = NSWorkspace.shared.frontmostApplication { app = frontmost }
+    else { throw ControlError("That window is not open.", code: TargetRefusal.gone.rawValue) }
+    let appId = app.bundleIdentifier ?? ""
+    guard !app.isTerminated, app.processIdentifier != getppid(), app.processIdentifier != getpid(), appId != "ai.coarena.openassist", !watchRefused(appId) else {
+        throw ControlError("That application cannot be worked in the background.", code: TargetRefusal.protected.rawValue)
+    }
+    exposeAccessibilityTree(app)
+    let element = AXUIElementCreateApplication(app.processIdentifier)
+    _ = AXUIElementSetMessagingTimeout(element, 2.0)
+    let window: AXUIElement
+    if let id = requestedWindow {
+        guard let found = watchWindowElement(pid: app.processIdentifier, windowID: id) else { throw ControlError("That window is not open.", code: TargetRefusal.gone.rawValue) }
+        window = found
+    } else {
+        guard let found = targetWindow(app, element: element, title: spec["title"] as? String) else { throw ControlError("That application has no window to work in.", code: TargetRefusal.gone.rawValue) }
+        window = found
+    }
+    _ = AXUIElementSetMessagingTimeout(window, 2.0)
+    guard !watchWindowProtected(appId: appId, window: window) else { throw ControlError("That page cannot be worked in the background.", code: TargetRefusal.protected.rawValue) }
+    guard let bounds = elementRect(window), bounds.width > 40, bounds.height > 40 else { throw ControlError("The window has no usable bounds.", code: TargetRefusal.gone.rawValue) }
+    guard let windowID = requestedWindow ?? windowID(of: window, pid: app.processIdentifier) else { throw ControlError("The window could not be identified on screen.", code: TargetRefusal.gone.rawValue) }
+    let binding = TargetBinding(token: UUID().uuidString.lowercased(), pid: app.processIdentifier, windowID: windowID, appId: appId,
+                                appName: utf16Prefix(app.localizedName ?? "", 100), title: String((attribute(window, kAXTitleAttribute) as? String ?? "").prefix(300)),
+                                window: window, launchedAt: app.launchDate?.timeIntervalSince1970,
+                                appClass: targetAppClass(bundleId: appId, electronFramework: electronFramework(app)))
+    releaseTarget()
+    let front = NSWorkspace.shared.frontmostApplication
+    withState {
+        targetBinding = binding; targetMisses = RungMisses()
+        foregroundBeforeTarget = front.flatMap { $0.processIdentifier != binding.pid && $0.processIdentifier != getppid() && $0.bundleIdentifier != "ai.coarena.openassist" ? $0.processIdentifier : nil }
+    }
+    refreshTargetRects()
+    startTargetTracking(binding)
+    return ["token": binding.token, "pid": Int(binding.pid), "windowId": Int(windowID), "appId": appId, "appName": binding.appName, "title": binding.title]
+}
+// The binding a token names, still naming its process and its window; anything
+// else is TARGET_GONE, reported once and released, never re-resolved by name.
+func liveTarget(_ token: String) throws -> TargetBinding {
+    guard let bound = withState({ targetBinding }), watchProbeAllowed(token: token, bound: bound.token) else { throw ControlError("Unknown target token.", code: TargetRefusal.gone.rawValue) }
+    let running = NSRunningApplication(processIdentifier: bound.pid).flatMap { $0.isTerminated ? nil : runningIdentity($0) }
+    guard targetLive(bound: bound.identity, running: running, windowOwner: windowInfo(bound.windowID)?.owner),
+          attribute(bound.window, kAXRoleAttribute) != nil else { throw targetGone(bound) }
+    return bound
+}
+func targetGone(_ bound: TargetBinding) -> ControlError {
+    releaseTarget()
+    emit(["event": "target_gone", "token": bound.token, "code": TargetRefusal.gone.rawValue])
+    return ControlError("The target window is gone.", code: TargetRefusal.gone.rawValue)
+}
+// The floors of §4 on the target's own surface, never the frontmost
+// application's: the application, the page its window shows, and secure input
+// for anything that carries text (clicks carry none and go on).
+func guardTarget(_ bound: TargetBinding, typing: Bool) throws {
+    let appId = NSRunningApplication(processIdentifier: bound.pid)?.bundleIdentifier ?? bound.appId
+    if appId.lowercased().contains("uninstall") || watchRefused(appId) { throw ControlError("Protected application. Take over manually.", code: TargetRefusal.protected.rawValue) }
+    if watchWindowProtected(appId: appId, window: bound.window) { throw ControlError("Protected domain. Take over manually.", code: TargetRefusal.protected.rawValue) }
+    if typing, IsSecureEventInputEnabled() { throw ControlError("Sensitive input is active; typing is paused.", code: "SURFACE_BLOCKED") }
+}
+// Every accessibility action and write of a bound run addresses an element of
+// the bound process; anything else is refused before it is performed. The
+// return code is advice only (AXUIElement.h: applications report failure from
+// actions they performed), so the postcondition read decides.
+func assertTargetElement(_ element: AXUIElement, bound: TargetBinding) throws {
+    var pid: pid_t = 0
+    guard AXUIElementGetPid(element, &pid) == .success, pid == bound.pid else { throw ControlError("That element is not in the target application.", code: TargetRefusal.gone.rawValue) }
+    try ensureRunning()
+}
+func performTargetAction(_ element: AXUIElement, _ action: String, bound: TargetBinding) throws {
+    try assertTargetElement(element, bound: bound)
+    _ = AXUIElementPerformAction(element, action as CFString)
+}
+func setTargetAttribute(_ element: AXUIElement, _ name: String, _ value: CFTypeRef, bound: TargetBinding) throws {
+    try assertTargetElement(element, bound: bound)
+    _ = AXUIElementSetAttributeValue(element, name as CFString, value)
+}
+func endTargetHandoff() { withState { targetHandoff = false } }
+
+// The parts of the bound window the user can see, from the window server's
+// z-ordered list: every drawn window in front of it, of any application,
+// covers what it overlaps. No accessibility call, so a hung target cannot
+// stall the tap's cache. A window not on screen has nothing to click and
+// nothing fresh to show.
+func targetCover(_ bound: TargetBinding) -> (frame: CGRect?, coverage: Double, uncovered: [CGRect]) {
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] ?? []
+    var above = [CGRect]()
+    for info in list {
+        guard let number = info[kCGWindowNumber as String] as? Int, let raw = info[kCGWindowBounds as String] as? [String:Any],
+              let rect = CGRect(dictionaryRepresentation: raw as CFDictionary) else { continue }
+        if CGWindowID(number) == bound.windowID { return (rect, coverage(of: rect, above: above), uncoveredRects(of: rect, above: above)) }
+        if (info[kCGWindowAlpha as String] as? Double ?? 1) > 0 { above.append(rect) }
+    }
+    return (nil, 1, [])
+}
+func refreshTargetRects() {
+    guard let bound = withState({ targetBinding }) else { return }
+    let uncovered = targetCover(bound).uncovered
+    withState { if targetBinding?.token == bound.token { targetUncovered = uncovered } }
+}
+// Keeps the cover fresh (a 250 ms timer, and the window's own moved and resized
+// notifications on the main run loop) and watches activations for the target
+// coming forward (design §3). Installed for the binding alive now; a binding
+// released meanwhile installs nothing.
+func startTargetTracking(_ bound: TargetBinding) {
+    let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+    timer.schedule(deadline: .now() + .milliseconds(250), repeating: .milliseconds(250), leeway: .milliseconds(50))
+    timer.setEventHandler { refreshTargetRects() }
+    withState { targetRectTimer = timer }
+    timer.resume()
+    DispatchQueue.main.async {
+        guard withState({ targetBinding?.token == bound.token }) else { return }
+        var observer: AXObserver?
+        if AXObserverCreate(bound.pid, { _, _, _, _ in refreshTargetRects() }, &observer) == .success, let observer {
+            for name in [kAXWindowMovedNotification, kAXWindowResizedNotification] { AXObserverAddNotification(observer, bound.window, name as CFString, nil) }
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        }
+        let activation = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil) { targetActivated($0) }
+        let kept = withState { () -> Bool in
+            guard targetBinding?.token == bound.token else { return false }
+            targetObserver = observer; targetActivationObserver = activation
+            return true
+        }
+        if !kept {
+            if let observer { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode) }
+            NSWorkspace.shared.notificationCenter.removeObserver(activation)
+        }
+    }
+}
+// Releases the bound target and everything that tracked it.
+func releaseTarget() {
+    let released = withState { () -> (DispatchSourceTimer?, AXObserver?, NSObjectProtocol?) in
+        let held = (targetRectTimer, targetObserver, targetActivationObserver)
+        targetBinding = nil; targetUncovered = []; targetHandoff = false; foregroundBeforeTarget = nil
+        targetRectTimer = nil; targetObserver = nil; targetActivationObserver = nil
+        return held
+    }
+    released.0?.cancel()
+    guard released.1 != nil || released.2 != nil else { return }
+    DispatchQueue.main.async {
+        if let observer = released.1 { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode) }
+        if let activation = released.2 { NSWorkspace.shared.notificationCenter.removeObserver(activation) }
+    }
+}
+// The target came to the front (design §3). By the user's hand (their own
+// input within 0.3 s): the run pauses, scoped to the target. During the
+// handoff: expected. Otherwise the application activated itself (Safari on a
+// write, Electron on launch): the application in front before gets the front
+// back at once and the run goes on. Any other activation is remembered as
+// that front.
+func targetActivated(_ notification: Notification) {
+    guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+    let (bound, handoff) = withState { (targetBinding, targetHandoff) }
+    guard let bound else { return }
+    guard app.processIdentifier == bound.pid else {
+        if app.processIdentifier != getppid(), app.bundleIdentifier != "ai.coarena.openassist" { withState { foregroundBeforeTarget = app.processIdentifier } }
+        return
+    }
+    switch targetActivation(lastManualInputAt: lastManualInput(), now: ProcessInfo.processInfo.systemUptime, handoff: handoff) {
+    case .expected: break
+    case .userEntered:
+        if !isStopped() { endContinuousScroll(.input); latch(true); emit(["event": "user_takeover", "source": "target_activated", "scope": TakeoverScope.target.rawValue]) }
+    case .selfActivated:
+        if let previous = withState({ foregroundBeforeTarget }).flatMap({ NSRunningApplication(processIdentifier: $0) }), !previous.isTerminated { previous.activate(options: []) }
+        emit(["event": "target_self_activated", "token": bound.token])
+    }
+}
+// The scope of the user's own input for the tap: today's rule with nothing
+// bound; with a target bound, the hit test against the cached uncovered
+// rectangles and one frontmost compare for a key (no accessibility call here).
+func userTakeoverScope(type: CGEventType, location: CGPoint) -> TakeoverScope? {
+    let (bound, handoff, uncovered) = withState { (targetBinding, targetHandoff, targetUncovered) }
+    let frontmost = bound != nil && type == .keyDown && NSWorkspace.shared.frontmostApplication?.processIdentifier == bound?.pid
+    return takeoverScope(type: type, location: location, bound: bound != nil, handoff: handoff, uncovered: uncovered, targetFrontmost: frontmost)
+}
+
+// The bound window's tree, walked as the frontmost window's is. Only a focused
+// element inside the bound window is the run's: a sibling window's field is not.
+func targetState(_ bound: TargetBinding) -> WindowState {
+    let app = AXUIElementCreateApplication(bound.pid)
+    let focused = attribute(app, kAXFocusedUIElementAttribute).map { $0 as! AXUIElement }
+    let inWindow = focused.flatMap { attribute($0, kAXWindowAttribute) }.map { CFEqual($0, bound.window) } ?? false
+    return windowState(pid: bound.pid, appId: bound.appId, window: bound.window, focused: inWindow ? focused : nil)
+}
+// What the ladder needs to know about the window now.
+func targetFacts(_ bound: TargetBinding) -> TargetFacts {
+    let app = AXUIElementCreateApplication(bound.pid)
+    let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    return TargetFacts(appClass: bound.appClass,
+                       minimized: attribute(bound.window, kAXMinimizedAttribute) as? Bool == true,
+                       onScreen: windowInfo(bound.windowID)?.onScreen == true,
+                       focusedWindow: attribute(app, kAXFocusedWindowAttribute).map { CFEqual($0, bound.window) } ?? false,
+                       siblingWindows: windows.filter { !CFEqual($0, bound.window) && attribute($0, kAXMinimizedAttribute) as? Bool != true }.count)
+}
+// The controls the model is shown for the bound window, centres as fractions
+// of the window, with their elements: the same walk capture uses for the
+// frontmost window, over the window's rectangle instead of the display's. Web
+// content (a browser, Electron) nests its controls deeper than that walk goes.
+func targetControlEntries(_ bound: TargetBinding, state: WindowState, frame: CGRect) -> [ControlEntry] {
+    var entries = groundedControlEntries(state, display: frame)
+    if bound.appClass.web { entries = mergeControls(entries, webControlEntries(bound.window, display: frame), limit: 60) { $0.item } }
+    return entries
+}
+func targetNamedControl(_ action: [String:Any], entries: [ControlEntry]) -> (match: ControlMatch, entry: ControlEntry?, control: NamedControl?) {
+    let controls = entries.map {
+        NamedControl(label: $0.item["label"] as? String ?? "", role: $0.item["role"] as? String ?? "",
+                     x: $0.item["x"] as? Double ?? 0, y: $0.item["y"] as? Double ?? 0, enabled: $0.item["enabled"] as? Bool ?? true)
+    }
+    let match = matchNamedControl(controls, label: action["label"] as? String ?? "", role: action["role"] as? String,
+                                  hintX: action["x"] as? Double, hintY: action["y"] as? Double)
+    if case .matched(let index) = match, controls.indices.contains(index) { return (match, entries[index], controls[index]) }
+    return (match, nil, nil)
+}
+// Whether the element sits in web content (an AXWebArea ancestor), where a
+// Chromium or Electron write can echo without rendering.
+func insideWebArea(_ element: AXUIElement) -> Bool {
+    var node: AXUIElement? = element
+    for _ in 0..<40 {
+        guard let current = node else { return false }
+        if attribute(current, kAXRoleAttribute) as? String == "AXWebArea" { return true }
+        node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+    }
+    return false
+}
+// Whether a window holds web content at all (Mail's message view is WebKit),
+// which stops drawing while fully covered. Bounded like webAreaHost.
+func containsWebArea(_ window: AXUIElement) -> Bool {
+    let started = ProcessInfo.processInfo.systemUptime
+    var queue: [(AXUIElement, Int)] = [(window, 0)], index = 0
+    while index < queue.count && index < 1500 && ProcessInfo.processInfo.systemUptime - started < 0.12 {
+        let (node, depth) = queue[index]; index += 1
+        let role = attribute(node, kAXRoleAttribute) as? String ?? ""
+        if role == "AXWebArea" { return true }
+        guard depth < 12, !["AXToolbar", "AXTabGroup"].contains(role) else { continue }
+        for child in (attribute(node, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(40) { queue.append((child, depth + 1)) }
+    }
+    return false
+}
+// The element of the bound application under a screen point, climbing to the
+// nearest ancestor that offers the action (or the element itself with none
+// asked), provided it belongs to the bound window: a sibling window of the
+// same application overlapping the point is not the target.
+func targetElement(at point: CGPoint, offering action: String?, bound: TargetBinding) -> AXUIElement? {
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(bound.pid), Float(point.x), Float(point.y), &hit) == .success else { return nil }
+    var node = hit
+    for _ in 0..<12 {
+        guard let current = node else { return nil }
+        if ["AXWindow", "AXApplication"].contains(attribute(current, kAXRoleAttribute) as? String ?? "") { return nil }
+        if action.map({ actionNames(current).contains($0) }) ?? true {
+            return attribute(current, kAXWindowAttribute).map { CFEqual($0, bound.window) } == true ? current : nil
+        }
+        node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+    }
+    return nil
+}
+// The scroll area of the bound window under a point, for the accessibility scroll rung.
+func targetScrollArea(at point: CGPoint, bound: TargetBinding) -> AXUIElement? {
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(bound.pid), Float(point.x), Float(point.y), &hit) == .success else { return nil }
+    var node = hit
+    for _ in 0..<20 {
+        guard let current = node else { return nil }
+        if attribute(current, kAXRoleAttribute) as? String == kAXScrollAreaRole {
+            return attribute(current, kAXWindowAttribute).map { CFEqual($0, bound.window) } == true ? current : nil
+        }
+        node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+    }
+    return nil
+}
+// The nearest row a cell or unlabelled control sits in, for selection by accessibility.
+func rowAncestor(_ element: AXUIElement) -> AXUIElement? {
+    var node: AXUIElement? = element
+    for _ in 0..<8 {
+        guard let current = node else { return nil }
+        if attribute(current, kAXRoleAttribute) as? String == kAXRowRole { return current }
+        node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+    }
+    return nil
+}
+// The field a keyboard step goes to (design §2.6): the listed control the model
+// named, else the bound window's focused element when it is a text role. A
+// secure field is refused: the floor hands it to the user.
+func typingField(_ bound: TargetBinding, action: [String:Any], state: WindowState, entries: [ControlEntry]) throws -> AXUIElement? {
+    var field = state.focused
+    if action["type"] as? String == "type_text", action["label"] as? String != nil {
+        let resolution = targetNamedControl(action, entries: entries)
+        guard case .matched = resolution.match, let entry = resolution.entry else { throw ControlError("No control named that is on screen now. Choose one from the context list.", code: "TARGET_MISSING") }
+        field = entry.element
+    }
+    guard let field else { return nil }
+    guard attribute(field, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole else { throw ControlError("Sensitive input is active; capture and input are blocked.", code: "SURFACE_BLOCKED") }
+    return ["AXTextField", "AXTextArea", "AXComboBox"].contains(attribute(field, kAXRoleAttribute) as? String ?? "") ? field : nil
+}
+// A query field that already holds text is replaced, not appended to, as type_text does today.
+func replacesField(_ field: AXUIElement) -> Bool {
+    replacesOnType(role: attribute(field, kAXRoleAttribute) as? String ?? "", subrole: attribute(field, kAXSubroleAttribute) as? String ?? "", label: fieldLabel(field))
+        && !(attribute(field, kAXValueAttribute) as? String ?? "").isEmpty
+}
+// Text goes in by a write, not by keys (design §2.6): an insertion at the
+// caret through the selected text when the field allows it, else the whole
+// value with the text appended; a query field's text is replaced. The
+// expectation is what the read-back must equal.
+func writeText(_ text: String, into field: AXUIElement, replacing: Bool, bound: TargetBinding) throws -> TargetDelivery {
+    let existing = attribute(field, kAXValueAttribute) as? String ?? ""
+    let expected = replacing ? text : existing + text
+    var settable = DarwinBoolean(false)
+    if AXUIElementIsAttributeSettable(field, kAXSelectedTextAttribute as CFString, &settable) == .success, settable.boolValue {
+        var range = replacing ? CFRange(location: 0, length: (existing as NSString).length) : CFRange(location: (existing as NSString).length, length: 0)
+        if let value = AXValueCreate(.cfRange, &range) { try setTargetAttribute(field, kAXSelectedTextRangeAttribute, value, bound: bound) }
+        try setTargetAttribute(field, kAXSelectedTextAttribute, text as CFString, bound: bound)
+        return .wrote(expected)
+    }
+    if AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue {
+        try setTargetAttribute(field, kAXValueAttribute, expected as CFString, bound: bound)
+        return .wrote(expected)
+    }
+    return .none
+}
+/**
+ The one way an event reaches a bound window (design §2.5): re-checks the
+ binding, stamps the routing fields (the target process, the window under the
+ pointer and the one that can handle it), marks the event as ours, records it
+ as held to this pid, and posts it to the process alone. Never the HID tap:
+ nothing here moves the cursor or activates anything. A release is posted even
+ once the latch is on, so nothing stays pressed.
+ */
+func postToTarget(_ bound: TargetBinding, _ event: CGEvent?) throws {
+    guard let event else { throw ControlError("Input event failed.") }
+    if ![.leftMouseUp, .rightMouseUp, .keyUp].contains(event.type) { try ensureRunning() }
+    let running = NSRunningApplication(processIdentifier: bound.pid).flatMap { $0.isTerminated ? nil : runningIdentity($0) }
+    guard targetLive(bound: bound.identity, running: running, windowOwner: windowInfo(bound.windowID)?.owner) else { throw targetGone(bound) }
+    event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(bound.pid))
+    event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(bound.windowID))
+    event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(bound.windowID))
+    event.setIntegerValueField(.eventSourceUserData, value: inputMarker)
+    stateLock.lock()
+    lastInputTime = ProcessInfo.processInfo.systemUptime
+    heldInput.targetPid = bound.pid
+    heldInput.record(type: event.type, location: event.location, keyCode: CGKeyCode(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode)))
+    event.postToPid(bound.pid)
+    stateLock.unlock()
+}
+// A posted click at a screen point (design §2.5): a stamped mouseMoved primer,
+// 12 ms, then down and up 28 ms apart; a double click is two pairs 80 ms
+// apart with the click state counting up; a right click carries the right
+// button's number, without which it lands as nothing.
+func postClick(_ bound: TargetBinding, at point: CGPoint, right: Bool, double: Bool) throws {
+    try postToTarget(bound, CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
+    Thread.sleep(forTimeInterval: 0.012)
+    for count in 1...(double ? 2 : 1) {
+        for (type, release) in [(right ? CGEventType.rightMouseDown : .leftMouseDown, false), (right ? CGEventType.rightMouseUp : .leftMouseUp, true)] {
+            let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: right ? .right : .left)
+            event?.setIntegerValueField(.mouseEventClickState, value: Int64(count))
+            if right { event?.setIntegerValueField(.mouseEventButtonNumber, value: 1) }
+            try postToTarget(bound, event)
+            if !release { Thread.sleep(forTimeInterval: 0.028) }
+        }
+        if double && count == 1 { Thread.sleep(forTimeInterval: 0.08) }
+    }
+}
+func postKey(_ bound: TargetBinding, code: CGKeyCode, flags: CGEventFlags, down: Bool) throws {
+    let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)
+    event?.flags = flags
+    try postToTarget(bound, event)
+}
+// One character as cua posts it: keycode 0 with the Unicode string, no flags.
+func postCharacter(_ bound: TargetBinding, _ character: Character) throws {
+    let utf16 = Array(String(character).utf16)
+    let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
+    down?.flags = []; down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+    try postToTarget(bound, down)
+    let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+    up?.flags = []
+    try postToTarget(bound, up)
+}
+// Rung 1: the route that names the thing, with no event at all.
+func deliverByAccessibility(_ bound: TargetBinding, _ action: [String:Any], control: ControlEntry?, point: CGPoint?, field: AXUIElement?, replacing: Bool, menuRoute: [String]?) throws -> TargetDelivery {
+    switch action["type"] as? String ?? "" {
+    case "click_control":
+        guard let element = control?.element else { return .none }
+        if actionNames(element).contains(kAXPressAction) { try performTargetAction(element, kAXPressAction, bound: bound); return .acted }
+        // A row or cell with no press of its own is chosen by selecting its row.
+        guard let row = rowAncestor(element) else { return .none }
+        try setTargetAttribute(row, kAXSelectedAttribute, kCFBooleanTrue, bound: bound)
+        return .acted
+    case "click":
+        guard let point, let element = targetElement(at: point, offering: kAXPressAction, bound: bound) else { return .none }
+        try performTargetAction(element, kAXPressAction, bound: bound)
+        return .acted
+    case "right_click":
+        guard let point, let element = targetElement(at: point, offering: kAXShowMenuAction, bound: bound) else { return .none }
+        try performTargetAction(element, kAXShowMenuAction, bound: bound)
+        return .acted
+    case "scroll":
+        // The scroll bar's page buttons under the window's scroll area: one page
+        // per area height asked for, bounded.
+        guard let point, let dy = action["delta_y"] as? Int, dy != 0, let area = targetScrollArea(at: point, bound: bound),
+              let bar = attribute(area, kAXVerticalScrollBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return .none }
+        let subrole = dy > 0 ? kAXIncrementPageSubrole : kAXDecrementPageSubrole
+        guard let button = (attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] ?? []).first(where: { attribute($0, kAXSubroleAttribute) as? String == subrole }) else { return .none }
+        let pages = max(1, min(5, Int((Double(abs(dy)) / max(1, Double(elementRect(area)?.height ?? 400))).rounded(.up))))
+        for _ in 0..<pages { try performTargetAction(button, kAXPressAction, bound: bound) }
+        return .acted
+    case "menu_item":
+        guard let path = action["path"] as? [String], path.count >= 2, path.count <= 3,
+              path.allSatisfy({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { throw ControlError("Invalid menu path.") }
+        try pressMenuPath(path, target: bound)
+        return .acted
+    case "hotkey":
+        guard let path = menuRoute, let names = action["keys"] as? [String] else { return .none }
+        try pressMenuPath(path, chord: normalizeChord(names), target: bound)
+        return .acted
+    case "key":
+        // ENTER confirms the focused field when it offers that, else presses the window's default button.
+        guard action["key"] as? String == "ENTER" else { return .none }
+        if let field, actionNames(field).contains(kAXConfirmAction) { try performTargetAction(field, kAXConfirmAction, bound: bound); return .acted }
+        guard let button = attribute(bound.window, kAXDefaultButtonAttribute), CFGetTypeID(button) == AXUIElementGetTypeID() else { return .none }
+        try performTargetAction(button as! AXUIElement, kAXPressAction, bound: bound)
+        return .acted
+    case "type_text":
+        guard let field, let text = action["text"] as? String else { return .none }
+        return try writeText(text, into: field, replacing: replacing, bound: bound)
+    default: return .none
+    }
+}
+// Rung 2: events posted to the bound process at window-relative points, with
+// today's per-character checks for text (stop latch, secure input, focus).
+func deliverByPosting(_ bound: TargetBinding, _ action: [String:Any], point: CGPoint?, field: AXUIElement?, replacing: Bool) throws -> TargetDelivery {
+    let type = action["type"] as? String ?? ""
+    switch type {
+    case "click", "click_control", "double_click", "right_click":
+        guard let point else { return .none }
+        try postClick(bound, at: point, right: action["button"] as? String == "right" || type == "right_click", double: type == "double_click")
+        return .acted
+    case "scroll":
+        guard let point, let dx = action["delta_x"] as? Int, let dy = action["delta_y"] as? Int, abs(dx) <= 1000, abs(dy) <= 1000 else { throw ControlError("Invalid scroll.") }
+        // A background window can keep a stale hit-test location: the primer first.
+        try postToTarget(bound, CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
+        Thread.sleep(forTimeInterval: 0.012)
+        let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: Int32(-dy), wheel2: Int32(-dx), wheel3: 0)
+        wheel?.location = point
+        try postToTarget(bound, wheel)
+        return .acted
+    case "type_text":
+        guard let field, let text = action["text"] as? String else { return .none }
+        // Keys land in the focused element: the field is given focus by
+        // accessibility when it has none, and nothing is posted if that fails.
+        let app = AXUIElementCreateApplication(bound.pid)
+        func focused() -> AXUIElement? { attribute(app, kAXFocusedUIElementAttribute).map { $0 as! AXUIElement } }
+        if !sameElement(field, focused()) {
+            try setTargetAttribute(field, kAXFocusedAttribute, kCFBooleanTrue, bound: bound)
+            guard sameElement(field, focused()) else { return .none }
+        }
+        if replacing, let existing = attribute(field, kAXValueAttribute) as? String {
+            var range = CFRange(location: 0, length: (existing as NSString).length)
+            if let value = AXValueCreate(.cfRange, &range) { try setTargetAttribute(field, kAXSelectedTextRangeAttribute, value, bound: bound) }
+        }
+        for character in text {
+            let focus = focused()
+            switch typingInterruption(secureInput: IsSecureEventInputEnabled(), focusUnchanged: sameElement(field, focus),
+                                      secureField: focus.map { attribute($0, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole } ?? false) {
+            case .surfaceBlocked?: throw ControlError("Sensitive input is active; capture and input are blocked.", code: "SURFACE_BLOCKED")
+            case .focusChanged?: throw changedScreen("The focused field changed while typing.")
+            case nil: break
+            }
+            try postCharacter(bound, character)
+            Thread.sleep(forTimeInterval: 0.008)
+        }
+        return .acted
+    case "key", "hotkey":
+        let names = action["keys"] as? [String] ?? [action["key"] as? String ?? ""]
+        guard names.count <= 4, names.allSatisfy({ keys[$0] != nil }) else { throw ControlError("Unsupported key.") }
+        guard clipboardChordAllowed(names: names, paste: action["paste"] as? Bool == true) else { throw ControlError("Clipboard disabled.") }
+        var flags: CGEventFlags = []
+        for name in names { if name == "CMD" { flags.insert(.maskCommand) }; if name == "CTRL" { flags.insert(.maskControl) }; if name == "ALT" { flags.insert(.maskAlternate) }; if name == "SHIFT" { flags.insert(.maskShift) } }
+        var pressed = [CGKeyCode]()
+        defer { for code in pressed.reversed() { try? postKey(bound, code: code, flags: flags, down: false) } }
+        for name in names { let code = keys[name]!; try postKey(bound, code: code, flags: flags, down: true); pressed.append(code) }
+        return .acted
+    default: return .none
+    }
+}
+// The bound window's image alone: the window filter excludes everything else on
+// the desktop by construction, so a protected window overlapping it never
+// appears, and a minimized or covered window still captures. Bounded to 1440 px
+// wide like the display capture; no cursor.
+@available(macOS 14.0, *)
+func targetCaptureSetup(_ bound: TargetBinding) async throws -> (filter: SCContentFilter, config: SCStreamConfiguration) {
+    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+    guard let window = content.windows.first(where: { $0.windowID == bound.windowID && $0.owningApplication?.processID == bound.pid }) else { throw targetGone(bound) }
+    guard window.frame.width > 40, window.frame.height > 40 else { throw ControlError("The window has no usable bounds.", code: TargetRefusal.gone.rawValue) }
+    let config = SCStreamConfiguration(), ratio = min(2, 1440 / window.frame.width)
+    config.width = Int(window.frame.width * ratio); config.height = Int(window.frame.height * ratio); config.showsCursor = false
+    return (SCContentFilter(desktopIndependentWindow: window), config)
+}
+// One reading of the bound window for the postcondition: its tree's controls
+// hash, the field's value, its window count and its image. A field's value is
+// read only for the field the step acts on, never a secure one (those are
+// refused before).
+@available(macOS 14.0, *)
+func observeTarget(_ bound: TargetBinding, field: AXUIElement?, setup: (filter: SCContentFilter, config: SCStreamConfiguration)) async -> TargetObservation {
+    let state = targetState(bound)
+    let image = try? await SCScreenshotManager.captureImage(contentFilter: setup.filter, configuration: setup.config)
+    return TargetObservation(controls: state.controls, fieldValue: field.map { String(describing: attribute($0, kAXValueAttribute) ?? "" as CFString) },
+                             windowCount: onScreenWindowCount(bound.pid), pixels: image.flatMap { ScreenPixels($0) })
+}
+// The "did it take" step (design §2.7): read 120 ms after the delivery and, if
+// nothing moved, again at 400 ms.
+@available(macOS 14.0, *)
+func readPostcondition(_ bound: TargetBinding, before: TargetObservation, field: AXUIElement?, targetRect: CGRect?, setup: (filter: SCContentFilter, config: SCStreamConfiguration)) async throws -> (read: PostconditionRead, after: TargetObservation) {
+    var after = before, read = PostconditionRead()
+    for delay in [120, 280] {
+        try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
+        after = await observeTarget(bound, field: field, setup: setup)
+        read = postconditionRead(before: before, after: after, targetRect: targetRect)
+        if read.any { break }
+    }
+    return (read, after)
+}
+// The model's context for a bound window (design §2.3): the window's own
+// title, document, text, focused field and menus, and what else is open so
+// the model does not start the task again elsewhere. Never the user's
+// frontmost window, and never a title of theirs.
+func targetContext(_ bound: TargetBinding, state: WindowState, frame: CGRect, facts: TargetFacts, coverage: Double) -> [String:Any] {
+    let title = String((attribute(bound.window, kAXTitleAttribute) as? String ?? "").prefix(300))
+    var result: [String:Any] = ["appName": bound.appName, "windowTitle": title]
+    if let document = attribute(bound.window, "AXDocument") as? String, let url = URL(string: document), url.isFileURL { result["documentName"] = String(url.lastPathComponent.prefix(300)) }
+    var text = windowVisibleText(bound.window)
+    if bound.appClass.web {
+        let page = webVisibleText(bound.window, display: frame)
+        if page.count > text.count { text = String(page.prefix(4200)) }
+    }
+    result["visibleText"] = text
+    var focusedRole = ""
+    if let focused = state.focused {
+        focusedRole = attribute(focused, kAXRoleAttribute) as? String ?? ""
+        // The field an accessibility write would go to: described, never read.
+        if ["AXTextField", "AXTextArea", "AXComboBox"].contains(focusedRole), attribute(focused, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole {
+            result["focusedField"] = ["role": String(focusedRole.dropFirst(2)).lowercased(), "label": fieldLabel(focused)]
+            if let selection = attribute(focused, kAXSelectedTextAttribute) as? String { result["selectedText"] = String(selection.prefix(2000)) }
+        }
+    }
+    result["windowCount"] = min(onScreenWindowCount(bound.pid), 99)
+    let open = openAppLines(openApplications())
+    if !open.isEmpty { result["openApps"] = open }
+    if let level = accessibilityLevel(window: bound.window, focusedRole: focusedRole, hitTarget: false) { result["accessibility"] = level.rawValue }
+    let menus = menuMap(AXUIElementCreateApplication(bound.pid), pid: bound.pid).lines
+    if !menus.isEmpty { result["menus"] = menus }
+    let covered = windowCovered(coverage)
+    result["background"] = ["appName": bound.appName, "title": title, "covered": covered, "minimized": facts.minimized,
+                            "staleRisk": staleRisk(covered: covered, appClass: bound.appClass, webArea: containsWebArea(bound.window))]
+    return result
+}
+/**
+ The observation of a bound run (design §2.3): the window's image alone with
+ its geometry, the window's own tree as controls and text, and how covered it
+ is. The frontmost surface plays no part; the target's own floors do. Two
+ agreeing tree samples around the shot, as capture() waits for, and the window
+ must not have moved under it.
+ */
+@available(macOS 14.0, *)
+func captureTarget(token: String) async throws -> [String:Any] {
+    try ensureRunning()
+    let bound = try liveTarget(token)
+    try guardTarget(bound, typing: false)
+    if screenLocked() { throw ControlError("The screen is locked.", code: "SURFACE_BLOCKED") }
+    let startedAt = ProcessInfo.processInfo.systemUptime
+    var timings = [String:Int](), stageAt = startedAt
+    func mark(_ stage: String) { let now = ProcessInfo.processInfo.systemUptime; timings[stage] = Int(((now - stageAt) * 1000).rounded()); stageAt = now }
+    while true {
+        if inputSettleRemaining() <= 0 { break }
+        try await Task.sleep(nanoseconds: 20_000_000); try ensureRunning()
+    }
+    mark("settle")
+    guard CGPreflightScreenCaptureAccess() else { throw ControlError("Grant Screen Recording permission and restart the app.") }
+    let setup = try await targetCaptureSetup(bound)
+    mark("content")
+    let stableDeadline = ProcessInfo.processInfo.systemUptime + 1.5
+    func settledSample() async throws -> WindowState {
+        var sample = targetState(bound)
+        while ProcessInfo.processInfo.systemUptime < stableDeadline {
+            try await Task.sleep(nanoseconds: 100_000_000); try ensureRunning()
+            let next = targetState(bound)
+            if stableWindow(sample, next) { return next }
+            sample = next
+        }
+        return sample
+    }
+    func attempt() async throws -> (WindowState, CGImage, CGRect)? {
+        let oldWindow = try await settledSample()
+        guard let frame = windowInfo(bound.windowID)?.bounds else { throw targetGone(bound) }
+        let image = try await SCScreenshotManager.captureImage(contentFilter: setup.filter, configuration: setup.config)
+        try ensureRunning()
+        let afterWindow = targetState(bound)
+        return stableWindow(oldWindow, afterWindow) && windowInfo(bound.windowID)?.bounds == frame ? (afterWindow, image, frame) : nil
+    }
+    var captured = try await attempt()
+    for _ in 0..<2 where captured == nil { captured = try await attempt() }
+    guard let (state, image, frame) = captured else { throw changedScreen("The active window changed during capture.") }
+    mark("shot")
+    let encoding = Task { await offThread { NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) } }
+    let facts = targetFacts(bound), cover = targetCover(bound)
+    withState { if targetBinding?.token == bound.token { targetUncovered = cover.uncovered } }
+    var context = targetContext(bound, state: state, frame: frame, facts: facts, coverage: cover.coverage)
+    try ensureRunning()
+    mark("context")
+    var reading: Task<String, Never>?
+    if (context["visibleText"] as? String ?? "").count < 600 {
+        reading = Task { await offThread { recognizeScreenText(image, window: nil, display: frame) } }
+    }
+    context["controls"] = targetControlEntries(bound, state: state, frame: frame).map { $0.item }
+    mark("controls")
+    if let reading { let text = await reading.value; if text.count > 40 { context["screenText"] = text } }
+    mark("ocr")
+    try ensureRunning()
+    guard let png = await encoding.value else { throw ControlError("Screenshot encoding failed.") }
+    mark("encode")
+    timings["total"] = Int(((ProcessInfo.processInfo.systemUptime - startedAt) * 1000).rounded())
+    var geometry = geometry(displayID, width: setup.config.width, height: setup.config.height)
+    geometry["window"] = ["id": Int(bound.windowID), "x": Double(frame.minX), "y": Double(frame.minY), "width": Double(frame.width), "height": Double(frame.height)]
+    geometry["scale_factor"] = Double(setup.config.width) / Double(frame.width)
+    let observation: [String:Any] = ["id": UUID().uuidString.lowercased(), "sha256": SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined(),
+                                     "image": "data:image/png;base64," + png.base64EncodedString(), "geometry": geometry,
+                                     "capturedAt": ProcessInfo.processInfo.systemUptime * 1000, "synthetic": false, "appId": bound.appId, "context": context, "timings": timings]
+    guard let pixels = ScreenPixels(image) else { throw ControlError("Screenshot comparison failed.") }
+    let stale = (context["background"] as? [String:Any])?["staleRisk"] as? Bool ?? false
+    setCurrentFrame(["frame": observation, "pid": Int(bound.pid), "window": state, "pixels": pixels, "token": token, "windowFrame": frame, "facts": facts, "staleRisk": stale])
+    return observation
+}
+/**
+ The target's surface for policy (design §4): the bound application and
+ window's own facts (the page, the focused field, the modal state, the named
+ control, the menu item, the shortcut, the element under a point) and what the
+ runner needs to plan the rungs. The user's frontmost application plays no part.
+ */
+func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [String:Any] {
+    let bound = try liveTarget(token)
+    guard let frame = windowInfo(bound.windowID)?.bounds else { throw targetGone(bound) }
+    let element = AXUIElementCreateApplication(bound.pid)
+    let state = targetState(bound), facts = targetFacts(bound), cover = targetCover(bound)
+    var action = requested
+    var namedControl: (status: String, label: String?)? = nil
+    if requested?["type"] as? String == "click_control", let request = requested {
+        let resolution = targetNamedControl(request, entries: targetControlEntries(bound, state: state, frame: frame))
+        switch resolution.match {
+        case .matched:
+            if let control = resolution.control {
+                action?["x"] = control.x; action?["y"] = control.y
+                namedControl = (control.enabled ? "resolved" : "disabled", control.label)
+            }
+        case .ambiguous: namedControl = ("ambiguous", nil)
+        case .missing: namedControl = ("missing", nil)
+        }
+    }
+    var secure = IsSecureEventInputEnabled(), focusedRole = ""
+    var result: [String:Any] = ["appId": bound.appId, "pid": Int(bound.pid), "appName": bound.appName, "unknown": !AXIsProcessTrusted(), "addressBar": state.addressBar]
+    if let focused = state.focused {
+        focusedRole = attribute(focused, kAXRoleAttribute) as? String ?? ""
+        let subrole = attribute(focused, kAXSubroleAttribute) as? String ?? ""
+        let secureField = subrole == kAXSecureTextFieldSubrole
+        secure = secure || secureField
+        result["focusedRole"] = focusedRole
+        if !subrole.isEmpty { result["focusedSubrole"] = subrole }
+        // Describes the field (e.g. "Search"), never its contents.
+        if !secureField { let label = fieldLabel(focused); if !label.isEmpty { result["focusedLabel"] = label } }
+        if state.addressBar { result["focusedValue"] = String(state.focusedValue.prefix(2000)) }
+        if terminalFocusEvidence(roleDescription: attribute(focused, kAXRoleDescriptionAttribute) as? String ?? "", label: fieldLabel(focused),
+                                 domClasses: attribute(focused, "AXDOMClassList") as? [String] ?? [], ide: ideFamily(bound.appId) != nil) { result["terminalFocus"] = true }
+    }
+    result["secureInput"] = secure
+    if let domain = windowDomain(bound.window) { result["domain"] = domain }
+    if modalContext(window: bound.window, element: state.focused) { result["modal"] = true }
+    if let a = action, let x = a["x"] as? Double, let y = a["y"] as? Double, let point = windowPoint(x: x, y: y, in: frame) {
+        for (key, value) in hitTargetFacts(element, at: point) { result[key] = value }
+    }
+    for (key, value) in commandFacts(element, pid: bound.pid, action: action) { result[key] = value }
+    if let status = namedControl {
+        result["controlStatus"] = status.status
+        if let label = status.label { result["controlLabel"] = utf16Prefix(label, 120) }
+    }
+    if let level = accessibilityLevel(window: bound.window, focusedRole: focusedRole, hitTarget: result["targetRole"] != nil) { result["accessibility"] = level.rawValue }
+    result["windowCount"] = min(onScreenWindowCount(bound.pid), 99)
+    result["target"] = ["bound": true, "covered": windowCovered(cover.coverage), "minimized": facts.minimized, "focusedWindow": facts.focusedWindow, "siblingWindows": facts.siblingWindows]
+    return result
+}
+/**
+ Revalidation for a bound run (design §2.7): the binding is live, a fresh
+ capture shows the same window (its bounds may change: the user may drag it
+ aside, and every point maps through the frame as it is now), a pointer target
+ hit-tests within the bound application to that window and to the control it
+ was aimed at, and a keyboard target is the same focused field. A window fully
+ covered whose picture may be stale refuses a pixel-aimed click: the listed
+ controls are the truth there.
+ */
+@available(macOS 14.0, *)
+func revalidateTarget(token: String, action: [String:Any]) async throws -> [String:Any] {
+    try ensureRunning()
+    let bound = try liveTarget(token)
+    let type = action["type"] as? String ?? ""
+    try guardTarget(bound, typing: ["type_text", "key", "hotkey"].contains(type))
+    guard let saved = getCurrentFrame(), saved["token"] as? String == token, let previous = saved["frame"] as? [String:Any],
+          action["frame_id"] as? String == previous["id"] as? String, let oldWindow = saved["window"] as? WindowState,
+          let oldPixels = saved["pixels"] as? ScreenPixels, let oldFrame = saved["windowFrame"] as? CGRect else { throw changedScreen("The observation is no longer current.") }
+    guard sameWindow(oldWindow, targetState(bound), ignoringBounds: true) else { throw changedScreen("The active window moved or changed.") }
+    let menuRoute = type == "hotkey" ? (action["keys"] as? [String]).flatMap { hotkeyRoute(keys: $0, shortcuts: menuMap(AXUIElementCreateApplication(bound.pid), pid: bound.pid).shortcuts, approved: false, label: nil).menuPath } : nil
+    let named = revalidatesByName(type: type, menuRoute: menuRoute, approved: action["approved"] as? Bool == true)
+    if named, ProcessInfo.processInfo.systemUptime * 1000 - (previous["capturedAt"] as? Double ?? 0) < 20000 { return previous }
+    let fresh = try await captureTarget(token: token)
+    guard let current = getCurrentFrame(), let newWindow = current["window"] as? WindowState, let pixels = current["pixels"] as? ScreenPixels,
+          let newFrame = current["windowFrame"] as? CGRect, let facts = current["facts"] as? TargetFacts, let stale = current["staleRisk"] as? Bool,
+          sameWindow(oldWindow, newWindow, ignoringBounds: true) else { throw changedScreen("The display or window changed.") }
+    if named || type == "scroll" || (type == "key" && action["key"] as? String == "ESC") { return fresh }
+    let keyboard = ["type_text", "key", "hotkey"].contains(type)
+    if keyboard {
+        guard sameElement(oldWindow.focused, newWindow.focused), oldWindow.focusedValue == newWindow.focusedValue, oldWindow.focusedSignature == newWindow.focusedSignature else { throw changedScreen("The focused field changed.") }
+        if let focused = newWindow.focused, elementRect(focused) != nil, ["AXTextField", "AXTextArea", "AXComboBox"].contains(attribute(focused, kAXRoleAttribute) as? String ?? ""), focusedEditingAction(action) { return fresh }
+        if let command = withState({ searchCommand }), searchCommandCurrent(commandPid: command.pid, commandAt: command.at, pid: bound.pid, now: ProcessInfo.processInfo.systemUptime) { return fresh }
+    }
+    guard oldWindow.controls == newWindow.controls else { throw changedScreen("The window's controls changed.") }
+    if keyboard, newWindow.focused != nil { return fresh }
+    // Pointer targets: the point maps through the window's frame now; the
+    // controls' geometry is compared relative to the frame, so a window the
+    // user nudged still matches.
+    guard let x = action["x"] as? Double, let y = action["y"] as? Double else { return fresh }
+    guard let point = windowPoint(x: x, y: y, in: newFrame) else { throw ControlError("Invalid coordinates.") }
+    if stale, facts.onScreen, !facts.minimized {
+        throw ControlError("The window is fully covered, so its picture may be stale; use a listed control instead of a point.", code: TargetRefusal.coveredStale.rawValue)
+    }
+    let relative = { (rect: CGRect, frame: CGRect) in rect.offsetBy(dx: -frame.minX, dy: -frame.minY) }
+    let stable = oldWindow.tracked.filter { old in
+        newWindow.tracked.contains { CFEqual(old.element, $0.element) && relative(old.bounds, oldFrame) == relative($0.bounds, newFrame) && old.signature == $0.signature }
+    }
+    let masks = stable.map { imageRect($0.bounds.insetBy(dx: -6, dy: -6), window: oldFrame, imageWidth: oldPixels.width, imageHeight: oldPixels.height) }
+    let imagePoint = CGPoint(x: x * Double(oldPixels.width), y: y * Double(oldPixels.height))
+    if facts.onScreen, !facts.minimized {
+        guard targetElement(at: point, offering: nil, bound: bound) != nil else { throw changedScreen("Another control covers the input target.") }
+        if let control = stable.filter({ $0.bounds.contains(point) }).min(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }) {
+            guard hitMatches(control.element, at: point, application: AXUIElementCreateApplication(bound.pid)) else { throw changedScreen("Another control covers the input target.") }
+            guard !targetPixelsChanged(oldPixels, pixels, points: [imagePoint], stableControls: masks) else { throw changedScreen("The input target changed.") }
+            return fresh
+        }
+    }
+    let whole = CGRect(x: 0, y: 0, width: oldPixels.width, height: oldPixels.height)
+    guard !oldPixels.changed(comparedTo: pixels, in: whole, target: false, ignoring: masks) else { throw changedScreen("The window content changed.") }
+    guard !framePixelsChanged(oldPixels, pixels, window: whole, points: [imagePoint], stableControls: masks) else { throw changedScreen("The input target changed.") }
+    return fresh
+}
+/**
+ One step in the bound window, down the ladder (design §2.5): accessibility
+ first, then events posted to the process, each followed by the postcondition
+ read of §2.7, whose verdict travels back so the runner decides the next rung.
+ Nothing here activates, raises or moves the cursor; rung 3 is
+ foregroundTarget, only ever after the runner has announced it. A rung with no
+ route here (no pressable element under the point, a key no menu publishes)
+ is passed over without a miss; one that read as no effect is a miss, and two
+ skip it for the rest of the run.
+ */
+@available(macOS 14.0, *)
+func executeTarget(token: String, action: [String:Any], rungs requested: [Rung]) async throws -> [String:Any] {
+    try ensureRunning()
+    let bound = try liveTarget(token)
+    let type = action["type"] as? String ?? ""
+    guard AXIsProcessTrusted() else { throw ControlError("Accessibility permission is required.") }
+    try guardTarget(bound, typing: ["type_text", "key", "hotkey"].contains(type))
+    guard let saved = getCurrentFrame(), saved["token"] as? String == token, let observation = saved["frame"] as? [String:Any],
+          action["frame_id"] as? String == observation["id"] as? String, let savedWindow = saved["window"] as? WindowState else { throw changedScreen("Stale frame.") }
+    guard ProcessInfo.processInfo.systemUptime * 1000 - (observation["capturedAt"] as? Double ?? 0) < 30000 else { throw changedScreen("Frame expired.") }
+    guard sameWindow(savedWindow, targetState(bound), ignoringBounds: true) else { throw changedScreen("The active window changed before input.") }
+    guard let frame = windowInfo(bound.windowID)?.bounds else { throw targetGone(bound) }
+    if type == "type_text" { guard let text = action["text"] as? String, text.count <= 2000 else { throw ControlError("Invalid text.") } }
+    let element = AXUIElementCreateApplication(bound.pid)
+    // A hotkey's route is decided once, by the bound application's own menus.
+    var menuRoute: [String]? = nil
+    if type == "hotkey", let names = action["keys"] as? [String] {
+        let route = hotkeyRoute(keys: names, shortcuts: menuMap(element, pid: bound.pid).shortcuts, approved: action["approved"] as? Bool == true, label: action["shortcutLabel"] as? String)
+        if route == .refused { throw ControlError(menuRefusal, code: "TARGET_REFUSED") }
+        if route == .changed { throw changedScreen("The shortcut's menu item changed.") }
+        menuRoute = route.menuPath
+    }
+    let plan = backgroundRungs(action, requested: requested, facts: targetFacts(bound), menuShortcut: menuRoute != nil,
+                               skipped: withState { targetMisses.skipped(appId: bound.appId, type: type) })
+    guard !plan.rungs.isEmpty else { return targetResult(rung: nil, effect: nil, code: plan.code, read: nil) }
+    let state = targetState(bound)
+    let entries = targetControlEntries(bound, state: state, frame: frame)
+    // What the step acts on: the control it named, the point it gave (the
+    // window's centre for a scroll), the field it types into.
+    var control: ControlEntry? = nil, point: CGPoint? = nil
+    if type == "click_control" {
+        let resolution = targetNamedControl(action, entries: entries)
+        guard case .matched = resolution.match, let entry = resolution.entry, let named = resolution.control else {
+            if case .ambiguous(let count) = resolution.match { throw ControlError("\(count) controls are named that. Name a different control, or add the x and y from the context list.", code: "TARGET_AMBIGUOUS") }
+            throw ControlError("No control named that is on screen now. Choose one from the context list.", code: "TARGET_MISSING")
+        }
+        guard named.enabled else { throw ControlError("That control is disabled.", code: "TARGET_DISABLED") }
+        control = entry; point = windowPoint(x: named.x, y: named.y, in: frame)
+    } else if type == "scroll" { point = CGPoint(x: frame.midX, y: frame.midY) }
+    else if let x = action["x"] as? Double, let y = action["y"] as? Double {
+        guard let mapped = windowPoint(x: x, y: y, in: frame) else { throw ControlError("Invalid coordinates.") }
+        point = mapped
+    }
+    let field = ["type_text", "key"].contains(type) ? try typingField(bound, action: action, state: state, entries: entries) : control?.element
+    let replacing = type == "type_text" && field.map(replacesField) == true
+    let setup = try await targetCaptureSetup(bound)
+    let rect = field.flatMap(elementRect) ?? point.map { CGRect(x: $0.x - 48, y: $0.y - 32, width: 96, height: 64) }
+    let targetRect = rect.map { imageRect($0, window: frame, imageWidth: setup.config.width, imageHeight: setup.config.height) }
+    // The search context follows the step as execute() keeps it: ENTER, TAB and
+    // ESC end it, arrows move it, other keys edit it; a chord no menu publishes
+    // replaces it with the search its item opens, or nothing.
+    switch type {
+    case "key": withState { searchCommand = nextSearchContext(searchCommand, .key(action["key"] as? String ?? "")) }
+    case "hotkey" where menuRoute == nil:
+        if let names = action["keys"] as? [String] { noteCommand(menuMap(element, pid: bound.pid).shortcuts[normalizeChord(names)]?.last, pid: bound.pid, appId: bound.appId) }
+    case "type_text", "menu_item", "hotkey": break
+    default: withState { searchCommand = nil }
+    }
+    let text = action["text"] as? String ?? ""
+    let typedInto = type == "type_text" ? withState { () -> SearchContext? in
+        let before = searchCommand; searchCommand = nextSearchContext(searchCommand, .interrupted(text, replaced: replacing)); return before
+    } : nil
+    var last: (rung: Rung, effect: RungEffect, read: PostconditionRead)? = nil
+    for rung in plan.rungs {
+        try ensureRunning()
+        let before = await observeTarget(bound, field: field, setup: setup)
+        let delivery: TargetDelivery
+        switch rung {
+        case .ax: delivery = try deliverByAccessibility(bound, action, control: control, point: point, field: field, replacing: replacing, menuRoute: menuRoute)
+        case .post: delivery = try deliverByPosting(bound, action, point: point, field: field, replacing: replacing)
+        case .foreground: continue
+        }
+        guard delivery != .none else { continue }
+        let (read, after) = try await readPostcondition(bound, before: before, field: field, targetRect: targetRect, setup: setup)
+        var effect = postconditionVerdict(read)
+        if case .wrote(let expected) = delivery {
+            effect = writeVerdict(readBack: after.fieldValue, expected: expected, echoRisk: bound.appClass.multiprocessWeb && field.map(insideWebArea) == true, fieldPixelsChanged: read.targetPixelsChanged)
+        }
+        if effect == .changed {
+            // Only the same context (not one a pause or another command replaced) learns the finished text.
+            if let before = typedInto { withState { if searchCommand?.pid == before.pid, searchCommand?.at == before.at { searchCommand = nextSearchContext(before, .typed(text, replaced: replacing)) } } }
+            return targetResult(rung: rung, effect: effect, code: nil, read: read)
+        }
+        withState { targetMisses.record(appId: bound.appId, type: type, rung: rung) }
+        last = (rung, effect, read)
+    }
+    guard let last else { return targetResult(rung: nil, effect: nil, code: .unavailable, read: nil) }
+    return targetResult(rung: last.rung, effect: last.effect, code: .noEffect, read: last.read)
+}
+/**
+ Rung 3 (design §2.8), only after the runner has announced it: the application
+ in front is remembered for restoreRemembered, the target is activated and its
+ window raised, and the helper waits up to 700 ms for it to be frontmost.
+ Activation is intent-driven on macOS 14, so it may not take; the result says.
+ The handoff ends with restoreRemembered or restore.
+ */
+func foregroundTarget(token: String) async throws -> [String:Any] {
+    try ensureRunning()
+    let bound = try liveTarget(token)
+    try guardTarget(bound, typing: false)
+    guard let app = NSRunningApplication(processIdentifier: bound.pid) else { throw targetGone(bound) }
+    if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != bound.pid, front.processIdentifier != getppid(), front.bundleIdentifier != "ai.coarena.openassist" {
+        rememberedPID = front.processIdentifier
+    }
+    withState { targetHandoff = true }
+    if app.isHidden { app.unhide() }
+    app.activate(options: [])
+    try performTargetAction(bound.window, kAXRaiseAction, bound: bound)
+    let deadline = ProcessInfo.processInfo.systemUptime + 0.7
+    while NSWorkspace.shared.frontmostApplication?.processIdentifier != bound.pid, ProcessInfo.processInfo.systemUptime < deadline {
+        try await Task.sleep(nanoseconds: 50_000_000); try ensureRunning()
+    }
+    withState { lastInputTime = ProcessInfo.processInfo.systemUptime }
+    return ["frontmost": NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid]
+}
 // MARK: system index
 struct IndexedApp { let name: String; let bundleId: String; let lastUsed: Date?; let useCount: Int? }
 var indexAppsCache: (time: TimeInterval, list: [IndexedApp])?
@@ -2323,6 +3372,7 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
     case "rememberForeground":
         if let app=NSWorkspace.shared.frontmostApplication,app.processIdentifier != getppid(),app.bundleIdentifier != "ai.coarena.openassist" {rememberedPID=app.processIdentifier};return ["remembered":true]
     case "restoreRemembered":
+        endTargetHandoff()
         if let pid=rememberedPID,NSWorkspace.shared.frontmostApplication?.processIdentifier != pid,let app=NSRunningApplication(processIdentifier:pid){app.activate(options:[]);try await Task.sleep(nanoseconds:300_000_000)};return ["restored":true]
     case "displays":var ids = [CGDirectDisplayID](repeating:0,count:16);var count:UInt32 = 0;CGGetActiveDisplayList(16,&ids,&count);return ["displays":ids.prefix(Int(count)).map{id in let b = CGDisplayBounds(id);return ["id":Int(id),"width":Int(b.width),"height":Int(b.height)]}]
     case "resume":guard AXIsProcessTrusted(),CGPreflightScreenCaptureAccess() else {throw ControlError("Grant Screen Recording and Accessibility permissions before starting.")};guard installTap() else {throw ControlError("Emergency stop could not be registered. Input remains disabled.")};latch(false);return ["resumed":true]
@@ -2377,7 +3427,47 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
     case "focusWatch":
         guard let token = command["token"] as? String else { throw ControlError("Missing token.") }
         return try await focusWatch(token: token)
+    // A bound run (background actuation, design §6.1): one window, named by its
+    // token alone. Nothing here takes the screen except foregroundTarget, which
+    // the runner calls only after announcing it.
+    case "bindTarget": return try bindTarget(command)
+    case "captureTarget":
+        guard let token = command["token"] as? String else { throw ControlError("Missing token.") }
+        if #available(macOS 14.0, *) { return try await captureTarget(token: token) }
+        throw ControlError("macOS 14 required.")
+    case "surfaceTarget":
+        guard let token = command["token"] as? String else { throw ControlError("Missing token.") }
+        return try surfaceTarget(token: token, action: command["action"] as? [String:Any])
+    case "revalidateTarget":
+        guard let token = command["token"] as? String, let action = command["action"] as? [String:Any] else { throw ControlError("Missing token or action.") }
+        if #available(macOS 14.0, *) { return try await revalidateTarget(token: token, action: action) }
+        throw ControlError("macOS 14 required.")
+    case "executeTarget":
+        guard let token = command["token"] as? String, var action = command["action"] as? [String:Any] else { throw ControlError("Missing token or action.") }
+        // Waiting and observing send no input and are not bound to a frame; the
+        // frontmost surface plays no part in a bound run, so neither goes through execute.
+        if action["type"] as? String == "wait" {
+            guard let ms = action["milliseconds"] as? Int, ms >= 0, ms <= 5000 else { throw ControlError("Invalid wait.") }
+            for _ in 0..<(ms/10) { try ensureRunning(); try await Task.sleep(nanoseconds: 10_000_000) }
+            return ["executed": true]
+        }
+        if action["type"] as? String == "capture" { return ["executed": true] }
+        try ensureRunning()
+        let rungs = (command["rungs"] as? [String] ?? ["ax", "post"]).compactMap(Rung.init(rawValue:))
+        if #available(macOS 14.0, *) {
+            let fresh = try await revalidateTarget(token: token, action: action)
+            action["frame_id"] = fresh["id"]
+            return try await executeTarget(token: token, action: action, rungs: rungs)
+        }
+        throw ControlError("macOS 14 required.")
+    case "foregroundTarget":
+        guard let token = command["token"] as? String else { throw ControlError("Missing token.") }
+        return try await foregroundTarget(token: token)
+    case "unbindTarget":
+        if let token = command["token"] as? String, withState({ targetBinding?.token == token }) { releaseTarget() }
+        return ["unbound": true]
     case "restore":
+        endTargetHandoff()
         let framePID = getCurrentFrame()?["pid"] as? Int
         let candidate = framePID.flatMap { NSRunningApplication(processIdentifier:pid_t($0)) }
         let target: NSRunningApplication?

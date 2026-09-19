@@ -295,9 +295,11 @@ func hotkeyWiringChecks(_ check: (Bool, String) -> Void) {
         "menuPressRefusal(path: path, chord: chord, item:",
         "AXUIElementPerformAction(item.item, kAXPressAction as CFString)",
     ]), "a menu press is refused before anything opens, must still carry its chord, and is refused unless enabled")
-    check(has(section("func surface(", "\n}"), [
+    check(has(section("func surface(", "\n}"), ["commandFacts(element, pid: app.processIdentifier, action: action)"])
+          && has(section("func surfaceTarget(", "\n}"), ["commandFacts(element, pid: bound.pid, action: action)"])
+          && has(section("func commandFacts(", "\n}"), [
         "publishedShortcutItem(keys: names, shortcuts: shortcuts)", "shortcutMenuLabel(item)", "shortcutStatus(keys: names, shortcuts: shortcuts)",
-    ]), "surface reports the label and the refusal from the same rules execute uses")
+    ]), "surface and surfaceTarget report the label and the refusal from the same rules execute uses")
     check(has(section("func changedScreen(", "\n"), ["change: screenChangeCode(reason)"]) && source.contains("if let change = (error as? ControlError)?.change {result[\"change\"] = change}"),
           "a refusal's kind of change reaches the app as its code")
 }

@@ -256,11 +256,14 @@ func typingInterruption(secureInput: Bool, focusUnchanged: Bool, secureField: Bo
 }
 
 // Synthetic buttons and keys the helper has pressed and not yet released, so
-// every exit path can release them before the process disappears.
+// every exit path can release them before the process disappears. Input posted
+// to a bound process (a background run) is released to that same process;
+// otherwise to the HID stream it went out on.
 struct HeldInput: Equatable {
     var leftButton: CGPoint? = nil
     var rightButton: CGPoint? = nil
     var keys: [CGKeyCode] = []
+    var targetPid: pid_t? = nil
     mutating func record(type: CGEventType, location: CGPoint, keyCode: CGKeyCode) {
         switch type {
         case .leftMouseDown, .leftMouseDragged: leftButton = location

@@ -15,6 +15,9 @@ class LabelledGroup: NSView {
 class Fixture: NSObject, NSApplicationDelegate {
     var window: FixtureWindow!
     var second: NSWindow?
+    // A solid window over the fixture for the background checks: covers its
+    // pixels without taking its field's first responder.
+    var cover: NSWindow?
     let field = NSTextField(string:"Original")
     let other = NSTextField(string:"Other")
     let button = NSButton(title:"Continue",target:nil,action:nil)
@@ -106,6 +109,18 @@ class Fixture: NSObject, NSApplicationDelegate {
         case "changeTail":field.stringValue = String(repeating:"x",count:5000) + "new"
         case "secondWindow":
             second = NSWindow(contentRect:NSRect(x:300,y:300,width:400,height:200),styleMask:[.titled],backing:.buffered,defer:false);second?.title = "Different window";second?.makeKeyAndOrderFront(nil)
+        // Background actuation: the fixture covered by a solid window of its own
+        // (ordered front, never key), sent behind Finder, and brought back.
+        case "cover":
+            let shade = NSWindow(contentRect:window.frame,styleMask:[.borderless],backing:.buffered,defer:false)
+            shade.backgroundColor = NSColor(calibratedWhite:0.5,alpha:1);shade.level = .floating;shade.orderFront(nil);cover = shade
+        case "uncover":cover?.orderOut(nil);cover = nil
+        case "deactivate":NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.apple.finder" }?.activate(options:[])
+        case "reactivate":NSApp.activate(ignoringOtherApps:true);window.makeKeyAndOrderFront(nil)
+        case "clickHere":
+            // One real click at the pointer, as the user's own hand, through the HID tap.
+            let position = CGEvent(source:nil)?.location ?? CGPoint(x:400,y:400)
+            for type in [CGEventType.leftMouseDown, .leftMouseUp] { CGEvent(mouseEventSource:nil,mouseType:type,mouseCursorPosition:position,mouseButton:.left)?.post(tap:.cghidEventTap) }
         case "close":output(["id":request["id"] ?? "","result":[:]]);previous?.activate(options:[]);NSApp.terminate(nil);return
         default:break
         }
@@ -113,7 +128,8 @@ class Fixture: NSObject, NSApplicationDelegate {
         let center = window.convertPoint(toScreen:NSPoint(x:button.frame.midX,y:button.frame.midY))
         let keypadCenter = window.convertPoint(toScreen:NSPoint(x:keypad.frame.midX,y:keypad.frame.midY))
         let trashCenter = window.convertPoint(toScreen:NSPoint(x:trash.frame.midX,y:trash.frame.midY))
-        output(["id":request["id"] ?? "","result":["clicks":clicks,"shortcuts":shortcuts,"keyEvents":keyEvents,"selectionLength":(field.currentEditor() as? NSTextView)?.selectedRange().length ?? 0,"text":field.stringValue,"x":(center.x-bounds.minX)/bounds.width,"y":(bounds.maxY-center.y)/bounds.height,"keypadX":(keypadCenter.x-bounds.minX)/bounds.width,"keypadY":(bounds.maxY-keypadCenter.y)/bounds.height,"trashX":(trashCenter.x-bounds.minX)/bounds.width,"trashY":(bounds.maxY-trashCenter.y)/bounds.height]])
+        let pointer = CGEvent(source:nil)?.location ?? .zero
+        output(["id":request["id"] ?? "","result":["clicks":clicks,"shortcuts":shortcuts,"keyEvents":keyEvents,"selectionLength":(field.currentEditor() as? NSTextView)?.selectedRange().length ?? 0,"text":field.stringValue,"x":(center.x-bounds.minX)/bounds.width,"y":(bounds.maxY-center.y)/bounds.height,"keypadX":(keypadCenter.x-bounds.minX)/bounds.width,"keypadY":(bounds.maxY-keypadCenter.y)/bounds.height,"trashX":(trashCenter.x-bounds.minX)/bounds.width,"trashY":(bounds.maxY-trashCenter.y)/bounds.height,"pointer":[pointer.x,pointer.y],"frontmost":NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""]])
     }
 }
 let application = NSApplication.shared

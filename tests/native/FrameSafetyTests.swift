@@ -32,6 +32,7 @@ import CoreGraphics
         queryFieldChecks(check)
         workspaceChecks(check)
         agendaRulesChecks(check)
+        backgroundInputChecks(check)
         screenChangeChecks(check)
         // Blind surfaces: Spotify (Chromium/CEF) publishes a real window and
         // nothing inside it; a loading window or an empty desktop must not be

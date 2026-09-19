@@ -62,6 +62,11 @@ function request(method) {
   });
 }
 const packaged = process.argv.includes("--packaged");
+// The --background section (design §6.1) binds the fixture's window, covers
+// it and sends it behind Finder, then proves accessibility and posted input
+// reach it while the pointer and the frontmost application never change.
+const background = process.argv.includes("--background");
+const takeovers = [];
 const controller = new NativeController(
   packaged
     ? resolve(localApp(process.cwd()).resources, "coarena-controller")
@@ -69,6 +74,7 @@ const controller = new NativeController(
   () => {},
   () => {},
   (event, data) => {
+    if (event === "NativeUserTakeover") takeovers.push(data);
     if (["NativeUserTakeover", "NativeEmergencyStop"].includes(event))
       console.log(JSON.stringify({ event, ...data }));
   },
@@ -471,7 +477,143 @@ try {
     assert.equal((await request("status")).clicks, 2);
     checks.push(mutation + " blocks stale input");
   }
-  const report = { result: "passed", packaged, checks, skipped };
+  if (background) {
+    console.log(
+      "Checking background actuation: the fixture bound, covered and behind Finder",
+    );
+    await request("focus");
+    await request("cover");
+    await request("deactivate");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const before = await request("status");
+    assert.equal(before.frontmost, "com.apple.finder", "Finder is in front");
+    const bound = await controller.request("bindTarget", { pid: info.pid });
+    assert.equal(bound.pid, info.pid);
+    assert.equal(bound.title, "Butler regression check");
+    const bind = (action, rungs) =>
+      controller.request("executeTarget", {
+        token: bound.token,
+        action,
+        rungs,
+      });
+    let observed = await controller.request("captureTarget", {
+      token: bound.token,
+    });
+    assert.equal(observed.geometry.window.id, bound.windowId);
+    assert.equal(
+      observed.context.background.covered,
+      true,
+      JSON.stringify(observed.context.background),
+    );
+    assert.ok(
+      observed.context.controls.some((control) => control.label === "Continue"),
+      "the bound window's controls are listed",
+    );
+    checks.push(
+      "a covered window behind Finder binds and captures with its own controls",
+    );
+    let result = await bind(
+      { type: "click_control", label: "Continue", frame_id: observed.id },
+      ["ax"],
+    );
+    assert.equal(result.rung, "ax", JSON.stringify(result));
+    assert.equal(result.effect, "changed", JSON.stringify(result));
+    assert.equal((await request("status")).clicks, before.clicks + 1);
+    checks.push("an accessibility press reaches a covered, unfocused window");
+    observed = await controller.request("captureTarget", {
+      token: bound.token,
+    });
+    result = await bind(
+      { type: "type_text", text: " typed", frame_id: observed.id },
+      ["ax"],
+    );
+    assert.equal(result.rung, "ax", JSON.stringify(result));
+    assert.equal(result.effect, "changed", JSON.stringify(result));
+    assert.equal((await request("status")).text, before.text + " typed");
+    checks.push(
+      "an accessibility write reaches the field of a covered, unfocused window and reads back",
+    );
+    // A point aimed at the covered window is refused: the covering window is
+    // what the hit test finds there. Uncovered, the posted click may land.
+    await assert.rejects(
+      bind(
+        {
+          type: "click",
+          x: before.x,
+          y: before.y,
+          button: "left",
+          frame_id: observed.id,
+        },
+        ["post"],
+      ),
+      /covers the input target/,
+    );
+    checks.push("a point under the covering window is refused, not clicked");
+    await request("uncover");
+    observed = await controller.request("captureTarget", {
+      token: bound.token,
+    });
+    assert.equal(observed.context.background.covered, false);
+    result = await bind(
+      {
+        type: "click",
+        x: before.x,
+        y: before.y,
+        button: "left",
+        frame_id: observed.id,
+      },
+      ["post"],
+    );
+    assert.equal(result.rung, "post", JSON.stringify(result));
+    if (result.effect === "changed") {
+      assert.equal((await request("status")).clicks, before.clicks + 2);
+      checks.push(
+        "a click posted to the process reaches an unfocused AppKit window",
+      );
+    } else
+      skipped.push(
+        "a click posted to the fixture's process read as no effect (" +
+          JSON.stringify(result.observed) +
+          "); the ladder hands such a step to the foreground",
+      );
+    const after = await request("status");
+    assert.deepEqual(after.pointer, before.pointer, "the pointer never moved");
+    assert.equal(
+      after.frontmost,
+      before.frontmost,
+      "the frontmost application never changed",
+    );
+    assert.equal(takeovers.length, 0, JSON.stringify(takeovers));
+    checks.push(
+      "background input moved no cursor, changed no focus and paused nothing",
+    );
+    // The user's hand: hovering over the bound window is normal life; a real
+    // click inside it pauses the run.
+    await request("movePointer");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(takeovers.length, 0, "pointer travel is not a takeover");
+    await controller.request("captureTarget", { token: bound.token });
+    checks.push(
+      "pointer travel over the bound window does not pause a background run",
+    );
+    await request("clickHere");
+    for (let i = 0; i < 20 && takeovers.length === 0; i++)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      takeovers.length,
+      1,
+      "a click inside the bound window pauses the run",
+    );
+    await assert.rejects(
+      controller.request("captureTarget", { token: bound.token }),
+      /Native input stopped/,
+    );
+    checks.push("a real click inside the bound window is a takeover");
+    await controller.resume();
+    await controller.request("unbindTarget", { token: bound.token });
+    await request("reactivate");
+  }
+  const report = { result: "passed", packaged, background, checks, skipped };
   mkdirSync("output/qa", { recursive: true });
   writeFileSync(
     "output/qa/native-input-smoke.json",

@@ -22,6 +22,7 @@ const result = spawnSync(
     "native/macos/NamedTargets.swift",
     "native/macos/IdeSafety.swift",
     "native/macos/Workspace.swift",
+    "native/macos/BackgroundInput.swift",
     "-framework",
     "AppKit",
     "-framework",
