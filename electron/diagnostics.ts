@@ -215,6 +215,8 @@ const fields = new Set([
   "pinned",
   "finish",
   "longRunning",
+  // A coding delegation's folder as a hashed code, never its path.
+  "project",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -333,6 +335,7 @@ const codeFields = new Set([
   "questionKind",
   "providerState",
   "answerTier",
+  "project",
 ]);
 /**
  * The early step's own events keep only these keys, whatever else a caller

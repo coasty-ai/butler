@@ -14,6 +14,7 @@ import {
   systemPreferences,
   powerSaveBlocker,
 } from "electron";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
@@ -112,7 +113,11 @@ import {
   pausedLabel,
   type VoiceEvent,
 } from "./voice";
-import { Conversation, type ReplyHandle } from "./conversation";
+import {
+  Conversation,
+  type PlanContext,
+  type ReplyHandle,
+} from "./conversation";
 import { AssistantSession, DIALOG_LIMITS } from "./assistant";
 import {
   dialogEligible,
@@ -188,6 +193,23 @@ import {
   type WakeContext,
   type WatchChain,
 } from "./watch";
+import { CodingDelegate, nodeCodingIo, type CodingEvent } from "./coding";
+import {
+  DEFAULT_CODING_AGENT,
+  codingAgents,
+  type CodingAgentId,
+} from "../src/coding/agents";
+import { codingRequest, type CodingRequest } from "../src/coding/intents";
+import {
+  ackLine,
+  attachHint,
+  folderName,
+  newsLine,
+  statusLine as codingStatusLine,
+  summaryLine,
+} from "../src/coding/lines";
+import { watchState, type Delegation } from "../src/coding/state";
+import { ideFamily } from "../src/core/ide";
 import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
 import {
@@ -901,9 +923,15 @@ function currentRunView() {
     heldByVoice: voiceHoldResumable(),
   });
 }
-/** The fixed status line every channel answers "how's it going?" with. */
+/**
+ * The fixed status line every channel answers "how's it going?" with: the
+ * run's, or, with no run, the coding agent's when one is at work.
+ */
 function statusText() {
-  return statusLine(currentRunView());
+  const delegation = coding.find();
+  return !runActive() && delegation
+    ? codingStatusLine(delegation, Date.now())
+    : statusLine(currentRunView());
 }
 /**
  * The phone remote over the user's own tailnet (docs/REMOTE.md): plain
@@ -1242,6 +1270,284 @@ function hideRelay(id: string, reason: RelayGone) {
     canApprove: false,
   });
 }
+/**
+ * Coding delegation (docs/CODING_AGENTS.md): "ask Claude Code to fix the
+ * failing test in open-assist" hands the words to the CLI in a tmux session
+ * the owner can attach to (or, without tmux, its print mode) and takes no
+ * screen. What the agent asks comes back as a spoken question, and only the
+ * owner's "tell it yes" or "tell it no" answers it: Butler never does.
+ */
+const coding = new CodingDelegate({
+  home: homedir(),
+  io: nodeCodingIo(),
+  env: process.env,
+  onEvent: (e) => codingEvent(e),
+  trace: debug,
+});
+/**
+ * The coding editor in front and its window title, read the way a watch
+ * binds a window (no screenshot, protected apps refused); undefined for
+ * anything that is not a coding editor.
+ */
+async function frontEditor(): Promise<
+  { appId: string; title: string } | undefined
+> {
+  try {
+    const binding = await getNative().bindWatch();
+    void getNative()
+      .unbindWatch(binding.token)
+      .catch(() => {});
+    return ideFamily(binding.appId)
+      ? { appId: binding.appId, title: binding.title }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+/** A delegation as facts for the reporter's cadence: the phone and texts hear it like a watch. */
+function codingFacts(d: Delegation): ProgressFacts {
+  const now = Date.now();
+  const minutes = Math.max(0, Math.floor((now - d.startedAt) / 60000));
+  return {
+    runId: d.id,
+    seq: d.seq,
+    task: d.task,
+    ...(d.origin ? { origin: d.origin } : {}),
+    status: "watching",
+    activeMinutes: minutes,
+    actions: 0,
+    sinceLast: [],
+    apps: [],
+    corrections: [],
+    detail: settings.messagesDetail,
+    watch: {
+      agent: codingAgents[d.agent].name,
+      state: watchState(d.status),
+      minutes,
+      change: Math.max(0, Math.floor((now - d.lastChangeAt) / 60000)),
+    },
+  };
+}
+/**
+ * News from a delegation: spoken for one asked for by voice (a question
+ * urgently, with a window for the answer), shown on the pill with the
+ * question or the attach command, and handed to the reporter for the phone.
+ * The start itself is answered as the turn's own reply (codingTurn).
+ */
+function codingEvent(e: CodingEvent) {
+  const d = e.d;
+  if (e.type !== "ended") reporter.onWatchFacts(codingFacts(d));
+  if (e.type === "started") return;
+  // In print mode the CLI moves on from a question by itself; only the
+  // question, the end and an error are news.
+  if (e.type === "changed" && d.transport === "print" && d.status === "working")
+    return;
+  const asks = d.status === "asks_yes_no" || d.status === "asks_text";
+  const line = newsLine(d, e.type === "ended" ? d.status : e.from);
+  if (d.origin === "voice")
+    conversation.say(
+      { text: line },
+      {
+        kind: "progress",
+        key: `coding:${d.id}:${d.seq}`,
+        priority: asks ? "urgent" : "result",
+        ...(asks ? { listen: conversation.listenWindow("answer") } : {}),
+      },
+    );
+  showWatchPill({
+    phase: asks ? "working" : "done",
+    label: line,
+    transcript: asks && d.question ? d.question : attachHint(d),
+    canApprove: false,
+    synthetic: false,
+    inputLevel: 0,
+  });
+}
+/** Whether speech was heard well enough to type its words into a coding agent. */
+function heardForCoding(
+  fromVoice: boolean,
+  confidence: number,
+  extra: { segments?: number; recovered?: boolean },
+) {
+  return (
+    !fromVoice ||
+    (confidence >= APPROVAL_MIN_CONFIDENCE &&
+      !extra.recovered &&
+      (extra.segments ?? 1) <= 1)
+  );
+}
+/**
+ * A coding request, handled before the router sees the words and answered
+ * as a reply. False when the words are not one, or say "it" with no agent at
+ * work: then they are for the run, as before.
+ */
+async function codingTurn(
+  text: string,
+  fromVoice: boolean,
+  confidence: number,
+  extra: { segments?: number; recovered?: boolean },
+  context: PlanContext,
+): Promise<boolean> {
+  const request = codingRequest(text);
+  if (!request) return false;
+  if ("pronoun" in request && request.pronoun) {
+    const it = coding.find();
+    if (!it) return false;
+    // With a run under way as well, "it" is the run, unless the coding
+    // agent is the one with a question open.
+    if (runActive() && it.status !== "asks_yes_no" && it.status !== "asks_text")
+      return false;
+  }
+  debug("CodingTurn", {
+    kind: request.kind,
+    source: request.agent ? codingAgents[request.agent].short : undefined,
+  });
+  const answer = await codingAction(request, {
+    heard: heardForCoding(fromVoice, confidence, extra),
+    origin: fromVoice ? "voice" : "typed",
+  });
+  const plan: TurnPlan = { kind: "reply", act: "answer", resume: false };
+  const ctx: PlanCtx = {
+    origin: fromVoice ? "voice" : "typed",
+    channel: fromVoice ? "voice" : "app",
+    replyText: answer.line,
+  };
+  const outcome = await executePlan(plan, ctx);
+  if (!outcome.ok) throw new Error(outcome.error);
+  // The attach command, or the summary in full, under the spoken line.
+  if (answer.detail && !listening && !runActive())
+    setPill({ transcript: answer.detail });
+  conversation.acknowledge(plan, {
+    source: context.source,
+    handsFree: settings.handsFree,
+    activationAt: context.activationAt,
+    text: answer.line,
+  });
+  return true;
+}
+function startRefusal(
+  reason: "secret" | "no_binary" | "busy" | "too_many" | "failed",
+  agent: CodingAgentId,
+): string {
+  const name = codingAgents[agent].name;
+  switch (reason) {
+    case "secret":
+      return "Remove credentials from the task first; I never type them into a coding agent.";
+    case "no_binary":
+      return `${name} isn’t installed on this Mac; I looked for its ${codingAgents[agent].binary} command.`;
+    case "busy":
+      return `${name} is still busy in that folder. Wait for it, or tell it something.`;
+    case "too_many":
+      return "I’m already running as many coding sessions as I will at once.";
+    case "failed":
+      return `I couldn’t start ${name}’s session.`;
+  }
+}
+/** What a coding request does, and the line that says so. */
+async function codingAction(
+  r: CodingRequest,
+  o: { heard: boolean; origin: RunOrigin },
+): Promise<{ line: string; detail?: string }> {
+  const current = coding.find("agent" in r ? r.agent : undefined);
+  const name = (agent: CodingAgentId) => codingAgents[agent].name;
+  switch (r.kind) {
+    case "delegate": {
+      const agent = r.agent ?? current?.agent ?? DEFAULT_CODING_AGENT;
+      // The words are typed into a CLI: they need the confidence an approval needs.
+      if (!o.heard)
+        return {
+          line: `I didn’t catch that clearly enough to hand it to ${name(agent)}. Say it again.`,
+        };
+      if (!coding.available(agent))
+        return { line: startRefusal("no_binary", agent) };
+      // A named project when it resolves, with the task minus its name;
+      // otherwise the editor's project with the whole request.
+      let task = r.task;
+      const named = r.place ? coding.resolveProject(r.place.name) : undefined;
+      if (named?.ok) task = r.place!.task;
+      else if (named && named.reason === "refused")
+        return { line: "I don’t point a coding agent at a system folder." };
+      const where = named?.ok
+        ? named
+        : coding.resolveProject(undefined, await frontEditor());
+      if (!where.ok)
+        return {
+          line:
+            where.reason === "refused"
+              ? "I don’t point a coding agent at a system folder."
+              : "Which project? Name its folder, or bring it up in your editor first.",
+        };
+      const started = await coding.start(agent, where.dir, task, o.origin);
+      if (!started.ok) return { line: startRefusal(started.reason, agent) };
+      return { line: ackLine(started.d), detail: attachHint(started.d) };
+    }
+    case "status":
+      return {
+        line: current
+          ? codingStatusLine(current, Date.now())
+          : "No coding agent is running.",
+      };
+    case "summary":
+      return current
+        ? {
+            line: summaryLine(current),
+            ...(current.summary ? { detail: current.summary } : {}),
+          }
+        : { line: "No coding agent has run yet." };
+    case "answer": {
+      if (!current) return { line: "No coding agent is asking anything." };
+      if (!o.heard)
+        return {
+          line: `I didn’t hear that clearly. Tell ${name(current.agent)} yes or no again.`,
+        };
+      const result = await coding.answer(current.id, r.yes);
+      return {
+        line:
+          result === "sent"
+            ? `Told ${name(current.agent)} ${r.yes ? "yes" : "no"}.`
+            : result === "no_question"
+              ? `${name(current.agent)} isn’t asking a yes-or-no question right now.`
+              : result === "cannot"
+                ? `${name(current.agent)} is running in print mode, which takes no yes or no; install tmux to answer its questions.`
+                : `${name(current.agent)}’s session is gone.`,
+      };
+    }
+    case "tell": {
+      if (!current) return { line: "No coding agent is running to tell." };
+      if (!o.heard)
+        return {
+          line: "I didn’t hear that clearly enough to pass it on. Say it again.",
+        };
+      const result = await coding.tell(current.id, r.text);
+      return {
+        line:
+          result === "sent"
+            ? `Passed that on to ${name(current.agent)}.`
+            : result === "queued"
+              ? `I’ll pass that on once ${name(current.agent)} finishes this turn.`
+              : result === "yes_no"
+                ? `${name(current.agent)} is asking yes or no. Tell it yes or tell it no.`
+                : result === "secret"
+                  ? "Remove credentials from that first; I never type them into a coding agent."
+                  : `${name(current.agent)}’s session is gone.`,
+      };
+    }
+    case "interrupt":
+      return {
+        line:
+          current && (await coding.interrupt(current.id))
+            ? `Interrupted ${name(current.agent)}.`
+            : "No coding agent is running.",
+      };
+    case "quit":
+      return {
+        line:
+          current && (await coding.quit(current.id))
+            ? `Ended ${name(current.agent)}’s session in ${folderName(current.dir)}.`
+            : "No coding agent is running.",
+      };
+  }
+}
 /** How an approval answered through a channel is journaled. */
 function approvalSource(channel: Channel): ApprovalSource {
   return channel === "voice"
@@ -1331,10 +1637,14 @@ function getNative() {
         watchPill.clear();
         const watchesStopped = watchers.onEmergencyStop();
         if (!snapshot.run || terminal(snapshot.run.status)) {
-          if (watchesStopped)
+          // With no run, the panic button also interrupts a coding agent.
+          const interrupted = coding.interruptWorking();
+          if (watchesStopped || interrupted)
             setPill({
               phase: "done",
-              label: "Stopped watching.",
+              label: watchesStopped
+                ? "Stopped watching."
+                : "Interrupted the coding agent.",
               transcript: "",
               canApprove: false,
             });
@@ -2340,6 +2650,9 @@ async function planCommand(
   text = z.string().trim().min(1).max(2000).parse(text);
   const context = conversation.planContext(fromVoice);
   const gate = currentGate();
+  // Words for a coding agent ("ask Claude Code to …", "tell it yes") are
+  // its business, not the router's or the model's; they start no run.
+  if (await codingTurn(text, fromVoice, confidence, extra, context)) return;
   // The deterministic plan comes first, exactly as before: control words,
   // approval answers (a "yes" may accept the assistant's open offer),
   // fragments and status questions never reach the model.
@@ -2604,15 +2917,17 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
     }
   }
   switch (plan.kind) {
-    case "stop":
+    case "stop": {
       voiceHeld = false;
       // A stop is for everything the user asked for, queued tasks and
-      // watches included.
+      // watches included; with no run to stop, for the coding agent at work.
       taskQueue.clear();
       stopWatches();
+      const interrupted = runActive() ? 0 : coding.interruptWorking();
       runner?.stop("Stopped.");
-      idleCard("Stopped.");
+      idleCard(interrupted ? "Interrupted the coding agent." : "Stopped.");
       return;
+    }
     case "pause":
       voiceHeld = false;
       runner?.pause();
@@ -4652,6 +4967,7 @@ app.on("before-quit", () => {
   for (const timer of deferredReloads.values()) clearTimeout(timer);
   deferredReloads.clear();
   stopWatches();
+  coding.closeAll();
   runner?.stop();
   flushMemory();
   native?.close();
