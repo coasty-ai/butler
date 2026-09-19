@@ -673,7 +673,7 @@ export class Conversation {
           break;
         case "amendTask":
         case "acknowledge":
-        // "That's all": main closed the window; nothing is said and none opens.
+        // "Thanks": main closed the window; nothing is said and none opens.
         case "endConversation":
           break;
         // The run reports the undo itself, a moment later: "Undone." or

@@ -6,6 +6,7 @@ import {
   momentKey,
   type ConversationSettings,
 } from "../electron/conversation";
+import { CONVERSATION_IDLE_SECONDS } from "../src/voice/turns";
 import {
   createSpeechOutput,
   type SpeakRequest,
@@ -629,7 +630,7 @@ describe("conversation: push-to-talk and hands-free", () => {
     expect(ptt.listens()).toEqual([]);
   });
 
-  it("makes every window as long as the Keep listening setting says, approvals bounded", async () => {
+  it("makes every window as long as the Keep listening setting says, approvals bounded, a conversation's until its inactivity cap", async () => {
     const long = setup({ handsFree: true, followUpWindow: "long" });
     long.voiceStart();
     expect(long.spoken[0]).toMatchObject({
@@ -649,7 +650,7 @@ describe("conversation: push-to-talk and hands-free", () => {
     talk.voiceStart();
     expect(talk.spoken[0].listen).toEqual({
       kind: "continuation",
-      seconds: 45,
+      seconds: CONVERSATION_IDLE_SECONDS,
     });
     talk.render(approval("Open Notes?"));
     expect(talk.spoken.at(-1)?.listen).toEqual({
@@ -658,7 +659,10 @@ describe("conversation: push-to-talk and hands-free", () => {
     });
     talk.play();
     talk.render(snapshot("takeover", { message: "Which account?" }));
-    expect(talk.spoken.at(-1)?.listen).toEqual({ kind: "answer", seconds: 45 });
+    expect(talk.spoken.at(-1)?.listen).toEqual({
+      kind: "answer",
+      seconds: CONVERSATION_IDLE_SECONDS,
+    });
     talk.play();
     // A fragment still waits only the short grace before it is asked about;
     // the question itself then listens the long way.
@@ -668,7 +672,7 @@ describe("conversation: push-to-talk and hands-free", () => {
     await talk.flush();
     expect(talk.spoken.at(-1)).toMatchObject({
       text: "Open what?",
-      listen: { kind: "answer", seconds: 45 },
+      listen: { kind: "answer", seconds: CONVERSATION_IDLE_SECONDS },
     });
     // The closing phrase is acknowledged with nothing: no line, no window.
     const before = {
@@ -690,7 +694,9 @@ describe("conversation: push-to-talk and hands-free", () => {
     });
     quiet.voiceStart("ptt");
     quiet.conversation.acknowledge({ kind: "decline" }, { source: "followup" });
-    expect(quiet.listens()).toEqual([{ kind: "answer", seconds: 45 }]);
+    expect(quiet.listens()).toEqual([
+      { kind: "answer", seconds: CONVERSATION_IDLE_SECONDS },
+    ]);
     const result = setup(
       {
         conversation: "model",
@@ -706,7 +712,7 @@ describe("conversation: push-to-talk and hands-free", () => {
     );
     expect(result.spoken.at(-1)).toMatchObject({
       text: "Spotify is open.",
-      listen: { kind: "answer", seconds: 45 },
+      listen: { kind: "answer", seconds: CONVERSATION_IDLE_SECONDS },
     });
   });
 

@@ -783,8 +783,8 @@ export type TurnPlan =
   | { kind: "nothingRunning" }
   | { kind: "stillWorking" }
   | { kind: "acknowledge" }
-  // "That's all", "stop listening", "goodbye", "thanks Butler" under the
-  // conversation setting: the open window closes and nothing else happens.
+  // "Thanks", "that's all", "goodbye", "stop listening" under the conversation
+  // setting: the open window closes and nothing else happens.
   | { kind: "endConversation" }
   // `words`: the user's own words when they named no task of their own
   // ("do that", "go for it"); the dialog model may still resolve them to
@@ -949,26 +949,51 @@ const WAKE_ONLY =
   /^(?:(?:hay|hi|hei|his|a)\s+)?(?:butler|buttler|butlar|budler|butla|batala)$/;
 /**
  * What ends a conversation-mode window without acting (native endsConversation,
- * TurnPolicy.swift; the "endConversation" fixture pins both): "that's all",
- * "that'll be all", "that's it", "goodbye", "bye", "good night", "stop
- * listening", each with the name or "for now" allowed after it, or "thanks"
- * followed by the name. A bare "thanks" stays a back-channel word.
+ * TurnPolicy.swift; the "endConversation" and "keepsConversation" fixtures pin
+ * both): "thanks" on its own (isThanks), or "that's all", "that'll be all",
+ * "that's it", "goodbye", "bye", "good night", "stop listening", each with a
+ * thanks before it and the name or "for now" after it allowed. Never a longer
+ * command that happens to hold one ("thanks, now open Notes", "write thank
+ * you in the note").
  */
 const CONVERSATION_CLOSER = String.raw`(?:(?:thats|that is|thatll be|that will be) (?:all|it)|good ?bye|bye(?: bye)?|good ?night|(?:you can )?stop listening)(?: for now| now)?`;
-const CONVERSATION_THANKS = "(?:thanks|thank you)";
+const CONVERSATION_THANKS =
+  "(?:thanks(?: a lot| so much| very much)?|thank you(?: so much| very much)?)";
 const CONVERSATION_END = new RegExp(
-  `^(?:${CONVERSATION_THANKS} (?:${WAKE_NAME} )?)?${CONVERSATION_CLOSER}(?: ${WAKE_NAME})?$|^${CONVERSATION_THANKS} ${WAKE_NAME}$`,
+  `^(?:${CONVERSATION_THANKS} (?:${WAKE_NAME} )?)?${CONVERSATION_CLOSER}(?: ${WAKE_NAME})?$`,
 );
+const THANKS_ONLY = new RegExp(`^${CONVERSATION_THANKS}(?: ${WAKE_NAME})?$`);
+/**
+ * "Thanks", "thank you", "thanks a lot", with or without the name, and nothing
+ * else: the closing phrase, and the acknowledgement it always was while a
+ * question is open.
+ */
+export function isThanks(text: string): boolean {
+  const { base, key } = keyParts(text);
+  // Stripped as a trailing courtesy, a bare "thanks" (or "okay, thank you")
+  // leaves no key.
+  if (!key.length) return base.some((w) => w === "thanks" || w === "thank");
+  return THANKS_ONLY.test(key.join(" "));
+}
 export function endsConversation(text: string): boolean {
-  return CONVERSATION_END.test(intentKey(text));
+  return isThanks(text) || CONVERSATION_END.test(intentKey(text));
 }
 
 export type FollowUpWindow = "short" | "long" | "conversation";
 /**
+ * The one timer on a conversation-mode window (native conversationIdleSeconds,
+ * TurnPolicy.swift). The window has no deadline of its own: after "Hey Butler"
+ * and after every reply it stays open until a closing phrase. Every turn and
+ * every reply reopens it, so after this long with nothing addressed to Butler
+ * it closes silently and the wake phrase is needed again, which is why an
+ * empty room cannot keep issuing commands.
+ */
+export const CONVERSATION_IDLE_SECONDS = 15 * 60;
+/**
  * How long a follow-up window stays open, by kind and the "Keep listening"
  * setting (native followUpSeconds, TurnPolicy.swift). Continuation and answer
- * windows grow with the setting; an approval window stays bounded, since a
- * "yes" inside it acts.
+ * windows grow with the setting, up to the conversation window's inactivity
+ * cap; an approval window stays bounded, since a "yes" inside it acts.
  */
 export function followUpSeconds(
   kind: FollowUpKind,
@@ -978,7 +1003,7 @@ export function followUpSeconds(
   if (kind === "scroll") return 95;
   if (window === "short") return kind === "continuation" ? 3 : 8;
   if (kind === "approval") return 12;
-  return window === "long" ? 20 : 45;
+  return window === "long" ? 20 : CONVERSATION_IDLE_SECONDS;
 }
 
 export function isWakePhraseOnly(text: string): boolean {
@@ -1159,19 +1184,23 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
   const remote = isRemoteSource(source);
   // "Hey Butler" alone never becomes a task, correction or answer.
   if (!typed && isWakePhraseOnly(text)) return { kind: "acknowledge" };
-  // Under the conversation setting, "that's all" closes the window that would
-  // otherwise reopen after every reply; it runs, resumes and approves nothing.
+  const run =
+    input.run && !TERMINAL.has(input.run.status) ? input.run : undefined;
+  const pending =
+    !!run && run.status === "confirming" && run.pendingReason !== undefined;
+  // Under the conversation setting, "thanks" or "that's all" closes the window
+  // that would otherwise reopen after every reply; it runs, resumes and
+  // approves nothing. A bare thanks while a question is open is the
+  // acknowledgement it always was: the question is asked again and stays.
   if (
     !typed &&
     input.followUpWindow === "conversation" &&
     endsConversation(text)
   )
-    return { kind: "endConversation" };
+    return pending && isThanks(text)
+      ? { kind: "confirmAgain" }
+      : { kind: "endConversation" };
   const intent = voiceIntent(text);
-  const run =
-    input.run && !TERMINAL.has(input.run.status) ? input.run : undefined;
-  const pending =
-    !!run && run.status === "confirming" && run.pendingReason !== undefined;
   // 1. Control intents are never merged; stop and pause always win.
   if (intent.kind === "stop") return { kind: "stop" };
   if (intent.kind === "pause") return { kind: "pause" };

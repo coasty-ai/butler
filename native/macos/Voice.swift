@@ -375,14 +375,17 @@ func completeTurn(_ how: TurnCompletion) {
         // Never routes by itself: Electron asks the user to confirm it.
         output(["event": "transcript_unconfirmed", "text": text, "source": "deadline_hypothesis", "segments": segments])
     }
-    if accepted && handsFree { acceptHandsFreeTurn(text) } else { scheduleStandby() }
+    if handsFree { endHandsFreeTurn(text, accepted: accepted) } else { scheduleStandby() }
 }
-// Pop, then a continuation window as long as the Keep listening setting makes it catches
-// "...and search" without the wake phrase. The phrase that ends a conversation-mode window
-// ("that's all") opens none; Electron acts on nothing for it either.
-func acceptHandsFreeTurn(_ text: String) {
-    playEarcon("Pop")
-    guard handsFreeEnabled, followUpEnabled, !(followUpWindow == .conversation && endsConversation(text)) else { scheduleStandby(); return }
+// Pop for a turn that was heard, then a continuation window as long as the Keep listening
+// setting makes it catches "...and search" without the wake phrase. Under the conversation
+// setting the window reopens after every turn, heard or not ("Hey Butler" alone opens it, and
+// one missed word does not end the conversation); the phrase that ends it ("thanks") opens
+// none, and Electron acts on nothing for it either.
+func endHandsFreeTurn(_ text: String, accepted: Bool) {
+    if accepted { playEarcon("Pop") }
+    let reopens = followUpWindow == .conversation ? !(accepted && endsConversation(text)) : accepted
+    guard handsFreeEnabled, followUpEnabled, reopens else { scheduleStandby(); return }
     cancelPendingWindow("cancel")
     let work = DispatchWorkItem {
         pendingWindow = nil
@@ -1213,8 +1216,8 @@ func handle(_ command: [String: Any]) {
                 }
                 if followUpExpired(now: now, deadline: windowDeadline, lastSpeech: lastSpeechAt) {
                     clearSpeech(windowReason: "timeout"); scheduleStandby(0.1)
-                } else if windowKind == .scroll && scrollWindowRotationDue(now: now, rotatedAt: rotatedAt, lastSpeech: lastSpeechAt) {
-                    // A scroll's long window outlives one request: continue in a fresh one.
+                } else if windowRotationDue(now: now, rotatedAt: rotatedAt, lastSpeech: lastSpeechAt) {
+                    // A scroll's or a conversation's window outlives one request: continue in a fresh one.
                     rotateRequest(reason: "cadence", preRoll: true)
                 }
             case .handsFree:

@@ -32,7 +32,7 @@ const expectedDefaults = {
   voiceRate: 1,
   listeningPatience: "normal",
   followUpListening: true,
-  followUpWindow: "short",
+  followUpWindow: "conversation",
   voiceSounds: true,
 } satisfies Pick<Settings, (typeof voiceKeys)[number]>;
 
@@ -209,26 +209,44 @@ describe("voice settings", () => {
       expect(parses({ followUpWindow })).toBe(false);
   });
 
-  it("keeps a config saved before Keep listening on the short windows", () => {
+  it("listens in conversation mode by default, and keeps a saved Briefly or Longer", () => {
+    // "Hey Butler activates the listening and the listening does not stop
+    // until thanks" (the owner): a config without the setting takes it.
+    expect(defaultSettings.followUpWindow).toBe("conversation");
     const { followUpWindow: _w, ...older } = structuredClone(defaultSettings);
-    expect(settingsSchema.parse(older).followUpWindow).toBe("short");
+    expect(settingsSchema.parse(older).followUpWindow).toBe("conversation");
+    // Nothing migrates: a choice already made stays as chosen.
+    for (const followUpWindow of ["short", "long", "conversation"] as const)
+      expect(
+        settingsSchema.parse({ ...older, followUpWindow }).followUpWindow,
+      ).toBe(followUpWindow);
   });
 
   it("says what each Keep listening choice does, honestly about the room", () => {
     expect(followUpWindowHint("short")).toMatch(/3 s.*8 s/);
     expect(followUpWindowHint("long")).toMatch(/20 s.*12 s for a yes or no/);
     const talk = followUpWindowHint("conversation");
-    expect(talk).toContain(
-      "Keeps listening for 45 s after each exchange, so you can keep talking without the wake phrase; anything anyone says in the room in that time is taken as addressed to Butler.",
+    expect(talk).toMatch(
+      /^After “Hey Butler”, Butler keeps listening for you until you say “thanks”/,
     );
-    for (const phrase of [
-      "that’s all",
-      "stop listening",
-      "goodbye",
-      "thanks Butler",
-    ])
+    expect(talk).toContain(
+      "anything anyone says in the room until then is taken as addressed to Butler.",
+    );
+    expect(talk).toContain(
+      "It stops by itself after 15 minutes of silence, when the Mac sleeps or locks, or while a password field has the keyboard.",
+    );
+    for (const phrase of ["thanks", "that’s all", "goodbye", "stop listening"])
       expect(talk).toContain(`“${phrase}”`);
+    expect(talk).not.toMatch(/45 s/);
     expect(talk).toMatch(/yes or no is still only heard for 12 s/);
+    // The picker's own words match.
+    const ui = readFileSync(
+      new URL("../src/ui/main.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(ui).toMatch(
+      /<option value="conversation">\s*Conversation, until I say “thanks”\s*<\/option>/,
+    );
     // Without follow-up listening the picker changes nothing, and says so.
     for (const window of ["short", "long", "conversation"] as const)
       expect(followUpWindowHint(window, false)).toMatch(

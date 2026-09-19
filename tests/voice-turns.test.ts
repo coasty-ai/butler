@@ -9,10 +9,12 @@ import {
 } from "../src/core/schema";
 import {
   askWhatToDo,
+  CONVERSATION_IDLE_SECONDS,
   deicticTask,
   dropsCurrentTask,
   endsConversation,
   followUpSeconds,
+  isThanks,
   isWakePhraseOnly,
   cleanTaskText,
   clarifyFragment,
@@ -360,20 +362,52 @@ describe("intent normalization", () => {
 
   it("ends a conversation on exactly the closing fixtures (native parity)", () => {
     expect(fixture.endConversation.length).toBeGreaterThan(0);
+    expect(fixture.keepsConversation.length).toBeGreaterThan(0);
     for (const text of fixture.endConversation) {
       expect([text, endsConversation(text)]).toEqual([text, true]);
       expect(isControlPhrase(text)).toBe(false);
     }
-    // Every routed intent keeps talking: a bare "thanks" is an acknowledgement,
-    // "say goodbye to Dana" and "stop listening to the podcast" are commands.
+    // A closer inside a longer command is an ordinary word: "thanks, now open
+    // Notes" continues and "write thank you in the note" is a dictation.
+    for (const text of fixture.keepsConversation) {
+      expect([text, endsConversation(text)]).toEqual([text, false]);
+      expect(isThanks(text)).toBe(false);
+    }
+    // Every routed intent keeps talking ("say goodbye to Dana" and "stop
+    // listening to the podcast" are commands), except the bare "thanks" that
+    // acknowledges in every other mode.
     for (const kind of intents)
       for (const text of fixture[kind])
-        expect([text, endsConversation(text)]).toEqual([text, false]);
-    for (const text of ["thanks Butler open notes", "that's all wrong", ""])
-      expect(endsConversation(text)).toBe(false);
+        expect([text, endsConversation(text)]).toEqual([
+          text,
+          kind === "acknowledge" && isThanks(text),
+        ]);
+    expect(fixture.acknowledge.some((text) => isThanks(text))).toBe(true);
+    // The thanks alone is told from the other closers.
+    for (const text of [
+      "thanks",
+      "Thank you.",
+      "okay thanks",
+      "thanks a lot",
+      "thank you Butler",
+      "Thanks, Butler.",
+    ])
+      expect([text, isThanks(text)]).toEqual([text, true]);
+    for (const text of [
+      "that's all",
+      "goodbye",
+      "thanks that's all",
+      "bye thanks",
+    ])
+      expect([text, isThanks(text), endsConversation(text)]).toEqual([
+        text,
+        false,
+        true,
+      ]);
   });
 
-  it("makes follow-up windows as long as the setting says, approvals bounded", () => {
+  it("makes follow-up windows as long as the setting says, approvals bounded, a conversation's until its inactivity cap", () => {
+    expect(CONVERSATION_IDLE_SECONDS).toBe(15 * 60);
     expect(
       (["continuation", "answer", "approval"] as const).map((kind) => [
         followUpSeconds(kind),
@@ -382,8 +416,8 @@ describe("intent normalization", () => {
         followUpSeconds(kind, "conversation"),
       ]),
     ).toEqual([
-      [3, 3, 20, 45],
-      [8, 8, 20, 45],
+      [3, 3, 20, CONVERSATION_IDLE_SECONDS],
+      [8, 8, 20, CONVERSATION_IDLE_SECONDS],
       [8, 8, 12, 12],
     ]);
   });
@@ -782,7 +816,6 @@ describe("turn planning", () => {
       for (const state of [
         undefined,
         run(),
-        approval("Open Notes?"),
         run({ status: "paused", held: true, stalled: true }),
       ])
         expect(
@@ -794,6 +827,22 @@ describe("turn planning", () => {
             run: state,
           }),
         ).toEqual({ kind: "endConversation" });
+      // With an approval pending a bare thanks is the acknowledgement it
+      // always was: the question is asked again and stays open. The other
+      // closers close the window; the question stays on the pill, unanswered.
+      expect([
+        text,
+        plan({
+          ...talk,
+          text,
+          source: "followup",
+          window: "approval",
+          run: approval("Open Notes?"),
+        }),
+      ]).toEqual([
+        text,
+        { kind: isThanks(text) ? "confirmAgain" : "endConversation" },
+      ]);
       expect(plan({ ...talk, text, source: "wake" })).toEqual({
         kind: "endConversation",
       });
@@ -818,19 +867,54 @@ describe("turn planning", () => {
           plan({ followUpWindow, text, source: "followup" }).kind,
         ).not.toBe("endConversation");
     }
-    // Stop, pause and a bare thanks are untouched by the setting.
+    // A closer inside a longer command is an ordinary word.
+    for (const text of fixture.keepsConversation)
+      expect([
+        text,
+        plan({ ...talk, text, source: "followup" }).kind,
+      ]).not.toEqual([text, "endConversation"]);
+    expect(plan({ ...talk, text: "thanks, now open Notes" })).toEqual({
+      kind: "start",
+      text: "thanks, now open Notes",
+      taskSource: "user_words",
+    });
+    expect(plan({ ...talk, text: "write thank you in the note" })).toEqual({
+      kind: "start",
+      text: "write thank you in the note",
+      taskSource: "user_words",
+    });
+    // Stop and pause are untouched by the setting.
     expect(plan({ ...talk, text: "stop", run: run() })).toEqual({
       kind: "stop",
     });
     expect(plan({ ...talk, text: "wait", run: run() })).toEqual({
       kind: "pause",
     });
-    expect(plan({ ...talk, text: "thanks" })).toEqual({ kind: "acknowledge" });
     expect(plan({ ...talk, text: "say goodbye to Dana" })).toEqual({
       kind: "start",
       text: "say goodbye to Dana",
       taskSource: "user_words",
     });
+    // A bare thanks closes only under the conversation setting and only with
+    // nothing pending; everywhere else it is the acknowledgement it was.
+    for (const text of ["thanks", "thank you", "okay, thanks"]) {
+      expect(plan({ ...talk, text, source: "followup" })).toEqual({
+        kind: "endConversation",
+      });
+      expect(plan({ ...talk, text, source: "wake", run: run() })).toEqual({
+        kind: "endConversation",
+      });
+      expect(
+        plan({ ...talk, text, source: "followup", run: approval() }),
+      ).toEqual({ kind: "confirmAgain" });
+      for (const followUpWindow of ["short", "long", undefined] as const)
+        expect(plan({ followUpWindow, text, source: "followup" })).toEqual({
+          kind: "acknowledge",
+        });
+      expect(plan({ ...talk, text, source: "text" })).toEqual({
+        kind: "acknowledge",
+      });
+    }
   });
 
   it("lets stop and pause win everywhere, including a continuation window", () => {

@@ -414,9 +414,17 @@ private let followUpStarters: Set<String> = ["and", "also", "oh", "actually", "w
 private let scrollStarters: Set<String> = ["stop", "scroll", "scrolling", "faster", "quicker", "slower", "slowly", "slow",
     "speed", "keep", "continue", "quit", "cancel", "end", "enough", "wait", "hold", "hang", "pause", "resume"]
 
+// A conversation-mode window has no deadline of its own: after "Hey Butler" and after every
+// reply it stays open until a closing phrase. The one timer on it is this inactivity cap,
+// renewed by every turn and every reply (each reopens the window): after this long with
+// nothing addressed to Butler it closes silently and the wake phrase is needed again, so an
+// empty room cannot keep issuing commands. Mirrors CONVERSATION_IDLE_SECONDS in src/voice/turns.ts.
+let conversationIdleSeconds = 15.0 * 60
+
 // Continuation and answer windows grow with the setting (mirrors followUpSeconds in
 // src/voice/turns.ts); an approval window stays bounded, since a "yes" inside it acts; a
-// scroll window is as long as the controller's lease whatever the setting.
+// scroll window is as long as the controller's lease whatever the setting; a conversation
+// window lasts until its inactivity cap.
 func followUpSeconds(_ kind: FollowUpKind, window: FollowUpWindow = .short) -> Double {
     switch (window, kind) {
     case (_, .scroll): return 95.0
@@ -424,7 +432,7 @@ func followUpSeconds(_ kind: FollowUpKind, window: FollowUpWindow = .short) -> D
     case (.short, .answer), (.short, .approval): return 8.0
     case (.long, .continuation), (.long, .answer): return 20.0
     case (.long, .approval), (.conversation, .approval): return 12.0
-    case (.conversation, .continuation), (.conversation, .answer): return 45.0
+    case (.conversation, .continuation), (.conversation, .answer): return conversationIdleSeconds
     }
 }
 
@@ -433,7 +441,7 @@ func followUpCapSeconds(_ window: FollowUpWindow) -> Double {
     switch window {
     case .short: return 15
     case .long: return 20
-    case .conversation: return 45
+    case .conversation: return conversationIdleSeconds
     }
 }
 
@@ -455,12 +463,13 @@ func turnContext(for kind: FollowUpKind) -> TurnContext {
     }
 }
 
-// A scroll window outlives one recognition request (standby recycles at 45 s for the same
-// reason): after this long without speech under way, the window continues in a fresh request
-// that first hears the ring's last moments, so a word at the seam is not lost.
-let scrollWindowRotateSeconds = 40.0
-func scrollWindowRotationDue(now: TimeInterval, rotatedAt: TimeInterval, lastSpeech: TimeInterval) -> Bool {
-    now - rotatedAt + 1e-6 >= scrollWindowRotateSeconds && now - lastSpeech >= 1.0
+// A long window (a scroll's 95 s, a conversation's) outlives one recognition request (standby
+// recycles at 45 s for the same reason): after this long without speech under way, the window
+// continues in a fresh request that first hears the ring's last moments, so a word at the seam
+// is not lost. A window under the short or long setting closes before this comes due.
+let windowRotateSeconds = 40.0
+func windowRotationDue(now: TimeInterval, rotatedAt: TimeInterval, lastSpeech: TimeInterval) -> Bool {
+    now - rotatedAt + 1e-6 >= windowRotateSeconds && now - lastSpeech >= 1.0
 }
 
 // Speech that turns an open window into a turn. A continuation must sound like one
@@ -485,17 +494,27 @@ func followUpOnset(text: String, speechRun: Double, kind: FollowUpKind, window: 
 }
 
 // What ends a conversation-mode window without acting (mirrors endsConversation in
-// src/voice/turns.ts; tests/fixtures/voice-phrases.json "endConversation" pins both):
-// "that's all", "that'll be all", "that's it", "goodbye", "bye", "good night", "stop
-// listening", each with the name or "for now" allowed after it, or "thanks" followed by the
-// name. A bare "thanks" stays a back-channel word.
+// src/voice/turns.ts; tests/fixtures/voice-phrases.json "endConversation" and
+// "keepsConversation" pin both): "thanks" on its own (isThanks), or "that's all", "that'll be
+// all", "that's it", "goodbye", "bye", "good night", "stop listening", each with a thanks
+// before it and the name or "for now" after it allowed. Never a longer command that happens
+// to hold one ("thanks, now open Notes", "write thank you in the note").
 private let conversationCloser = "(?:(?:thats|that is|thatll be|that will be) (?:all|it)|good ?bye|bye(?: bye)?|good ?night|(?:you can )?stop listening)(?: for now| now)?"
-private let conversationThanks = "(?:thanks|thank you)"
+private let conversationThanks = "(?:thanks(?: a lot| so much| very much)?|thank you(?: so much| very much)?)"
 private let conversationEnd = try! NSRegularExpression(
-    pattern: "^(?:\(conversationThanks) (?:\(wakeNamePattern) )?)?\(conversationCloser)(?: \(wakeNamePattern))?$|^\(conversationThanks) \(wakeNamePattern)$")
+    pattern: "^(?:\(conversationThanks) (?:\(wakeNamePattern) )?)?\(conversationCloser)(?: \(wakeNamePattern))?$")
+private let thanksOnly = try! NSRegularExpression(pattern: "^\(conversationThanks)(?: \(wakeNamePattern))?$")
+// "Thanks", "thank you", "thanks a lot", with or without the name, and nothing else: the
+// closing phrase, and the acknowledgement it always was while a question is open.
+func isThanks(_ text: String) -> Bool {
+    let key = normalizeVoiceKey(text)
+    // Stripped as a trailing courtesy, a bare "thanks" (or "okay, thank you") leaves no key.
+    if key.isEmpty { return voiceKeyBase(text).contains { $0 == "thanks" || $0 == "thank" } }
+    return thanksOnly.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil
+}
 func endsConversation(_ text: String) -> Bool {
     let key = normalizeVoiceKey(text)
-    return conversationEnd.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil
+    return isThanks(text) || conversationEnd.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil
 }
 
 // A window closes at its deadline, unless speech energy is still arriving (the user

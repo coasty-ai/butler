@@ -331,13 +331,17 @@ export const settingsSchema = z
     followUpListening: z.boolean().default(true),
     /**
      * How long those windows stay open (src/voice/turns.ts followUpSeconds).
-     * "short": 3 s to add to a request, 8 s for an answer or a yes.
-     * "long": 20 s / 20 s / 12 s. "conversation": 45 s after every exchange,
-     * reopened after each reply, until "that's all", "stop listening",
-     * "goodbye" or "thanks Butler"; anything said in the room meanwhile is
-     * taken as addressed to Butler. Approvals stay bounded in every mode.
+     * "conversation" (the default): after "Hey Butler" and after every reply
+     * the window stays open until "thanks", "that's all", "goodbye" or "stop
+     * listening", with no timer but a 15-minute cap on silence; anything said
+     * in the room meanwhile is taken as addressed to Butler. "short": 3 s to
+     * add to a request, 8 s for an answer or a yes. "long": 20 s / 20 s /
+     * 12 s. Approvals stay bounded in every mode. A saved "short" or "long"
+     * stays as chosen; only a config without the field takes the default.
      */
-    followUpWindow: z.enum(["short", "long", "conversation"]).default("short"),
+    followUpWindow: z
+      .enum(["short", "long", "conversation"])
+      .default("conversation"),
     /**
      * Open the app a spoken request starts with while the user is still
      * talking ("open Slack and…" brings Slack forward before "and";
@@ -529,7 +533,7 @@ export const defaultSettings: Settings = {
   voiceRate: 1,
   listeningPatience: "normal",
   followUpListening: true,
-  followUpWindow: "short",
+  followUpWindow: "conversation",
   earlyStart: true,
   voiceSounds: true,
   conversation: "model",

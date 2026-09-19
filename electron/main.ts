@@ -2629,9 +2629,9 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       else idleCard("Okay.");
       return;
     case "endConversation":
-      // "That's all" under the conversation setting: the window closes and no
-      // new one opens until the wake phrase. The run this very activation
-      // paused carries on; nothing else changes.
+      // "Thanks" under the conversation setting: the window closes and no new
+      // one opens until the wake phrase. The run this very activation paused
+      // carries on; nothing else changes.
       void voice?.call("endFollowUp").catch(() => {});
       if (ctx.channel === "voice" && (await resumeVoiceHold())) return;
       voiceHeld = false;

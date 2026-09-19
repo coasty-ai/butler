@@ -1497,7 +1497,7 @@ function SettingsPanel({
                   <option value="short">Briefly after each exchange</option>
                   <option value="long">Longer after each exchange</option>
                   <option value="conversation">
-                    Conversation, until I say “that’s all”
+                    Conversation, until I say “thanks”
                   </option>
                 </select>
               </label>
