@@ -18,7 +18,7 @@ export interface VoiceEvent {
   /** speech_started / speech_finished / speech_error. */
   utteranceId?: string;
   interrupted?: boolean;
-  /** speech_finished: barge_in, escape, replaced, cancel, sleep, disabled. standby_trace rotate: final, error, cadence. */
+  /** speech_finished: barge_in, escape, replaced, cancel, sleep, disabled. standby_trace rotate: final, error, cadence, vocabulary. */
   reason?: string;
   /** followup_open / followup_detected / followup_closed: the window kind. */
   kind?: string;
@@ -55,6 +55,8 @@ export interface VoiceEvent {
   patience?: string;
   noiseFloor?: number;
   threshold?: number;
+  /** vocabulary: how many phrases the recognizer is now biased toward (never the words). */
+  count?: number;
 }
 export class NativeVoice {
   private helper: HelperProcess;

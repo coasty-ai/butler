@@ -192,6 +192,7 @@ const countFields = new Set([
   "launchedWindows",
   "ticks",
   "channels",
+  "count",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([

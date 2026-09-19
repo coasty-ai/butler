@@ -140,6 +140,7 @@ import {
   type TurnPlanKind,
 } from "../src/voice/turns";
 import { dictationRequest } from "../src/voice/dictation";
+import { recognizerVocabulary } from "../src/voice/vocabulary";
 import { runView, statusLine } from "../src/assistant/run-view";
 import type {
   Channel,
@@ -1474,6 +1475,7 @@ function rememberAppNames(result: unknown) {
   if (names.size) {
     installedApps = listed;
     installedAppNames = names;
+    scheduleVocabulary();
   }
 }
 /** Asks for the app list when the early opener has none yet; never awaited. */
@@ -1708,6 +1710,39 @@ function getVoice() {
   }
   return voice;
 }
+/**
+ * The phrases the voice helper biases Apple's recognizer toward
+ * (src/voice/vocabulary.ts): every installed app, the ones memory says are
+ * opened most, the ones open now, and Butler's own command words. Sent with
+ * the first configure and again, debounced, when an index answer changes the
+ * list (each activation refreshes the index, so a change in what is opened
+ * most rides along); the helper reports only its count.
+ */
+function voiceVocabulary() {
+  return recognizerVocabulary({
+    installed: installedApps,
+    usage: memory && settings.memory ? memory.data().apps : undefined,
+    openApps: frameContext()?.openApps,
+  });
+}
+let vocabularySent = "";
+let vocabularyTimer: ReturnType<typeof setTimeout> | undefined;
+function scheduleVocabulary() {
+  clearTimeout(vocabularyTimer);
+  vocabularyTimer = setTimeout(() => {
+    vocabularyTimer = undefined;
+    if (shuttingDown || !voice) return;
+    const vocabulary = voiceVocabulary();
+    const key = JSON.stringify(vocabulary);
+    if (key === vocabularySent) return;
+    voice
+      .call("configure", { vocabulary })
+      .then(() => {
+        vocabularySent = key;
+      })
+      .catch((error) => debug("VoiceSetupFailed", errorDetails(error)));
+  }, 1500);
+}
 /** Spoken-reply and listening settings the voice helper applies. */
 function voiceOutputConfig(s: Settings = settings) {
   return {
@@ -1733,12 +1768,15 @@ async function configureVoice() {
   try {
     await getVoice().call("enable");
   } catch {}
+  const vocabulary = voiceVocabulary();
   try {
     await getVoice().call("configure", {
       handsFree: settings.handsFree,
       controllerPID: nativePid(),
       ...voiceOutputConfig(),
+      vocabulary,
     });
+    vocabularySent = JSON.stringify(vocabulary);
   } catch (error) {
     debug("VoiceSetupFailed", errorDetails(error));
   }
@@ -1949,6 +1987,7 @@ async function receiveVoice(event: VoiceEvent) {
       sampleRate: event.sampleRate,
       channels: event.channels,
       voiceProcessing: event.voiceProcessing,
+      count: event.count,
     });
   try {
     if (event.event === "wake_status") {

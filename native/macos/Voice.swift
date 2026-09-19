@@ -74,6 +74,8 @@ var handsFreeEnabled = false
 // understand follow-up windows or earcons never gets them.
 var followUpEnabled = false
 var soundsEnabled = false
+// The phrases every request is biased toward (recognizerContext), from Electron's configure.
+var vocabulary: [String] = []
 var patience = Patience.normal
 var followUpWindow = FollowUpWindow.short
 var suspended = false
@@ -434,7 +436,7 @@ func startRecognition(preRoll: Bool = false) -> Bool {
     let session = generation, segment = segmentGeneration
     let next = SFSpeechAudioBufferRecognitionRequest()
     next.shouldReportPartialResults = true; next.requiresOnDeviceRecognition = true; next.taskHint = .dictation
-    next.contextualStrings = recognizerContext(ambient: mode == .standby || mode == .followUp)
+    next.contextualStrings = recognizerContext(ambient: mode == .standby || mode == .followUp, vocabulary: vocabulary)
     request = next
     setTapInput(next, preRoll: preRoll)
     task = recognizer.recognitionTask(with: next) { result, error in
@@ -1025,6 +1027,16 @@ func handle(_ command: [String: Any]) {
             // A window opened under the old setting closes; the next one has the new length.
             followUpWindow = next
             closeWindow("cancel"); if mode == nil { scheduleStandby() }
+        }
+        if let value = command["vocabulary"] as? [String] {
+            let next = recognizerVocabulary(value)
+            if next != vocabulary {
+                vocabulary = next
+                output(["event": "vocabulary", "count": next.count])
+                // A request keeps the context it began with: an idle standby request gives way to
+                // one that has the words now, between utterances, not at its next cadence or recycle.
+                if mode == .standby && !pendingWake && trimmed(standbyRaw).isEmpty { rotateRequest(reason: "vocabulary", preRoll: true) }
+            }
         }
         if let value = command["speechEnabled"] as? Bool { speaker.setEnabled(value) }
         if let enabled = command["handsFree"] as? Bool, enabled != handsFreeEnabled {

@@ -46,8 +46,17 @@ func wakePolicyChecks(_ check: (Bool, String) -> Void) {
           "a revision of earlier words keeps the boundary while it fits")
     check(commandAfterWakePhrase(String("the meeting moved to Thursday Hey Butler open Notes".dropFirst(29)), ended: false) == "open Notes",
           "the utterance after the boundary activates as if it had started the hypothesis")
-    check(recognizerContext(ambient: true) == ["Hey Butler"] && recognizerContext(ambient: false).isEmpty,
-          "the recognizer is biased toward the wake phrase only while listening for it")
+    check(recognizerContext(ambient: true, vocabulary: []) == ["Hey Butler"] && recognizerContext(ambient: false, vocabulary: []).isEmpty,
+          "without a vocabulary the recognizer is biased toward the wake phrase only while listening for it")
+    check(recognizerContext(ambient: true, vocabulary: ["TextEdit", "Calculator"]) == ["Hey Butler", "TextEdit", "Calculator"]
+          && recognizerContext(ambient: false, vocabulary: ["TextEdit", "Calculator"]) == ["TextEdit", "Calculator"],
+          "the vocabulary rides on every request: ambient listening keeps the wake phrase first, a command turn carries the vocabulary alone")
+    check(recognizerVocabulary(["  TextEdit ", "", "   ", "Visual  Studio\tCode", "textedit", String(repeating: "x", count: 41), String(repeating: "y", count: 40)])
+          == ["TextEdit", "Visual Studio Code", String(repeating: "y", count: 40)],
+          "the vocabulary is trimmed, collapsed, deduplicated regardless of case, and rid of empty or overlong phrases")
+    let manyPhrases = (1...120).map { "App \($0)" }
+    check(recognizerVocabulary(manyPhrases) == Array(manyPhrases.prefix(90)) && recognizerContext(ambient: true, vocabulary: recognizerVocabulary(manyPhrases)).count == 91,
+          "at most 90 phrases are kept in the order sent, so with the wake phrase a request stays within Apple's 100")
     check(commandAfterWakeRestart("Butler open calendar and put an event") == "open calendar and put an event", "the bare name restarts a turn already listening")
     check(commandAfterWakeRestart("Butler, open Notes.") == "open Notes.", "restart ignores case and punctuation")
     check(commandAfterWakeRestart("Hey, Butler! Stop.") == "Stop.", "the full wake phrase restarts")

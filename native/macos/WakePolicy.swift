@@ -149,10 +149,37 @@ func activatedVoiceCommand(_ text: String) -> String {
     textAfter(wakePrefix, in: text) ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-// Recognizer bias toward the wake phrase, only while listening for it (standby and
-// follow-up windows, where activation is gated). A command turn is left unbiased: biased
-// toward "Butler", a recognizer writes "this is a test" as "this Butler test".
-func recognizerContext(ambient: Bool) -> [String] { ambient ? ["Hey Butler"] : [] }
+// Recognizer bias (SFSpeechRecognitionRequest.contextualStrings). Apple's documentation asks for
+// brief phrases, "one or two words whenever possible", and says to "limit the total number of
+// phrases to no more than 100":
+// developer.apple.com/documentation/speech/sfspeechrecognitionrequest/contextualstrings
+// Electron builds the vocabulary (src/voice/vocabulary.ts: the installed and most opened apps,
+// Butler's own command words) and sends it through configure; it is sanitized again here, so the
+// recognizer is never handed an empty, overlong, repeated or 91st phrase.
+let recognizerVocabularyLimit = 90
+let recognizerPhraseLimit = 40
+func recognizerVocabulary(_ phrases: [String]) -> [String] {
+    var seen = Set<String>(), kept = [String]()
+    for phrase in phrases {
+        let clean = phrase.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !clean.isEmpty, clean.count <= recognizerPhraseLimit, seen.insert(clean.lowercased()).inserted else { continue }
+        kept.append(clean)
+        if kept.count == recognizerVocabularyLimit { break }
+    }
+    return kept
+}
+
+// While listening for the wake phrase (standby and follow-up windows, where activation is gated)
+// the request is biased toward "Hey Butler" first, and toward the vocabulary as well: activateWake
+// continues the standby request into the command turn rather than rotating it (the words after
+// the name are already in flight), so a hands-free command is transcribed with the context its
+// request began with; the 2026-09-19 voice loop's "quick calculator" was heard on such a request.
+// Apple documents the strings as raising the likelihood of those phrases only; whether a bias
+// toward app names costs any wake detections is for the live trial. A command turn (push-to-talk,
+// or a rotation inside a turn) carries the vocabulary alone: the wake phrase is not a command
+// word, and biased toward the name a recognizer once wrote "this is a test" as "this ISA test".
+// The bare name is in the vocabulary so a restart ("Butler, open Notes") is heard.
+func recognizerContext(ambient: Bool, vocabulary: [String]) -> [String] { ambient ? ["Hey Butler"] + vocabulary : vocabulary }
 
 // Whether a recognizer result opens with the wake phrase: diagnostics labels, and the words the
 // self-echo filter never drops (isSelfEcho). Activation itself keeps its gate.

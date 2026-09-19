@@ -49,6 +49,8 @@ export const SKIP_PHASES = new Set([
   "audio_level",
   "recognition_update",
   "transcript_partial",
+  // The helper took a new recognizer vocabulary: bookkeeping, nothing happened in the room.
+  "vocabulary",
 ]);
 export const TERMINAL = new Set([
   "completed",
