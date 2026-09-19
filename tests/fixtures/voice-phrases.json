@@ -203,10 +203,6 @@
         "out": "yeah"
       },
       {
-        "in": "Hey Butler thanks",
-        "out": "thanks"
-      },
-      {
         "in": "Hey Butler good morning",
         "out": "good morning"
       },
@@ -221,6 +217,10 @@
       {
         "in": "Hey Butler not now",
         "out": "not now"
+      },
+      {
+        "in": "Hey Butler so open Notes",
+        "out": "so open Notes"
       }
     ],
     "activateFused": [],
