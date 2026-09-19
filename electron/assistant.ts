@@ -404,7 +404,7 @@ export class AssistantSession implements AssistantSessionApi {
     launched.flight = flight;
     // The opt-in decider runs beside the stream, never before it; its one
     // use is an early start, and only for words that pass every guard.
-    const jev = this.jevFor(i, base);
+    const jev = this.jevFor(i, base, flight.readOut);
     launched.jev = jev;
     const started = this.now();
     this.noteUser(i.text, i.channel);
@@ -463,6 +463,9 @@ export class AssistantSession implements AssistantSessionApi {
       heard,
       channel: i.channel,
       heldByVoice: this.options.heldByVoice(),
+      // The notifications the user asked about came with the request: words
+      // that ask to be told never run on the model's say-so (arbitrate).
+      readOut: flight.readOut,
     });
     this.log("decided", {
       code: a.code,
@@ -710,6 +713,9 @@ export class AssistantSession implements AssistantSessionApi {
       const key = this.options.jevKey?.() ?? "";
       if (!jevEnabled(this.options.settings(), key)) return;
       if (this.options.view().running) return;
+      // The notifications the user asked about are in the state: the answer
+      // is in hand, and no decider starts a run to go and read them.
+      if (state.notifications?.length) return;
       if (!jevStartCandidate({ kind: "start", text }, text)) return;
       if (!JEV_ACT_QUESTION) return this.jevFailed(channel, "no_question");
       this.jevAsk = this.askJev(state, key, intent, channel);
@@ -732,16 +738,23 @@ export class AssistantSession implements AssistantSessionApi {
    * The ask for this turn, when every condition for an early start holds:
    * the decider is on, the router's own plan is start with the user's own
    * words (typed, or heard at least as clearly as an approval), nothing is
-   * running, the words pass the fast-start guards minus the verb list, and
-   * the budget allows. A fresh ask fired on the partial for the same intent
-   * is reused; otherwise one is fired now, beside the stream.
+   * running, the words pass the fast-start guards minus the verb list, the
+   * request carried no notifications (the answer to a question about them
+   * is in hand, never a run) and the budget allows. A fresh ask fired on the
+   * partial for the same intent is reused; otherwise one is fired now,
+   * beside the stream.
    */
-  private jevFor(i: DecideInput, base: TurnPlan): JevAsk | undefined {
+  private jevFor(
+    i: DecideInput,
+    base: TurnPlan,
+    readOut: boolean,
+  ): JevAsk | undefined {
     const ask = this.jevAsk;
     this.jevAsk = undefined;
     try {
       const key = this.options.jevKey?.() ?? "";
       const eligible =
+        !readOut &&
         jevEnabled(this.options.settings(), key) &&
         base.kind === "start" &&
         base.taskSource === "user_words" &&

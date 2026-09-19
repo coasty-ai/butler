@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   arbitrate,
+  asksToBeTold,
   dialogEligible,
   entityTokens,
   fastStart,
@@ -1233,5 +1234,153 @@ describe("a run the user paused", () => {
     );
     expect(a.plan.kind).toBe("reply");
     expect(a.proposal).toBe("Resume the transfer now");
+  });
+});
+
+describe("a question answered with the notifications in hand", () => {
+  // buildDialogState sends the notifications only for a question about
+  // them, and the session marks the request readOut: the answer is in the
+  // request, so a task act for words that ask to be told never runs.
+  const asking = [
+    "read me my notifications",
+    "what does this notification mean",
+    "anything from Slack",
+    "any new messages?",
+    "who texted me",
+    "did I miss anything",
+    "what's the banner say",
+    "show me my messages",
+    "can you read me my notifications",
+  ];
+  // Asking words that also only point ("what Dana said" is a report of
+  // another text): the router's own question stands for them, as before.
+  const askingVague = ["tell me what Dana said", "tell me what it says"];
+  const acting = [
+    "reply yes to that",
+    "accept her invite",
+    "archive this email",
+    "open the message from Dana",
+    "answer Dana's text",
+    "mark that message as read",
+    "can you open Messages",
+    "forward this to Dana",
+  ];
+
+  it("tells words that ask to be told from words that act on the Mac", () => {
+    for (const text of [...asking, ...askingVague])
+      expect([text, asksToBeTold(text)]).toEqual([text, true]);
+    for (const text of acting)
+      expect([text, asksToBeTold(text)]).toEqual([text, false]);
+  });
+
+  it("offers, never runs, a task act for asking words, whatever TASK the model wrote", () => {
+    for (const text of asking) {
+      const base = start(text);
+      for (const act of ["start", "queue", "replace", "revise"] as const)
+        for (const task of [text, "Read my notifications", "Check Slack"]) {
+          const a = decide(base, { act, task }, { readOut: true });
+          expect([text, act, task, a.plan, a.code]).toEqual([
+            text,
+            act,
+            task,
+            { kind: "reply", act: "none", resume: true },
+            "proposal_readout",
+          ]);
+          expect(a.proposal).toBe(task);
+          expect(a.speakSay).toBe(false);
+        }
+      // Without the notifications in the request, the same words run as
+      // before: the question needs looking up.
+      expect(decide(base, { act: "start", task: text }).plan).toEqual(base);
+    }
+  });
+
+  it("keeps the offer with a run under way, and a correction to the run as the router's own", () => {
+    const working = run();
+    for (const text of asking) {
+      const base: TurnPlan = { kind: "revise", text };
+      for (const act of ["start", "queue", "replace"] as const) {
+        const a = decide(
+          base,
+          { act, task: text },
+          { readOut: true, run: working },
+        );
+        expect([text, act, a.plan.kind, a.code]).toEqual([
+          text,
+          act,
+          "reply",
+          "proposal_readout",
+        ]);
+      }
+      // A hint to the run in the user's words is what the router does with
+      // the model off; the model's revise keeps it.
+      const hint = decide(
+        base,
+        { act: "revise", task: text },
+        { readOut: true, run: working },
+      );
+      expect([text, hint.plan]).toEqual([text, { kind: "revise", text }]);
+    }
+  });
+
+  it("lets words that act on what a notification shows run, in the user's words", () => {
+    for (const text of acting) {
+      const base = start(text);
+      const a = decide(base, { act: "start", task: text }, { readOut: true });
+      expect([text, a.plan, a.code]).toEqual([text, base, "start"]);
+    }
+  });
+
+  it("a paste the question never asked for is neither run nor offered", () => {
+    const a = decide(
+      start("what does the message say"),
+      { act: "start", task: "Paste the code from the message" },
+      { readOut: true },
+    );
+    expect(a.plan.kind).toBe("reply");
+    expect(a.refused).toBe("clipboard");
+    expect(a.proposal).toBeUndefined();
+  });
+
+  it("a TASK that points is offered too, never the router's own start", () => {
+    // Below the rule, a pointing rewrite lets the router's plan stand
+    // (rewrite_vague), which for a question is a start in the user's words.
+    const base = start("what does this notification mean");
+    const task = "Tell me what it says";
+    const a = decide(base, { act: "start", task }, { readOut: true });
+    expect([a.plan.kind, a.code]).toEqual(["reply", "proposal_readout"]);
+    expect(decide(base, { act: "start", task })).toMatchObject({
+      plan: base,
+      code: "rewrite_vague",
+    });
+  });
+
+  it("asking words that only point keep the router's question, notifications or not", () => {
+    for (const text of askingVague) {
+      const base = askWhatToDo(text);
+      for (const readOut of [true, false]) {
+        const a = decide(
+          base,
+          { act: "start", task: text },
+          { utterance: text, readOut },
+        );
+        expect([text, readOut, a.plan.kind]).toEqual([
+          text,
+          readOut,
+          "clarify",
+        ]);
+      }
+    }
+  });
+
+  it("answers and statuses are untouched: the model read the notifications out", () => {
+    for (const act of ["answer", "none"] as const)
+      expect(
+        decide(start("read me my notifications"), { act }, { readOut: true }),
+      ).toEqual({
+        plan: { kind: "reply", act, resume: true },
+        speakSay: true,
+        code: act,
+      });
   });
 });

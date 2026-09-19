@@ -165,9 +165,10 @@ describe("the dialog-act question", () => {
       expect(text).not.toMatch(/\bTASK\b|\bSAY\b/);
     }
     // The start line keeps its screen rule before the TASK sentence: a pointer
-    // at what the user sees defines the act (prompt v5), and Jev is told so.
+    // at what the user sees defines the act (prompt v5), whatever the verb
+    // (v6), and Jev is told so.
     expect(d.start).toBe(
-      'the user wants something done on the Mac, or information you would have to go and look up. You see the screen only once a task runs, so words that name their object by pointing ("click that", "send this", "close those", "open the attachment", "read that to me") with nothing in turns they could mean are about what is on the screen in front of the user: start, and the task will find it there. Never ask which one; starting is how you look.',
+      'the user wants something done on the Mac, or information you would have to go and look up. You see the screen only once a task runs, so words that name their object by pointing ("click that", "send this", "close those", "open the attachment", "read that to me") with nothing in turns they could mean are about what is on the screen in front of the user: start, and the task will find it there. Never ask which one; starting is how you look. That holds when the verb sends, deletes, approves, pays or pastes ("forward that", "trash the top one", "reject it", "decline this", "drop it in there") as much as when it looks: the task asks the user on the Mac before anything is sent, deleted or paid, so you never need to; a verb with only "it", "that", "this" or "them" for its object is the commonest case, and a position or a count after such a verb ("the third one", "both of those", "all of them") points at the screen too.',
     );
     // The answer line keeps its calendar rule: it defines the act.
     expect(d.answer).toMatch(

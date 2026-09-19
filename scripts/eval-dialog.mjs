@@ -211,6 +211,7 @@ for (const c of cases) {
     userWords: turns.filter((t) => t.role === "user").map((t) => t.text),
     channel: c.channel ?? "voice",
     heldByVoice: c.heldByVoice === true,
+    readOut: !!state.notifications?.length,
   });
   if (a.proposal !== undefined || a.refused) {
     // A refused rewrite (a paste the user never asked for) counts with the

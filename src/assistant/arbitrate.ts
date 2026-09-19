@@ -124,8 +124,9 @@ export function fastStart(plan: TurnPlan, text: string): boolean {
 /**
  * Verbs that ask for an answer in words. "tell me whether the invoice was
  * paid" reads as an imperative (looksLikeQuestion is about the first word)
- * but wants a report, and live Jev calls it a confident start. Only the
- * Jev candidate guard needs these: fastStart never allowed them as verbs.
+ * but wants a report, and live Jev calls it a confident start. The Jev
+ * candidate guard and asksToBeTold need these: fastStart never allowed
+ * them as verbs.
  */
 const REPORT_VERBS = new Set(["tell", "say", "know", "let", "report"]);
 const REPORT_CLAUSE = new Set(["whether", "if"]);
@@ -142,6 +143,57 @@ function reportFrame(words: string[]): boolean {
   return words
     .slice(at + 1)
     .some((word) => REPORT_CLAUSE.has(word) || WH_WORDS.has(word));
+}
+
+/**
+ * Verbs that do something on the Mac, beyond the verbs that send, pay,
+ * delete or agree (consequentialVerb): the fast-start verbs and the things
+ * done to a message or a notification once read. Reading, telling and
+ * showing are deliberately absent: they ask to be told.
+ */
+const ACTING_VERBS = new Set([
+  ...FAST_START_VERBS,
+  ..."archive mark star flag snooze dismiss mute unmute pin unpin save copy move close clear block silence skip stop turn".split(
+    " ",
+  ),
+]);
+
+/** Verbs that ask to be told, with "me" or "us" for their object. */
+const TELLING = new Set([
+  ...REPORT_VERBS,
+  ..."read show describe explain summarize summarise recap repeat list".split(
+    " ",
+  ),
+]);
+
+/**
+ * "tell me about …", "read me my notifications", "show us the message", or
+ * a report frame ("tell me what she said", "let me know if …"): the verb
+ * asks for words, not for a thing done. "tell dana yes" and "read the
+ * message" are not frames; the latter has no acting verb either.
+ */
+function toldFrame(words: string[]): boolean {
+  const at = words.findIndex((word) => !LEADING.has(word));
+  if (at < 0 || !TELLING.has(words[at])) return false;
+  const next = words[at + 1];
+  return next === "me" || next === "us" || reportFrame(words);
+}
+
+/**
+ * Whether the words ask to be told something rather than for something to
+ * be done: a question ("what does this say", "who texted me", "did I miss
+ * anything"), a request for words ("read me my notifications", "tell me
+ * what she said") or words with no verb that acts on the Mac ("anything
+ * from Slack"). Words that act on what a notification shows ("reply yes to
+ * that", "accept her invite", "archive this email", "open the message",
+ * "tell dana yes") are not asking.
+ */
+export function asksToBeTold(text: string): boolean {
+  if (looksLikeQuestion(text)) return true;
+  const words = intentKey(text).split(" ").filter(Boolean);
+  if (toldFrame(words)) return true;
+  if (consequentialVerb(text)) return false;
+  return !words.some((word) => ACTING_VERBS.has(word));
 }
 
 /**
@@ -388,6 +440,13 @@ export interface ArbitrateInput {
   channel: Channel;
   /** main.ts voiceHoldResumable(): the only hold a model resume may end. */
   heldByVoice: boolean;
+  /**
+   * The request carried the notifications the user asked about
+   * (buildDialogState sends them only for a question about them), so the
+   * answer to words that ask to be told is already in hand: a task act for
+   * such words is at most offered, whatever TASK the model wrote.
+   */
+  readOut?: boolean;
 }
 
 const reply = (
@@ -481,15 +540,6 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
   // in the model's words ("Send it" for "send Dana the report", "Install
   // the update" for "yeah do that") is as vague as agreement.
   const own = !!rewrite && intentKey(rewrite) === intentKey(words);
-  if (rewrite && deicticTask(rewrite, own))
-    return vague ? unclear("vague") : settle(base, "rewrite_vague");
-  if (vague && !rewrite) return unclear("vague");
-  // The pointer resolved to words that still point ("send it to them in
-  // Safari", "do what Dana asked in Safari"): not even offered, since
-  // accepted it would resolve them from the screen all the same. A thing
-  // with its value ("wire $900 to account 55440011") is offered out loud.
-  if (vague && pointsElsewhere(rewrite, false))
-    return unclear("rewrite_points");
   const grounded = rewrite
     ? groundedTask(
         rewrite,
@@ -510,7 +560,7 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
     ? (baseSource ?? i.heard ?? "user_words")
     : "model_rewrite";
   const task = grounded.ok ? rewrite : undefined;
-  const propose = (): Arbitrated =>
+  const propose = (code?: string): Arbitrated =>
     !grounded.ok && grounded.code === "clipboard"
       ? {
           plan: reply("none"),
@@ -522,8 +572,37 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
           plan: reply("none"),
           speakSay: false,
           proposal: rewrite,
-          code: `proposal_${grounded.ok ? "ok" : grounded.code}`,
+          code: code ?? `proposal_${grounded.ok ? "ok" : grounded.code}`,
         };
+  // The notifications the user asked about came with the request (the
+  // session sends them only for a question about them), so words that ask
+  // to be told ("read me my notifications", "what does this say", "anything
+  // from Slack") have their answer in hand. A task act for them is a
+  // misroute: the run would go and read the same text off the screen in the
+  // user's name, so nothing runs on the model's say-so, whatever TASK it
+  // wrote (their own words, a rewrite, or one that points, which below
+  // would let the router's own start stand); the rewrite is at most
+  // offered. Words that act on what a notification shows ("reply yes to
+  // that", "accept her invite") are the user's own task on the screen, as
+  // before; words that only point are the router's question, as before;
+  // and a correction to the run under way stays one (the router's own plan
+  // for the words).
+  if (
+    i.readOut &&
+    !vague &&
+    asksToBeTold(words) &&
+    !(run && head.act === "revise")
+  )
+    return propose("proposal_readout");
+  if (rewrite && deicticTask(rewrite, own))
+    return vague ? unclear("vague") : settle(base, "rewrite_vague");
+  if (vague && !rewrite) return unclear("vague");
+  // The pointer resolved to words that still point ("send it to them in
+  // Safari", "do what Dana asked in Safari"): not even offered, since
+  // accepted it would resolve them from the screen all the same. A thing
+  // with its value ("wire $900 to account 55440011") is offered out loud.
+  if (vague && pointsElsewhere(rewrite, false))
+    return unclear("rewrite_points");
   if (!run) {
     // Nothing running: every task act starts, or offers, the task.
     if (task)
