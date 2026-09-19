@@ -209,6 +209,23 @@ Primitives live in `src/gym/bench/graders.ts` and return booleans. A new evidenc
 3. `npm run cycle -- --probe <CLASS> --baseline <cycle> --i-know-this-drives-my-mac` runs only where the class showed up in that finished cycle: the models whose rate for it was above zero, times the baseline's own tasks in the categories it touched (whichever suite they came from), times `--repeat` (3 by default), at the same caps and gate as any cycle. `--matrix` narrows the models further. It is then judged against that baseline, across revisions by design (the fix is another revision), over the same cells and tasks only: it **passes** when the class's rate fell (one-sided p < 0.05) or the class is gone (0 in 36 or more attempts), no other agent-owned class is a `regression`, and no affected model's success rate is. A changed task template (`TASKS_CHANGED`) fails it. Classes are compared from the rows on both sides, except the class under test, which keeps its stored count (the analyzer's frictions such as `BLIND_SURFACE` live only there). The verdict is printed, stored in `results.json` (`probe`) and in the report's header, and a failed probe exits 1. A probe is evidence for a merge, never for "fixed": its tasks are the ones the fix was tuned on.
 4. A class is **fixed** when, at the merged revision and in the next full cycle, its rate's Wilson upper bound is below 10% (5% for `HANDOFF_*` and `FALSE_DONE`, which breach trust), no agent-owned class rose by 10 points significantly, and no model's success regressed. It is **parked** after three lanes that failed to move it.
 
+### Running it: `npm run loop`
+
+`scripts/harness-loop.mjs` does steps 1 and 2 for you, and stops where a person has to take over.
+
+```sh
+npm run loop                       # plan from the newest cycle: lanes and briefs, nothing else
+npm run loop -- --create-lanes     # + a git worktree and branch per lane
+npm run loop -- --agent "claude -p --permission-mode acceptEdits"   # + hand each brief to that agent
+npm run loop -- --lane FALSE_DONE --check   # run the suites and the floor check for one lane
+```
+
+It reads `output/harness/<cycle>/results.json`, picks at most three classes (the costliest first, but a grader or harness fault at 10% or more of ran attempts comes first, because unknown grades hide every other number), and writes `output/harness/<cycle>/lanes/<class>.md`: the mechanism to explain, the models, categories and example run ids to start from, the suites to pass, and the probe command. Classes that are parked, already fixed, or have a lane in flight are skipped; `output/harness/loop-state.json` remembers that between nights.
+
+With `--agent` it runs that command inside each lane's worktree with the brief on stdin, then checks the result: every suite must pass, and the diff must not remove a refusal from a safety floor (`src/core/policy.ts`, `src/voice/turns.ts`, `src/assistant/arbitrate.ts`, `electron/credentials.ts` and the `native/macos/*Safety.swift` rules). A lane that weakens a floor is refused outright and recorded as blocked, whatever it does to a rate; a lane that fails its suites is blocked too.
+
+Two things the loop never does: **it never merges** (every lane ends as a branch for a person to review, even after a probe passes), and **it never runs the probe itself** (that spends money and drives the Mac, so it stays your command, printed at the end). Three lanes that fail their probes park the class.
+
 ## 12. The Honesty Report
 
 `results.json` (schema 2) is the unit of contribution: it carries `catalogueHash` and `harnessVersion`, and nothing about the contributor's screen. The Honesty Report is generated from every `output/harness/*/results.json` on a machine plus contributed files placed under `reports/<contributor>/<cycle>.json`; ingest re-runs the privacy check (no marker text, no URL, no home path, codes only). Rows are grouped by git revision and catalogue hash and never pooled across either. Per model: attempts, success with its interval, graded success, **false-done rate** (never hidden), agent hand-off rate, median actions, cost per success, cycles contributing. Rows under 30 attempts are shown as descriptive.

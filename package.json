@@ -32,6 +32,7 @@
     "test:live": "node --import tsx scripts/live-task.mjs",
     "bench": "node scripts/bench.mjs",
     "cycle": "node scripts/harness-cycle.mjs",
+    "loop": "node scripts/harness-loop.mjs",
     "analyze-runs": "node scripts/analyze-runs.mjs"
   },
   "build": {
