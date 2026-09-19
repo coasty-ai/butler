@@ -1544,6 +1544,8 @@ func installTap() -> Bool {
             if classified.ignored {return Unmanaged.passUnretained(event)}
             pointerDistance = classified.distance
         }
+        // The owner's own presses, keys and wheel reach the observer as facts copied here (Observer.swift); a move or a drag never does.
+        observerSawInput(type:type, event:event)
         // Where the input landed relative to a bound window, read once for the
         // episode (the resume rule) and for the scope of a takeover (design §3).
         let aimed = userInputFacts(type:type, location:event.location)
@@ -3480,6 +3482,418 @@ func systemIndex(query: String, limit: Int) async -> [String:Any] {
         "folders": folders, "recentFiles": recentFiles, "matches": matches,
     ]
 }
+// MARK: observe
+/**
+ Watching how the owner works (.data/design/observer.md §2; the rules in
+ Observer.swift). One stream on this channel: observe_frame (what is in
+ front, on a change and at most once per everyMs), observe_action (what the
+ owner did, from the tap's unmarked events, content-free) and observe_dropped
+ (frames the byte caps refused). `observe {on:false}` is answered on the
+ reader thread like presence, ahead of anything queued behind a capture, and
+ every write reads the flag under the output lock the answer takes, so
+ nothing built earlier goes out after that answer; `on:true` runs on the command queue,
+ where the tap is installed (without lifting the latch). Everything else runs
+ on observerQueue, never on the tap's thread: the tap copies an event's facts
+ (kind, point, key code, flags, click count, wheel delta, a chord's key name)
+ and hands them over, so an accessibility read on a hung application can
+ delay an action, never disable the tap. The observer sets nothing on any
+ application (it never asks an Electron application to publish its tree, as
+ a capture does), sends no input and activates nothing; while the lock
+ screen, Butler's own run or idle lasts it reads nothing from the front.
+ */
+let observerLock = NSLock()
+var observerOn = false
+var observerGeneration = 0
+var observerTier = ObserveTier.structure
+let observerQueue = DispatchQueue(label: "ai.coarena.controller.observe", qos: .utility)
+// The stream's state, touched on observerQueue only.
+var observerTimer: DispatchSourceTimer?
+var observerActivation: NSObjectProtocol?
+var observerTracker = ObserveTracker(everyMs: observeEveryMsDefault)
+var observerBudget = ObserveBudget()
+var observerTyping = ObserveTypingAggregator()
+var observerScroll = ObserveScrollAggregator()
+var observerPresses = ObservePressCoalescer()
+var observerSwitch = ObserveSwitchWitness()
+var observerFront: ObserveFront? = nil
+var observerBuilding = false
+
+/// The facts of one unmarked event, copied on the tap's thread.
+struct ObserveInput {
+    let type: CGEventType
+    let location: CGPoint
+    let keyCode: Int64
+    let flags: CGEventFlags
+    let clickState: Int64
+    let wheel: Double
+    let layoutName: String?
+    let at: TimeInterval
+    let atMs: Int
+}
+/// The light reading the sampler takes of what is in front.
+struct ObserveFront {
+    let at: TimeInterval
+    let pid: pid_t
+    let appId: String
+    let appName: String
+    let window: AXUIElement?
+    let bounds: CGRect?
+    let title: String
+    let browser: Bool
+    let host: String?
+    let protected: Bool
+    let focused: AXUIElement?
+    let focusedRole: String?
+    let focusedLabel: String
+    let focusedSecure: Bool
+}
+/// The moment's exclusion facts, read without touching any application.
+struct ObserveMoment { let locked: Bool; let secure: Bool; let ownRun: Bool; let idleSeconds: Double }
+
+func wallMs() -> Int { Int((Date().timeIntervalSince1970 * 1000).rounded()) }
+func observerLive(_ generation: Int) -> Bool { observerLock.lock(); defer { observerLock.unlock() }; return observerOn && observerGeneration == generation }
+/// `observe {on:false}`: the stream stops here and now (the flag), the machinery after.
+func stopObserving() -> [String: Any] {
+    observerLock.lock(); observerOn = false; observerGeneration += 1; observerLock.unlock()
+    observerQueue.async { stopObserverMachinery() }
+    return ["observing": false]
+}
+/// `observe {on:true, tier, everyMs}`: needs Accessibility (the reads) and
+/// the tap (the owner's own input); the tap is installed without lifting
+/// the latch, so nothing here enables input.
+func startObserving(_ options: ObserveOptions) throws -> [String: Any] {
+    guard AXIsProcessTrusted() else { throw ControlError("Accessibility permission is required.") }
+    guard installTap() else { throw ControlError("The input tap could not be installed.") }
+    observerLock.lock(); observerOn = true; observerGeneration += 1; observerTier = options.tier; let generation = observerGeneration; observerLock.unlock()
+    observerQueue.async { startObserverMachinery(options, generation: generation) }
+    return ["observing": true, "tier": options.tier.rawValue, "everyMs": options.everyMs]
+}
+func startObserverMachinery(_ options: ObserveOptions, generation: Int) {
+    stopObserverMachinery()
+    observerTracker = ObserveTracker(everyMs: options.everyMs)
+    observerBudget = ObserveBudget()
+    let timer = DispatchSource.makeTimerSource(queue: observerQueue)
+    timer.schedule(deadline: .now() + .milliseconds(200), repeating: .seconds(1), leeway: .milliseconds(100))
+    timer.setEventHandler { observerTick(generation: generation) }
+    timer.resume()
+    observerTimer = timer
+    // Frames are event-driven: an activation is read at once rather than at the next second.
+    observerActivation = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil) { note in
+        let appId = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier ?? ""
+        observerQueue.async { observerActivated(appId: appId, generation: generation) }
+    }
+}
+func stopObserverMachinery() {
+    observerTimer?.cancel(); observerTimer = nil
+    if let activation = observerActivation { NSWorkspace.shared.notificationCenter.removeObserver(activation); observerActivation = nil }
+    observerTyping = ObserveTypingAggregator(); observerScroll = ObserveScrollAggregator(); observerPresses = ObservePressCoalescer(); observerSwitch = ObserveSwitchWitness()
+    observerFront = nil; observerBuilding = false
+}
+/// Writes one event of the stream while it is on for this generation. A
+/// frame passes the byte caps first; a refused one becomes the notice when
+/// one is due. The output lock is taken before the flag is read, and the
+/// answer to `on:false` takes that same lock after the flag has flipped, so
+/// the answer follows the last event out and never precedes one; the flag's
+/// own lock is never held across a write, so the tap's snapshot of it never
+/// waits on the pipe.
+func observerWrite(_ object: [String: Any], frame: Bool, generation: Int) {
+    guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+    if frame {
+        switch observerBudget.admit(bytes: data.count, now: ProcessInfo.processInfo.systemUptime) {
+        case .send: break
+        case .drop(let reason, let notice):
+            if let notice, let line = try? JSONSerialization.data(withJSONObject: ["event": "observe_dropped", "atMs": wallMs(), "reason": reason.rawValue, "dropped": notice]) {
+                observerSend(line, generation: generation)
+            }
+            return
+        }
+    }
+    observerSend(data, generation: generation)
+}
+func observerSend(_ data: Data, generation: Int) {
+    outputLock.lock(); defer { outputLock.unlock() }
+    observerLock.lock(); let live = observerOn && observerGeneration == generation; observerLock.unlock()
+    guard live else { return }
+    FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data([10]))
+}
+/// The tap saw one of the owner's own events: copied as facts and handed to
+/// the observer off the tap's thread. Only a chord's key is read from the
+/// layout (a command modifier down); a character typed alone never is.
+func observerSawInput(type: CGEventType, event: CGEvent) {
+    observerLock.lock(); let on = observerOn, generation = observerGeneration; observerLock.unlock()
+    guard on, [CGEventType.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(type) else { return }
+    let flags = event.flags
+    var layoutName: String? = nil
+    if type == .keyDown, !flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty {
+        var length = 0, units = [UniChar](repeating: 0, count: 4)
+        event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &length, unicodeString: &units)
+        if length > 0 { layoutName = String(utf16CodeUnits: units, count: length) }
+    }
+    let input = ObserveInput(type: type, location: event.location, keyCode: event.getIntegerValueField(.keyboardEventKeycode), flags: flags,
+                             clickState: event.getIntegerValueField(.mouseEventClickState), wheel: event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1),
+                             layoutName: layoutName, at: ProcessInfo.processInfo.systemUptime, atMs: wallMs())
+    observerQueue.async { observerHandleInput(input, generation: generation) }
+}
+func observerMoment(now: TimeInterval) -> ObserveMoment {
+    let hidIdle = CGEventType(rawValue: ~0).map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) } ?? 0
+    let idle = lastManualInput().map { now - $0 } ?? hidIdle
+    // Butler acts: the latch is lifted, a window is bound for a background run, or a spoken scroll is under way.
+    let ownRun = !isStopped() || withState { targetBinding != nil || scrollSession != nil }
+    return ObserveMoment(locked: screenLocked(), secure: IsSecureEventInputEnabled(), ownRun: ownRun, idleSeconds: idle.isFinite ? max(0, idle) : 0)
+}
+/// What is in front, lightly: the application (inputApplication, so a
+/// Spotlight panel reads as Spotlight, which a watch refuses), its focused
+/// window's title and bounds, the page's host in a browser (pageIdentity),
+/// the focused element's role and label (fieldLabel: never a value), and
+/// whether a watch would refuse it: watchRefused for the application,
+/// watchDomainRefused for a browser page, which refuses one whose host
+/// cannot be read while any domain is protected.
+func observerReadFront(now: TimeInterval) -> ObserveFront {
+    let app = inputApplication()
+    let pid = app?.processIdentifier ?? 0, appId = app?.bundleIdentifier ?? ""
+    let element = AXUIElementCreateApplication(pid)
+    let window = pid > 0 ? attribute(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement } : nil
+    let focused = pid > 0 ? attribute(element, kAXFocusedUIElementAttribute).map { $0 as! AXUIElement } : nil
+    let browser = browserAppIDs.contains(appId)
+    let host = browser ? window.flatMap { pageIdentity(window: $0, focused: focused).host } : nil
+    let protected = (app.map { butlerOwn($0) } ?? true) || watchRefused(appId) || (browser && watchDomainRefused(domain: host, browser: true, protectedDomains: protectedDomains))
+    return ObserveFront(at: now, pid: pid, appId: appId, appName: app?.localizedName ?? "", window: window, bounds: window.flatMap(elementRect),
+                        title: window.flatMap { attribute($0, kAXTitleAttribute) as? String } ?? "", browser: browser, host: host, protected: protected,
+                        focused: focused, focusedRole: focused.flatMap { attribute($0, kAXRoleAttribute) as? String },
+                        focusedLabel: focused.map(fieldLabel) ?? "",
+                        focusedSecure: focused.map { attribute($0, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole } ?? false)
+}
+/// The last light reading when it is under two seconds old, else a fresh one.
+func observerFrontFacts(now: TimeInterval) -> ObserveFront {
+    if let front = observerFront, now - front.at < 2 { return front }
+    let front = observerReadFront(now: now)
+    observerFront = front
+    return front
+}
+/// The field with focus now: its label and whether it is secure.
+func observerFocus(pid: pid_t) -> (label: String, secure: Bool) {
+    guard pid > 0, let raw = attribute(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute) else { return ("", false) }
+    let focused = raw as! AXUIElement
+    return (fieldLabel(focused), attribute(focused, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole)
+}
+/// Bursts and held presses that are due go out.
+func observerFlushActions(now: TimeInterval, generation: Int) {
+    if let burst = observerTyping.flush(now: now) { observerWrite(burst.event, frame: false, generation: generation) }
+    if let burst = observerScroll.flush(now: now) { observerWrite(burst.event, frame: false, generation: generation) }
+    if let press = observerPresses.flush(now: now) { observerWrite(press.event, frame: false, generation: generation) }
+}
+/// One second: flush what is due, read the moment, and decide a frame. The
+/// lock screen, Butler's own run and idle are said once and read nothing;
+/// otherwise the front is read lightly and a frame is built (off this
+/// queue) when the tracker says one is due.
+func observerTick(generation: Int) {
+    guard observerLive(generation) else { return }
+    let now = ProcessInfo.processInfo.systemUptime, atMs = wallMs()
+    observerFlushActions(now: now, generation: generation)
+    observerLock.lock(); let tier = observerTier; observerLock.unlock()
+    let moment = observerMoment(now: now)
+    if let state = observeExclusion(secureInput: false, protected: false, locked: moment.locked, ownRun: moment.ownRun, idleSeconds: moment.idleSeconds) {
+        observerFront = nil
+        if case .transition(let code) = observerTracker.decide(signature: "", exclusion: state, now: now) {
+            observerWrite(observeFrame(ObserveReadings(), tier: tier, exclusion: code, atMs: atMs), frame: true, generation: generation)
+        }
+        return
+    }
+    // A frame is being built: the change stays pending for the next second.
+    guard !observerBuilding else { return }
+    let front = observerReadFront(now: now)
+    observerFront = front
+    let exclusion = observeExclusion(secureInput: moment.secure || front.focusedSecure, protected: front.protected, locked: false, ownRun: false, idleSeconds: moment.idleSeconds)
+    let signature = observeSignature(appId: front.appId, windowTitle: front.title, host: front.host, focusedRole: front.focusedRole)
+    guard observerTracker.decide(signature: signature, exclusion: exclusion, now: now) == .frame else { return }
+    if let exclusion {
+        var readings = ObserveReadings()
+        readings.appId = front.appId
+        observerWrite(observeFrame(readings, tier: tier, exclusion: exclusion, atMs: atMs), frame: true, generation: generation)
+        return
+    }
+    observerBuilding = true
+    Task {
+        let readings = await observerFullReadings(front, tier: tier)
+        observerQueue.async {
+            observerBuilding = false
+            guard observerLive(generation) else { return }
+            observerWrite(observeFrame(readings, tier: tier, exclusion: nil, atMs: atMs), frame: true, generation: generation)
+        }
+    }
+}
+/// The full reading behind one frame: the controls the capture would list
+/// (the same walk, names only: modelControlName never returns a field's
+/// contents), the window's text for tier text, and for text and pixels one
+/// screenshot excluding protected applications as capture's does: OCR when
+/// accessibility gave little text, the picture scaled to 512 px for pixels.
+func observerFullReadings(_ front: ObserveFront, tier: ObserveTier) async -> ObserveReadings {
+    var readings = ObserveReadings()
+    readings.appId = front.appId; readings.appName = front.appName; readings.windowTitle = front.title
+    readings.host = front.host; readings.browser = front.browser
+    readings.focusedRole = front.focusedRole; readings.focusedLabel = front.focusedLabel; readings.focusedSecure = front.focusedSecure
+    let display = CGDisplayBounds(displayID)
+    let walked: (controls: [ObserveControl], text: String) = await offThread {
+        guard let window = front.window else { return ([], "") }
+        let state = windowState(pid: front.pid, appId: front.appId, window: window, focused: front.focused)
+        var controls = groundedControls(state, display: display, limit: observeControlLimit)
+        if front.browser { controls = mergeControls(controls, webControls(window, display: display), limit: observeControlLimit) { $0 } }
+        let named = controls.map { ObserveControl(role: $0["role"] as? String ?? "", label: $0["label"] as? String ?? "") }
+        var text = ""
+        if tier >= .text {
+            text = windowVisibleText(window)
+            if front.browser { let page = webVisibleText(window, display: display); if page.count > text.count { text = page } }
+        }
+        return (named, text)
+    }
+    readings.controls = walked.controls
+    readings.visibleText = walked.text
+    guard tier >= .text, #available(macOS 14.0, *), CGPreflightScreenCaptureAccess(), tier == .pixels || walked.text.count < 600 else { return readings }
+    guard let image = try? await observerScreenshot() else { return readings }
+    if walked.text.count < 600 {
+        let read = await offThread { recognizeScreenText(image, window: front.bounds, display: display, limit: observeTextLimit) }
+        if read.count > walked.text.count { readings.visibleText = read }
+    }
+    if tier == .pixels { readings.images = await offThread { observeJpegRenditions(image) } }
+    return readings
+}
+/// One screenshot of the display as capture takes it: protected applications,
+/// terminals and Butler's own windows excluded, no cursor.
+@available(macOS 14.0, *)
+func observerScreenshot() async throws -> CGImage {
+    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+    guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw ControlError("Selected display is no longer connected.") }
+    let excluded = content.applications.filter { app in
+        protectedApps.contains(where: { app.bundleIdentifier.lowercased().contains($0.lowercased()) }) || terminalApp(app.bundleIdentifier)
+            || app.processID == getppid() || app.bundleIdentifier == "ai.coarena.openassist"
+    }
+    let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
+    let bounds = CGDisplayBounds(displayID), ratio = min(1, 1440 / bounds.width)
+    let config = SCStreamConfiguration()
+    config.width = Int(bounds.width * ratio); config.height = Int(bounds.height * ratio); config.showsCursor = false
+    return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+}
+/// JPEG renditions at most 512 px wide, largest first, for observeImageFitting.
+func observeJpegRenditions(_ image: CGImage) -> [Data] {
+    var result = [Data]()
+    for (width, quality) in [(observeImageMaxWidth, 0.5), (observeImageMaxWidth, 0.35), (384, 0.35), (256, 0.3)] {
+        let scale = min(1, Double(width) / Double(image.width))
+        let w = max(1, Int((Double(image.width) * scale).rounded())), h = max(1, Int((Double(image.height) * scale).rounded()))
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { continue }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let scaled = context.makeImage(), let jpeg = NSBitmapImageRep(cgImage: scaled).representation(using: .jpeg, properties: [.compressionFactor: quality]) else { continue }
+        result.append(jpeg)
+    }
+    return result
+}
+/// The element under the owner's press and the control it belongs to, walked
+/// as hitTargetFacts walks (the same roles stop the climb; a card's link or
+/// button is preferred to its unlabelled group), named by its label alone:
+/// an editable field by title, description or placeholder (elementText), a
+/// secure field as "secure field". The menu path when the press was on a
+/// menu item; whether it was on an application's Dock tile.
+struct ObserveHit { let appId: String; let role: String; let label: String; let menu: [String]?; let dock: Bool }
+func observerHitTarget(at point: CGPoint) -> ObserveHit? {
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success, var target = hit else { return nil }
+    var pid: pid_t = 0
+    let appId = AXUIElementGetPid(target, &pid) == .success ? (NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "") : ""
+    var ancestry = [ObserveAncestor](), node: AXUIElement? = target
+    for _ in 0..<12 {
+        guard let current = node else { break }
+        ancestry.append(ObserveAncestor(role: attribute(current, kAXRoleAttribute) as? String ?? "", title: attribute(current, kAXTitleAttribute) as? String ?? ""))
+        node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+    }
+    let menu = observeMenuPath(ancestry)
+    var role = attribute(target, kAXRoleAttribute) as? String ?? ""
+    for _ in 0..<6 where !hitWalkControlRoles.contains(role) {
+        guard hitWalkClimbRoles.contains(role), let parent = attribute(target, kAXParentAttribute), CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+        target = parent as! AXUIElement
+        role = attribute(target, kAXRoleAttribute) as? String ?? ""
+        if hitWalkStopsAt(role: role, description: attribute(target, kAXDescriptionAttribute) as? String ?? "", actions: actionNames(target)) { break }
+    }
+    if ["AXGroup", "AXImage", "AXStaticText"].contains(role) {
+        var ancestor = attribute(target, kAXParentAttribute).map { $0 as! AXUIElement }
+        for _ in 0..<8 {
+            guard let current = ancestor else { break }
+            let above = attribute(current, kAXRoleAttribute) as? String ?? ""
+            if ["AXWebArea", "AXWindow", "AXApplication"].contains(above) { break }
+            if ["AXLink", "AXButton"].contains(above) { target = current; role = above; break }
+            ancestor = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+        }
+    }
+    let subrole = attribute(target, kAXSubroleAttribute) as? String ?? ""
+    let secure = subrole == kAXSecureTextFieldSubrole
+    return ObserveHit(appId: appId, role: role, label: observeLabel(secure ? "" : elementText(target), secure: secure), menu: menu,
+                      dock: appId == "com.apple.dock" && subrole == "AXApplicationDockItem")
+}
+/// One of the owner's own events, on observerQueue. Nothing of the owner's
+/// is said from behind the lock screen, during Butler's own run, under
+/// secure input, in a protected application or page, or in a secure field.
+func observerHandleInput(_ input: ObserveInput, generation: Int) {
+    guard observerLive(generation) else { return }
+    let now = input.at
+    observerFlushActions(now: now, generation: generation)
+    let moment = observerMoment(now: now)
+    guard !moment.locked, !moment.ownRun, !moment.secure else { return }
+    let front = observerFrontFacts(now: now)
+    guard !front.protected else { return }
+    switch input.type {
+    case .keyDown:
+        let focus = observerFocus(pid: front.pid)
+        guard !focus.secure else { return }
+        switch observeKey(keyCode: input.keyCode, flags: input.flags, layoutName: input.layoutName) {
+        case .ignored: return
+        case .chord(let name):
+            // CMD+TAB is the switch it causes, said as app_switch on the activation.
+            if observerSwitch.saw(chord: name, at: now) { return }
+            observerWrite(observeAction(kind: "key_chord", appId: front.appId, atMs: input.atMs, fields: ["chord": name]), frame: false, generation: generation)
+        case .character:
+            if let ended = observerTyping.key(appId: front.appId, field: observeLabel(focus.label, secure: false), at: now, atMs: input.atMs) {
+                observerWrite(ended.event, frame: false, generation: generation)
+            }
+        }
+    case .scrollWheel:
+        if let ended = observerScroll.wheel(appId: front.appId, delta: input.wheel, at: now, atMs: input.atMs) {
+            observerWrite(ended.event, frame: false, generation: generation)
+        }
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+        guard let kind = observePointerKind(type: input.type, clickState: input.clickState) else { return }
+        let hit = observerHitTarget(at: input.location)
+        // A press in a protected application's own window (a palette over the front one) is not said either.
+        if let hit, !hit.appId.isEmpty, hit.appId != front.appId, watchRefused(hit.appId) { return }
+        let appId = hit.map { $0.appId.isEmpty ? front.appId : $0.appId } ?? front.appId
+        if let hit, let menu = hit.menu {
+            if let out = observerPresses.flush(now: now, force: true) { observerWrite(out.event, frame: false, generation: generation) }
+            observerWrite(observeAction(kind: "menu_item", appId: appId, atMs: input.atMs, fields: ["menu": menu, "target": ["role": hit.role, "label": hit.label]]), frame: false, generation: generation)
+            return
+        }
+        let press = ObservePress(kind: kind, appId: appId, target: hit.map { ObserveControl(role: $0.role, label: $0.label) }, dock: hit?.dock ?? false, at: now, atMs: input.atMs)
+        if let out = observerPresses.press(press) { observerWrite(out.event, frame: false, generation: generation) }
+        if let out = observerPresses.flush(now: now) { observerWrite(out.event, frame: false, generation: generation) }
+    default: return
+    }
+}
+/// An application came forward: the switch the owner caused by CMD+TAB or a
+/// Dock press is said (never into a protected application), and the front
+/// is read now rather than at the next second.
+func observerActivated(appId: String, generation: Int) {
+    guard observerLive(generation) else { return }
+    let now = ProcessInfo.processInfo.systemUptime, atMs = wallMs()
+    let moment = observerMoment(now: now)
+    if !moment.locked, !moment.ownRun, !moment.secure, !watchRefused(appId) {
+        if let dock = observerPresses.takeDockPress(now: now) {
+            var fields = [String: Any]()
+            if let target = dock.target { fields["target"] = ["role": target.role, "label": target.label] }
+            observerWrite(observeAction(kind: "app_switch", appId: appId, atMs: atMs, fields: fields), frame: false, generation: generation)
+        } else if let chord = observerSwitch.cause(now: now) {
+            observerWrite(observeAction(kind: "app_switch", appId: appId, atMs: atMs, fields: ["chord": chord]), frame: false, generation: generation)
+        }
+    }
+    observerSwitch.reset()
+    observerTick(generation: generation)
+}
 func handle(_ command:[String:Any]) async throws -> [String:Any] {
     switch command["method"] as? String {
     case "permissions":return ["screen":CGPreflightScreenCaptureAccess(),"accessibility":AXIsProcessTrusted(),"emergencyStop":tap != nil,"supported":ProcessInfo.processInfo.operatingSystemVersion.majorVersion>=14]
@@ -3550,6 +3964,12 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
         let on = command["on"] as? Bool ?? false
         withState { watching = on; if !on { lastEscapeAt = nil } }
         return ["watching": on]
+    // Watching how the owner works (Observer.swift, MARK: observe): on installs
+    // the tap without lifting the latch; off is also answered on the reader thread.
+    case "observe":
+        guard let options = ObserveOptions(command: command) else { throw ControlError("Invalid observe options.") }
+        if options.on { return try startObserving(options) }
+        return stopObserving()
     case "focusWatch":
         guard let token = command["token"] as? String else { throw ControlError("Missing token.") }
         return try await focusWatch(token: token)
@@ -3637,6 +4057,9 @@ DispatchQueue.global().async {
         // ahead of the queue: a capture or paced typing in flight would
         // otherwise hold it past that deadline and leave main a stale report.
         if command["method"] as? String == "presence" {emit(["id":command["id"] ?? "","result":presence()]);continue}
+        // Stopping the observer must not wait behind a capture: the flag flips
+        // here, so nothing goes out after this answer (.data/design/observer.md §2).
+        if command["method"] as? String == "observe", command["on"] as? Bool == false {emit(["id":command["id"] ?? "","result":stopObserving()]);continue}
         // A spoken stop must not wait behind a capture or paced typing: the
         // scroll ends here, off the queue, under its own locks.
         if command["method"] as? String == "scrollStop" {endContinuousScroll(.stop);emit(["id":command["id"] ?? "","result":["stopped":true]]);continue}

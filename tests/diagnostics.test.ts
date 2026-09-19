@@ -256,6 +256,67 @@ describe("local diagnostic stream", () => {
       expect(lines[1].data).toEqual({ method: "capture" });
       expect(lines[2].data).toEqual({ method: "execute", waitedMs: 30012 });
     }));
+  it("keeps the observe stream's codes only: a frame's application and exclusion, an action's kind, a drop's reason and count", () =>
+    fixture((log) => {
+      // The controller traces these with codes alone; the writer keeps
+      // exactly those keys whatever a caller passes, so a frame's title,
+      // host, labels, controls, text digest and picture never reach the
+      // diagnostics (.data/design/observer.md §2, §6).
+      log.write("ObserverFrame", {
+        appId: "com.apple.Notes",
+        excluded: undefined,
+        windowTitle: "Groceries password: hunter2!x",
+        host: "docs.example.com",
+        focusedLabel: "Note body",
+        controls: [{ role: "button", label: "Save" }],
+        textDigest: "private screen text",
+        image: "QUJD",
+        runId: "dda590c3-1234-4567-8cd6-c0e751c0cd36",
+      });
+      log.write("ObserverFrame", {
+        appId: "com.1password.1password",
+        excluded: "secure_input",
+      });
+      log.write("ObserverFrame", { excluded: "not a code" });
+      log.write("ObserverAction", {
+        kind: "typing",
+        appId: "com.apple.Notes",
+        target: { role: "AXButton", label: "Save" },
+        chord: "CMD+S",
+        typed: { field: "Note body", chars: 12, ms: 1800 },
+        menu: ["File", "Export"],
+      });
+      log.write("ObserverDropped", {
+        reason: "minute_budget",
+        dropped: 3,
+        atMs: 5,
+      });
+      const lines = readFileSync(log.file, "utf8")
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(lines.map((l) => l.data)).toEqual([
+        { appId: "com.apple.Notes" },
+        { appId: "com.1password.1password", excluded: "secure_input" },
+        {},
+        { kind: "typing" },
+        { reason: "minute_budget", dropped: 3 },
+      ]);
+      const raw = readFileSync(log.file, "utf8");
+      for (const word of [
+        "Groceries",
+        "hunter2",
+        "docs.example.com",
+        "Note body",
+        "Save",
+        "private screen text",
+        "QUJD",
+        "CMD+S",
+        "Export",
+        "dda590c3",
+      ])
+        expect(raw, word).not.toContain(word);
+    }));
   it("logs refusals and action loops by code and shape only", () =>
     fixture((log) => {
       const id = crypto.randomUUID();

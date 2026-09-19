@@ -280,6 +280,10 @@ const fields = new Set([
   "ms",
   "loaded",
   "rejected",
+  // The observe stream (ObserverFrame, ObserverAction, ObserverDropped):
+  // the application's id and the exclusion code, the action's kind, the
+  // drop's reason and count. Never a title, a label, a digest or a picture.
+  "excluded",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -442,6 +446,8 @@ const codeFields = new Set([
   // A clause's commit ("boundary" or "stable") and a fast action's site code.
   "by",
   "siteKey",
+  // An observe frame's exclusion.
+  "excluded",
 ]);
 /**
  * The early step's own events keep only these keys, whatever else a caller
@@ -500,7 +506,22 @@ const moduleEvents = new Map<string, Set<string>>([
   ["ModuleFallback", new Set(["port", "kind", "code"])],
   ["ModuleSlow", new Set(["port", "kind", "ms"])],
 ]);
-const keyedEvents = new Map([...streamEvents, ...moduleEvents]);
+/**
+ * The observe stream (electron/controller.ts, .data/design/observer.md):
+ * a frame is its application and exclusion code, an action its kind, a
+ * drop its reason and count. A frame's title, host, labels, controls, text
+ * digest and picture never reach the diagnostics, whatever a caller passes.
+ */
+const observerEvents = new Map<string, Set<string>>([
+  ["ObserverFrame", new Set(["appId", "excluded"])],
+  ["ObserverAction", new Set(["kind"])],
+  ["ObserverDropped", new Set(["reason", "dropped"])],
+]);
+const keyedEvents = new Map([
+  ...streamEvents,
+  ...moduleEvents,
+  ...observerEvents,
+]);
 const memoryEvents = new Set([
   "MemoryRecalled",
   "PlanStepProposed",

@@ -561,6 +561,257 @@ const watchMethods = new Set([
   "focusWatch",
 ]);
 /**
+ * The observe stream (.data/design/observer.md §2, lane O1). The helper
+ * emits three events on its channel while `observe {on:true}` holds: a
+ * frame (what is in front, on a change and at most once per everyMs), an
+ * action (what the owner did, from the tap's unmarked input, content-free
+ * by construction) and a notice of frames the byte caps refused. Every
+ * event is validated and bounded here before the app sees it; an excluded
+ * frame keeps nothing but its code and, for secure input and a protected
+ * surface, the application's id.
+ */
+export type ObserveTier = "structure" | "text" | "pixels";
+export const observeTiers: readonly ObserveTier[] = [
+  "structure",
+  "text",
+  "pixels",
+];
+export type ObserveExclusion =
+  "secure_input" | "protected" | "locked" | "own_run" | "idle";
+const observeExclusions = new Set<ObserveExclusion>([
+  "secure_input",
+  "protected",
+  "locked",
+  "own_run",
+  "idle",
+]);
+export type ObserveActionKind =
+  | "click"
+  | "double_click"
+  | "right_click"
+  | "key_chord"
+  | "typing"
+  | "scroll"
+  | "app_switch"
+  | "menu_item";
+const observeActionKinds = new Set<ObserveActionKind>([
+  "click",
+  "double_click",
+  "right_click",
+  "key_chord",
+  "typing",
+  "scroll",
+  "app_switch",
+  "menu_item",
+]);
+export type ObserveDropReason = "frame_too_large" | "minute_budget";
+const observeDropReasons = new Set<ObserveDropReason>([
+  "frame_too_large",
+  "minute_budget",
+]);
+export interface ObserveOptions {
+  on: boolean;
+  /** What a frame carries; structure when omitted. */
+  tier?: ObserveTier;
+  /** The least time between two frames; 20 s when omitted, clamped to 1 s … 10 min. */
+  everyMs?: number;
+}
+export interface ObserveControl {
+  role: string;
+  label: string;
+}
+export interface ObserveFrame {
+  event: "observe_frame";
+  atMs: number;
+  appId?: string;
+  appName?: string;
+  /** Redacted by the helper, at most 120 UTF-16 units. */
+  windowTitle?: string;
+  /** The page's host alone, never a path or a query. */
+  host?: string;
+  focusedRole?: string;
+  /** The field's label, never its value; "secure field" for one. */
+  focusedLabel?: string;
+  /** At most 60, names only. */
+  controls?: ObserveControl[];
+  /** Tier text and above: redacted, at most 1 500 UTF-16 units. */
+  textDigest?: string;
+  /** Tier pixels: a JPEG at most 512 px wide, base64. */
+  image?: string;
+  excluded?: ObserveExclusion;
+  /** On an own_run frame: the run that was going, added by the controller. */
+  runId?: string;
+}
+export interface ObserveAction {
+  event: "observe_action";
+  atMs: number;
+  appId: string;
+  kind: ObserveActionKind;
+  target?: ObserveControl;
+  chord?: string;
+  typed?: { field: string; chars: number; ms: number };
+  scroll?: { direction: "up" | "down"; ticks: number };
+  menu?: string[];
+}
+export interface ObserveDropped {
+  event: "observe_dropped";
+  atMs: number;
+  reason: ObserveDropReason;
+  /** Frames dropped since the last notice. */
+  dropped: number;
+}
+export type ObservedEvent = ObserveFrame | ObserveAction | ObserveDropped;
+/** The helper's bounds, applied again here so a helper bug cannot widen them. */
+export const OBSERVE_TITLE_MAX = 120;
+export const OBSERVE_LABEL_MAX = 120;
+export const OBSERVE_APP_NAME_MAX = 100;
+export const OBSERVE_CONTROLS_MAX = 60;
+export const OBSERVE_TEXT_MAX = 1500;
+export const OBSERVE_FRAME_MAX_BYTES = 24 * 1024;
+export const OBSERVE_MENU_MAX = 6;
+export const OBSERVE_EVERY_MS_DEFAULT = 20_000;
+export const OBSERVE_EVERY_MS_MIN = 1_000;
+export const OBSERVE_EVERY_MS_MAX = 600_000;
+const boundedString = (value: unknown, max: number) =>
+  typeof value === "string" && value.length > 0
+    ? value.slice(0, max)
+    : undefined;
+const wholeNumber = (value: unknown) =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined;
+const observeControl = (value: unknown): ObserveControl | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.role !== "string" || typeof v.label !== "string")
+    return undefined;
+  return {
+    role: v.role.slice(0, 40),
+    label: v.label.slice(0, OBSERVE_LABEL_MAX),
+  };
+};
+/**
+ * One event of the observe stream in the contract's shape, or undefined
+ * when the helper's line is not one. Fields outside the contract are
+ * dropped, strings are cut to the helper's own bounds, and an excluded
+ * frame keeps its code and (secure_input, protected) the application's id
+ * only: main adds the runId to an own_run frame.
+ */
+export function observedEvent(value: unknown): ObservedEvent | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  const atMs = wholeNumber(v.atMs);
+  if (atMs === undefined) return undefined;
+  if (v.event === "observe_dropped") {
+    if (
+      typeof v.reason !== "string" ||
+      !observeDropReasons.has(v.reason as ObserveDropReason)
+    )
+      return undefined;
+    return {
+      event: "observe_dropped",
+      atMs,
+      reason: v.reason as ObserveDropReason,
+      dropped: wholeNumber(v.dropped) ?? 1,
+    };
+  }
+  if (v.event === "observe_action") {
+    const appId = boundedString(v.appId, 255);
+    if (
+      !appId ||
+      typeof v.kind !== "string" ||
+      !observeActionKinds.has(v.kind as ObserveActionKind)
+    )
+      return undefined;
+    const action: ObserveAction = {
+      event: "observe_action",
+      atMs,
+      appId,
+      kind: v.kind as ObserveActionKind,
+    };
+    const target = observeControl(v.target);
+    if (target) action.target = target;
+    const chord = boundedString(v.chord, 40);
+    if (chord && /^[A-Z0-9+`~!@#$%^&*()_\-=\[\]{};':",.<>/?\\|]+$/.test(chord))
+      action.chord = chord;
+    if (v.typed && typeof v.typed === "object") {
+      const t = v.typed as Record<string, unknown>;
+      const chars = wholeNumber(t.chars),
+        ms = wholeNumber(t.ms);
+      if (
+        typeof t.field === "string" &&
+        chars !== undefined &&
+        ms !== undefined
+      )
+        action.typed = {
+          field: t.field.slice(0, OBSERVE_LABEL_MAX),
+          chars,
+          ms,
+        };
+    }
+    if (v.scroll && typeof v.scroll === "object") {
+      const sc = v.scroll as Record<string, unknown>;
+      const ticks = wholeNumber(sc.ticks);
+      if (
+        (sc.direction === "up" || sc.direction === "down") &&
+        ticks !== undefined
+      )
+        action.scroll = { direction: sc.direction, ticks };
+    }
+    if (Array.isArray(v.menu)) {
+      const menu = v.menu
+        .filter((m): m is string => typeof m === "string" && m.length > 0)
+        .slice(0, OBSERVE_MENU_MAX)
+        .map((m) => m.slice(0, 60));
+      if (menu.length) action.menu = menu;
+    }
+    return action;
+  }
+  if (v.event !== "observe_frame") return undefined;
+  if (v.excluded !== undefined) {
+    if (
+      typeof v.excluded !== "string" ||
+      !observeExclusions.has(v.excluded as ObserveExclusion)
+    )
+      return undefined;
+    const excluded = v.excluded as ObserveExclusion;
+    const frame: ObserveFrame = { event: "observe_frame", atMs, excluded };
+    const appId = boundedString(v.appId, 255);
+    if (appId && (excluded === "secure_input" || excluded === "protected"))
+      frame.appId = appId;
+    return frame;
+  }
+  const appId = boundedString(v.appId, 255);
+  if (!appId) return undefined;
+  const frame: ObserveFrame = { event: "observe_frame", atMs, appId };
+  const appName = boundedString(v.appName, OBSERVE_APP_NAME_MAX);
+  if (appName) frame.appName = appName;
+  const windowTitle = boundedString(v.windowTitle, OBSERVE_TITLE_MAX);
+  if (windowTitle) frame.windowTitle = windowTitle;
+  const host = boundedString(v.host, 253);
+  if (host && /^[a-z0-9.-]+$/i.test(host)) frame.host = host.toLowerCase();
+  const focusedRole = boundedString(v.focusedRole, 40);
+  if (focusedRole) frame.focusedRole = focusedRole;
+  const focusedLabel = boundedString(v.focusedLabel, OBSERVE_LABEL_MAX);
+  if (focusedLabel) frame.focusedLabel = focusedLabel;
+  frame.controls = Array.isArray(v.controls)
+    ? v.controls
+        .map(observeControl)
+        .filter((c): c is ObserveControl => !!c)
+        .slice(0, OBSERVE_CONTROLS_MAX)
+    : [];
+  const textDigest = boundedString(v.textDigest, OBSERVE_TEXT_MAX);
+  if (textDigest) frame.textDigest = textDigest;
+  if (
+    typeof v.image === "string" &&
+    v.image.length > 0 &&
+    v.image.length <= OBSERVE_FRAME_MAX_BYTES &&
+    /^[A-Za-z0-9+/]+=*$/.test(v.image)
+  )
+    frame.image = v.image;
+  return frame;
+}
+/**
  * A bounded copy of the helper's run target, or undefined when its shape is
  * not one. As with a watch binding, the token names the window only to the
  * helper (.data/design/background-actuation.md §2.2).
@@ -821,6 +1072,9 @@ export function nativeTimeout(
     return 8000;
   if (["unbindWatch", "setWatchMode", "unbindTarget"].includes(method))
     return 3000;
+  // Turning the observer on installs the tap and starts a timer; off flips
+  // a flag on the helper's reader thread. Neither reads the screen.
+  if (method === "observe") return 3000;
   // The helper answers presence on its reader thread, ahead of its command
   // queue, so it never waits behind a capture or paced typing and answers in
   // milliseconds; a slow answer means a wedged helper, not a long request.
@@ -876,6 +1130,8 @@ export class NativeController implements Controller {
   ) => Promise<ExecutionResult["navigated"]>;
   /** LaunchServices `open` with these arguments (a test passes a fake). */
   private launch: (args: string[]) => Promise<void>;
+  /** The run going now, for the observer's own_run frames (setObserveRun). */
+  private observeRun?: string;
   constructor(
     binary: string,
     emergency: () => void,
@@ -903,6 +1159,11 @@ export class NativeController implements Controller {
       targetSelfActivated?: (token: string) => void;
       /** The binding behind the token died or became protected. */
       targetGone?: (token: string, code: TargetCode) => void;
+      /**
+       * One event of the observe stream (a frame, an action or a dropped
+       * notice), validated and bounded; only while observe({on:true}) holds.
+       */
+      observed?: (event: ObservedEvent) => void;
       /**
        * The open_url route (electron/open-url.ts): the browser is told the
        * address by Apple Event or LaunchServices, never through the helper.
@@ -1020,6 +1281,37 @@ export class NativeController implements Controller {
           if (report) hooks.scrollEnded?.(report);
           return true;
         }
+        if (
+          obj.event === "observe_frame" ||
+          obj.event === "observe_action" ||
+          obj.event === "observe_dropped"
+        ) {
+          const event = observedEvent(obj);
+          if (!event) {
+            trace(this.diagnostics, "ObserverMalformed", { kind: obj.event });
+            return true;
+          }
+          // The diagnostics see codes only: never a title, a digest, a
+          // picture, a label or a chord (electron/diagnostics.ts keeps
+          // exactly these keys for these events).
+          if (event.event === "observe_frame") {
+            if (event.excluded === "own_run" && this.observeRun)
+              event.runId = this.observeRun;
+            trace(this.diagnostics, "ObserverFrame", {
+              appId: event.appId,
+              excluded: event.excluded,
+            });
+          } else if (event.event === "observe_action") {
+            trace(this.diagnostics, "ObserverAction", { kind: event.kind });
+          } else {
+            trace(this.diagnostics, "ObserverDropped", {
+              reason: event.reason,
+              dropped: event.dropped,
+            });
+          }
+          hooks.observed?.(event);
+          return true;
+        }
         return typeof obj.event === "string";
       },
     });
@@ -1047,17 +1339,23 @@ export class NativeController implements Controller {
               : method === "unbindTarget"
                 ? // Releasing a binding at the end of a run is never worth a restart.
                   { message: "The target did not answer in time.", kill: false }
-                : {
-                    message:
-                      "Desktop control stopped responding and is restarting.",
-                    kill: true,
-                    // Alive and busy is not dead: while the helper answers
-                    // presence the wait is extended up to this bound, then
-                    // the request fails with its own sentence and the
-                    // helper, its bindings and its tap are kept.
-                    limitMs: this.slowLimit(method, data),
-                    slow: slowMessage(method),
-                  },
+                : method === "observe"
+                  ? // The observer is a flag and a timer; a restart would pause a run for it.
+                    {
+                      message: "The observer did not answer in time.",
+                      kill: false,
+                    }
+                  : {
+                      message:
+                        "Desktop control stopped responding and is restarting.",
+                      kill: true,
+                      // Alive and busy is not dead: while the helper answers
+                      // presence the wait is extended up to this bound, then
+                      // the request fails with its own sentence and the
+                      // helper, its bindings and its tap are kept.
+                      limitMs: this.slowLimit(method, data),
+                      slow: slowMessage(method),
+                    },
       )
       .then(
         (result) => {
@@ -1300,6 +1598,38 @@ export class NativeController implements Controller {
   }
   async scrollStop() {
     await this.request("scrollStop");
+  }
+  /**
+   * Watching how the owner works (.data/design/observer.md §2): turns the
+   * helper's observe stream on at a tier and cadence, or off. Off is
+   * acknowledged by the helper before anything queued behind a capture,
+   * and nothing of the stream follows the acknowledgement. The events reach
+   * the app through hooks.observed.
+   */
+  async observe(options: ObserveOptions): Promise<{ observing: boolean }> {
+    const tier = options.tier ?? "structure";
+    if (!observeTiers.includes(tier)) throw new Error("Unknown observe tier.");
+    const requested = options.everyMs ?? OBSERVE_EVERY_MS_DEFAULT;
+    const everyMs = Number.isFinite(requested)
+      ? Math.min(
+          OBSERVE_EVERY_MS_MAX,
+          Math.max(OBSERVE_EVERY_MS_MIN, Math.round(requested)),
+        )
+      : OBSERVE_EVERY_MS_DEFAULT;
+    const result = await this.request("observe", {
+      on: options.on,
+      tier,
+      everyMs,
+    });
+    return { observing: result?.observing === true };
+  }
+  /**
+   * The run going now, so an own_run frame carries its id (the helper
+   * knows a run is going from its latch and bindings, not which one).
+   * Undefined when no run is going.
+   */
+  setObserveRun(runId: string | undefined) {
+    this.observeRun = runId;
   }
   close() {
     this.helper.close(() => this.stop());
