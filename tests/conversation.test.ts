@@ -629,6 +629,87 @@ describe("conversation: push-to-talk and hands-free", () => {
     expect(ptt.listens()).toEqual([]);
   });
 
+  it("makes every window as long as the Keep listening setting says, approvals bounded", async () => {
+    const long = setup({ handsFree: true, followUpWindow: "long" });
+    long.voiceStart();
+    expect(long.spoken[0]).toMatchObject({
+      text: "On it.",
+      listen: { kind: "continuation", seconds: 20 },
+    });
+    long.render(approval("Open Notes?"));
+    expect(long.spoken.at(-1)?.listen).toEqual({
+      kind: "approval",
+      seconds: 12,
+    });
+    long.play();
+    long.conversation.acknowledge({ kind: "pause" }, { source: "wake" });
+    expect(long.spoken.at(-1)?.listen).toEqual({ kind: "answer", seconds: 20 });
+
+    const talk = setup({ handsFree: true, followUpWindow: "conversation" });
+    talk.voiceStart();
+    expect(talk.spoken[0].listen).toEqual({
+      kind: "continuation",
+      seconds: 45,
+    });
+    talk.render(approval("Open Notes?"));
+    expect(talk.spoken.at(-1)?.listen).toEqual({
+      kind: "approval",
+      seconds: 12,
+    });
+    talk.play();
+    talk.render(snapshot("takeover", { message: "Which account?" }));
+    expect(talk.spoken.at(-1)?.listen).toEqual({ kind: "answer", seconds: 45 });
+    talk.play();
+    // A fragment still waits only the short grace before it is asked about;
+    // the question itself then listens the long way.
+    talk.listenReply(() => ({ opened: false }));
+    talk.conversation.clarify("Open what?", "Open", { source: "followup" });
+    expect(talk.listens().at(-1)).toEqual({ kind: "answer", seconds: 3 });
+    await talk.flush();
+    expect(talk.spoken.at(-1)).toMatchObject({
+      text: "Open what?",
+      listen: { kind: "answer", seconds: 45 },
+    });
+    // The closing phrase is acknowledged with nothing: no line, no window.
+    const before = {
+      spoken: talk.spoken.length,
+      listens: talk.listens().length,
+    };
+    talk.conversation.acknowledge(
+      { kind: "endConversation" },
+      { source: "followup", handsFree: true },
+    );
+    expect(talk.spoken).toHaveLength(before.spoken);
+    expect(talk.listens()).toHaveLength(before.listens);
+
+    // Windows asked for on their own, and the one after a spoken result.
+    const quiet = setup({
+      voiceReplies: "off",
+      handsFree: true,
+      followUpWindow: "conversation",
+    });
+    quiet.voiceStart("ptt");
+    quiet.conversation.acknowledge({ kind: "decline" }, { source: "followup" });
+    expect(quiet.listens()).toEqual([{ kind: "answer", seconds: 45 }]);
+    const result = setup(
+      {
+        conversation: "model",
+        handsFree: true,
+        followUpWindow: "conversation",
+      },
+      { modelActive: () => true },
+    );
+    result.voiceStart();
+    result.advance(20000);
+    result.render(
+      snapshot("completed", { summary: "Spotify is open.", actions: 12 }),
+    );
+    expect(result.spoken.at(-1)).toMatchObject({
+      text: "Spotify is open.",
+      listen: { kind: "answer", seconds: 45 },
+    });
+  });
+
   it("adds the approval suffix only to the first hands-free question", () => {
     const t = setup({ handsFree: true });
     t.voiceStart();

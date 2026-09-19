@@ -11,6 +11,8 @@ import {
   askWhatToDo,
   deicticTask,
   dropsCurrentTask,
+  endsConversation,
+  followUpSeconds,
   isWakePhraseOnly,
   cleanTaskText,
   clarifyFragment,
@@ -342,6 +344,36 @@ describe("intent normalization", () => {
           text,
           kind === "stop" || kind === "pause",
         ]);
+  });
+
+  it("ends a conversation on exactly the closing fixtures (native parity)", () => {
+    expect(fixture.endConversation.length).toBeGreaterThan(0);
+    for (const text of fixture.endConversation) {
+      expect([text, endsConversation(text)]).toEqual([text, true]);
+      expect(isControlPhrase(text)).toBe(false);
+    }
+    // Every routed intent keeps talking: a bare "thanks" is an acknowledgement,
+    // "say goodbye to Dana" and "stop listening to the podcast" are commands.
+    for (const kind of intents)
+      for (const text of fixture[kind])
+        expect([text, endsConversation(text)]).toEqual([text, false]);
+    for (const text of ["thanks Butler open notes", "that's all wrong", ""])
+      expect(endsConversation(text)).toBe(false);
+  });
+
+  it("makes follow-up windows as long as the setting says, approvals bounded", () => {
+    expect(
+      (["continuation", "answer", "approval"] as const).map((kind) => [
+        followUpSeconds(kind),
+        followUpSeconds(kind, "short"),
+        followUpSeconds(kind, "long"),
+        followUpSeconds(kind, "conversation"),
+      ]),
+    ).toEqual([
+      [3, 3, 20, 45],
+      [8, 8, 20, 45],
+      [8, 8, 12, 12],
+    ]);
   });
 
   it("never approves on back-channel words and keeps negated stops as commands", () => {
@@ -730,6 +762,64 @@ describe("turn planning", () => {
       now,
       ...over,
     });
+
+  it("ends a conversation-mode window on its closing phrases without acting", () => {
+    const talk = { followUpWindow: "conversation" as const };
+    for (const text of fixture.endConversation) {
+      // Whatever is going on: nothing runs, resumes, queues or is approved.
+      for (const state of [
+        undefined,
+        run(),
+        approval("Open Notes?"),
+        run({ status: "paused", held: true, stalled: true }),
+      ])
+        expect(
+          plan({
+            ...talk,
+            text,
+            source: "followup",
+            window: "continuation",
+            run: state,
+          }),
+        ).toEqual({ kind: "endConversation" });
+      expect(plan({ ...talk, text, source: "wake" })).toEqual({
+        kind: "endConversation",
+      });
+      // A pending fragment does not turn "that's all" into its answer.
+      expect(
+        plan({
+          ...talk,
+          text,
+          source: "followup",
+          window: "answer",
+          fragment: { text: "Open", until: now + 5000 },
+        }),
+      ).toEqual({ kind: "endConversation" });
+      // Typed or texted words never end a window: there is none.
+      for (const source of ["text", "message", "remote"] as const)
+        expect(plan({ ...talk, text, source }).kind).not.toBe(
+          "endConversation",
+        );
+      // Under the other settings the same words are what they always were.
+      for (const followUpWindow of ["short", "long", undefined] as const)
+        expect(
+          plan({ followUpWindow, text, source: "followup" }).kind,
+        ).not.toBe("endConversation");
+    }
+    // Stop, pause and a bare thanks are untouched by the setting.
+    expect(plan({ ...talk, text: "stop", run: run() })).toEqual({
+      kind: "stop",
+    });
+    expect(plan({ ...talk, text: "wait", run: run() })).toEqual({
+      kind: "pause",
+    });
+    expect(plan({ ...talk, text: "thanks" })).toEqual({ kind: "acknowledge" });
+    expect(plan({ ...talk, text: "say goodbye to Dana" })).toEqual({
+      kind: "start",
+      text: "say goodbye to Dana",
+      taskSource: "user_words",
+    });
+  });
 
   it("lets stop and pause win everywhere, including a continuation window", () => {
     const lastTurn = {

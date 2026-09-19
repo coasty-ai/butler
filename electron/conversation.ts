@@ -24,6 +24,8 @@ import {
 } from "../src/voice/speakable";
 import {
   followUpApprovalAllowed,
+  followUpSeconds,
+  type FollowUpWindow,
   type TurnPlan,
   type VoiceFragment,
   type VoiceLastTurn,
@@ -39,6 +41,8 @@ export interface ConversationSettings {
   handsFree: boolean;
   voiceReplies?: VoiceReplies;
   followUpListening?: boolean;
+  /** How long the windows stay open (default "short"). */
+  followUpWindow?: FollowUpWindow;
   voiceRate?: number;
   /**
    * "model": replies are written by the dialog model, step narration
@@ -218,11 +222,8 @@ interface Fragment {
   askedAt?: number;
 }
 
-export const ANSWER_WINDOW: Listen = { kind: "answer", seconds: 8 };
-export const APPROVAL_WINDOW: Listen = { kind: "approval", seconds: 8 };
-export const CONTINUATION_WINDOW: Listen = { kind: "continuation", seconds: 3 };
 /** After a spoken result, hands-free with the model on: no wake word needed. */
-export const AFTER_RESULT_WINDOW: Listen = { kind: "answer", seconds: 5 };
+const AFTER_RESULT_SECONDS = 5;
 /** A filler that already played gives the streamed answer this long to wait for it. */
 export const FILLER_TAIL_MS = 1200;
 /** A short run whose fast-start line just played gets no spoken "Done." on top. */
@@ -532,14 +533,14 @@ export class Conversation {
       switch (plan.kind) {
         case "start":
         case "replace":
-          afterReply(ptt ? undefined : CONTINUATION_WINDOW);
+          afterReply(ptt ? undefined : this.listenWindow("continuation"));
           break;
         case "revise":
         case "queue":
-          afterReply(CONTINUATION_WINDOW);
+          afterReply(this.listenWindow("continuation"));
           break;
         case "pause":
-          afterReply(ANSWER_WINDOW);
+          afterReply(this.listenWindow("answer"));
           break;
         case "status":
           afterReply(undefined);
@@ -571,16 +572,26 @@ export class Conversation {
         // hands-free the follow-up window reopens right after the reply.
         case "start":
         case "replace":
-          reply("ackStart", "ack", true, ptt ? undefined : CONTINUATION_WINDOW);
+          reply(
+            "ackStart",
+            "ack",
+            true,
+            ptt ? undefined : this.listenWindow("continuation"),
+          );
           break;
         case "revise":
-          reply("ackCorrection", "ack", true, CONTINUATION_WINDOW);
+          reply(
+            "ackCorrection",
+            "ack",
+            true,
+            this.listenWindow("continuation"),
+          );
           break;
         case "stop":
           reply("ackStop", "ack", true);
           break;
         case "pause":
-          reply("ackPause", "ack", true, ANSWER_WINDOW);
+          reply("ackPause", "ack", true, this.listenWindow("answer"));
           break;
         case "resume":
           reply("ackResume", "ack", true);
@@ -589,7 +600,7 @@ export class Conversation {
           reply("ackApprove", "ack", true);
           break;
         case "decline":
-          reply("ackDecline", "ack", true, ANSWER_WINDOW);
+          reply("ackDecline", "ack", true, this.listenWindow("answer"));
           break;
         case "needClick":
           reply("needClick", "urgent", true);
@@ -600,7 +611,13 @@ export class Conversation {
             this.confirmAgain = { key, count: 0 };
           // After two re-prompts the pill alone asks.
           if (++this.confirmAgain.count <= MAX_CONFIRM_AGAIN)
-            reply("confirmAgain", "urgent", true, APPROVAL_WINDOW, gateOf(s));
+            reply(
+              "confirmAgain",
+              "urgent",
+              true,
+              this.listenWindow("approval"),
+              gateOf(s),
+            );
           break;
         }
         case "nothingToApprove":
@@ -609,7 +626,7 @@ export class Conversation {
             "result",
             true,
             run && ["paused", "takeover"].includes(run.status)
-              ? ANSWER_WINDOW
+              ? this.listenWindow("answer")
               : undefined,
           );
           break;
@@ -623,7 +640,7 @@ export class Conversation {
           this.clarify(plan.question, undefined, { source, handsFree });
           break;
         case "queue":
-          reply("queued", "ack", true, CONTINUATION_WINDOW);
+          reply("queued", "ack", true, this.listenWindow("continuation"));
           break;
         case "status":
           // The truthful line main built from the run view; without one, the
@@ -646,6 +663,8 @@ export class Conversation {
           break;
         case "amendTask":
         case "acknowledge":
+        // "That's all": main closed the window; nothing is said and none opens.
+        case "endConversation":
           break;
         // The run reports the undo itself, a moment later: "Undone." or
         // "Nothing to undo." as its pause or its result.
@@ -852,7 +871,7 @@ export class Conversation {
     const listen =
       reply.listen ??
       (/\?\s*$/.test(reply.spokenText) && this.windowsAllowed(reply.handsFree)
-        ? ANSWER_WINDOW
+        ? this.listenWindow("answer")
         : undefined);
     reply.listen = undefined;
     if (listen && !reply.cancelled) void this.listen(listen);
@@ -929,7 +948,11 @@ export class Conversation {
     this.markAsked();
     this.say(
       { text },
-      { priority: "urgent", listen: ANSWER_WINDOW, kind: "clarify" },
+      {
+        priority: "urgent",
+        listen: this.listenWindow("answer"),
+        kind: "clarify",
+      },
     );
   }
 
@@ -1283,7 +1306,7 @@ export class Conversation {
             restricted: !followUpApprovalAllowed(s.pending.reason),
           }),
           priority: "urgent",
-          listen: APPROVAL_WINDOW,
+          listen: this.listenWindow("approval"),
           gate: gateOf(s),
           valid: (x) => approvalKey(x) === key,
         };
@@ -1295,7 +1318,7 @@ export class Conversation {
           kind: "question",
           text: speakableQuestion(message) ?? phrase("needHelp"),
           priority: "urgent",
-          listen: ANSWER_WINDOW,
+          listen: this.listenWindow("answer"),
           valid: (x) =>
             x?.run?.id === id &&
             x.run.status === "takeover" &&
@@ -1320,7 +1343,7 @@ export class Conversation {
             : (speakableText(adaptContinueHint(message, handsFree)) ??
               phrase("needHelp")),
           priority: "result",
-          listen: ANSWER_WINDOW,
+          listen: this.listenWindow("answer"),
           valid: (x) =>
             x?.run?.id === id &&
             x.run.status === "paused" &&
@@ -1367,7 +1390,9 @@ export class Conversation {
           kind: "done",
           text,
           priority: "result",
-          ...(model ? { listen: AFTER_RESULT_WINDOW } : {}),
+          ...(model
+            ? { listen: this.listenWindow("answer", AFTER_RESULT_SECONDS) }
+            : {}),
         };
       }
       case "failed":
@@ -1569,7 +1594,11 @@ export class Conversation {
     this.markAsked();
     this.say(
       { text: pending.text },
-      { priority: "urgent", listen: ANSWER_WINDOW, kind: "clarify" },
+      {
+        priority: "urgent",
+        listen: this.listenWindow("answer"),
+        kind: "clarify",
+      },
     );
   }
 
@@ -1647,6 +1676,19 @@ export class Conversation {
 
   private windowsAllowed(handsFree: boolean) {
     return handsFree && this.options.settings().followUpListening !== false;
+  }
+
+  /**
+   * A window of `kind` as long as the "Keep listening" setting makes it. A
+   * caller's own short length (the 5 s after a result) applies under the
+   * default setting only; the longer settings take the table's value.
+   */
+  listenWindow(kind: FollowUpKind, short = followUpSeconds(kind)): Listen {
+    const setting = this.options.settings().followUpWindow ?? "short";
+    return {
+      kind,
+      seconds: setting === "short" ? short : followUpSeconds(kind, setting),
+    };
   }
 
   /** The run a start plan just created, when its snapshot came first. */

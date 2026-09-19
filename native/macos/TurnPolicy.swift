@@ -379,6 +379,8 @@ func strippedWordCount(raw: String, command: String) -> Int {
 // MARK: - Follow-up windows
 
 enum FollowUpKind: String { case answer, approval, continuation }
+// The "Keep listening" setting (settings.followUpWindow), received through configure.
+enum FollowUpWindow: String { case short, long, conversation }
 
 let followUpOnsetSeconds = 0.24
 let continuationWindowDelay = 0.25
@@ -386,16 +388,30 @@ let followUpGraceSeconds = 1.5
 private let followUpStarters: Set<String> = ["and", "also", "oh", "actually", "wait", "no", "not", "stop", "then", "plus",
     "but", "instead", "sorry", "use", "with"]
 
-func followUpSeconds(_ kind: FollowUpKind) -> Double {
-    switch kind {
-    case .continuation: return 3.0
-    case .answer, .approval: return 8.0
+// Continuation and answer windows grow with the setting (mirrors followUpSeconds in
+// src/voice/turns.ts); an approval window stays bounded, since a "yes" inside it acts.
+func followUpSeconds(_ kind: FollowUpKind, window: FollowUpWindow = .short) -> Double {
+    switch (window, kind) {
+    case (.short, .continuation): return 3.0
+    case (.short, .answer), (.short, .approval): return 8.0
+    case (.long, .continuation), (.long, .answer): return 20.0
+    case (.long, .approval), (.conversation, .approval): return 12.0
+    case (.conversation, .continuation), (.conversation, .answer): return 45.0
     }
 }
 
-func clampFollowUpSeconds(_ seconds: Double?, kind: FollowUpKind) -> Double {
-    guard let seconds = seconds, seconds.isFinite else { return followUpSeconds(kind) }
-    return min(max(seconds, 0.5), 15)
+// The longest window Electron may ask for under each setting.
+func followUpCapSeconds(_ window: FollowUpWindow) -> Double {
+    switch window {
+    case .short: return 15
+    case .long: return 20
+    case .conversation: return 45
+    }
+}
+
+func clampFollowUpSeconds(_ seconds: Double?, kind: FollowUpKind, window: FollowUpWindow = .short) -> Double {
+    guard let seconds = seconds, seconds.isFinite else { return followUpSeconds(kind, window: window) }
+    return min(max(seconds, 0.5), followUpCapSeconds(window))
 }
 
 func turnContext(for kind: FollowUpKind) -> TurnContext {
@@ -407,19 +423,35 @@ func turnContext(for kind: FollowUpKind) -> TurnContext {
 }
 
 // Speech that turns an open window into a turn. A continuation must sound like one
-// ("and search", "actually use Safari") so side conversation does not become a command.
-// Words that may be the start of the wake phrase ("Hey Butler"): a window waits for more
-// text before treating them as the user's reply, so the wake phrase can take over.
+// ("and search", "actually use Safari") so side conversation does not become a command,
+// except under the conversation setting, where the user chose to have everything said in
+// the room taken as addressed to Butler. Words that may be the start of the wake phrase
+// ("Hey Butler"): a window waits for more text before treating them as the user's reply,
+// so the wake phrase can take over.
 let wakeLeadWords: Set<String> = ["hey", "hay", "hi", "hei"]
 
-func followUpOnset(text: String, speechRun: Double, kind: FollowUpKind) -> Bool {
+func followUpOnset(text: String, speechRun: Double, kind: FollowUpKind, window: FollowUpWindow = .short) -> Bool {
     let words = voiceTokens(text).filter { !fillerWords.contains($0) }
     guard speechRun + timingEpsilon >= followUpOnsetSeconds, let first = words.first else { return false }
     if wakeLeadWords.contains(first) && words.count < 3 { return false }
     switch kind {
-    case .continuation: return followUpStarters.contains(first) || isControlPhrase(text)
+    case .continuation: return window == .conversation || followUpStarters.contains(first) || isControlPhrase(text)
     case .answer, .approval: return true
     }
+}
+
+// What ends a conversation-mode window without acting (mirrors endsConversation in
+// src/voice/turns.ts; tests/fixtures/voice-phrases.json "endConversation" pins both):
+// "that's all", "that'll be all", "that's it", "goodbye", "bye", "good night", "stop
+// listening", each with the name or "for now" allowed after it, or "thanks" followed by the
+// name. A bare "thanks" stays a back-channel word.
+private let conversationCloser = "(?:(?:thats|that is|thatll be|that will be) (?:all|it)|good ?bye|bye(?: bye)?|good ?night|(?:you can )?stop listening)(?: for now| now)?"
+private let conversationThanks = "(?:thanks|thank you)"
+private let conversationEnd = try! NSRegularExpression(
+    pattern: "^(?:\(conversationThanks) (?:\(wakeNamePattern) )?)?\(conversationCloser)(?: \(wakeNamePattern))?$|^\(conversationThanks) \(wakeNamePattern)$")
+func endsConversation(_ text: String) -> Bool {
+    let key = normalizeVoiceKey(text)
+    return conversationEnd.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil
 }
 
 // A window closes at its deadline, unless speech energy is still arriving (the user

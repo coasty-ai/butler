@@ -270,7 +270,10 @@ export function remoteReply(
       return "Nothing is running.";
     case "stillWorking":
       return "Still on it.";
+    // Texted words never end a conversation window; the router keeps the kind
+    // out of this path.
     case "acknowledge":
+    case "endConversation":
       return "Okay.";
     case "clarify":
       return o.question ?? "What would you like me to do?";

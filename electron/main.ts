@@ -95,7 +95,7 @@ import {
   pausedLabel,
   type VoiceEvent,
 } from "./voice";
-import { Conversation, ANSWER_WINDOW, type ReplyHandle } from "./conversation";
+import { Conversation, type ReplyHandle } from "./conversation";
 import { AssistantSession, DIALOG_LIMITS } from "./assistant";
 import {
   dialogEligible,
@@ -1122,14 +1122,22 @@ function refreshSpeechPill() {
   const speaking = conversation.speaking,
     followUp = conversation.followUp;
   if (pill.speaking === speaking && pill.followUp === followUp) return;
+  if (pill.followUp !== followUp) tray?.setToolTip(trayTooltip());
   pill = { ...pill, speaking, followUp };
   if (!indicator || indicator.isDestroyed()) return;
   indicator.webContents.send("pill", pill);
   if (pill.phase === "done") armDoneHide();
 }
+/** A follow-up window under the long or conversation setting. */
+function longWindowOpen() {
+  return !!conversation.followUp && settings.followUpWindow !== "short";
+}
 function armDoneHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
+    // A long window keeps the pill up, glowing, until it closes (the close
+    // re-arms this through refreshSpeechPill).
+    if (longWindowOpen()) return;
     // A watch's news that a run or the microphone kept off the pill comes up
     // before the pill goes away.
     const held = watchPill.take(listening || runActive());
@@ -1517,15 +1525,17 @@ async function toggleHandsFree(enabled = !settings.handsFree) {
       canApprove: false,
     });
 }
+/** The menu-bar tooltip: how to reach Butler right now. */
+function trayTooltip() {
+  if (!settings.handsFree) return "Butler · Hold Option-Space";
+  if (longWindowOpen()) return "Butler · Listening, no wake phrase needed";
+  return wakeListening
+    ? "Butler · Say Hey Butler"
+    : "Butler · Hands-free enabled";
+}
 function updateTray() {
   if (!tray) return;
-  tray.setToolTip(
-    settings.handsFree
-      ? wakeListening
-        ? "Butler · Say Hey Butler"
-        : "Butler · Hands-free enabled"
-      : "Butler · Hold Option-Space",
-  );
+  tray.setToolTip(trayTooltip());
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
@@ -1627,6 +1637,7 @@ function voiceOutputConfig(s: Settings = settings) {
     voiceRate: s.voiceRate,
     patience: s.listeningPatience,
     followUp: s.followUpListening,
+    followUpWindow: s.followUpWindow,
     sounds: s.voiceSounds,
   };
 }
@@ -1636,6 +1647,7 @@ const voiceOutputKeys = [
   "voiceRate",
   "listeningPatience",
   "followUpListening",
+  "followUpWindow",
   "voiceSounds",
 ] as const;
 async function configureVoice() {
@@ -1988,7 +2000,7 @@ async function receiveVoice(event: VoiceEvent) {
         showFailure("Didn’t catch that. Try again.");
         conversation.say("didntCatch", {
           priority: "urgent",
-          listen: ANSWER_WINDOW,
+          listen: conversation.listenWindow("answer"),
         });
       }
     } else if (event.event === "voice_error" || event.event === "wake_error") {
@@ -2095,6 +2107,7 @@ async function planCommand(
     lastRun: lastRunInput(),
     approvesAnyByVoice: approvesAnyByVoice(settings),
     proposal: assistant.proposal(),
+    followUpWindow: settings.followUpWindow,
     ...context,
   });
   debug("Command", {
@@ -2422,6 +2435,16 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       // A held run stays paused and keeps showing why.
       if (runActive()) render();
       else idleCard("Okay.");
+      return;
+    case "endConversation":
+      // "That's all" under the conversation setting: the window closes and no
+      // new one opens until the wake phrase. The run this very activation
+      // paused carries on; nothing else changes.
+      void voice?.call("endFollowUp").catch(() => {});
+      if (ctx.channel === "voice" && (await resumeVoiceHold())) return;
+      voiceHeld = false;
+      if (runActive()) render();
+      else idleCard("Okay. Say “Hey Butler” when you need me.");
       return;
     case "clarify": {
       // No run starts and no correction is recorded; the answer completes it.

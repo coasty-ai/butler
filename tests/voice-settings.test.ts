@@ -7,6 +7,7 @@ import {
   type Settings,
 } from "../src/core/schema";
 import { previewBridge } from "../src/ui/preview";
+import { followUpWindowHint } from "../src/ui/settings-voice";
 
 const voiceKeys = [
   "voiceReplies",
@@ -16,6 +17,7 @@ const voiceKeys = [
   "voiceRate",
   "listeningPatience",
   "followUpListening",
+  "followUpWindow",
   "voiceSounds",
 ] as const satisfies readonly (keyof Settings)[];
 
@@ -27,6 +29,7 @@ const expectedDefaults = {
   voiceRate: 1,
   listeningPatience: "normal",
   followUpListening: true,
+  followUpWindow: "short",
   voiceSounds: true,
 } satisfies Pick<Settings, (typeof voiceKeys)[number]>;
 
@@ -141,6 +144,7 @@ describe("voice settings", () => {
       voiceRate: 1.25,
       listeningPatience: "relaxed",
       followUpListening: false,
+      followUpWindow: "conversation",
       voiceSounds: false,
     } satisfies Settings;
     expect(settingsSchema.parse(structuredClone(saved))).toEqual(saved);
@@ -195,6 +199,87 @@ describe("voice settings", () => {
       expect(parses({ listeningPatience })).toBe(true);
     for (const listeningPatience of ["slow", "fast", 1])
       expect(parses({ listeningPatience })).toBe(false);
+
+    for (const followUpWindow of ["short", "long", "conversation"])
+      expect(parses({ followUpWindow })).toBe(true);
+    for (const followUpWindow of ["always", "forever", 45, true, ""])
+      expect(parses({ followUpWindow })).toBe(false);
+  });
+
+  it("keeps a config saved before Keep listening on the short windows", () => {
+    const { followUpWindow: _w, ...older } = structuredClone(defaultSettings);
+    expect(settingsSchema.parse(older).followUpWindow).toBe("short");
+  });
+
+  it("says what each Keep listening choice does, honestly about the room", () => {
+    expect(followUpWindowHint("short")).toMatch(/3 s.*8 s/);
+    expect(followUpWindowHint("long")).toMatch(/20 s.*12 s for a yes or no/);
+    const talk = followUpWindowHint("conversation");
+    expect(talk).toContain(
+      "Keeps listening for 45 s after each exchange, so you can keep talking without the wake phrase; anything anyone says in the room in that time is taken as addressed to Butler.",
+    );
+    for (const phrase of [
+      "that’s all",
+      "stop listening",
+      "goodbye",
+      "thanks Butler",
+    ])
+      expect(talk).toContain(`“${phrase}”`);
+    expect(talk).toMatch(/yes or no is still only heard for 12 s/);
+    // Without follow-up listening the picker changes nothing, and says so.
+    for (const window of ["short", "long", "conversation"] as const)
+      expect(followUpWindowHint(window, false)).toMatch(
+        /^Off: the wake phrase is needed every time/,
+      );
+  });
+
+  it("wires the setting from the picker to the helper and the turn planner", () => {
+    const ui = readFileSync(
+      new URL("../src/ui/main.tsx", import.meta.url),
+      "utf8",
+    );
+    // The picker sits under "Talk to Butler", hands-free only, with its hint.
+    const picker = ui.slice(
+      ui.indexOf("Talk to Butler"),
+      ui.indexOf("</details>", ui.indexOf("Talk to Butler")),
+    );
+    expect(picker).toMatch(
+      /\{s\.handsFree && \([\s\S]{0,80}Keep listening[\s\S]{0,200}value=\{s\.followUpWindow\}[\s\S]{0,40}disabled=\{!s\.followUpListening\}/,
+    );
+    expect(picker).toContain(
+      "followUpWindowHint(s.followUpWindow, s.followUpListening)",
+    );
+    const main = readFileSync(
+      new URL("../electron/main.ts", import.meta.url),
+      "utf8",
+    );
+    // Sent to the helper with the other listening settings, and re-sent on change.
+    const config = main.slice(
+      main.indexOf("function voiceOutputConfig("),
+      main.indexOf("async function configureVoice("),
+    );
+    expect(config).toContain("followUpWindow: s.followUpWindow");
+    expect(config).toMatch(/voiceOutputKeys = \[[^\]]*"followUpWindow"/);
+    // Voice turns are planned with it, and its closing phrases act on nothing.
+    const planning = main.slice(
+      main.indexOf("async function planCommand("),
+      main.indexOf('debug("Command", {'),
+    );
+    expect(planning).toContain("followUpWindow: settings.followUpWindow");
+    const start = main.indexOf('case "endConversation":');
+    const end = main.slice(start, main.indexOf('case "clarify": {', start));
+    expect(end).toContain('voice?.call("endFollowUp")');
+    expect(end).not.toMatch(/startRun|approveFromVoice|runner\?\.stop|steer/);
+    // Electron's windows take their length from the same setting.
+    const conversation = readFileSync(
+      new URL("../electron/conversation.ts", import.meta.url),
+      "utf8",
+    );
+    // The only fixed length left is the fragment grace, which is not a mode.
+    expect(conversation.match(/seconds: \d+/g)).toEqual(["seconds: 3"]);
+    expect(conversation).toMatch(
+      /listenWindow\(kind: FollowUpKind, short = followUpSeconds\(kind\)\)/,
+    );
   });
 
   it("type-checks the remaining voice fields", () => {

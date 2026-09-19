@@ -75,6 +75,7 @@ var handsFreeEnabled = false
 var followUpEnabled = false
 var soundsEnabled = false
 var patience = Patience.normal
+var followUpWindow = FollowUpWindow.short
 var suspended = false
 var containsWakePhrase = false
 // The latest ambient hypothesis is the wake phrase alone: it activates once the speaker pauses.
@@ -254,16 +255,18 @@ func completeTurn(_ how: TurnCompletion) {
         // Never routes by itself: Electron asks the user to confirm it.
         output(["event": "transcript_unconfirmed", "text": text, "source": "deadline_hypothesis", "segments": segments])
     }
-    if accepted && handsFree { acceptHandsFreeTurn() } else { scheduleStandby() }
+    if accepted && handsFree { acceptHandsFreeTurn(text) } else { scheduleStandby() }
 }
-// Pop, then a short continuation window catches "...and search" without the wake phrase.
-func acceptHandsFreeTurn() {
+// Pop, then a continuation window as long as the Keep listening setting makes it catches
+// "...and search" without the wake phrase. The phrase that ends a conversation-mode window
+// ("that's all") opens none; Electron acts on nothing for it either.
+func acceptHandsFreeTurn(_ text: String) {
     playEarcon("Pop")
-    guard handsFreeEnabled, followUpEnabled else { scheduleStandby(); return }
+    guard handsFreeEnabled, followUpEnabled, !(followUpWindow == .conversation && endsConversation(text)) else { scheduleStandby(); return }
     cancelPendingWindow("cancel")
     let work = DispatchWorkItem {
         pendingWindow = nil
-        if !openWindow(.continuation, seconds: followUpSeconds(.continuation), announced: false) && mode == nil { scheduleStandby() }
+        if !openWindow(.continuation, seconds: followUpSeconds(.continuation, window: followUpWindow), announced: false) && mode == nil { scheduleStandby() }
     }
     pendingWindow = work; DispatchQueue.main.asyncAfter(deadline: .now() + continuationWindowDelay, execute: work)
 }
@@ -545,7 +548,7 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
                 traceStandby("wake", raw, extra: ["boundary": standbyBoundary])
                 wakeOffset = standbyBoundary
                 activateWake(context: turnContext(for: windowKind), window: windowKind)
-            } else if followUpOnset(text: raw, speechRun: windowRun.longest, kind: windowKind) {
+            } else if followUpOnset(text: raw, speechRun: windowRun.longest, kind: windowKind, window: followUpWindow) {
                 activateFollowUp()
             } else {
                 traceStandby(result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
@@ -678,7 +681,7 @@ func openWindow(_ kind: FollowUpKind, seconds: Double, announced: Bool) -> Bool 
 }
 func listenRequest(_ command: [String: Any]) -> [String: Any] {
     guard let kind = FollowUpKind(rawValue: command["kind"] as? String ?? "") else { return ["opened": false, "reason": "invalid"] }
-    let seconds = clampFollowUpSeconds(command["seconds"] as? Double, kind: kind)
+    let seconds = clampFollowUpSeconds(command["seconds"] as? Double, kind: kind, window: followUpWindow)
     guard handsFreeEnabled && followUpEnabled else { return ["opened": false, "reason": "disabled"] }
     if suspended { return ["opened": false, "reason": "suspended"] }
     if keyHeld || mode == .handsFree || mode == .pushToTalk { return ["opened": false, "reason": "capturing"] }
@@ -727,7 +730,7 @@ func speakRequest(_ command: [String: Any], pcm: Bool) -> [String: Any] {
     var listen: ListenRequest?
     if let window = command["listen"] as? [String: Any] {
         guard let kind = FollowUpKind(rawValue: window["kind"] as? String ?? "") else { return reject("invalid") }
-        listen = ListenRequest(kind: kind, seconds: clampFollowUpSeconds(window["seconds"] as? Double, kind: kind))
+        listen = ListenRequest(kind: kind, seconds: clampFollowUpSeconds(window["seconds"] as? Double, kind: kind, window: followUpWindow))
     }
     let source: SpokenUtterance.Source
     if pcm {
@@ -878,7 +881,8 @@ func status() -> [String: Any] {
             "onDevice": speech?.supportsOnDeviceRecognition ?? false, "shortcut": tap != nil,
             "locale": speech?.locale.identifier ?? "unknown", "handsFree": handsFreeEnabled, "wakeListening": wakeListening,
             "speaking": speaker.isActive, "voiceQuality": voice?.quality.rawValue ?? VoiceQuality.none.rawValue,
-            "voiceName": voice?.name ?? "", "patience": patience.rawValue, "followUp": followUpEnabled]
+            "voiceName": voice?.name ?? "", "patience": patience.rawValue, "followUp": followUpEnabled,
+            "followUpWindow": followUpWindow.rawValue]
 }
 func voicesReply(_ id: Any) {
     speaker.withVoices { list in
@@ -904,6 +908,11 @@ func handle(_ command: [String: Any]) {
         if let value = command["followUp"] as? Bool, value != followUpEnabled {
             followUpEnabled = value
             if !value { closeWindow("cancel"); if mode == nil { scheduleStandby() } }
+        }
+        if let value = command["followUpWindow"] as? String, let next = FollowUpWindow(rawValue: value), next != followUpWindow {
+            // A window opened under the old setting closes; the next one has the new length.
+            followUpWindow = next
+            closeWindow("cancel"); if mode == nil { scheduleStandby() }
         }
         if let value = command["speechEnabled"] as? Bool { speaker.setEnabled(value) }
         if let enabled = command["handsFree"] as? Bool, enabled != handsFreeEnabled {

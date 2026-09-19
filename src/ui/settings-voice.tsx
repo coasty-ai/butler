@@ -51,6 +51,23 @@ export function autonomyChange(
   if (autonomy !== "all") return { autonomy, autonomyAllAcknowledged: false };
   return { autonomy: "all", autonomyAllAcknowledged: acknowledged };
 }
+/**
+ * What each "Keep listening" choice means, under the picker. Honest about the
+ * conversation setting: for 45 s after each exchange, whoever speaks in the
+ * room is speaking to Butler.
+ */
+export function followUpWindowHint(
+  window: Settings["followUpWindow"],
+  followUpListening = true,
+): string {
+  if (!followUpListening)
+    return "Off: the wake phrase is needed every time. Turn on “Listen for your reply without Hey Butler” under Listening to choose.";
+  if (window === "long")
+    return "Listens 20 s after each exchange for you to add to a request (“and…”, “actually…”) or answer a question, and 12 s for a yes or no, without the wake phrase.";
+  if (window === "conversation")
+    return "Keeps listening for 45 s after each exchange, so you can keep talking without the wake phrase; anything anyone says in the room in that time is taken as addressed to Butler. Say “that’s all”, “stop listening”, “goodbye” or “thanks Butler” to end it. A yes or no is still only heard for 12 s.";
+  return "A few seconds after each exchange, without the wake phrase: 3 s to add to a request (“and…”), 8 s to answer a question or say yes or no.";
+}
 /** What the "Talk naturally" hint says about where the words go. */
 export function conversationHint(s: Settings): string {
   const model = s.dialogModel || s.model;

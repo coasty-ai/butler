@@ -246,6 +246,38 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     // Follow-up windows
     check(followUpSeconds(.continuation) == 3 && followUpSeconds(.answer) == 8 && followUpSeconds(.approval) == 8, "follow-up window lengths")
     check(clampFollowUpSeconds(nil, kind: .answer) == 8 && clampFollowUpSeconds(60, kind: .answer) == 15 && clampFollowUpSeconds(0, kind: .answer) == 0.5, "requested window lengths are bounded")
+    // The Keep listening setting: kind x setting, approvals bounded everywhere.
+    for (window, continuation, answer, approval) in [(FollowUpWindow.short, 3.0, 8.0, 8.0), (.long, 20.0, 20.0, 12.0), (.conversation, 45.0, 45.0, 12.0)] {
+        check(followUpSeconds(.continuation, window: window) == continuation && followUpSeconds(.answer, window: window) == answer
+              && followUpSeconds(.approval, window: window) == approval, "follow-up window lengths under \(window.rawValue)")
+        check(clampFollowUpSeconds(nil, kind: .answer, window: window) == answer && clampFollowUpSeconds(nil, kind: .approval, window: window) == approval,
+              "an unspecified window takes the setting's length under \(window.rawValue)")
+    }
+    check(followUpCapSeconds(.short) == 15 && followUpCapSeconds(.long) == 20 && followUpCapSeconds(.conversation) == 45, "the longest window each setting allows")
+    check(clampFollowUpSeconds(45, kind: .answer, window: .short) == 15 && clampFollowUpSeconds(45, kind: .answer, window: .long) == 20
+          && clampFollowUpSeconds(45, kind: .answer, window: .conversation) == 45 && clampFollowUpSeconds(60, kind: .answer, window: .conversation) == 45,
+          "a requested window is capped by the setting")
+    check(FollowUpWindow(rawValue: "short") == .short && FollowUpWindow(rawValue: "conversation") == .conversation && FollowUpWindow(rawValue: "forever") == nil,
+          "window setting protocol names")
+    // Conversation mode: plain words continue the conversation; the onset rules still hold.
+    check(followUpOnset(text: "open Safari", speechRun: 0.24, kind: .continuation, window: .conversation), "in conversation mode plain words continue a turn")
+    check(!followUpOnset(text: "open Safari", speechRun: 0.24, kind: .continuation, window: .long) && !followUpOnset(text: "open Safari", speechRun: 0.24, kind: .continuation),
+          "a long or short continuation still needs a starter")
+    check(!followUpOnset(text: "open Safari", speechRun: 0.16, kind: .continuation, window: .conversation), "conversation mode still needs 0.24 s of energy")
+    check(!followUpOnset(text: "Hey", speechRun: 1.0, kind: .continuation, window: .conversation) && !followUpOnset(text: "um", speechRun: 1.0, kind: .continuation, window: .conversation),
+          "a wake lead word or filler alone still waits in conversation mode")
+    check(followUpOnset(text: "Safari", speechRun: 0.24, kind: .answer, window: .conversation) && followUpOnset(text: "yes", speechRun: 0.3, kind: .approval, window: .long),
+          "answer and approval windows are unchanged by the setting")
+    // Closing phrases end a conversation-mode window without acting.
+    for phrase in ["that's all", "That is all.", "that'll be all", "That's all for now", "that's it", "goodbye", "Good bye", "bye", "bye bye", "good night",
+                   "stop listening", "you can stop listening now", "Thanks, Butler.", "thank you Butler", "okay thanks that's all", "Thanks Butler, goodbye",
+                   "that's all thank you", "goodbye Butler"] {
+        check(endsConversation(phrase), "ends the conversation: \(phrase)")
+    }
+    for phrase in ["thanks", "thank you", "okay", "stop", "stop listening to the podcast", "say goodbye to Dana", "write that's all in the note",
+                   "that's all wrong", "open Safari", "Butler", "Hey Butler", "bye the way", "thanks Butler open notes", ""] {
+        check(!endsConversation(phrase), "keeps the conversation: \(phrase)")
+    }
     check(followUpOnset(text: "and search", speechRun: 0.24, kind: .continuation), "a continuation starter with enough energy opens a turn")
     check(followUpOnset(text: "um, actually use Safari", speechRun: 0.4, kind: .continuation), "fillers before a starter are skipped")
     check(followUpOnset(text: "Stop", speechRun: 0.3, kind: .continuation), "a control phrase continues a turn")
@@ -393,6 +425,11 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
         for phrase in phrases(category) { check(utteranceCompleteness(phrase, context: .answer) == .shortAnswer, "fixture \(category) is a short answer: \(phrase)") }
     }
     for phrase in phrases("incomplete") { check(utteranceCompleteness(phrase, context: .command) == .incomplete, "fixture incomplete: \(phrase)") }
+    check(!phrases("endConversation").isEmpty, "voice phrase fixture has the closing phrases")
+    for phrase in phrases("endConversation") { check(endsConversation(phrase) && !isControlPhrase(phrase), "fixture ends the conversation, and is no stop: \(phrase)") }
+    for category in ["stop", "pause", "resume", "approve", "decline", "unclear", "acknowledge", "undo", "command"] {
+        for phrase in phrases(category) { check(!endsConversation(phrase), "fixture \(category) keeps the conversation: \(phrase)") }
+    }
     for phrase in phrases("complete") {
         let completeness = utteranceCompleteness(phrase, context: .command)
         check(completeness == (isControlPhrase(phrase) ? .control : .complete), "fixture complete: \(phrase)")

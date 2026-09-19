@@ -60,7 +60,11 @@ import {
 } from "../providers/catalog";
 import { JEV_CREDENTIAL_SCOPE } from "../providers/jev";
 import { idlePill, type PillState } from "../voice/router";
-import { VoiceSettings, jevKeyToSave } from "./settings-voice";
+import {
+  VoiceSettings,
+  followUpWindowHint,
+  jevKeyToSave,
+} from "./settings-voice";
 import { previewBridge } from "./preview";
 import { SettingsRemote } from "./settings-remote";
 import "@fontsource-variable/space-grotesk";
@@ -446,8 +450,8 @@ function App() {
                     <p>
                       Review a run before contributing it. Your voice audio is
                       never saved. Deleting a run also removes its task and
-                      corrections from what Butler learned; learned
-                      routines stay until you forget them in Settings.
+                      corrections from what Butler learned; learned routines
+                      stay until you forget them in Settings.
                     </p>
                     {runs.length === 0 ? (
                       <div className="empty-review">
@@ -1472,6 +1476,33 @@ function SettingsPanel({
             {s.handsFree &&
               " Background speech and audio are never saved or sent."}
           </p>
+          {s.handsFree && (
+            <>
+              <label>
+                Keep listening
+                <select
+                  value={s.followUpWindow}
+                  disabled={!s.followUpListening}
+                  aria-describedby={`${ids}-window`}
+                  onChange={(e) =>
+                    set(
+                      "followUpWindow",
+                      e.target.value as Settings["followUpWindow"],
+                    )
+                  }
+                >
+                  <option value="short">Briefly after each exchange</option>
+                  <option value="long">Longer after each exchange</option>
+                  <option value="conversation">
+                    Conversation, until I say “that’s all”
+                  </option>
+                </select>
+              </label>
+              <p id={`${ids}-window`}>
+                {followUpWindowHint(s.followUpWindow, s.followUpListening)}
+              </p>
+            </>
+          )}
           {info.settings.handsFree && (
             <p role="status">
               {info.voice.wakeListening
@@ -1864,9 +1895,11 @@ function SettingsPanel({
               <span>
                 {patience?.label ?? "Normal"} patience
                 {s.handsFree &&
-                  (s.followUpListening
-                    ? " · Hears replies without ‘Hey Butler’"
-                    : " · Wake phrase every time")}
+                  (!s.followUpListening
+                    ? " · Wake phrase every time"
+                    : s.followUpWindow === "conversation"
+                      ? " · Conversation mode"
+                      : " · Hears replies without ‘Hey Butler’")}
               </span>
             </span>
             <ChevronDown size={15} />
@@ -2143,11 +2176,10 @@ function SettingsPanel({
           </summary>
           <div className="setting-fields">
             <p>
-              Butler can text one number — yours — when a task starts,
-              needs you or finishes, and read short replies from that same
-              number as commands. It never texts anyone else, never approves
-              anything by text, and only reads messages that arrive after you
-              turn this on.
+              Butler can text one number — yours — when a task starts, needs you
+              or finishes, and read short replies from that same number as
+              commands. It never texts anyone else, never approves anything by
+              text, and only reads messages that arrive after you turn this on.
             </p>
             <label className="consent">
               <input
@@ -2252,11 +2284,11 @@ function SettingsPanel({
           </summary>
           <div className="setting-fields">
             <p>
-              Butler remembers how your tasks went, your corrections and
-              the apps you use, so repeated tasks get faster. It knows where
-              apps and files are from macOS metadata, never file contents.
-              Everything stays encrypted on this Mac; only a few relevant notes
-              go to your model with a task. The safe tutorial is never learned.
+              Butler remembers how your tasks went, your corrections and the
+              apps you use, so repeated tasks get faster. It knows where apps
+              and files are from macOS metadata, never file contents. Everything
+              stays encrypted on this Mac; only a few relevant notes go to your
+              model with a task. The safe tutorial is never learned.
             </p>
             <label className="consent">
               <input
@@ -2888,8 +2920,8 @@ function SetupView({
         <section className="setup-step" aria-labelledby={`${ids}-model`}>
           <h1 id={`${ids}-model`}>Choose a model</h1>
           <p>
-            Butler sends a screenshot of your screen and your task to one
-            model you choose. It has no server of its own in between.
+            Butler sends a screenshot of your screen and your task to one model
+            you choose. It has no server of its own in between.
           </p>
           <div className="setup-card">
             <h3>On this Mac — free, nothing leaves the Mac</h3>
@@ -3068,9 +3100,9 @@ function SetupView({
         <section className="setup-step" aria-labelledby={`${ids}-voice`}>
           <h1 id={`${ids}-voice`}>Spoken replies</h1>
           <p>
-            Butler answers out loud when you talk to it. The built-in Mac
-            voice works now. A free natural voice runs entirely on this Mac
-            after a one-time download.
+            Butler answers out loud when you talk to it. The built-in Mac voice
+            works now. A free natural voice runs entirely on this Mac after a
+            one-time download.
           </p>
           <div className="setup-card">
             {!kokoro.supported ? (

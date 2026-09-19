@@ -88,6 +88,30 @@
     "oops, undo",
     "u-u-undo that"
   ],
+  "endConversation": [
+    "That's all.",
+    "that is all",
+    "That'll be all",
+    "that will be all",
+    "that's all for now",
+    "That's it.",
+    "Goodbye",
+    "good bye",
+    "Bye!",
+    "bye bye",
+    "bye for now",
+    "Good night",
+    "goodnight",
+    "stop listening",
+    "You can stop listening now",
+    "Thanks, Butler.",
+    "Thank you Butler",
+    "Goodbye, Butler",
+    "okay thanks that's all",
+    "Thanks Butler, goodbye",
+    "that's all, thank you",
+    "Thanks, Butler. That's it."
+  ],
   "command": [
     "Stop scrolling and click Save",
     "Don't undo that",
@@ -100,7 +124,11 @@
     "open notes",
     "Yesterday I said yes.",
     "No, use the September report.",
-    "Don't send anything yet."
+    "Don't send anything yet.",
+    "say goodbye to Dana",
+    "stop listening to the podcast",
+    "write that's all in the note",
+    "text mom good night"
   ],
   "incomplete": [
     "Open",
