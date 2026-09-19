@@ -1695,6 +1695,7 @@ export class Runner {
       frame_id: frame.id,
       sha256: frame.sha256,
       geometry: frame.geometry,
+      ...(frame.timings && { timings: frame.timings }),
     });
     return frame;
   }

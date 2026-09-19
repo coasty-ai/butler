@@ -573,6 +573,8 @@ export interface Frame {
   synthetic: boolean;
   appId?: string;
   context?: ScreenContext;
+  /** Native capture stage times in ms (settle, content, shot, context, controls, ocr, encode, total). */
+  timings?: Record<string, number>;
 }
 export interface ScreenContext {
   appName: string;

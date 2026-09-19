@@ -1396,17 +1396,33 @@ func geometry(_ display: SCDisplay, width: Int, height: Int) -> [String:Any] {
     let b = CGDisplayBounds(display.displayID)
     return ["display_id":Int(display.displayID),"x":Double(b.origin.x),"y":Double(b.origin.y),"width":Double(b.width),"height":Double(b.height),"native_width":CGDisplayPixelsWide(display.displayID),"native_height":CGDisplayPixelsHigh(display.displayID),"model_width":width,"model_height":height,"scale_factor":Double(CGDisplayPixelsWide(display.displayID))/Double(b.width)]
 }
+/// Blocking work (image encoding, Vision) on a global queue, awaited off the
+/// cooperative pool, so two such stages of a capture can run at once.
+func offThread<T>(_ work: @escaping () -> T) async -> T {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: work()) }
+    }
+}
 @available(macOS 14.0, *)
 func capture() async throws -> [String:Any] {
     try ensureRunning(); try guardSurface()
+    // Stage times in ms travel with the frame (FrameCaptured in the diagnostics),
+    // so a slow capture says where it spent the time. Each mark is the time since
+    // the previous one; "ocr" and "encode" are only what remained after the
+    // stages they overlap.
+    let startedAt = ProcessInfo.processInfo.systemUptime
+    var timings = [String:Int](), stageAt = startedAt
+    func mark(_ stage: String) { let now = ProcessInfo.processInfo.systemUptime; timings[stage] = Int(((now - stageAt) * 1000).rounded()); stageAt = now }
     // Observe after our own input has reached the app and its short transition
     // has settled. The event tap and stop signal remain active during the wait.
     while true {
         if inputSettleRemaining() <= 0 {break}
         try await Task.sleep(nanoseconds:20_000_000);try ensureRunning()
     }
+    mark("settle")
     guard CGPreflightScreenCaptureAccess() else { throw ControlError("Grant Screen Recording permission and restart the app.") }
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly:true)
+    mark("content")
     guard let display = content.displays.first(where:{$0.displayID == displayID}) else { throw ControlError("Selected display is no longer connected.") }
     // Terminals are on the protected floor whatever the settings say, and their
     // windows can show secrets, so they are never in a screenshot either.
@@ -1439,14 +1455,17 @@ func capture() async throws -> [String:Any] {
     var captured = try await attempt()
     for _ in 0..<2 where captured == nil { captured = try await attempt() }
     guard let (before, afterWindow, image) = captured else { throw changedScreen("The active window changed during capture.") }
-    let bitmap = NSBitmapImageRep(cgImage:image)
-    guard let png = bitmap.representation(using:.png, properties:[:]) else { throw ControlError("Screenshot encoding failed.") }
+    mark("shot")
+    // The PNG is only for the model: encode it while accessibility is read.
+    let encoding = Task { await offThread { NSBitmapImageRep(cgImage:image).representation(using:.png, properties:[:]) } }
     var context=screenContext();try ensureRunning()
-    // Little or no text from accessibility: read it from the screenshot.
+    mark("context")
+    // Little or no text from accessibility: read it from the screenshot, while
+    // the controls are walked (Vision and the accessibility walk are independent).
+    var reading: Task<String, Never>?
     if !context.isEmpty, (context["visibleText"] as? String ?? "").count < 600 {
-        let text = recognizeScreenText(image, window: afterWindow.bounds, display: CGDisplayBounds(displayID))
-        if text.count > 40 { context["screenText"] = text }
-        try ensureRunning()
+        let window = afterWindow.bounds, display = CGDisplayBounds(displayID)
+        reading = Task { await offThread { recognizeScreenText(image, window: window, display: display) } }
     }
     if !context.isEmpty {
         var controls = groundedControls(afterWindow, display: bounds)
@@ -1456,7 +1475,14 @@ func capture() async throws -> [String:Any] {
         }
         context["controls"] = controls
     }
-    let frame: [String:Any] = ["id":UUID().uuidString.lowercased(),"sha256":SHA256.hash(data:png).map{String(format:"%02x",$0)}.joined(),"image":"data:image/png;base64,"+png.base64EncodedString(),"geometry":geometry(display,width:config.width,height:config.height),"capturedAt":ProcessInfo.processInfo.systemUptime*1000,"synthetic":false,"appId":before["appId"] ?? "unknown","context":context]
+    mark("controls")
+    if let reading { let text = await reading.value; if text.count > 40 { context["screenText"] = text } }
+    mark("ocr")
+    try ensureRunning()
+    guard let png = await encoding.value else { throw ControlError("Screenshot encoding failed.") }
+    mark("encode")
+    timings["total"] = Int(((ProcessInfo.processInfo.systemUptime - startedAt) * 1000).rounded())
+    let frame: [String:Any] = ["id":UUID().uuidString.lowercased(),"sha256":SHA256.hash(data:png).map{String(format:"%02x",$0)}.joined(),"image":"data:image/png;base64,"+png.base64EncodedString(),"geometry":geometry(display,width:config.width,height:config.height),"capturedAt":ProcessInfo.processInfo.systemUptime*1000,"synthetic":false,"appId":before["appId"] ?? "unknown","context":context,"timings":timings]
     guard let pixels = ScreenPixels(image) else { throw ControlError("Screenshot comparison failed.") }
     setCurrentFrame(["frame":frame,"pid":before["pid"] ?? 0,"window":afterWindow,"pixels":pixels])
     return frame
