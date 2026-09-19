@@ -39,6 +39,7 @@ import {
 } from "./labels";
 import {
   evaluate,
+  focusedTextField,
   normalizeAppName,
   surfacePolicy,
   PASTE_ALLOWED,
@@ -1878,6 +1879,12 @@ export class Runner {
       chain?: WatchChain;
       /** A step taken while the user was still speaking (electron/early-start.ts). */
       prelude?: RunPrelude;
+      /**
+       * The words only asked to type this text ("type see you at six",
+       * src/voice/dictation.ts): with a known text field focused on the first
+       * frame it is typed there without a model call and the run is over.
+       */
+      dictation?: string;
     } = {},
   ) {
     if (this.active()) throw new Error("A run is already active.");
@@ -1951,6 +1958,8 @@ export class Runner {
     let reaimed = false;
     // A search route to take on the next step instead of asking the model.
     let routed: string[] | undefined;
+    // Dictated text, typed on the first frame or left to the model for good.
+    let dictation = options.dictation;
     try {
       if (options.prelude && !run.synthetic) this.applyPrelude(options.prelude);
       // Recall overlaps the first capture (the helper answers the index off its
@@ -2053,6 +2062,23 @@ export class Runner {
               action: proposal.action,
               usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
             };
+          }
+        }
+        // The words were only text to type. With a known text field focused
+        // the one step is proposed on this frame and, once typed, ends the
+        // run; anything else in front (no field, a button, a blind surface)
+        // is the model's to work out from the words as they were said.
+        let dictated = false;
+        if (!result && dictation !== undefined) {
+          const text = dictation;
+          dictation = undefined;
+          if (this.lastSurface && focusedTextField(this.lastSurface)) {
+            this.event("DictationStepProposed");
+            result = {
+              action: { type: "type_text", text, frame_id: frame.id },
+              usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+            };
+            dictated = true;
           }
         }
         if (!result && routed) {
@@ -2483,6 +2509,15 @@ export class Runner {
           outcome,
           { reaimed },
         );
+        // Native typed every character into the field it verified as it
+        // went, so the words are in; a screenshot to check would only be for
+        // a model this run never calls. The summary names no text.
+        if (dictated) {
+          run.summary = "Typed it.";
+          this.event("RunCompleted");
+          this.status("completed", run.summary);
+          break;
+        }
       }
     } catch (e) {
       if (this.active()) {

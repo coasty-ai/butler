@@ -233,6 +233,23 @@ function blindSurface(surface: Surface): boolean {
     !surface.unknown && !surface.secureInput && surface.accessibility === "none"
   );
 }
+/** Focused roles text is typed into; a secure field is refused before them. */
+const editableRoles = ["AXTextField", "AXTextArea", "AXComboBox"];
+/**
+ * Whether a known, non-secure text field has the focus: what a dictation
+ * ("type hello world") is typed into without a model call (src/core/runner.ts).
+ * Secure input or a secure field, a terminal's input and an unidentified
+ * surface never count, so the words go to the normal run and its refusals.
+ */
+export function focusedTextField(surface: Surface): boolean {
+  return (
+    !surface.unknown &&
+    !surface.secureInput &&
+    !surface.terminalFocus &&
+    surface.focusedSubrole !== "AXSecureTextField" &&
+    editableRoles.includes(surface.focusedRole ?? "")
+  );
+}
 /** The application name an approval question names, never a bundle id. */
 function appLabel(surface: Surface): string {
   const name = quote((surface.appName ?? "").trim());
@@ -1114,9 +1131,7 @@ export function evaluate(
       context.pasteRequested &&
       pasteOnly &&
       !surface.unknown &&
-      ["AXTextField", "AXTextArea", "AXComboBox"].includes(
-        surface.focusedRole ?? "",
-      )
+      editableRoles.includes(surface.focusedRole ?? "")
     )
       return { kind: "ALLOW", reason: PASTE_ALLOWED };
     return { kind: "DENY", reason: CLIPBOARD_REFUSAL };
@@ -1152,9 +1167,7 @@ export function evaluate(
   if (namedRefusal) return namedRefusal;
   if (["move", "scroll"].includes(action.type))
     return { kind: "ALLOW", reason: "Pointer navigation." };
-  const editable = ["AXTextField", "AXTextArea", "AXComboBox"].includes(
-    surface.focusedRole ?? "",
-  );
+  const editable = editableRoles.includes(surface.focusedRole ?? "");
   // Dismissal, navigation keys and these exact shortcuts do not activate the
   // focused control. Do not let a focused Send/Delete label gate them.
   if (!surface.unknown && action.type === "key" && action.key === "ESC")
@@ -1191,9 +1204,7 @@ export function evaluate(
     !surface.unknown &&
     !surface.modal &&
     surface.appId === "com.apple.calculator" &&
-    !["AXTextField", "AXTextArea", "AXComboBox"].includes(
-      surface.focusedRole ?? "",
-    )
+    !editableRoles.includes(surface.focusedRole ?? "")
   ) {
     if (
       action.type === "type_text" &&
@@ -1525,9 +1536,7 @@ export function evaluate(
     !surface.addressBar &&
     surface.appId !== "com.apple.Spotlight" &&
     // Web search boxes are often text areas (YouTube: "Search or ask a question").
-    ["AXTextField", "AXComboBox", "AXTextArea"].includes(
-      surface.focusedRole ?? "",
-    ) &&
+    editableRoles.includes(surface.focusedRole ?? "") &&
     !/[\r\n]/.test(surface.focusedValue ?? "") &&
     (surface.focusedSubrole === "AXSearchField" ||
       /\b(search|find|filter|query|go to)\b/i.test(

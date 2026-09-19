@@ -132,6 +132,7 @@ import {
   type TurnPlan,
   type TurnPlanKind,
 } from "../src/voice/turns";
+import { dictationRequest } from "../src/voice/dictation";
 import { runView, statusLine } from "../src/assistant/run-view";
 import type {
   Channel,
@@ -2809,6 +2810,16 @@ async function startRun(
     task = z.string().trim().min(1).max(8000).parse(task);
     const from = startFromSchema.parse(source);
     const origin: RunOrigin = from?.origin ?? "typed";
+    const taskSource =
+      from?.taskSource ?? (origin === "typed" ? "user_words" : undefined);
+    // The user's own words, said or typed at the Mac, that only ask to type
+    // text: the run types them into the focused field without a model call.
+    const dictation =
+      !tutorial &&
+      taskSource === "user_words" &&
+      (origin === "voice" || origin === "typed")
+        ? dictationRequest(task)
+        : undefined;
     if (scanText(task).some((f) => f.action === "BLOCK_UPLOAD"))
       throw new Error(
         "Remove credentials from the task. Enter passwords manually during takeover.",
@@ -2869,11 +2880,11 @@ async function startRun(
     void runner
       .start(task, {
         origin,
-        taskSource:
-          from?.taskSource ?? (origin === "typed" ? "user_words" : undefined),
+        taskSource,
         ...(from?.watch ? { watch: from.watch } : {}),
         ...(from?.watch && from.chain ? { chain: from.chain } : {}),
         ...(prelude && !tutorial ? { prelude } : {}),
+        ...(dictation ? { dictation } : {}),
       })
       .catch((error) => {
         debug("RunStartFailed", errorDetails(error));
