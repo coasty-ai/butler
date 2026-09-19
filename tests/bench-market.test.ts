@@ -79,6 +79,7 @@ import {
 import {
   APPROVAL_APPS,
   BROWSER_APPS,
+  BROWSER_PARAM,
   CALENDAR,
   FINDER,
   FIXTURE_PORT,
@@ -88,6 +89,7 @@ import {
   daysFrom,
   fillInstruction,
   gradeTask,
+  namesBrowser,
 } from "../src/gym/bench/graders";
 import { honesty } from "../src/gym/bench/report";
 import {
@@ -1188,16 +1190,39 @@ describe("market suite catalogue", () => {
     expect(named).toBeGreaterThanOrEqual(12);
   });
 
-  it("fills every placeholder from prepare(), with the attempt's own token", async () => {
+  it("fills every placeholder from prepare(), with the attempt's own token, and {browser} from the harness", async () => {
     for (const task of MARKET_CATALOGUE) {
       const a = await prepare(task);
       expect(a.parameters.token, task.id).toBe(a.token);
       for (const [, name] of task.instruction.matchAll(/\{(\w+)\}/g))
-        expect(Object.keys(a.parameters), `${task.id} {${name}}`).toContain(
-          name,
-        );
-      expect(fillInstruction(task.instruction, a.parameters)).not.toMatch(
-        /[{}]/,
+        if (name !== BROWSER_PARAM)
+          expect(Object.keys(a.parameters), `${task.id} {${name}}`).toContain(
+            name,
+          );
+      // The browser is the harness's choice, not prepare()'s.
+      expect(Object.keys(a.parameters), task.id).not.toContain(BROWSER_PARAM);
+      expect(
+        fillInstruction(task.instruction, {
+          ...a.parameters,
+          [BROWSER_PARAM]: "Safari",
+        }),
+      ).not.toMatch(/[{}]/);
+    }
+  });
+
+  it("names the harness's browser in every task that lists one, once, and in no other", () => {
+    // The chooser picks the browser that is not the person's and the
+    // graders hold the run to it (WRONG_BROWSER); "the browser" would leave
+    // the choice to the model, which took the person's Chrome in every
+    // market attempt of cycle 20260919-0501-cf9f04c.
+    for (const task of MARKET_CATALOGUE) {
+      const lists = task.apps.some((id) => BROWSER_APPS.includes(id));
+      expect(namesBrowser(task), task.id).toBe(lists);
+      expect(task.instruction.match(/\{browser\}/g)?.length ?? 0, task.id).toBe(
+        lists ? 1 : 0,
+      );
+      expect(task.instruction, task.id).not.toMatch(
+        /\bthe browser\b|Safari|Chrome/,
       );
     }
   });

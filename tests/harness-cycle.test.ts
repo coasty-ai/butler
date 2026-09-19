@@ -106,6 +106,7 @@ import {
   catalogueHash,
   classRates,
   comparable,
+  contentFree,
   failureClasses,
   renderCycleReport,
   type CycleInfo,
@@ -122,29 +123,46 @@ import {
   leftoversLine,
   ran,
   renderSummary,
+  renderTable,
   type AttemptResult,
 } from "../src/gym/bench/report";
 import type {
   BenchTask,
+  Evidence,
   FixtureHandle,
+  Grade,
+  JournalStep,
+  RunJournal,
   TakeoverSource,
 } from "../src/gym/bench/types";
 import {
+  BROWSER_EXECUTABLES,
   REMEDY,
   agendaAccess,
   agendaSetupError,
+  appsOpen,
+  appsToWatch,
+  chooseBrowser,
   ideBlind,
   installedApps,
   launchable,
   missingKey,
   openedByPerson,
+  parseWindowFacts,
   presentKeyNames,
   readStartFacts,
+  readWindowFacts,
   requiredApps,
+  runningApps,
   runningDocumentApps,
+  safeOpen,
+  skipRemedy,
   startSkip,
+  startSkipDetail,
+  startSkipDetails,
   startSkips,
   taskGate,
+  windowScript,
 } from "../src/gym/bench/preflight";
 import {
   MAX_CLEANUPS,
@@ -166,6 +184,8 @@ import { CATALOGUE } from "../src/gym/bench/catalogue";
 import {
   APPROVAL_APPS,
   BROWSER_APPS,
+  BROWSER_NAMES,
+  BROWSER_PREFERENCE,
   CALCULATOR,
   FIXTURE_HOST,
   REPLACE_REASON,
@@ -173,6 +193,11 @@ import {
   TEXTEDIT,
   approvalInContext,
   approvesPrompt,
+  chosenBrowsers,
+  gradeTask,
+  markerValues,
+  namesBrowser,
+  withBrowserCheck,
 } from "../src/gym/bench/graders";
 import {
   createReaders,
@@ -3106,6 +3131,36 @@ describe("results.json and report.md", () => {
     expect(json).toContain("STATE_CHANGED");
   });
 
+  it("counts the APPS_OPEN rows by application under Unknowns, bundle ids only", () => {
+    const skipped = (id: string, i: number) =>
+      row({
+        planIndex: 100 + i,
+        status: "unknown",
+        reason: "APPS_OPEN",
+        runStatus: "skipped",
+        endingCode: "SKIPPED",
+        openApps: [id],
+      });
+    const cycle = buildCycleResults({
+      cycle: info(),
+      results: [
+        ...results,
+        skipped("com.apple.TextEdit", 0),
+        skipped("com.apple.TextEdit", 1),
+        skipped("com.apple.Music", 2),
+        skipped(`${MARK} ~/Documents/plan.txt`, 3),
+      ],
+      analysis,
+    });
+    const md = renderCycleReport(cycle);
+    expect(md).toContain("| APPS_OPEN | 4 |");
+    expect(md).toContain(
+      "APPS_OPEN by application: com.apple.TextEdit 2, com.apple.Music 1.",
+    );
+    expect(md).toMatch(/SKIPPED\s+APPS_OPEN com\.apple\.Music$/m);
+    expect(JSON.stringify(cycle)).not.toContain(MARK);
+  });
+
   it("hashes templates and grader source, so a grader change changes the metric", () => {
     const task = testTask();
     const one = catalogueHash([task], ["grader v1"]);
@@ -3836,6 +3891,512 @@ describe("task-level preflight", () => {
     gate.observe(blind);
     expect(gate.skip({ taskId: ide.id })).toBe("IDE_BLIND");
     expect(gate.skip({ taskId: other.id })).toBeUndefined();
+  });
+});
+
+describe("open applications and the browser choice", () => {
+  const SAFARI = "com.apple.Safari";
+  const CHROME = "com.google.Chrome";
+  const TEXT = "com.apple.TextEdit";
+  const emptyJournal = (): RunJournal => ({
+    status: "completed",
+    settled: true,
+    actions: 0,
+    steps: [],
+    approvals: 0,
+    approvalsDeclined: 0,
+    retries: 0,
+    takeovers: 0,
+    takeoverSources: {
+      manual_input: 0,
+      request_user: 0,
+      policy: 0,
+      surface: 0,
+      handoff: 0,
+    },
+    manualTakeover: false,
+    modelFailed: false,
+    loops: 0,
+    noProgress: 0,
+    failures: {},
+    endingCode: "COMPLETED",
+    cost: 0,
+    seconds: 0,
+    modelCalls: 0,
+  });
+  const step = (over: Partial<JournalStep>): JournalStep => ({
+    type: "click",
+    ...over,
+  });
+  const evidenceWith = (
+    steps: JournalStep[],
+    browserId?: string,
+  ): Evidence => ({
+    appId: SAFARI,
+    journal: { ...emptyJournal(), steps, actions: steps.length },
+    parameters: {
+      token: "benchnoteab12",
+      ...(browserId ? { browserId } : {}),
+    },
+  });
+
+  it("names every browser once: the same ids in BROWSER_APPS, the executables, the names and the preference, Safari then Chrome first", () => {
+    const ids = [...BROWSER_APPS].sort();
+    expect(Object.keys(BROWSER_NAMES).sort()).toEqual(ids);
+    expect(Object.keys(BROWSER_EXECUTABLES).sort()).toEqual(ids);
+    expect([...BROWSER_PREFERENCE].sort()).toEqual(ids);
+    expect(BROWSER_PREFERENCE.slice(0, 2)).toEqual([SAFARI, CHROME]);
+    // open_app takes a display name: never a path or a bundle id.
+    for (const name of Object.values(BROWSER_NAMES))
+      expect(name).toMatch(/^[A-Z][A-Za-z ]+$/);
+  });
+
+  it("sees a browser's main process and not its helpers, apart from the document applications", () => {
+    const ps = [
+      "  201 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "  202 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/140.0.0.0/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer",
+      "  203 /System/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari",
+      "  204 /Applications/Safari Technology Preview.app/Contents/MacOS/Safari Technology Preview",
+      "  205 /System/Applications/TextEdit.app/Contents/MacOS/TextEdit",
+      "  206 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+    ].join("\n");
+    expect([...runningApps(ps)].sort()).toEqual([
+      SAFARI,
+      "com.apple.SafariTechnologyPreview",
+      TEXT,
+      CHROME,
+    ]);
+    expect([...runningDocumentApps(ps)]).toEqual([TEXT]);
+    expect(runningApps(undefined).size).toBe(0);
+    // What a person opens during a wait counts, browsers included.
+    expect(
+      [
+        ...openedByPerson(
+          { first: false, sawInput: true },
+          ps,
+          new Set([TEXT]),
+        ),
+      ].sort(),
+    ).toEqual([SAFARI, "com.apple.SafariTechnologyPreview", CHROME]);
+  });
+
+  it("chooses the browser that is not the person's: Safari when Chrome is open, Chrome when Safari is, and skips only when every one is in use", () => {
+    const task = byTaskId("browser-nav-chain");
+    expect(namesBrowser(task)).toBe(true);
+    const installed = new Set(["com.apple.finder", SAFARI, CHROME]);
+    const chrome = new Set([CHROME]);
+    expect(chooseBrowser(task, { installed, running: chrome })).toEqual({
+      id: SAFARI,
+      name: "Safari",
+    });
+    expect(
+      startSkipDetail(task, { installed, running: chrome }),
+    ).toBeUndefined();
+    expect(
+      chooseBrowser(task, { installed, running: new Set([SAFARI]) }),
+    ).toEqual({ id: CHROME, name: "Google Chrome" });
+    // Neither running: Safari, first in the preference.
+    expect(chooseBrowser(task, { installed, running: new Set() })?.id).toBe(
+      SAFARI,
+    );
+    expect(chooseBrowser(task, { installed })?.id).toBe(SAFARI);
+    // Both open with unknown windows: nothing free, and the skip names both.
+    const both = new Set([SAFARI, CHROME]);
+    expect(chooseBrowser(task, { installed, running: both })).toBeUndefined();
+    expect(startSkipDetail(task, { installed, running: both })).toEqual({
+      code: "APPS_OPEN",
+      apps: [SAFARI, CHROME],
+    });
+    expect(startSkip(task, { installed, running: both })).toBe("APPS_OPEN");
+    // Only Chrome installed, and open.
+    expect(
+      chooseBrowser(task, {
+        installed: new Set(["com.apple.finder", CHROME]),
+        running: chrome,
+      }),
+    ).toBeUndefined();
+    // Spotlight silent: only Safari and what is running are known to exist,
+    // so no third browser is ever named.
+    expect(chooseBrowser(task, { running: both })).toBeUndefined();
+    expect(chooseBrowser(task, { running: chrome })?.id).toBe(SAFARI);
+    // Both open, but Safari shows only fixture pages (the last attempt's)
+    // or no window at all: Safari. Safari with the person's window: Chrome
+    // when Chrome has none.
+    expect(
+      chooseBrowser(task, {
+        installed,
+        running: both,
+        windows: { [SAFARI]: { windows: 2, foreign: 0 } },
+      })?.id,
+    ).toBe(SAFARI);
+    expect(
+      chooseBrowser(task, {
+        installed,
+        running: both,
+        windows: { [SAFARI]: { windows: 0, foreign: 0 } },
+      })?.id,
+    ).toBe(SAFARI);
+    expect(
+      chooseBrowser(task, {
+        installed,
+        running: both,
+        windows: {
+          [SAFARI]: { windows: 1, foreign: 1 },
+          [CHROME]: { windows: 0, foreign: 0 },
+        },
+      })?.id,
+    ).toBe(CHROME);
+    // No browser installed at all: the older skip.
+    expect(
+      startSkip(task, {
+        installed: new Set(["com.apple.finder"]),
+        running: both,
+      }),
+    ).toBe("APP_NOT_INSTALLED");
+    // A smoke task only opens its application; a long task that does not
+    // name the browser is not kept by one either.
+    expect(
+      startSkip(byTaskId("browser-open"), { installed, running: both }),
+    ).toBeUndefined();
+    const unnamed = { ...task, instruction: "In the browser, go to {site}." };
+    expect(appsOpen(unnamed, { installed, running: both })).toEqual([]);
+    // A task with no browser gets no choice.
+    expect(
+      chooseBrowser(byTaskId("text-append-line"), { installed }),
+    ).toBeUndefined();
+  });
+
+  it("lets an application an earlier attempt left open run when it shows only benchmark windows or none, and names what is open otherwise", () => {
+    const running = new Set([TEXT]);
+    const text = byTaskId("text-append-line");
+    expect(startSkipDetail(text, { running })).toEqual({
+      code: "APPS_OPEN",
+      apps: [TEXT],
+    });
+    expect(
+      startSkipDetail(text, { running, windows: { [TEXT]: undefined } })?.code,
+    ).toBe("APPS_OPEN");
+    expect(
+      startSkipDetail(text, {
+        running,
+        windows: { [TEXT]: { windows: 1, foreign: 1 } },
+      }),
+    ).toEqual({ code: "APPS_OPEN", apps: [TEXT] });
+    expect(
+      startSkipDetail(text, {
+        running,
+        windows: { [TEXT]: { windows: 2, foreign: 0 } },
+      }),
+    ).toBeUndefined();
+    expect(
+      startSkipDetail(text, {
+        running,
+        windows: { [TEXT]: { windows: 0, foreign: 0 } },
+      }),
+    ).toBeUndefined();
+    expect(safeOpen(TEXT, {})).toBe(false);
+    // Two applications open, one of them the benchmark's: the line names
+    // the other only.
+    expect(
+      startSkipDetail(byTaskId("multi-folder-note-event"), {
+        running: new Set([TEXT, "com.apple.iCal"]),
+        windows: { [TEXT]: { windows: 1, foreign: 0 } },
+      }),
+    ).toEqual({ code: "APPS_OPEN", apps: ["com.apple.iCal"] });
+    // Music keeps its one window, titled Music: not the benchmark's.
+    expect(
+      startSkipDetail(byTaskId("media-search-library"), {
+        running: new Set(["com.apple.Music"]),
+        windows: { "com.apple.Music": { windows: 1, foreign: 1 } },
+      }),
+    ).toEqual({ code: "APPS_OPEN", apps: ["com.apple.Music"] });
+    expect(skipRemedy({ code: "APPS_OPEN", apps: [TEXT] })).toBe(
+      `${REMEDY.APPS_OPEN} Open now: ${TEXT}.`,
+    );
+    expect(skipRemedy({ code: "FIXTURE_PORT" })).toBe(REMEDY.FIXTURE_PORT);
+    // The night of 20260919-0429: TextEdit left running by the cycle
+    // before, Chrome the person's. Every task listing TextEdit (the ten
+    // that cycle skipped, and recovery-missing-file) is kept and named; no
+    // browser task is, since Safari is free.
+    const facts = { running: new Set([TEXT, CHROME]) };
+    const details = startSkipDetails(LONG_CATALOGUE, facts);
+    expect(startSkips(LONG_CATALOGUE, facts)).toEqual(
+      new Map([...details].map(([id, d]) => [id, d.code])),
+    );
+    expect(details.size).toBe(11);
+    for (const [id, d] of details) {
+      expect(d, id).toEqual({ code: "APPS_OPEN", apps: [TEXT] });
+      expect(byTaskId(id).apps, id).toContain(TEXT);
+    }
+    // With TextEdit's windows read as the last attempt's, nothing is kept.
+    expect(
+      startSkips(LONG_CATALOGUE, {
+        ...facts,
+        windows: { [TEXT]: { windows: 3, foreign: 0 } },
+      }).size,
+    ).toBe(0);
+  });
+
+  it("asks System Events for window counts only, never a title, and reads the answer or says it cannot", async () => {
+    const script = windowScript(TEXT);
+    expect(script).toContain('tell application "System Events"');
+    expect(script).toContain(`bundle identifier is "${TEXT}"`);
+    expect(script).toContain('does not contain "benchnote"');
+    expect(script).toContain(
+      'return (total as text) & " " & (foreign as text)',
+    );
+    expect(script).not.toMatch(
+      /tell application "TextEdit"|do shell script|quit/,
+    );
+    expect(() => windowScript('x" & (do shell script "id")')).toThrow();
+    expect(parseWindowFacts("2 0\n")).toEqual({ windows: 2, foreign: 0 });
+    expect(parseWindowFacts("0 0")).toEqual({ windows: 0, foreign: 0 });
+    expect(parseWindowFacts("1 2")).toBeUndefined();
+    expect(parseWindowFacts(undefined)).toBeUndefined();
+    expect(
+      parseWindowFacts(
+        "execution error: Not authorized to send Apple events to System Events. (-1743)",
+      ),
+    ).toBeUndefined();
+    const calls: string[][] = [];
+    const facts = await readWindowFacts(
+      async (command, args) => {
+        calls.push([command, ...args]);
+        return args[1].includes("com.apple.Music") ? undefined : "3 1";
+      },
+      [TEXT, "com.apple.Music"],
+    );
+    expect(calls.map((call) => call[0])).toEqual(["osascript", "osascript"]);
+    expect(calls[0][1]).toBe("-e");
+    expect(facts).toEqual({
+      [TEXT]: { windows: 3, foreign: 1 },
+      "com.apple.Music": undefined,
+    });
+    // Only the running applications a long task lists are asked: never
+    // Calculator, never a smoke task's, never what no selected task needs.
+    expect(
+      appsToWatch(
+        [
+          byTaskId("text-append-line"),
+          byTaskId("calculator-open"),
+          byTaskId("browser-nav-chain"),
+        ],
+        [TEXT, "com.apple.calculator", CHROME, "com.apple.Notes"],
+      ),
+    ).toEqual([TEXT, CHROME]);
+  });
+
+  it("asks about windows only when told to, and then lets the last night's TextEdit run", async () => {
+    const calls: string[] = [];
+    const run = async (command: string, args: string[]) => {
+      calls.push(command);
+      if (command === "mdfind")
+        return args[0].includes("com.apple.finder")
+          ? "/System/Library/CoreServices/Finder.app"
+          : args[0].includes(`${TEXT}'`)
+            ? "/System/Applications/TextEdit.app"
+            : args[0].includes(`${SAFARI}'`)
+              ? "/Applications/Safari.app"
+              : args[0].includes(`${CHROME}'`)
+                ? "/Applications/Google Chrome.app"
+                : "";
+      if (command === "ps")
+        return [
+          "  101 /System/Applications/TextEdit.app/Contents/MacOS/TextEdit",
+          "  102 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ].join("\n");
+      if (command === "osascript") return "2 0";
+      return undefined;
+    };
+    const tasks = [
+      byTaskId("text-append-line"),
+      byTaskId("browser-form-submit-local"),
+    ];
+    const source = { run, home: "/Users/someone", benchRootDirty: () => false };
+    const quiet = await readStartFacts(tasks, source);
+    expect(calls).not.toContain("osascript");
+    expect(quiet.windows).toBeUndefined();
+    expect([...quiet.running!].sort()).toEqual([TEXT, CHROME]);
+    // Without a look at its windows TextEdit counts as the person's; Chrome
+    // only costs the browser task its first choice.
+    expect(startSkipDetails(tasks, quiet)).toEqual(
+      new Map([["text-append-line", { code: "APPS_OPEN", apps: [TEXT] }]]),
+    );
+    expect(chooseBrowser(tasks[1], quiet)?.name).toBe("Safari");
+    calls.length = 0;
+    const asked = await readStartFacts(tasks, { ...source, appleEvents: true });
+    expect(calls.filter((command) => command === "osascript")).toHaveLength(2);
+    expect(asked.windows).toEqual({
+      [TEXT]: { windows: 2, foreign: 0 },
+      [CHROME]: { windows: 2, foreign: 0 },
+    });
+    expect(startSkips(tasks, asked).size).toBe(0);
+  });
+
+  it("holds a run to the browser the harness named: another browser in an acting step, a launch or an open fails it", () => {
+    const passed: Grade = { status: "passed", checks: { ok: true } };
+    const safariOnly = [
+      step({
+        type: "open_app",
+        appId: "com.apple.finder",
+        launchedAppId: SAFARI,
+      }),
+      step({ type: "type_text", appId: SAFARI }),
+    ];
+    expect(withBrowserCheck(passed, evidenceWith(safariOnly, SAFARI))).toEqual({
+      status: "passed",
+      checks: { ok: true, browser: true },
+    });
+    // Chrome in front of a capture is nothing the run did; a click in it is.
+    expect(
+      withBrowserCheck(
+        passed,
+        evidenceWith([step({ type: "capture", appId: CHROME })], SAFARI),
+      ).checks.browser,
+    ).toBe(true);
+    expect(
+      withBrowserCheck(passed, evidenceWith([step({ appId: CHROME })], SAFARI)),
+    ).toEqual({
+      status: "failed",
+      reason: "WRONG_BROWSER",
+      checks: { ok: true, browser: false },
+    });
+    expect(
+      withBrowserCheck(
+        passed,
+        evidenceWith(
+          [
+            step({
+              type: "open_app",
+              appId: "com.apple.finder",
+              launchedAppId: CHROME,
+            }),
+          ],
+          SAFARI,
+        ),
+      ).status,
+    ).toBe("failed");
+    expect(
+      withBrowserCheck(
+        passed,
+        evidenceWith(
+          [
+            step({
+              type: "open_file",
+              appId: "com.apple.finder",
+              openedAppId: CHROME,
+            }),
+          ],
+          SAFARI,
+        ),
+      ).status,
+    ).toBe("failed");
+    // A failure keeps its own reason; an unknown stays unknown; no choice,
+    // no check.
+    const failed: Grade = {
+      status: "failed",
+      checks: { ok: false },
+      reason: "FACT_NOT_NOTED",
+    };
+    expect(
+      withBrowserCheck(failed, evidenceWith([step({ appId: CHROME })], SAFARI)),
+    ).toEqual({
+      status: "failed",
+      reason: "FACT_NOT_NOTED",
+      checks: { ok: false, browser: false },
+    });
+    const unknown: Grade = {
+      status: "unknown",
+      checks: {},
+      reason: "NO_ACCESSIBILITY",
+    };
+    expect(
+      withBrowserCheck(
+        unknown,
+        evidenceWith([step({ appId: CHROME })], SAFARI),
+      ),
+    ).toBe(unknown);
+    expect(
+      withBrowserCheck(passed, evidenceWith([step({ appId: CHROME })])),
+    ).toBe(passed);
+    expect(chosenBrowsers({ parameters: { browserId: SAFARI } })).toEqual([
+      SAFARI,
+    ]);
+    expect(chosenBrowsers({ parameters: {} })).toEqual(BROWSER_APPS);
+    expect(chosenBrowsers({ parameters: { browserId: TEXT } })).toEqual(
+      BROWSER_APPS,
+    );
+    // gradeTask applies it to every task, and the browser's name is no marker.
+    const task = testTask({ instruction: "In {browser}, open Calculator" });
+    expect(
+      gradeTask(task, {
+        ...evidenceWith([step({ appId: CHROME })], SAFARI),
+        appId: CALC,
+      }),
+    ).toMatchObject({ status: "failed", reason: "WRONG_BROWSER" });
+    expect(
+      markerValues({
+        token: "benchnoteab12",
+        browser: "Google Chrome",
+        browserId: CHROME,
+        site: "127.0.0.1:47831/benchnoteab12",
+      }),
+    ).toEqual(["benchnoteab12", "127.0.0.1:47831/benchnoteab12"]);
+  });
+
+  it("fills {browser} with the preflight's choice and grades the run in that browser only", async () => {
+    const { controller } = fakeController();
+    const seen: string[] = [];
+    const client = {
+      next: async (o: Observation): Promise<ProviderResult> => {
+        seen.push(o.task);
+        return {
+          usage,
+          action: { type: "done", summary: "ok", frame_id: o.frame.id },
+        };
+      },
+    };
+    const { deps } = attemptDeps(controller, {
+      clients: { [CELL.cell]: client },
+    });
+    const chosen = { id: SAFARI, name: "Safari" };
+    const named = await runAttempt(
+      deps,
+      CELL,
+      testTask({ instruction: "In {browser}, open Calculator" }),
+      1,
+      { ...caps, browser: chosen },
+    );
+    expect(seen[0]).toBe("In Safari, open Calculator");
+    expect(named.status).toBe("passed");
+    expect(named.checks.browser).toBe(true);
+    // A task that does not name the browser is not held to one.
+    seen.length = 0;
+    const plain = await runAttempt(deps, CELL, testTask(), 1, {
+      ...caps,
+      browser: chosen,
+    });
+    expect(seen[0]).toBe("Open Calculator");
+    expect(plain.checks.browser).toBeUndefined();
+  });
+
+  it("says which application kept a skipped attempt from running, by bundle id only", () => {
+    const skipped = row({
+      status: "unknown",
+      reason: "APPS_OPEN",
+      runStatus: "skipped",
+      endingCode: "SKIPPED",
+      openApps: [TEXT],
+    });
+    expect(renderTable([skipped])).toMatch(
+      /SKIPPED\s+APPS_OPEN com\.apple\.TextEdit$/m,
+    );
+    const clean = contentFree({
+      ...skipped,
+      openApps: [TEXT, "Untitled 3 ~/Documents/plan.txt"],
+    });
+    expect(clean.openApps).toEqual([TEXT]);
+    expect(contentFree(row({})).openApps).toBeUndefined();
   });
 });
 
@@ -4989,6 +5550,15 @@ describe("harness-cycle.mjs with the suites", () => {
       after.indexOf("attempt: async (entry, maxCost, gateWaitSeconds)"),
     );
     expect(after).toContain("skips.set(id, code)");
+    // The windows of what they opened are asked about too, and the browser
+    // is chosen per attempt from the facts so far; a dry run sends no Apple
+    // Event.
+    expect(after).toContain("readWindowFacts(run, appsToWatch(tasks, opened))");
+    expect(cycle).toContain('appleEvents: !values["dry-run"],');
+    expect(cycle).toContain("...browserFor(byId.get(entry.taskId)),");
+    expect(cycle).toMatch(
+      /reason === "APPS_OPEN" \? skipDetail\(entry\.taskId, reason\)\.apps/,
+    );
     // Durations from any slice; the baseline the dry run names is the
     // slice-aware one the end of the cycle picks.
     expect(cycle).toContain("const timing = baselineFor(draft, timingCycles);");
@@ -5028,6 +5598,11 @@ describe("harness-cycle.mjs with the suites", () => {
     expect(skipAt).toBeGreaterThan(0);
     expect(skipAt).toBeLessThan(loop.indexOf("await runAttempt("));
     expect(loop).toContain("gate.observe(result);");
+    // The window counts at the real start, under the lock; the browser
+    // chosen for the attempt; the open application on the skip row.
+    expect(bench).toContain("appleEvents: true,");
+    expect(loop).toContain("const browser = chooseBrowser(task, facts);");
+    expect(loop).toContain("if (apps?.length) row.openApps = apps;");
     // The final sweep under the lock, answering the leftovers and the exit.
     const finallyAt = bench.indexOf("} finally {");
     const sweepAt = bench.indexOf("swept = await sweepTokens({", finallyAt);

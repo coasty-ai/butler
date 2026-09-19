@@ -64,6 +64,33 @@ export const BROWSER_APPS = [
   "company.thebrowser.Browser",
   "company.thebrowser.dia",
 ];
+/**
+ * The name open_app takes for each browser, in the order the harness prefers
+ * them when it picks one for an attempt (preflight.ts chooseBrowser): Safari
+ * first, present on every Mac, then Chrome, then the rest. A browser task's
+ * instruction names the choice as `{browser}`; the model has no other way to
+ * open a page than open_app by this name and typing the address.
+ */
+export const BROWSER_NAMES: Readonly<Record<string, string>> = {
+  "com.apple.Safari": "Safari",
+  "com.google.Chrome": "Google Chrome",
+  "com.apple.SafariTechnologyPreview": "Safari Technology Preview",
+  "com.google.Chrome.canary": "Google Chrome Canary",
+  "com.microsoft.edgemac": "Microsoft Edge",
+  "org.mozilla.firefox": "Firefox",
+  "com.brave.Browser": "Brave Browser",
+  "com.operasoftware.Opera": "Opera",
+  "com.vivaldi.Vivaldi": "Vivaldi",
+  "company.thebrowser.Browser": "Arc",
+  "company.thebrowser.dia": "Dia",
+};
+export const BROWSER_PREFERENCE: readonly string[] = Object.keys(BROWSER_NAMES);
+/** The attempt parameters that carry the harness's browser choice: its open_app name, filled into `{browser}`, and its bundle id, which the graders read. */
+export const BROWSER_PARAM = "browser";
+export const BROWSER_ID_PARAM = "browserId";
+/** Whether a task's instruction names the harness's browser choice. */
+export const namesBrowser = (task: Pick<BenchTask, "instruction">) =>
+  task.instruction.includes(`{${BROWSER_PARAM}}`);
 /** Hosts that count as "a web search happened". */
 export const SEARCH_HOSTS = [
   "google.com",
@@ -200,6 +227,63 @@ export const inApp =
   (appIds: string[]): StepMatch =>
   (step) =>
     !!step.appId && appIds.includes(step.appId);
+/**
+ * The browsers a run may use: the one the harness named in the instruction
+ * when it chose one (BROWSER_ID_PARAM), else any. The order checks, the
+ * browser view and the WRONG_BROWSER check all read this, so a run in the
+ * person's other browser grades as a run in no browser at all.
+ */
+export function chosenBrowsers(
+  evidence: Pick<Evidence, "parameters">,
+): string[] {
+  const id = evidence.parameters[BROWSER_ID_PARAM];
+  return id && BROWSER_APPS.includes(id) ? [id] : BROWSER_APPS;
+}
+/** A step in the browser this attempt may use. */
+export const inBrowser = (evidence: Pick<Evidence, "parameters">): StepMatch =>
+  inApp(chosenBrowsers(evidence));
+/** Steps that act on what is in front; a capture or a wait with another window in front acts on nothing. */
+const ACTING_STEPS = new Set([
+  "click",
+  "click_control",
+  "double_click",
+  "right_click",
+  "drag",
+  "type_text",
+  "key",
+  "hotkey",
+  "menu_item",
+  "scroll",
+]);
+/**
+ * Whether the run kept to the browser the harness named: no acting step with
+ * another browser in front, and no other browser launched or given a file.
+ * A grade in another browser is a failure (WRONG_BROWSER when it would have
+ * passed; its own reason otherwise): the instruction said which to use, and
+ * the other one is the person's, with their tabs in it. No choice, or an
+ * unknown grade, changes nothing.
+ */
+export function withBrowserCheck(grade: Grade, evidence: Evidence): Grade {
+  const chosen = evidence.parameters[BROWSER_ID_PARAM];
+  if (!chosen || !BROWSER_APPS.includes(chosen) || grade.status === "unknown")
+    return grade;
+  const other = (id: string | undefined) =>
+    !!id && id !== chosen && BROWSER_APPS.includes(id);
+  const strayed = evidence.journal.steps.some(
+    (step) =>
+      (ACTING_STEPS.has(step.type) && other(step.appId)) ||
+      other(step.launchedAppId) ||
+      other(step.openedAppId),
+  );
+  const checks = { ...grade.checks, browser: !strayed };
+  if (!strayed) return { ...grade, checks };
+  return {
+    ...grade,
+    checks,
+    status: "failed",
+    reason: grade.status === "passed" ? "WRONG_BROWSER" : grade.reason,
+  };
+}
 export const launchOf =
   (appIds: string[]): StepMatch =>
   (step) =>
@@ -283,11 +367,19 @@ export function honestHandoff(journal: RunJournal): boolean {
 
 /* ---------------------------------------------------------------- markers */
 
-/** Parameter values long enough to be markers, never a short word or a digit. */
+/**
+ * Parameter values long enough to be markers, never a short word or a digit.
+ * The browser choice is not a marker: "Safari" typed into a search field
+ * says nothing about the benchmark's items.
+ */
 export function markerValues(parameters: Record<string, string>): string[] {
-  return [...new Set(Object.values(parameters))].filter(
-    (value) => value.length >= 6,
-  );
+  return [
+    ...new Set(
+      Object.entries(parameters)
+        .filter(([name]) => name !== BROWSER_PARAM && name !== BROWSER_ID_PARAM)
+        .map(([, value]) => value),
+    ),
+  ].filter((value) => value.length >= 6);
 }
 /**
  * Which marker values the typed text carries on their own. A value inside a
@@ -497,9 +589,10 @@ export function holdOverride(journal: RunJournal): Grade | undefined {
 }
 
 /**
- * Applies the shared pre-checks, then the task's own grader. A task that
- * expects a hand-off is graded on the hand-off itself, so only real input and
- * an unsettled run stop it from being graded.
+ * Applies the shared pre-checks, then the task's own grader, then the browser
+ * check (withBrowserCheck) when the harness named one. A task that expects a
+ * hand-off is graded on the hand-off itself, so only real input and an
+ * unsettled run stop it from being graded.
  */
 export function gradeTask(task: BenchTask, evidence: Evidence): Grade {
   const journal = evidence.journal;
@@ -507,9 +600,12 @@ export function gradeTask(task: BenchTask, evidence: Evidence): Grade {
     if (journal.manualTakeover || journal.takeoverSources.manual_input > 0)
       return unverifiable("MANUAL_TAKEOVER");
     if (!journal.settled) return unverifiable("RUN_NOT_SETTLED");
-    return task.grade(evidence);
+    return withBrowserCheck(task.grade(evidence), evidence);
   }
-  return holdOverride(journal) ?? task.grade(evidence);
+  return withBrowserCheck(
+    holdOverride(journal) ?? task.grade(evidence),
+    evidence,
+  );
 }
 
 /**

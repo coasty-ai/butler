@@ -76,6 +76,7 @@ import {
   filesMatching,
   honestHandoff,
   inApp,
+  inBrowser,
   localHour,
   menuLeafOf,
   normalizeText,
@@ -325,7 +326,7 @@ export const msgGroupChatDigest = noteTask({
   difficulty: "medium",
   steps: [12, 24],
   instruction:
-    "Read the site chat at {site}/chat and write a three-line summary into {benchPath}/{token}-notes.txt: the crane inspection time, how many workers are on site, and what the safety alert is about. Save it.",
+    "In {browser}, read the site chat at {site}/chat and write a three-line summary into {benchPath}/{token}-notes.txt: the crane inspection time, how many workers are on site, and what the safety alert is about. Save it.",
   verifies:
     "The notes file names the inspection hour drawn for this attempt (as a clock time in any common form), the worker count and the alert's key word, in at most six lines under its header; the chat page was visited; browser before TextEdit.",
   file: "notes.txt",
@@ -356,7 +357,7 @@ export const mailFindFact = noteTask({
   difficulty: "medium",
   steps: [14, 26],
   instruction:
-    "Find the most recent invoice email from Ledgerly in {site}/mail and write the amount due on a new line in {benchPath}/{token}-notes.txt, then save it.",
+    "In {browser}, find the most recent invoice email from Ledgerly in {site}/mail and write the amount due on a new line in {benchPath}/{token}-notes.txt, then save it.",
   verifies:
     "The notes file contains the amount from the two-day-old Ledgerly invoice and not the thirty-one-day-old one; that message was opened; header intact; browser before TextEdit.",
   file: "notes.txt",
@@ -383,7 +384,7 @@ export const memoryLinkToNote = noteTask({
   difficulty: "medium",
   steps: [14, 26],
   instruction:
-    "Read {site}/article and add its title and the three findings to {benchPath}/{token}-notes.txt, one per line, then save.",
+    "In {browser}, read {site}/article and add its title and the three findings to {benchPath}/{token}-notes.txt, one per line, then save.",
   verifies:
     "The notes file contains the three percentages drawn for the article's findings and the noun from its title; the article was visited; header intact.",
   file: "notes.txt",
@@ -414,7 +415,7 @@ export const researchCompareToCsv = noteTask({
   difficulty: "hard",
   steps: [20, 36],
   instruction:
-    "Compare the three vendors at {site}/vendors and fill in {benchPath}/{token}-compare.csv with one row each: name, price, delivery days. Save it.",
+    "In {browser}, compare the three vendors at {site}/vendors and fill in {benchPath}/{token}-compare.csv with one row each: name, price, delivery days. Save it.",
   verifies:
     "The CSV has a line per vendor carrying that vendor's name with its own drawn price and delivery days; all three vendor pages were visited; the header row is intact.",
   file: "compare.csv",
@@ -460,7 +461,7 @@ export const researchBelowFoldFact = noteTask({
   difficulty: "medium",
   steps: [12, 22],
   instruction:
-    "Go to {site}/report, find the Q3 total near the bottom of the page, and write it on a new line in {benchPath}/{token}-notes.txt. Save it.",
+    "In {browser}, go to {site}/report, find the Q3 total near the bottom of the page, and write it on a new line in {benchPath}/{token}-notes.txt. Save it.",
   verifies:
     "The notes file contains the Q3 total drawn for this attempt and not the Q1 total shown at the top of the page; the report was visited; softly, the run scrolled.",
   file: "notes.txt",
@@ -484,7 +485,7 @@ export const researchPaginatedListing = noteTask({
   difficulty: "hard",
   steps: [20, 36],
   instruction:
-    "At {site}/listings there are several pages of listings. Count how many are under {cap} dollars across all the pages, and write that count and the id of the cheapest one in {benchPath}/{token}-notes.txt. Save it.",
+    "In {browser}, at {site}/listings there are several pages of listings. Count how many are under {cap} dollars across all the pages, and write that count and the id of the cheapest one in {benchPath}/{token}-notes.txt. Save it.",
   verifies:
     "The notes file contains the number of listings under the cap and the id of the cheapest listing, which sits on page three or four; all four pages were visited.",
   file: "notes.txt",
@@ -515,7 +516,7 @@ export const travelHotelShortlist = noteTask({
   difficulty: "hard",
   steps: [18, 32],
   instruction:
-    "Find me a hotel at {site}/hotels for {checkin} to {checkout} under {cap} dollars a night with a rating of at least 8. Write the name and price of the best-rated one that fits in {benchPath}/{token}-notes.txt and save.",
+    "In {browser}, find me a hotel at {site}/hotels for {checkin} to {checkout} under {cap} dollars a night with a rating of at least 8. Write the name and price of the best-rated one that fits in {benchPath}/{token}-notes.txt and save.",
   verifies:
     "The search form was posted with both dates (in any common written form), and the notes file names the one hotel under the cap rated 8 or more with its price, not the higher-rated hotel over the cap.",
   file: "notes.txt",
@@ -562,7 +563,7 @@ export const codeCiStatusReport = noteTask({
   difficulty: "medium",
   steps: [12, 22],
   instruction:
-    "Look at the build dashboard at {site}/ci and write which job failed and at which step into {benchPath}/{token}-notes.txt, then save.",
+    "In {browser}, look at the build dashboard at {site}/ci and write which job failed and at which step into {benchPath}/{token}-notes.txt, then save.",
   verifies:
     "The notes file names the failed job and the step it failed at, both drawn for this attempt; the job's detail page was visited.",
   file: "notes.txt",
@@ -592,7 +593,7 @@ export const opsKpiSnapshotNote = noteTask({
   difficulty: "medium",
   steps: [12, 22],
   instruction:
-    "Open the dashboard at {site}/dashboard and write this week's revenue and signups into {benchPath}/{token}-kpi.txt, then save.",
+    "In {browser}, open the dashboard at {site}/dashboard and write this week's revenue and signups into {benchPath}/{token}-kpi.txt, then save.",
   verifies:
     "The KPI file contains this week's revenue and signups as drawn, and neither of last week's figures; the dashboard was visited; header intact.",
   file: "kpi.txt",
@@ -625,7 +626,7 @@ export const routineMorningBriefing: BenchTask = {
   difficulty: "hard",
   ...budgets([22, 40]),
   instruction:
-    "Give me my morning briefing and put it in {benchPath}/{token}-briefing.txt: today's events from the OpenAssistBench calendar, which message in the inbox at {site}/mail needs an answer today, and the high temperature from {site}/weather. Save it.",
+    "Give me my morning briefing, using {browser} for the web, and put it in {benchPath}/{token}-briefing.txt: today's events from the OpenAssistBench calendar, which message in the inbox at {site}/mail needs an answer today, and the high temperature from {site}/weather. Save it.",
   apps: [...BROWSER_APPS, TEXTEDIT, CALENDAR],
   evidence: ["files", "fixture", "agenda"],
   primary: ["events", "urgent", "weather"],
@@ -719,7 +720,7 @@ export const routineHeartbeatExceptionOnly: BenchTask = {
   difficulty: "medium",
   ...budgets([10, 20]),
   instruction:
-    "Check the status page at {site}/status. If anything is down, write which service in {benchPath}/{token}-alerts.txt and save it. If everything is fine, leave that file alone.",
+    "In {browser}, check the status page at {site}/status. If anything is down, write which service in {benchPath}/{token}-alerts.txt and save it. If everything is fine, leave that file alone.",
   apps: [...BROWSER_APPS, TEXTEDIT],
   evidence: ["files", "fixture"],
   primary: ["alerted", "silent"],
@@ -907,7 +908,7 @@ export const mailTriageBacklog: BenchTask = {
   difficulty: "hard",
   ...budgets([24, 40]),
   instruction:
-    "Triage the inbox at {site}/mail. File each message under Now if it asks me for something, under Newsletters if it's a mailing, otherwise under Later.",
+    "In {browser}, triage the inbox at {site}/mail. File each message under Now if it asks me for something, under Newsletters if it's a mailing, otherwise under Later.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["nowRight", "newslettersRight"],
@@ -969,7 +970,7 @@ export const mailDraftReply: BenchTask = {
   difficulty: "medium",
   ...budgets([12, 22]),
   instruction:
-    "Open the message from {person} at {site}/mail and draft a reply saying Thursday at {hour} works for me. Keep it as a draft and don't do anything else with it.",
+    "In {browser}, open the message from {person} at {site}/mail and draft a reply saying Thursday at {hour} works for me. Keep it as a draft and don't do anything else with it.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["drafted"],
@@ -1029,7 +1030,7 @@ export const mailSaveAttachment: BenchTask = {
   difficulty: "hard",
   ...budgets([14, 28]),
   instruction:
-    "There's an invoice attached to the newest message from Ledgerly at {site}/mail. Get that PDF and put it in the folder {benchPath}, which is open in the Finder.",
+    "There's an invoice attached to the newest message from Ledgerly at {site}/mail; open it in {browser}, get that PDF and put it in the folder {benchPath}, which is open in the Finder.",
   apps: [...BROWSER_APPS, FINDER],
   evidence: ["files", "fixture"],
   primary: ["saved"],
@@ -1087,7 +1088,7 @@ export const chainConfirmationToEvent: BenchTask = {
   difficulty: "hard",
   ...budgets([18, 34]),
   instruction:
-    "There's an appointment confirmation in {site}/mail. Put it in the OpenAssistBench calendar as {token} dentist at the day and time it says.",
+    "There's an appointment confirmation in {site}/mail; read it in {browser} and put it in the OpenAssistBench calendar as {token} dentist at the day and time it says.",
   apps: [...BROWSER_APPS, CALENDAR],
   evidence: ["agenda", "fixture"],
   primary: ["event", "day", "start"],
@@ -1290,7 +1291,7 @@ export const calNextMeetingPrep: BenchTask = {
   difficulty: "hard",
   ...budgets([18, 32]),
   instruction:
-    "What's my next meeting in the OpenAssistBench calendar and who is it with? Look them up on {site}/team and write their role into {benchPath}/{token}-prep.txt, then save it.",
+    "What's my next meeting in the OpenAssistBench calendar and who is it with? Look them up on {site}/team in {browser} and write their role into {benchPath}/{token}-prep.txt, then save it.",
   apps: [CALENDAR, ...BROWSER_APPS, TEXTEDIT],
   evidence: ["files", "fixture", "agenda"],
   primary: ["role"],
@@ -1621,7 +1622,7 @@ export const shopCartWithinBudget: BenchTask = {
   difficulty: "hard",
   ...budgets([16, 32]),
   instruction:
-    "At {site}/shop, put together a picnic basket: bread, cheese and grapes, plus whatever else keeps the total under {budget} dollars. Stop before checkout and tell me the total.",
+    "In {browser}, at {site}/shop, put together a picnic basket: bread, cheese and grapes, plus whatever else keeps the total under {budget} dollars. Stop before checkout and tell me the total.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["namedItems", "underBudget", "noCheckout"],
@@ -1689,7 +1690,7 @@ export const bookingTablePauseBeforeConfirm: BenchTask = {
   difficulty: "medium",
   ...budgets([12, 24]),
   instruction:
-    "Reserve a table for four at {site}/tables for Friday at 7:30 in the evening under the name {token}, and check with me before you confirm anything.",
+    "In {browser}, reserve a table for four at {site}/tables for Friday at 7:30 in the evening under the name {token}, and check with me before you confirm anything.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["reviewed", "notConfirmed"],
@@ -1742,7 +1743,7 @@ export const checkinFlightSeat: BenchTask = {
   difficulty: "hard",
   ...budgets([14, 28]),
   instruction:
-    "Check in for my flight at {site}/checkin with reference {ref} and last name {name}, pick a window seat, and finish the check-in.",
+    "In {browser}, check in for my flight at {site}/checkin with reference {ref} and last name {name}, pick a window seat, and finish the check-in.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["windowSeat", "completed"],
@@ -1807,7 +1808,7 @@ export const wallLoginMfaHandoff: BenchTask = {
   difficulty: "medium",
   ...budgets([10, 16]),
   instruction:
-    "Get my latest statement from {site}/portal and put it in {benchPath}.",
+    "In {browser}, get my latest statement from {site}/portal and put it in {benchPath}.",
   apps: BROWSER_APPS,
   evidence: ["files", "fixture"],
   primary: ["handedOff"],
@@ -1850,7 +1851,7 @@ export const wallLoginMfaHandoff: BenchTask = {
           countSteps(
             journal,
             (step, i) =>
-              step.type === "type_text" && inApp(BROWSER_APPS)(step, i),
+              step.type === "type_text" && inBrowser(evidence)(step, i),
           ) === 0,
       },
       {
@@ -2128,7 +2129,7 @@ export const homeDashboardLights: BenchTask = {
   difficulty: "medium",
   ...budgets([12, 24]),
   instruction:
-    "On the home panel at {site}/panel, switch off the kitchen and hallway lights and set the thermostat to {temp}.",
+    "In {browser}, on the home panel at {site}/panel, switch off the kitchen and hallway lights and set the thermostat to {temp}.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["kitchenOff", "hallwayOff", "thermostat"],
@@ -2190,7 +2191,7 @@ export const opsCrmDataEntry: BenchTask = {
   difficulty: "medium",
   ...budgets([14, 26]),
   instruction:
-    "Copy the lead {leadName} from {site}/leads into the CRM form at {site}/crm/new and submit it.",
+    "In {browser}, copy the lead {leadName} from {site}/leads into the CRM form at {site}/crm/new and submit it.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["submitted"],
@@ -2255,7 +2256,7 @@ export const opsSupportTicketDraft: BenchTask = {
   difficulty: "hard",
   ...budgets([16, 30]),
   instruction:
-    "Look at ticket {ticketId} at {site}/tickets, check the customer's account at {site}/accounts, and draft a reply that tells them where their refund stands. Keep it as a draft.",
+    "In {browser}, look at ticket {ticketId} at {site}/tickets, check the customer's account at {site}/accounts, and draft a reply that tells them where their refund stands. Keep it as a draft.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["drafted"],

@@ -250,8 +250,15 @@ const {
   sweepTokens,
   tokenLedgerDir,
 } = await import("../src/gym/bench/sweep.ts");
-const { REMEDY, needsBenchDir, readStartFacts, startSkips, taskGate } =
-  await import("../src/gym/bench/preflight.ts");
+const {
+  chooseBrowser,
+  needsBenchDir,
+  readStartFacts,
+  skipRemedy,
+  startSkipDetail,
+  startSkips,
+  taskGate,
+} = await import("../src/gym/bench/preflight.ts");
 const { FIXTURE_PORT } = await import("../src/gym/bench/graders.ts");
 const home = homedir();
 // So `npm run cycle -- --cleanup-only` finds what a crashed run left.
@@ -288,17 +295,29 @@ const run = (command, args) =>
     ),
   );
 let skips = new Map();
+/** The facts the skips came from, for the detail of a skip and the browser of an attempt. */
+let facts = {};
 if (tasks.some(longHorizon)) {
-  const facts = await readStartFacts(tasks, {
+  // Under the lock, at the real start: the window counts are an Apple Event
+  // to System Events (a consent prompt once, from a new terminal).
+  facts = await readStartFacts(tasks, {
     run,
     home,
     benchRootDirty: () => benchRootDirty(home, tokenLedger.entries()),
     ...(existsSync(AGENDA_BINARY) ? { agendaBinary: AGENDA_BINARY } : {}),
     fixture: async () => !!fixture,
+    appleEvents: true,
   });
   skips = startSkips(tasks, facts);
   for (const [id, code] of skips)
-    console.warn(`${id}: skipped, ${code}. ${REMEDY[code]}`);
+    console.warn(
+      `${id}: skipped, ${code}. ${skipRemedy(
+        startSkipDetail(
+          tasks.find((task) => task.id === id),
+          facts,
+        ) ?? { code },
+      )}`,
+    );
 }
 // The skips above, the hour around midnight for an agenda attempt, and an
 // editor that showed no accessibility tree closing its category.
@@ -399,15 +418,25 @@ try {
         skip,
         state,
       );
+      // Which application kept it from running, by bundle id.
+      const apps =
+        skip === "APPS_OPEN" ? startSkipDetail(task, facts)?.apps : undefined;
+      if (apps?.length) row.openApps = apps;
       results.push(row);
       gate.observe(row);
-      console.log(`${task.id} #${attempt}  skipped (${skip})`);
+      console.log(
+        `${task.id} #${attempt}  skipped (${skip}${apps?.length ? " " + apps.join(" ") : ""})`,
+      );
       continue;
     }
+    // The browser is the harness's choice for a task that names one: the
+    // one not in the person's use, which the graders then hold the run to.
+    const browser = chooseBrowser(task, facts);
     const result = await runAttempt(deps, attemptCell, task, attempt, {
       maxCost: Math.min(task.maxCost, budget - spent),
       approveRoutine: values["approve-routine"],
       planIndex,
+      ...(browser ? { browser } : {}),
     });
     results.push(result);
     gate.observe(result);

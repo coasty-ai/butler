@@ -80,6 +80,8 @@ export interface AttemptResult {
   /** Cleanup codes for what the attempt left behind, when cleanup ran. */
   leftovers?: string[];
   cleanupFailed?: boolean;
+  /** An APPS_OPEN skip: the applications that were open, by bundle id. Never a window title. */
+  openApps?: string[];
   /** The task's declared [minimum, maximum] competent step count. */
   expectedSteps?: [number, number];
   /** Seconds the presence gate held this attempt back; 0 without a gate. */
@@ -440,7 +442,10 @@ export function renderTable(results: AttemptResult[]): string {
     String(result.retries),
     String(result.takeovers),
     result.endingCode,
-    result.status === "passed" ? "" : (result.reason ?? ""),
+    // A skip for an open application says which, so the line is actionable.
+    result.status === "passed"
+      ? ""
+      : [result.reason ?? "", ...(result.openApps ?? [])].join(" ").trim(),
   ]);
   const widths = header.map((name, column) =>
     Math.max(name.length, ...rows.map((row) => row[column].length)),

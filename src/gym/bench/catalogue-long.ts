@@ -27,11 +27,13 @@ import {
   daysFrom,
   fileEntry,
   fileText,
+  chosenBrowsers,
   filesMatching,
   frontmost,
   honestHandoff,
   hostMatches,
   inApp,
+  inBrowser,
   inOrder,
   inputCount,
   localHour,
@@ -147,9 +149,9 @@ export const marker = (evidence: Evidence): string | undefined => {
   return TOKEN_RE.test(token) ? token : undefined;
 };
 
-/** Steps in a browser, then steps in TextEdit: the page was read before the note was written. */
+/** Steps in the attempt's browser, then steps in TextEdit: the page was read before the note was written. */
 export const browserThenTextEdit = (evidence: Evidence) =>
-  inOrder(evidence.journal, inApp(BROWSER_APPS), inApp([TEXTEDIT]));
+  inOrder(evidence.journal, inBrowser(evidence), inApp([TEXTEDIT]));
 
 /**
  * Whether a browser is in front, and the address it shows. Another
@@ -163,7 +165,8 @@ type BrowserView = { shown: false } | { shown: true; address: string };
 function browserView(evidence: Evidence): BrowserView | Grade {
   const app = frontmost(evidence);
   if (!app) return unverifiable("NO_FRONTMOST_INFO");
-  if (!BROWSER_APPS.includes(app)) return { shown: false };
+  // The person's other browser in front is no browser of this attempt's.
+  if (!chosenBrowsers(evidence).includes(app)) return { shown: false };
   const address = evidence.domain ?? evidence.context?.browserAddress;
   if (!accessibilityText(evidence.context))
     return unverifiable("NO_ACCESSIBILITY");
@@ -284,7 +287,7 @@ export const researchFactNote = research({
   difficulty: "medium",
   steps: [12, 22],
   instruction:
-    "In the browser, go to {site}/about and find how many employees the company has. Then open the file {benchPath}/{token}-notes.txt in TextEdit, write that number on a new line, and save it.",
+    "In {browser}, go to{site}/about and find how many employees the company has. Then open the file {benchPath}/{token}-notes.txt in TextEdit, write that number on a new line, and save it.",
   verifies:
     "The notes file in the bench folder contains the employee count drawn for this attempt (the founding year or office count do not count), its header line is intact, nothing else is in the folder, the fixture server saw the About page, and the journal shows browser steps before TextEdit steps.",
   page: "about",
@@ -307,7 +310,7 @@ export const researchCompareNote = research({
   difficulty: "medium",
   steps: [15, 25],
   instruction:
-    "In the browser, go to {site}/plans and work out which plan is the cheapest per month. Then open the file {benchPath}/{token}-notes.txt in TextEdit, write that plan's name on a new line, and save it.",
+    "In {browser}, go to{site}/plans and work out which plan is the cheapest per month. Then open the file {benchPath}/{token}-notes.txt in TextEdit, write that plan's name on a new line, and save it.",
   verifies:
     "The notes file names the plan with the lowest monthly cost (one plan is billed yearly, so the comparison needs a division) and no other plan; header intact, folder otherwise empty, the Plans page visited, browser before TextEdit.",
   page: "plans",
@@ -334,7 +337,7 @@ export const researchListNote = research({
   difficulty: "hard",
   steps: [20, 35],
   instruction:
-    "In the browser, go to {site}/team. Then open the file {benchPath}/{token}-notes.txt in TextEdit, add the full names of everyone whose role is Engineer, one per line, and save it.",
+    "In {browser}, go to{site}/team. Then open the file {benchPath}/{token}-notes.txt in TextEdit, add the full names of everyone whose role is Engineer, one per line, and save it.",
   verifies:
     "The notes file contains both engineers' names and neither of the other two people; header intact, folder otherwise empty, the Team page visited, browser before TextEdit.",
   page: "team",
@@ -1117,7 +1120,7 @@ export const browserNavChain: BenchTask = {
   difficulty: "medium",
   ...budgets([10, 16]),
   instruction:
-    "In the browser, go to {site}, open the Orders page, and open the order for {customer}.",
+    "In {browser}, go to{site}, open the Orders page, and open the order for {customer}.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["onOrder"],
@@ -1178,7 +1181,7 @@ export const browserFormSubmitLocal: BenchTask = {
   difficulty: "medium",
   ...budgets([12, 22]),
   instruction:
-    "Go to {site}/contact, put {token} in the name field and hello from the benchmark in the message field, then submit the form.",
+    "In {browser}, go to {site}/contact, put {token} in the name field and hello from the benchmark in the message field, then submit the form.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["submitted"],
@@ -1236,7 +1239,7 @@ export const browserFindInTable: BenchTask = {
   difficulty: "medium",
   ...budgets([12, 20]),
   instruction:
-    "Go to {site}/prices, find the item with the highest unit price, and open its detail page.",
+    "In {browser}, go to {site}/prices, find the item with the highest unit price, and open its detail page.",
   apps: BROWSER_APPS,
   evidence: ["fixture"],
   primary: ["onItem"],
@@ -1462,7 +1465,7 @@ export const multiPageCalcNote: BenchTask = {
   difficulty: "hard",
   ...budgets([18, 30]),
   instruction:
-    "In the browser, go to {site}/sheet. Multiply the unit price by the quantity in Calculator, then open the file {benchPath}/{token}-notes.txt in TextEdit, write the total on a new line, and save it.",
+    "In {browser}, go to{site}/sheet. Multiply the unit price by the quantity in Calculator, then open the file {benchPath}/{token}-notes.txt in TextEdit, write the total on a new line, and save it.",
   apps: [...BROWSER_APPS, CALCULATOR, TEXTEDIT],
   evidence: ["files", "fixture"],
   primary: ["noteTotal"],
@@ -1508,7 +1511,7 @@ export const multiPageCalcNote: BenchTask = {
         visited: fixture.visits.includes(`/${token}/sheet`),
         order: inOrder(
           journal,
-          inApp(BROWSER_APPS),
+          inBrowser(evidence),
           inApp([CALCULATOR]),
           inApp([TEXTEDIT]),
         ),
@@ -1809,7 +1812,7 @@ export const recoveryWrongPage: BenchTask = {
   difficulty: "medium",
   ...budgets([12, 22]),
   instruction:
-    "In the browser, go to the Orders page at {site}/orders and enter the total of order {orderId} into Calculator.",
+    "In {browser}, go tothe Orders page at {site}/orders and enter the total of order {orderId} into Calculator.",
   apps: [...BROWSER_APPS, CALCULATOR],
   evidence: ["fixture"],
   primary: ["total"],

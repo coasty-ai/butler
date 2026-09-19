@@ -4,9 +4,12 @@ import { providerKeyEnv } from "../../providers/catalog";
 import { dayBoundary } from "./catalogue-long";
 import {
   BROWSER_APPS,
+  BROWSER_NAMES,
+  BROWSER_PREFERENCE,
   CALENDAR,
   FINDER,
   MUSIC,
+  namesBrowser,
   NOTES,
   REMINDERS,
   SETTINGS,
@@ -67,7 +70,7 @@ export const REMEDY: Record<RemedyCode, string> = {
   FIXTURE_PORT:
     "Free port 47831 on 127.0.0.1 (another fixture server or a forgotten test server holds it); the browser and research tasks need it.",
   APPS_OPEN:
-    "Save your work and quit TextEdit, Calendar, Reminders, Notes, Music and System Settings before the night; the harness never quits an application.",
+    "Save your work and quit the application named (TextEdit, Calendar, Reminders, Notes, Music, System Settings, or every browser a web task could use), or leave it open with no window; the harness never quits an application, and one an earlier attempt left open with only benchmark windows (titles carrying its token) does not count.",
   BENCH_ROOT_DIRTY:
     "An earlier cycle left benchmark items behind: run npm run cycle -- --cleanup-only, then remove by hand anything it still reports.",
 };
@@ -191,10 +194,11 @@ export function appIdsToCheck(tasks: Pick<BenchTask, "apps">[]): string[] {
 
 /**
  * Applications whose open windows can hold a person's unsaved work, by the
- * main executable `ps -axo pid=,command=` shows. The Finder and the browser
- * are always open and a task never types into a document of theirs;
- * Calculator holds nothing to lose and its graders need the entry in the
- * journal, so a result left on its display cannot pass.
+ * main executable `ps -axo pid=,command=` shows. The Finder is always open
+ * and a task never types into a window of its; a browser in the person's
+ * use is avoided by choosing the other one (chooseBrowser) rather than by a
+ * skip; Calculator holds nothing to lose and its graders need the entry in
+ * the journal, so a result left on its display cannot pass.
  */
 export const DOCUMENT_APPS: Record<string, RegExp> = {
   [TEXTEDIT]: /\/TextEdit\.app\/Contents\/MacOS\/TextEdit(\s|$)/,
@@ -208,22 +212,58 @@ export const DOCUMENT_APPS: Record<string, RegExp> = {
 };
 /** The document applications running now, from ps output. */
 export function runningDocumentApps(psText: string | undefined): Set<string> {
+  return runningOf(psText, DOCUMENT_APPS);
+}
+
+/**
+ * The browsers' main executables, by the same ps line. Helper processes
+ * (renderers, GPU, networking) live under Contents/Frameworks and never
+ * match. A browser is not a document application: it is never a skip reason
+ * on its own, only one alternative fewer for chooseBrowser, and it counts
+ * only for tasks whose instruction names the choice.
+ */
+export const BROWSER_EXECUTABLES: Record<string, RegExp> = {
+  "com.apple.Safari": /\/Safari\.app\/Contents\/MacOS\/Safari(\s|$)/,
+  "com.apple.SafariTechnologyPreview":
+    /\/Safari Technology Preview\.app\/Contents\/MacOS\/Safari Technology Preview(\s|$)/,
+  "com.google.Chrome":
+    /\/Google Chrome\.app\/Contents\/MacOS\/Google Chrome(\s|$)/,
+  "com.google.Chrome.canary":
+    /\/Google Chrome Canary\.app\/Contents\/MacOS\/Google Chrome Canary(\s|$)/,
+  "com.microsoft.edgemac":
+    /\/Microsoft Edge\.app\/Contents\/MacOS\/Microsoft Edge(\s|$)/,
+  "org.mozilla.firefox": /\/Firefox\.app\/Contents\/MacOS\/firefox(\s|$)/,
+  "com.brave.Browser":
+    /\/Brave Browser\.app\/Contents\/MacOS\/Brave Browser(\s|$)/,
+  "com.operasoftware.Opera": /\/Opera\.app\/Contents\/MacOS\/Opera(\s|$)/,
+  "com.vivaldi.Vivaldi": /\/Vivaldi\.app\/Contents\/MacOS\/Vivaldi(\s|$)/,
+  "company.thebrowser.Browser": /\/Arc\.app\/Contents\/MacOS\/Arc(\s|$)/,
+  "company.thebrowser.dia": /\/Dia\.app\/Contents\/MacOS\/Dia(\s|$)/,
+};
+/** The document applications and browsers running now, from ps output. */
+export function runningApps(psText: string | undefined): Set<string> {
+  return runningOf(psText, { ...DOCUMENT_APPS, ...BROWSER_EXECUTABLES });
+}
+function runningOf(
+  psText: string | undefined,
+  executables: Record<string, RegExp>,
+): Set<string> {
   const running = new Set<string>();
   for (const line of (psText ?? "").split("\n"))
-    for (const [id, executable] of Object.entries(DOCUMENT_APPS))
+    for (const [id, executable] of Object.entries(executables))
       if (executable.test(line)) running.add(id);
   return running;
 }
 
 /**
- * The document applications a person opened since the harness last looked,
- * from a fresh ps after a gate pass. At the first pass that is everything
- * running: the start's reading can be hours old, and the harness has
- * launched nothing yet. After a wait that saw a person, it is what was not
- * running when the last attempt ended; what an attempt opened stays open
- * (the harness never quits an application) and is the benchmark's own.
- * Nothing otherwise, and nothing from a ps that could not be read, which
- * the gate refuses to pass on by itself.
+ * The applications a person opened since the harness last looked, from a
+ * fresh ps after a gate pass. At the first pass that is everything running:
+ * the start's reading can be hours old, and the harness has launched
+ * nothing yet. After a wait that saw a person, it is what was not running
+ * when the last attempt ended; what an attempt opened stays open (the
+ * harness never quits an application) and is the benchmark's own. Nothing
+ * otherwise, and nothing from a ps that could not be read, which the gate
+ * refuses to pass on by itself.
  */
 export function openedByPerson(
   pass: { first: boolean; sawInput: boolean },
@@ -231,9 +271,121 @@ export function openedByPerson(
   afterLast: Set<string> | undefined,
 ): Set<string> {
   if (psText === undefined || (!pass.first && !pass.sawInput)) return new Set();
-  const now = runningDocumentApps(psText);
+  const now = runningApps(psText);
   if (pass.first) return now;
   return new Set([...now].filter((id) => !afterLast?.has(id)));
+}
+
+/* ---------------------------------------------------------------- windows */
+
+/**
+ * What System Events says about a running application's windows: how many,
+ * and how many are not the benchmark's, a window whose title does not carry
+ * a token (a person's document, an untitled one, one with no readable name).
+ */
+export interface WindowFacts {
+  windows: number;
+  foreign: number;
+}
+
+const BUNDLE_ID = /^[A-Za-z0-9.-]{1,120}$/;
+/**
+ * The one Apple Event the preflight sends: to System Events, read-only, for
+ * the counts above. No title leaves the script, so nothing of the person's
+ * reaches a log. The first such event from a terminal shows the Automation
+ * consent prompt once; `--preflight`, run attended, is where it should
+ * appear. Never sent to the application itself (Calculator takes none).
+ */
+export function windowScript(bundleId: string): string {
+  if (!BUNDLE_ID.test(bundleId)) throw new Error("Not a bundle id.");
+  return [
+    'tell application "System Events"',
+    `  set procs to every process whose bundle identifier is "${bundleId}"`,
+    '  if (count of procs) is 0 then return "0 0"',
+    "  set total to 0",
+    "  set foreign to 0",
+    "  repeat with w in windows of item 1 of procs",
+    "    set total to total + 1",
+    "    try",
+    '      if (name of w as text) does not contain "benchnote" then set foreign to foreign + 1',
+    "    on error",
+    "      set foreign to foreign + 1",
+    "    end try",
+    "  end repeat",
+    '  return (total as text) & " " & (foreign as text)',
+    "end tell",
+  ].join("\n");
+}
+/** The script's answer; undefined for anything but two counts (a hung or refused query). */
+export function parseWindowFacts(
+  stdout: string | undefined,
+): WindowFacts | undefined {
+  const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(stdout ?? "");
+  if (!match) return undefined;
+  const windows = Number(match[1]);
+  const foreign = Number(match[2]);
+  return foreign <= windows ? { windows, foreign } : undefined;
+}
+/** The window facts of each running application asked, one query at a time (one consent prompt, not several). */
+export async function readWindowFacts(
+  run: (command: string, args: string[]) => Promise<string | undefined>,
+  ids: string[],
+): Promise<Record<string, WindowFacts | undefined>> {
+  const facts: Record<string, WindowFacts | undefined> = {};
+  for (const id of ids)
+    facts[id] = parseWindowFacts(
+      await run("osascript", ["-e", windowScript(id)]),
+    );
+  return facts;
+}
+/**
+ * An open application that cannot hold the person's work: no window at all,
+ * or only windows whose title carries a benchmark token, which is what an
+ * earlier attempt leaves behind (a TextEdit document named with it, a
+ * fixture page titled "Orders · benchnote1a2b"). Windows that could not be
+ * read, no consent or a hung query included, keep the skip.
+ */
+export function safeOpen(
+  id: string,
+  facts: Pick<StartFacts, "windows">,
+): boolean {
+  const windows = facts.windows?.[id];
+  return !!windows && (windows.windows === 0 || windows.foreign === 0);
+}
+
+/* --------------------------------------------------------------- browsers */
+
+/** The browser an attempt uses: the name open_app takes, and the id the graders hold the run to. */
+export interface BrowserChoice {
+  id: string;
+  name: string;
+}
+
+/**
+ * The browser an attempt of this task uses, filled into its instruction as
+ * `{browser}` and graded as the only browser: the first in
+ * BROWSER_PREFERENCE among the task's browsers that is installed (when
+ * Spotlight could say) and not running, else one running with no window of
+ * the person's (safeOpen). Safari when Chrome is the one open, Chrome when
+ * Safari is. Every alternative in the person's use means the task cannot
+ * run without a browser that may hold their tabs: undefined, and
+ * startSkipDetail says APPS_OPEN with those ids.
+ */
+export function chooseBrowser(
+  task: Pick<BenchTask, "apps">,
+  facts: Pick<StartFacts, "installed" | "running" | "windows">,
+): BrowserChoice | undefined {
+  // Spotlight silent: only Safari (on every Mac) and what is running are
+  // known to exist, so no third browser is ever named for open_app to miss.
+  const known =
+    facts.installed ?? new Set(["com.apple.Safari", ...(facts.running ?? [])]);
+  const candidates = BROWSER_PREFERENCE.filter(
+    (id) => task.apps.includes(id) && known.has(id),
+  );
+  const id =
+    candidates.find((candidate) => !facts.running?.has(candidate)) ??
+    candidates.find((candidate) => safeOpen(candidate, facts));
+  return id ? { id, name: BROWSER_NAMES[id] } : undefined;
 }
 
 /* -------------------------------------------------------------- the agenda */
@@ -275,8 +427,14 @@ export function needsBenchDir(task: Pick<BenchTask, "suite" | "evidence">) {
 export interface StartFacts {
   /** Launchable bundle ids; undefined when Spotlight could not say. */
   installed?: Set<string>;
-  /** Document applications running at the start. */
+  /** Document applications and browsers running at the start (runningApps), plus what a person opened since. */
   running?: Set<string>;
+  /**
+   * What System Events said about the windows of the running applications
+   * a selected task lists (readWindowFacts); undefined per id when it could
+   * not say, and absent altogether when nothing asked (a dry run).
+   */
+  windows?: Record<string, WindowFacts | undefined>;
   /** ~/OpenAssistBench or the token ledger holds an earlier attempt's items. */
   benchRootDirty?: boolean;
   /**
@@ -294,26 +452,80 @@ export interface StartFacts {
   fixture?: boolean;
 }
 
+/** A skip with what it was about: for APPS_OPEN, the applications open, by bundle id and nothing else. */
+export interface SkipDetail {
+  code: TaskSkip;
+  apps?: string[];
+}
+
 /**
- * The first reason a task cannot run tonight, or undefined. Checked once at
- * the start; the time-dependent rules are in taskGate.
+ * The applications open that keep a long or market task from running: its
+ * required ones (TextEdit, Calendar, ...) that are running with a window
+ * that could hold the person's work (not safeOpen), and, when its
+ * instruction names the browser, every browser it could use if chooseBrowser
+ * finds none free. Smoke tasks only open their application and are never
+ * kept. Empty when the task can run.
  */
-export function startSkip(
+export function appsOpen(task: BenchTask, facts: StartFacts): string[] {
+  if (!longHorizon(task)) return [];
+  const open = task.apps.filter(
+    (id) =>
+      !BROWSER_APPS.includes(id) &&
+      facts.running?.has(id) &&
+      !safeOpen(id, facts),
+  );
+  const browsers = task.apps.filter((id) => BROWSER_APPS.includes(id));
+  if (browsers.length && namesBrowser(task) && !chooseBrowser(task, facts))
+    open.push(...browsers.filter((id) => facts.running?.has(id)));
+  return open;
+}
+
+/**
+ * The first reason a task cannot run tonight, with its detail, or
+ * undefined. Checked once at the start; the time-dependent rules are in
+ * taskGate.
+ */
+export function startSkipDetail(
   task: BenchTask,
   facts: StartFacts,
-): TaskSkip | undefined {
+): SkipDetail | undefined {
   if (
     facts.installed &&
     requiredApps(task).some(
       (group) => !group.some((id) => facts.installed!.has(id)),
     )
   )
-    return "APP_NOT_INSTALLED";
+    return { code: "APP_NOT_INSTALLED" };
   // Long and market tasks edit documents, calendars and settings: one
   // already open may hold the person's unsaved work, which the model could
-  // type into, and the harness never quits an application to find out.
-  if (longHorizon(task) && task.apps.some((id) => facts.running?.has(id)))
-    return "APPS_OPEN";
+  // type into, and the harness never quits an application to find out. One
+  // an earlier attempt left open shows only benchmark windows, or none, and
+  // runs; a browser task takes the browser that is not the person's.
+  const open = appsOpen(task, facts);
+  if (open.length) return { code: "APPS_OPEN", apps: open };
+  const code = startSkipRest(task, facts);
+  return code ? { code } : undefined;
+}
+
+/** The first reason a task cannot run tonight, or undefined. */
+export function startSkip(
+  task: BenchTask,
+  facts: StartFacts,
+): TaskSkip | undefined {
+  return startSkipDetail(task, facts)?.code;
+}
+
+/** The remedy for a skip, naming what was open for APPS_OPEN. */
+export function skipRemedy(detail: SkipDetail): string {
+  return detail.apps?.length
+    ? `${REMEDY[detail.code]} Open now: ${detail.apps.join(", ")}.`
+    : REMEDY[detail.code];
+}
+
+function startSkipRest(
+  task: BenchTask,
+  facts: StartFacts,
+): TaskSkip | undefined {
   if (facts.benchRootDirty && needsBenchDir(task)) return "BENCH_ROOT_DIRTY";
   const kinds = agendaKinds(task);
   if (kinds.length) {
@@ -343,14 +555,33 @@ export interface StartFactsSource {
   agendaBinary?: string;
   /** Whether the fixture server can serve: a free port, or one started. */
   fixture?: () => Promise<boolean>;
+  /**
+   * Ask System Events about the windows of the running applications the
+   * long and market tasks list (readWindowFacts): an Apple Event, the first
+   * of which from a terminal shows a consent prompt once. Off in a dry run,
+   * which then reports every open application as a skip.
+   */
+  appleEvents?: boolean;
+}
+
+/** The running applications whose windows decide a selected long task's skip. */
+export function appsToWatch(
+  tasks: BenchTask[],
+  running: Iterable<string>,
+): string[] {
+  return [...running].filter((id) =>
+    tasks.some((task) => longHorizon(task) && task.apps.includes(id)),
+  );
 }
 
 /**
  * The facts startSkips judges, for the selected tasks, from read-only reads
  * only: one Spotlight lookup per bundle id a task could need (ignoring case
  * the way LaunchServices does), ps, the bench root and the token ledger,
- * the agenda helper's `status` (never `setup`, which writes), and the
- * fixture check. harness-cycle.mjs and bench.mjs both start from these.
+ * the agenda helper's `status` (never `setup`, which writes), the fixture
+ * check and, when asked, System Events' window counts for the running
+ * applications a long task lists. harness-cycle.mjs and bench.mjs both
+ * start from these.
  */
 export async function readStartFacts(
   tasks: BenchTask[],
@@ -367,10 +598,13 @@ export async function readStartFacts(
       Object.fromEntries(ids.map((id, i) => [id, found[i]])),
       source.home,
     ),
-    running: runningDocumentApps(
-      await source.run("ps", ["-axo", "pid=,command="]),
-    ),
+    running: runningApps(await source.run("ps", ["-axo", "pid=,command="])),
   };
+  if (source.appleEvents)
+    facts.windows = await readWindowFacts(
+      source.run,
+      appsToWatch(tasks, facts.running ?? []),
+    );
   if (tasks.some(needsBenchDir)) {
     try {
       facts.benchRootDirty = source.benchRootDirty();
@@ -398,9 +632,19 @@ export function startSkips(
   facts: StartFacts,
 ): Map<string, TaskSkip> {
   const skips = new Map<string, TaskSkip>();
+  for (const [id, detail] of startSkipDetails(tasks, facts))
+    skips.set(id, detail.code);
+  return skips;
+}
+/** Every selected task's start skip with its detail, by task id. */
+export function startSkipDetails(
+  tasks: BenchTask[],
+  facts: StartFacts,
+): Map<string, SkipDetail> {
+  const skips = new Map<string, SkipDetail>();
   for (const task of tasks) {
-    const code = startSkip(task, facts);
-    if (code) skips.set(task.id, code);
+    const detail = startSkipDetail(task, facts);
+    if (detail) skips.set(task.id, detail);
   }
   return skips;
 }

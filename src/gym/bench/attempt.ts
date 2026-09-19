@@ -27,6 +27,8 @@ import {
 import { frictionCodes } from "./analyze";
 import { benchToken } from "./catalogue";
 import {
+  BROWSER_ID_PARAM,
+  BROWSER_PARAM,
   TOKEN_RE,
   approvalInContext,
   approvesPrompt,
@@ -34,10 +36,11 @@ import {
   gradeTask,
   markerValues,
   markersIn,
+  namesBrowser,
   unverifiable,
   type ApprovalView,
 } from "./graders";
-import { needsBenchDir } from "./preflight";
+import { needsBenchDir, type BrowserChoice } from "./preflight";
 import { sweepsStrayFiles } from "./readers";
 import {
   endingCode,
@@ -211,6 +214,12 @@ export interface AttemptCaps {
   planIndex?: number;
   requeued?: number;
   gateWaitSeconds?: number;
+  /**
+   * The browser the preflight chose for this attempt (preflight.ts
+   * chooseBrowser): filled into the instruction's `{browser}` and the only
+   * browser the graders accept. Ignored for a task that does not name one.
+   */
+  browser?: BrowserChoice;
 }
 
 export const noSources = (): Record<TakeoverSource, number> => ({
@@ -623,6 +632,14 @@ export async function runAttempt(
       if (!resolved) return await notStarted("NO_PREPARED_TARGET");
       parameters = resolved;
     }
+    // The browser is the harness's choice, never the model's: the one not in
+    // the person's use, named in the instruction and held to by the graders.
+    if (caps.browser && namesBrowser(task))
+      parameters = {
+        ...parameters,
+        [BROWSER_PARAM]: caps.browser.name,
+        [BROWSER_ID_PARAM]: caps.browser.id,
+      };
     // An Escape or Ctrl-C during the settle or prepare found no run to stop:
     // the previous runner was already terminal. Starting now would resume the
     // helper, undoing the latch the Escape set, and drive the desktop until

@@ -239,11 +239,20 @@ export interface BenchTask {
   id: string;
   /**
    * The spoken instruction. `{name}` placeholders are filled from the
-   * parameters prepare() resolved. Only this template is ever reported: a
+   * parameters prepare() resolved; `{browser}` from the harness's browser
+   * choice (preflight.ts chooseBrowser), which every long or market task
+   * that lists browsers must carry. Only this template is ever reported: a
    * filled instruction can contain the user's own file names.
    */
   instruction: string;
-  /** Bundle ids the task needs on this Mac. */
+  /**
+   * Bundle ids the task needs on this Mac. Browsers (graders.ts
+   * BROWSER_APPS) and VS Code builds are alternatives: any one installed
+   * serves, and the harness picks the browser that is not in the person's
+   * use. Every other id is required as itself, and a long or market task is
+   * skipped (APPS_OPEN) while one of them is open with a window that could
+   * hold the person's work.
+   */
   apps: string[];
   category: BenchCategory;
   difficulty: BenchDifficulty;

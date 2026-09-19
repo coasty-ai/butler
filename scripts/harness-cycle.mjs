@@ -92,11 +92,16 @@ const {
 const {
   REMEDY,
   agendaSetupError,
+  appsToWatch,
+  chooseBrowser,
   missingKey,
   openedByPerson,
   presentKeyNames,
   readStartFacts,
-  runningDocumentApps,
+  readWindowFacts,
+  runningApps,
+  skipRemedy,
+  startSkipDetail,
   startSkips,
   taskGate,
 } = await import("../src/gym/bench/preflight.ts");
@@ -723,20 +728,37 @@ const codes = preflight({
 // helper's `status` (never `setup`, which writes, and runs only at the real
 // start), Spotlight, ps, a bind on the fixture port, the bench root and the
 // token ledger. A condition that concerns some tasks skips those tasks.
+// An application a long task lists that is running is asked, through System
+// Events, how many windows it has and how many are not the benchmark's: one
+// an earlier attempt left open with only its own documents, or none, does
+// not skip the task. That is an Apple Event (a consent prompt once, from a
+// new terminal), so a dry run does not send it and reports every open
+// application as a skip; --preflight, run attended, does.
 const facts = await readStartFacts(tasks, {
   run,
   home,
   benchRootDirty: () => benchRootDirty(home, tokenLedger.entries()),
   ...(existsSync(AGENDA_BINARY) ? { agendaBinary: AGENDA_BINARY } : {}),
   fixture: fixturePortFree,
+  appleEvents: !values["dry-run"],
 });
-/** The document applications running now; undefined when ps failed. */
+/** The document applications and browsers running now; undefined when ps failed. */
 const readRunning = async () => {
   const ps = await run("ps", ["-axo", "pid=,command="]);
-  return ps === undefined ? undefined : runningDocumentApps(ps);
+  return ps === undefined ? undefined : runningApps(ps);
 };
 let skips = startSkips(tasks, facts);
 const runnable = () => tasks.filter((task) => !skips.has(task.id));
+/** A task's skip with what it was about (APPS_OPEN: the bundle ids open), from the facts so far. */
+const skipDetail = (id, code) =>
+  startSkipDetail(byId.get(id), facts) ?? { code };
+/** The remedy for a task's skip, naming what was open for APPS_OPEN. */
+const remedyFor = (id, code) => skipRemedy(skipDetail(id, code));
+/** The browser this attempt uses, for a task that names one; the graders hold the run to it. */
+const browserFor = (task) => {
+  const browser = chooseBrowser(task, facts);
+  return browser ? { browser } : {};
+};
 
 function printSkips() {
   const byCode = new Map();
@@ -745,7 +767,17 @@ function printSkips() {
   if (!byCode.size) return;
   console.log("tasks skipped tonight (a resume retries them):");
   for (const [code, ids] of byCode)
-    console.log(`  ${code} (${ids.join(", ")}): ${REMEDY[code]}`);
+    console.log(
+      `  ${code} (${ids
+        .map((id) => {
+          const apps = skipDetail(id, code).apps;
+          return apps?.length ? `${id} [${apps.join(" ")}]` : id;
+        })
+        .join(", ")}): ${REMEDY[code]}` +
+        (code === "APPS_OPEN" && values["dry-run"]
+          ? " A dry run does not look at their windows; the real start does."
+          : ""),
+    );
 }
 function printGate() {
   console.log(
@@ -902,7 +934,7 @@ if (runnable().some((task) => agendaKinds(task).length)) {
   skips = startSkips(tasks, facts);
   for (const [id, code] of skips)
     if (!before.has(id))
-      console.warn(`${id}: skipped, ${code}. ${REMEDY[code]}`);
+      console.warn(`${id}: skipped, ${code}. ${remedyFor(id, code)}`);
   if (!runnable().length) {
     printGate();
     fail("\nRefusing to start: fix the refusals above first.");
@@ -1223,7 +1255,7 @@ try {
       skips = startSkips(tasks, facts);
       for (const [id, code] of skips)
         if (!before.has(id))
-          console.warn(`${id}: skipped, ${code}. ${REMEDY[code]}`);
+          console.warn(`${id}: skipped, ${code}. ${remedyFor(id, code)}`);
     }
   }
   const gate = taskGate(byId, skips, () => new Date());
@@ -1285,11 +1317,17 @@ try {
       );
       if (!opened.size) return;
       facts.running = new Set([...(facts.running ?? []), ...opened]);
+      // Their windows too: one they opened and closed again, or a browser
+      // with no window, holds nothing of theirs.
+      facts.windows = {
+        ...facts.windows,
+        ...(await readWindowFacts(run, appsToWatch(tasks, opened))),
+      };
       // In place: the task gate holds this map.
       for (const [id, code] of startSkips(tasks, facts))
         if (!skips.has(id)) {
           skips.set(id, code);
-          console.warn(`${id}: skipped, ${code}. ${REMEDY[code]}`);
+          console.warn(`${id}: skipped, ${code}. ${remedyFor(id, code)}`);
         }
     },
     attempt: async (entry, maxCost, gateWaitSeconds) => {
@@ -1304,6 +1342,9 @@ try {
           planIndex: entry.index,
           requeued: entry.requeued,
           gateWaitSeconds,
+          // Chosen now, from the facts so far: a browser the person opened
+          // during a wait is theirs from this attempt on.
+          ...browserFor(byId.get(entry.taskId)),
         },
       );
       console.log(
@@ -1312,8 +1353,8 @@ try {
       runningAfterLast = await readRunning();
       return result;
     },
-    skipped: (entry, reason) =>
-      neverRan(
+    skipped: (entry, reason) => {
+      const row = neverRan(
         cellInfo.get(entry.cell),
         byId.get(entry.taskId),
         entry.attempt,
@@ -1325,7 +1366,13 @@ try {
         },
         reason,
         state,
-      ),
+      );
+      // Which application kept it from running, by bundle id, so the
+      // report's line says what to quit.
+      const apps =
+        reason === "APPS_OPEN" ? skipDetail(entry.taskId, reason).apps : [];
+      return apps?.length ? { ...row, openApps: apps } : row;
+    },
     // A fixture server that died mid-cycle serves nothing more tonight.
     skipFor: (entry) =>
       gate.skip(entry) ??

@@ -486,6 +486,8 @@ export function comparable(
 }
 
 const CHECK = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+/** A bundle id, the one thing an APPS_OPEN row names: no path, no title. */
+const BUNDLE_ID = /^[A-Za-z0-9.-]{1,120}$/;
 const RUN_ID =
   /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const codeOnly = (value: string | undefined) =>
@@ -505,11 +507,13 @@ export function contentFree(row: AttemptResult): AttemptResult {
   const runId =
     row.runId !== undefined && RUN_ID.test(row.runId) ? row.runId : undefined;
   const leftovers = row.leftovers?.filter((code) => CODE.test(code));
+  const openApps = row.openApps?.filter((id) => BUNDLE_ID.test(id));
   const {
     reason: _r,
     pausedAfter: _p,
     runId: _i,
     leftovers: _l,
+    openApps: _a,
     ...rest
   } = row;
   return {
@@ -518,6 +522,7 @@ export function contentFree(row: AttemptResult): AttemptResult {
     ...(reason ? { reason } : {}),
     ...(pausedAfter ? { pausedAfter } : {}),
     ...(leftovers?.length ? { leftovers } : {}),
+    ...(openApps?.length ? { openApps } : {}),
     endingCode: codeOnly(row.endingCode) ?? "UNCLASSIFIED",
     checks: keysOnly(row.checks, CHECK),
     failures: keysOnly(row.failures, CODE),
@@ -930,6 +935,20 @@ export function renderCycleReport(cycle: CycleResults): string {
   ]).filter(([, n]) => n !== "0");
   if (!unknownRows.length) out.push("None.");
   else out.push(table(["code", "attempts"], unknownRows));
+  // Which application kept the APPS_OPEN rows from running: what to quit
+  // (or leave windowless) before the next night.
+  const openByApp: Record<string, number> = {};
+  for (const row of results)
+    if (row.reason === "APPS_OPEN")
+      for (const id of row.openApps ?? [])
+        openByApp[id] = (openByApp[id] ?? 0) + 1;
+  if (Object.keys(openByApp).length)
+    out.push(
+      `\nAPPS_OPEN by application: ${Object.entries(openByApp)
+        .sort((a, b) => b[1] - a[1])
+        .map(([id, n]) => `${id} ${n}`)
+        .join(", ")}.`,
+    );
   if (totals.attempts && totals.unknown / totals.attempts > 0.1)
     out.push(
       `\n**Warning:** ${totals.unknown} of ${totals.attempts} attempts are unknown (over 10%). Unknowns hide the other numbers; a grader lane takes priority over model lanes.`,
