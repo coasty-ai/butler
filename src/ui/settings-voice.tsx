@@ -35,7 +35,10 @@ export function conversationHint(s: Settings): string {
  * emptied field reaches withJevKey as "" and clears the slot. Mirrors the
  * provider key's `touched` flag.
  */
-export function jevKeyToSave(touched: boolean, typed: string): string | undefined {
+export function jevKeyToSave(
+  touched: boolean,
+  typed: string,
+): string | undefined {
   return touched ? typed.trim() : undefined;
 }
 
@@ -64,12 +67,50 @@ export function jevKeyField(o: {
   };
 }
 
+/** What the decider sends, for every hint that can lead to turning it on. */
+const JEV_SENDS =
+  "It sends what you said, the recent conversation (including replies that read out notifications or on-screen results), the current or last task and its result, your agenda and open app names to OpenRouter and TypeSafe, with zero data retention requested; never screenshots.";
+
+/** Whether the "Decide with Jev" toggle shows on, and whether it may change. */
+export function jevToggle(
+  s: Settings,
+  keyReady: boolean,
+): { checked: boolean; disabled: boolean } {
+  const local = s.privacy === "PRIVATE_LOCAL";
+  return {
+    checked:
+      !local &&
+      keyReady &&
+      s.decisions !== "off" &&
+      (s.jevConsented || s.decisions === "jev"),
+    // Turning it off is always allowed, so an off can be recorded ahead of
+    // a key; turning it on needs somewhere for it to run.
+    disabled: local && s.decisions === "off",
+  };
+}
+
+/** The settings a click on the toggle writes: an explicit, remembered choice. */
+export function jevToggleChange(
+  checked: boolean,
+): Pick<Settings, "decisions" | "decisionsChosen" | "jevConsented"> {
+  return checked
+    ? { decisions: "auto", decisionsChosen: true, jevConsented: true }
+    : { decisions: "off", decisionsChosen: true, jevConsented: false };
+}
+
 /** The one-line privacy note under the "Decide with Jev" toggle. */
 export function jevHint(s: Settings, keyReady: boolean): string {
   if (s.privacy === "PRIVATE_LOCAL")
     return "Not available in local mode: the conversation would leave this Mac.";
-  if (!keyReady) return "Add an OpenRouter API key below to turn this on.";
-  return "Sends what you said, the recent conversation, your agenda and open app names to OpenRouter and TypeSafe with zero data retention requested; never screen text. A confident “start” runs your words at once; anything else changes nothing.";
+  if (s.decisions === "off")
+    return keyReady
+      ? `Off. Tick it to start clear commands the moment you finish speaking. ${JEV_SENDS}`
+      : "Off. Add an OpenRouter API key below, then tick it to turn it on.";
+  if (!keyReady)
+    return `Add an OpenRouter API key below to turn this on. ${JEV_SENDS}`;
+  if (!s.jevConsented && s.decisions !== "jev")
+    return `An OpenRouter key is stored, but this stays off until you tick it. ${JEV_SENDS}`;
+  return `On. ${JEV_SENDS} A confident “start” runs your words at once; anything else changes nothing.`;
 }
 
 export function VoiceSettings({
@@ -102,7 +143,7 @@ export function VoiceSettings({
     typed: jevKey,
   });
   const jevKeyReady = keyField.ready;
-  const deciding = s.decisions === "jev" && !local;
+  const jevSwitch = jevToggle(s, jevKeyReady);
   return (
     <div className="voice-conversation">
       <label className="consent">
@@ -182,15 +223,16 @@ export function VoiceSettings({
           <label className="consent">
             <input
               type="checkbox"
-              checked={deciding}
-              disabled={local || (!deciding && !jevKeyReady)}
+              checked={jevSwitch.checked}
+              disabled={jevSwitch.disabled}
               aria-describedby={`${ids}-jev`}
-              onChange={(e) =>
-                set(
-                  "decisions",
-                  e.target.checked && jevKeyReady ? "jev" : "off",
-                )
-              }
+              onChange={(e) => {
+                // An explicit choice: a stored "off" is then the user's own.
+                const change = jevToggleChange(e.target.checked);
+                set("decisions", change.decisions);
+                set("decisionsChosen", change.decisionsChosen);
+                set("jevConsented", change.jevConsented);
+              }}
             />
             <span>Decide with Jev (TypeSafe via OpenRouter)</span>
           </label>
@@ -215,10 +257,14 @@ export function VoiceSettings({
                   type="button"
                   className="secondary"
                   onClick={() => {
-                    // Empties the field: the save then clears the vault
-                    // slot, and the decider cannot stay on over it.
+                    // Empties the field (the save clears the vault slot) and
+                    // records an explicit off, so a key imported later does
+                    // not bring the decider back.
                     onJevKey?.("");
-                    if (s.decisions === "jev") set("decisions", "off");
+                    const change = jevToggleChange(false);
+                    set("decisions", change.decisions);
+                    set("decisionsChosen", change.decisionsChosen);
+                    set("jevConsented", change.jevConsented);
                   }}
                 >
                   Remove key

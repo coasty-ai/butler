@@ -1295,7 +1295,8 @@ function SettingsPanel({
     [info.settings.handsFree],
   );
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => {
-    setS({ ...s, [k]: v });
+    // From the latest state, so two changes in one handler both land.
+    setS((prev) => ({ ...prev, [k]: v }));
     setSaved(false);
   };
   const changeProvider = (provider: Settings["provider"]) => {

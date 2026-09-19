@@ -340,13 +340,25 @@ export const settingsSchema = z
     /** Hourly ceiling for dialog and summary calls, in estimated dollars. */
     dialogHourlyCost: z.number().min(0.05).max(10).default(0.5),
     /**
-     * Opt-in early decider for free-form turns: "jev" asks TypeSafe's Jev
-     * (through OpenRouter, with an OpenRouter key) for the dialog act in
-     * parallel with the text model, and a confident "start" runs the user's
-     * own words at once. It can only make a turn faster, never change what
-     * else happens; off by default and forced off in PRIVATE_LOCAL.
+     * The early decider for free-form turns: TypeSafe's Jev (through
+     * OpenRouter) is asked for the dialog act in parallel with the text
+     * model, and a confident "start" runs the user's own words at once. It
+     * can only make a turn faster, never change what else happens. "auto"
+     * (the default) runs it once the user has consented (jevConsented) and
+     * an OpenRouter key is stored; "off" is the user's explicit choice; "jev"
+     * is the older explicit on, migrated to "auto" at load. Never in
+     * PRIVATE_LOCAL.
      */
-    decisions: z.enum(["off", "jev"]).default("off"),
+    decisions: z.enum(["auto", "off", "jev"]).default("auto"),
+    /** The user set `decisions` themselves: a stored "off" is theirs. */
+    decisionsChosen: z.boolean().default(false),
+    /**
+     * The user agreed to send the conversation state to OpenRouter and
+     * TypeSafe: by typing an OpenRouter key into Settings beside the
+     * disclosure, ticking the toggle, or launching with --decide-with-jev.
+     * A key imported from a .env is never consent on its own.
+     */
+    jevConsented: z.boolean().default(false),
     persona: z.enum(["jarvis", "friendly"]).default("jarvis"),
     /** How the assistant addresses the user; letters, spaces and ' . - only. */
     addressAs: z
@@ -484,7 +496,9 @@ export const defaultSettings: Settings = {
   conversation: "model",
   dialogModel: "",
   dialogHourlyCost: 0.5,
-  decisions: "off",
+  decisions: "auto",
+  decisionsChosen: false,
+  jevConsented: false,
   persona: "jarvis",
   addressAs: "",
   spokenProgress: true,

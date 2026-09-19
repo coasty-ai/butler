@@ -41,9 +41,17 @@ import {
   askJevAct,
   jevEnabled,
   jevSettingsToSave,
+  launchDecideWithJev,
+  migrateDecisions,
   type JevVerdict,
 } from "../electron/jev";
-import { jevHint, jevKeyField, jevKeyToSave } from "../src/ui/settings-voice";
+import {
+  jevHint,
+  jevKeyField,
+  jevKeyToSave,
+  jevToggle,
+  jevToggleChange,
+} from "../src/ui/settings-voice";
 
 const KEY = "sk-or-v1-TESTKEY-0123456789abcdef";
 const question = dialogActQuestion(
@@ -465,31 +473,133 @@ describe("jev: the key and the setting", () => {
     );
   });
 
-  it("refuses to enable the decider without a key and forces it off in local mode", () => {
-    expect(() => jevSettingsToSave(byom, {})).toThrow("OpenRouter");
-    const keys = withJevKey({}, KEY);
-    expect(jevSettingsToSave(byom, keys)).toEqual(byom);
-    expect(jevSettingsToSave({ ...byom, decisions: "off" }, {})).toEqual({
-      ...byom,
-      decisions: "off",
-    });
+  it("runs only with consent, a stored key and not in local mode; an imported key alone is not consent", () => {
     const local: Settings = {
       ...defaultSettings,
-      decisions: "jev",
+      decisions: "auto",
+      jevConsented: true,
       dialogModel: "qwen3:8b",
     };
-    expect(jevSettingsToSave(local, keys).decisions).toBe("off");
-    expect(jevEnabled(byom, KEY)).toBe(true);
-    expect(jevEnabled(byom, " ")).toBe(false);
-    expect(jevEnabled({ ...byom, decisions: "off" }, KEY)).toBe(false);
+    const auto: Settings = { ...byom, decisions: "auto", jevConsented: false };
+    const consented: Settings = { ...auto, jevConsented: true };
+    // A key in the vault (say, imported from a .env) is not enough.
+    expect(jevEnabled(auto, KEY)).toBe(false);
+    expect(jevEnabled(consented, KEY)).toBe(true);
+    expect(jevEnabled(consented, " ")).toBe(false);
+    expect(jevEnabled({ ...consented, decisions: "off" }, KEY)).toBe(false);
     expect(jevEnabled(local, KEY)).toBe(false);
+    // The older explicit on counts as consent.
+    expect(jevEnabled({ ...auto, decisions: "jev" }, KEY)).toBe(true);
   });
 
-  it("is off by default, also for a config saved before it existed, and accepts only off or jev", () => {
-    expect(defaultSettings.decisions).toBe("off");
+  it("saves without refusing: a typed key is consent, the old explicit on becomes auto", () => {
+    const auto: Settings = { ...byom, decisions: "auto", jevConsented: false };
+    // Nothing typed (an imported key included): nothing changes.
+    expect(jevSettingsToSave(auto)).toEqual(auto);
+    expect(jevSettingsToSave(auto, "")).toEqual(auto);
+    expect(jevSettingsToSave(auto, "   ")).toEqual(auto);
+    // A key typed into the field beside the disclosure.
+    expect(jevSettingsToSave(auto, KEY).jevConsented).toBe(true);
+    // The legacy explicit on, even with its key emptied, saves (no throw).
+    expect(jevSettingsToSave({ ...byom, decisions: "jev" })).toMatchObject({
+      decisions: "auto",
+      jevConsented: true,
+    });
+    // An explicit off stays off, key or not.
+    const off: Settings = { ...byom, decisions: "off", decisionsChosen: true };
+    expect(jevSettingsToSave(off, KEY).decisions).toBe("off");
+  });
+
+  it("migrates old configs without turning on an off that may have been deliberate", () => {
+    const off: Settings = { ...byom, decisions: "off" };
+    // The old default off, no key stored: auto, still idle until consent.
+    const idle = migrateDecisions(off, { decisions: "off" }, false);
+    expect(idle.decisions).toBe("auto");
+    expect(jevEnabled(idle, KEY)).toBe(false);
+    expect(migrateDecisions(off, undefined, false).decisions).toBe("auto");
+    // With a key stored, the off may have been chosen: it stays, marked.
+    expect(migrateDecisions(off, { decisions: "off" }, true)).toMatchObject({
+      decisions: "off",
+      decisionsChosen: true,
+    });
+    // Chosen in Settings: stays off regardless.
+    expect(
+      migrateDecisions(
+        { ...off, decisionsChosen: true },
+        { decisions: "off", decisionsChosen: true },
+        false,
+      ).decisions,
+    ).toBe("off");
+    // The older explicit on: auto with consent, and chosen.
+    expect(
+      migrateDecisions({ ...byom, decisions: "jev" }, { decisions: "jev" }),
+    ).toMatchObject({
+      decisions: "auto",
+      jevConsented: true,
+      decisionsChosen: true,
+    });
+    // Idempotent: a second load changes nothing.
+    const once = migrateDecisions(off, { decisions: "off" }, true);
+    expect(migrateDecisions(once, once, true)).toEqual(once);
+  });
+
+  it("records consent at launch only for --decide-with-jev", () => {
+    expect(launchDecideWithJev(byom, ["--verbose"])).toBeUndefined();
+    const on = launchDecideWithJev(
+      { ...byom, decisions: "off", decisionsChosen: true, jevConsented: false },
+      ["--decide-with-jev"],
+    );
+    expect(on).toMatchObject({
+      decisions: "auto",
+      decisionsChosen: true,
+      jevConsented: true,
+    });
+    expect(jevEnabled(on!, KEY)).toBe(true);
+  });
+
+  it("keeps the toggle honest: shows on only when it would run, and can always be turned off", () => {
+    const local: Settings = { ...defaultSettings, decisions: "auto" };
+    const auto: Settings = { ...byom, decisions: "auto", jevConsented: false };
+    const on: Settings = { ...auto, jevConsented: true };
+    const off: Settings = { ...byom, decisions: "off", decisionsChosen: true };
+    // An imported key, no consent: off, and clickable.
+    expect(jevToggle(auto, true)).toEqual({ checked: false, disabled: false });
+    expect(jevToggle(on, true)).toEqual({ checked: true, disabled: false });
+    // No key yet: not on, but still clickable (to record an off early).
+    expect(jevToggle(on, false)).toEqual({ checked: false, disabled: false });
+    expect(jevToggle(off, false)).toEqual({ checked: false, disabled: false });
+    // Local: cannot be turned on, but an on can be turned off.
+    expect(jevToggle({ ...local, decisions: "off" }, true)).toEqual({
+      checked: false,
+      disabled: true,
+    });
+    expect(jevToggle(local, true)).toEqual({ checked: false, disabled: false });
+    // A click writes an explicit, remembered choice.
+    expect(jevToggleChange(true)).toEqual({
+      decisions: "auto",
+      decisionsChosen: true,
+      jevConsented: true,
+    });
+    expect(jevToggleChange(false)).toEqual({
+      decisions: "off",
+      decisionsChosen: true,
+      jevConsented: false,
+    });
+    // Round trip: an off chosen in Settings survives a reload.
+    const saved = settingsSchema.parse({ ...byom, ...jevToggleChange(false) });
+    expect(migrateDecisions(saved, saved, true).decisions).toBe("off");
+    expect(migrateDecisions(saved, saved, false).decisions).toBe("off");
+  });
+
+  it("is auto by default, also for a config saved before it existed, and accepts only auto, off or jev", () => {
+    expect(defaultSettings.decisions).toBe("auto");
+    expect(defaultSettings.decisionsChosen).toBe(false);
     const older: Record<string, unknown> = structuredClone(defaultSettings);
     delete older.decisions;
-    expect(settingsSchema.parse(older).decisions).toBe("off");
+    delete older.decisionsChosen;
+    const parsed = settingsSchema.parse(older);
+    expect(parsed.decisions).toBe("auto");
+    expect(parsed.decisionsChosen).toBe(false);
     expect(
       settingsSchema.safeParse({ ...defaultSettings, decisions: "jev" })
         .success,
@@ -536,19 +646,39 @@ describe("jev: the key and the setting", () => {
     expect(
       jevKeyField({ stored: false, touched: true, typed: KEY }).ready,
     ).toBe(true);
-    // Removing the key while the decider is on is refused by the save, with
-    // the one fixed line, so a toggle can never be "on" over an empty slot.
-    expect(() =>
-      jevSettingsToSave(byom, withJevKey(withJevKey({}, KEY), "")),
-    ).toThrow("OpenRouter API key");
+    // Removing the key while the decider is on saves (no stuck toggle) and
+    // leaves it idle: nothing runs over an empty slot.
+    const emptied = withJevKey(withJevKey({}, KEY), "");
+    const saved = jevSettingsToSave(byom, "");
+    expect(jevEnabled(saved, jevKey(emptied))).toBe(false);
   });
 
   it("explains the toggle: local mode, a missing key, or what leaves the Mac", () => {
     expect(jevHint(defaultSettings, true)).toMatch(/local mode/);
-    expect(jevHint(byom, false)).toMatch(/OpenRouter API key/);
-    const on = jevHint(byom, true);
-    expect(on).toMatch(/zero data retention/);
-    expect(on).toMatch(/never screen text/);
-    expect(on).toMatch(/OpenRouter and TypeSafe/);
+    const auto: Settings = { ...byom, decisions: "auto", jevConsented: false };
+    expect(jevHint(auto, false)).toMatch(/Add an OpenRouter API key/);
+    // An imported key is not consent: the hint says it stays off.
+    expect(jevHint(auto, true)).toMatch(/stays off until you tick it/);
+    const on = jevHint({ ...auto, jevConsented: true }, true);
+    expect(on).toMatch(/^On\./);
+    // A chosen off says so, with or without a key.
+    const off: Settings = { ...byom, decisions: "off", decisionsChosen: true };
+    expect(jevHint(off, true)).toMatch(/^Off\. Tick it/);
+    expect(jevHint(off, false)).toMatch(
+      /^Off\. Add an OpenRouter API key below, then tick it/,
+    );
+    // Every hint that can lead to turning it on says what is sent, truthfully.
+    for (const hint of [
+      on,
+      jevHint(auto, true),
+      jevHint(auto, false),
+      jevHint(off, true),
+    ]) {
+      expect(hint).toMatch(/OpenRouter and TypeSafe/);
+      expect(hint).toMatch(/zero data retention/);
+      expect(hint).toMatch(/read out notifications or on-screen results/);
+      expect(hint).toMatch(/never screenshots/);
+      expect(hint).not.toMatch(/never screen text/);
+    }
   });
 });

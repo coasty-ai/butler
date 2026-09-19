@@ -58,7 +58,12 @@ const child = spawn(
     ...process.argv
       .slice(2)
       .filter((arg) =>
-        ["--hands-free", "--no-hands-free", "--natural-voice"].includes(arg),
+        [
+          "--hands-free",
+          "--no-hands-free",
+          "--natural-voice",
+          "--decide-with-jev",
+        ].includes(arg),
       ),
     ...(commandIndex >= 0 ? ["--command", process.argv[commandIndex + 1]] : []),
   ],

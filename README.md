@@ -71,7 +71,7 @@ Put `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and/or `GEMINI_API_KEY` in the reposi
 npm run start:local -- --provider openai
 ```
 
-This selects `gpt-5.4-mini` and its estimated token rates. `--provider google` selects `gemini-3.5-flash-lite`; `--provider anthropic` selects `claude-sonnet-5`. These are editable starting points, not a guarantee of task success. The command without `--provider` imports keys while preserving the current model and privacy mode. Run it again after rotating a key.
+This selects `gpt-5.4-mini` and its estimated token rates. `--provider google` selects `gemini-3.5-flash-lite`; `--provider anthropic` selects `claude-sonnet-5`. These are editable starting points, not a guarantee of task success. The command without `--provider` imports keys while preserving the current model and privacy mode. Run it again after rotating a key. An `OPENROUTER_API_KEY` in the same file is imported into its own slot for the optional "Decide with Jev" setting; importing it never turns that setting on (tick it in Settings, or add `--decide-with-jev` to a debug launch).
 
 `PHONE_NO` is imported the same way, as the number for optional text updates. It is saved in the encrypted config and nothing is texted until you turn the feature on in **Settings → Text updates**; use a number or iMessage address that is not signed in to Messages on this Mac, so your own texts can be told apart from Open Assist's.
 

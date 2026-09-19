@@ -174,7 +174,11 @@ import {
   withProviderKey,
   type Credentials,
 } from "./credentials";
-import { jevSettingsToSave } from "./jev";
+import {
+  jevSettingsToSave,
+  launchDecideWithJev,
+  migrateDecisions,
+} from "./jev";
 import {
   idlePill,
   voiceIntent,
@@ -2666,12 +2670,18 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         args[1] !== undefined
           ? withProviderKey(credentials, next, args[1])
           : credentials;
-      // The OpenRouter key for the Jev decider, saved into its own slot;
-      // the decider itself is refused without one and forced off locally.
+      // The OpenRouter key for the Jev decider, saved into its own slot. A
+      // key typed into Settings, beside the disclosure, is consent; a key
+      // that only arrived from a .env never is.
       if (args[2] !== undefined)
         nextCredentials = withJevKey(nextCredentials, args[2]);
-      const checked = jevSettingsToSave(next, nextCredentials);
+      const checked = jevSettingsToSave(
+        next,
+        typeof args[2] === "string" ? args[2] : undefined,
+      );
       next.decisions = checked.decisions;
+      next.decisionsChosen = checked.decisionsChosen;
+      next.jevConsented = checked.jevConsented;
       // The active Runner keeps its own provider and privacy; only changes to
       // those require stopping it.
       if (
@@ -3564,7 +3574,14 @@ app
       credentials = readCredentials(c.credentials);
       if (typeof c.providerKey === "string" && c.providerKey)
         credentials = withProviderKey(credentials, settings, c.providerKey);
+      // After the vault: an old "off" with a key stored may be deliberate.
+      settings = migrateDecisions(settings, c.settings, !!jevKey(credentials));
       uploads = c.uploads ?? {};
+    }
+    const decideWithJev = launchDecideWithJev(settings, process.argv);
+    if (decideWithJev) {
+      settings = decideWithJev;
+      saveConfig();
     }
     const handsFree = launchHandsFree(process.argv);
     if (handsFree !== undefined) {

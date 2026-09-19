@@ -82,7 +82,9 @@ export function importEnvCredentials(
       imported++;
     }
     // The OpenRouter key for the Jev decider, into its own slot: like a
-    // provider key it is imported, never printed, and never auto-enables.
+    // provider key it is imported and never printed. An imported key is not
+    // consent: the decider stays idle until the user ticks it in Settings,
+    // types a key there, or launches with --decide-with-jev.
     const jev = JEV_KEY_ENV.map((name) => env[name]?.trim()).find(Boolean);
     if (jev) {
       next = withJevKey(next, jev);

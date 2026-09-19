@@ -25,7 +25,7 @@ import {
   servedError,
   type JevChoiceQuestion,
 } from "../src/providers/jev";
-import { jevKey, type Credentials } from "./credentials";
+
 
 /**
  * The act question, built once from the dialog prompt's own lines when this
@@ -187,18 +187,65 @@ function failure(timedOut: boolean, signal?: AbortSignal): JevFailure {
  * without a key behind it. Throws with the one fixed line the settings
  * window shows.
  */
-export function jevSettingsToSave(
-  next: Settings,
-  credentials: Credentials,
-): Settings {
-  if (next.decisions !== "jev") return next;
-  if (next.privacy === "PRIVATE_LOCAL") return { ...next, decisions: "off" };
-  if (!jevKey(credentials))
-    throw new Error("Deciding with Jev needs an OpenRouter API key.");
-  return next;
+export function jevSettingsToSave(next: Settings, typedKey?: string): Settings {
+  let out = next;
+  // The legacy explicit on is the default plus consent.
+  if (out.decisions === "jev")
+    out = { ...out, decisions: "auto", jevConsented: true };
+  // A key typed into Settings sits beside the disclosure: that is consent.
+  if (typedKey?.trim()) out = { ...out, jevConsented: true };
+  return out;
 }
 
-/** Whether the decider may run at all for these settings and keys. */
+/**
+ * Whether the decider may run at all for these settings and keys: never
+ * off, never local, never without a key, and never without consent.
+ */
 export function jevEnabled(s: Settings, key: string): boolean {
-  return s.decisions === "jev" && s.privacy !== "PRIVATE_LOCAL" && !!key.trim();
+  return (
+    s.decisions !== "off" &&
+    s.privacy !== "PRIVATE_LOCAL" &&
+    !!key.trim() &&
+    (s.jevConsented || s.decisions === "jev")
+  );
+}
+
+/**
+ * Settings from a config saved before "auto" and consent existed. The old
+ * explicit on becomes "auto" with consent. The old default "off" becomes
+ * "auto" (still idle until the user consents) only when no OpenRouter key
+ * is stored; with a key it may have been a deliberate off, so it stays off
+ * and is marked as the user's.
+ */
+export function migrateDecisions(
+  settings: Settings,
+  stored: { decisions?: unknown; decisionsChosen?: unknown } | undefined,
+  keyStored = false,
+): Settings {
+  if (settings.decisions === "jev")
+    return {
+      ...settings,
+      decisions: "auto",
+      decisionsChosen: true,
+      jevConsented: true,
+    };
+  if (stored?.decisionsChosen === true || settings.decisions !== "off")
+    return settings;
+  return keyStored
+    ? { ...settings, decisionsChosen: true }
+    : { ...settings, decisions: "auto" };
+}
+
+/** --decide-with-jev: a developer's explicit consent at launch. */
+export function launchDecideWithJev(
+  settings: Settings,
+  args: string[],
+): Settings | undefined {
+  if (!args.includes("--decide-with-jev")) return undefined;
+  return {
+    ...settings,
+    decisions: "auto",
+    decisionsChosen: true,
+    jevConsented: true,
+  };
 }
