@@ -1944,6 +1944,7 @@ async function receiveVoice(event: VoiceEvent) {
       rms: event.rms,
       engine: event.engine,
       boundary: event.boundary,
+      wakeHead: event.wakeHead,
       preRollMs: event.preRollMs,
     });
   try {

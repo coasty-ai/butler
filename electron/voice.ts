@@ -38,6 +38,8 @@ export interface VoiceEvent {
   rms?: number;
   engine?: boolean;
   boundary?: number;
+  /** standby_trace: the first words of a hypothesis that opened like a wake attempt. */
+  wakeHead?: string;
   preRollMs?: number;
   quietMs?: number;
   completeness?: string;

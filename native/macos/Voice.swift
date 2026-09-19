@@ -100,10 +100,22 @@ var tapBuffers = 0, lastRms = 0.0, lastStandbyTraceAt = 0.0
 // its latest utterance begins (utteranceBoundary), and the offset the activated turn strips as
 // the room's words.
 var standbyRaw = "", standbyTextAt = 0.0, standbyChangedAt = 0.0, standbyBoundary = 0, wakeOffset = 0
+private let traceOpener = try! NSRegularExpression(pattern: #"^\s*(?:\#(wakeHeyPattern))\b"#, options: .caseInsensitive)
+/// The first three words of a hypothesis that opens like a wake attempt ("Hey …"): speech
+/// addressed to Butler, never the room's, and only as much as the wake matcher looked at.
+/// Cycle 2, 2026-09-19: "Hey Butler, type …" grew to 15 characters, was revised, and never
+/// woke; lengths alone could not say what the name became.
+func wakeHead(_ raw: String) -> String? {
+    guard traceOpener.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil else { return nil }
+    return raw.split(whereSeparator: { $0.isWhitespace }).prefix(3).joined(separator: " ")
+}
 func traceStandby(_ kind: String, _ raw: String? = nil, error: String? = nil, extra: [String: Any] = [:]) {
     guard !standbyTrace.isEmpty else { return }
     var event: [String: Any] = ["event": "standby_trace", "kind": kind, "sinceStartMs": Int(((uptime() - startedAt) * 1000).rounded())]
-    if let raw { event["textLength"] = raw.count; if standbyTrace == "text" { event["text"] = raw } }
+    if let raw {
+        event["textLength"] = raw.count
+        if standbyTrace == "text" { event["text"] = raw } else if let head = wakeHead(raw) { event["wakeHead"] = head }
+    }
     if let error { event["message"] = error }
     for (key, value) in extra { event[key] = value }
     output(event)
