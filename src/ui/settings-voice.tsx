@@ -19,6 +19,14 @@ const kokoroVoiceLabels: Record<Settings["kokoroVoice"], string> = {
   bm_fable: "Fable (British male)",
 };
 
+/** What each autonomy choice means, under the picker. */
+export function autonomyHint(autonomy: Settings["autonomy"]): string {
+  if (autonomy === "ask")
+    return "Every consequential step waits for you: saving, replacing, sending, buying, deleting.";
+  if (autonomy === "flow")
+    return "Anything that can be undone just happens, and is reported. Money leaving, anything sent or published, deletions, installs and account settings still wait for you.";
+  return "A step you asked for that can be undone just happens (you said “save the draft”, so it saves). Anything else consequential waits for you, and so do money, sending, deleting, installing and account settings, always.";
+}
 /** What the "Talk naturally" hint says about where the words go. */
 export function conversationHint(s: Settings): string {
   const model = s.dialogModel || s.model;
@@ -146,6 +154,23 @@ export function VoiceSettings({
   const jevSwitch = jevToggle(s, jevKeyReady);
   return (
     <div className="voice-conversation">
+      <label>
+        Asking before it acts
+        <select
+          value={s.autonomy}
+          aria-describedby={`${ids}-autonomy`}
+          onChange={(e) =>
+            set("autonomy", e.target.value as Settings["autonomy"])
+          }
+        >
+          <option value="ask">Ask me every time</option>
+          <option value="task">Only for what I did not ask for</option>
+          <option value="flow">Only when it cannot be undone</option>
+        </select>
+      </label>
+      <p id={`${ids}-autonomy`} className="field-hint">
+        {autonomyHint(s.autonomy)}
+      </p>
       <label className="consent">
         <input
           type="checkbox"

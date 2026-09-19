@@ -314,6 +314,71 @@ const navigationKeys = [
 ];
 const consequential =
   /\b(send|publish|pay|buy|purchase|transfer|delete|remove|uninstall|submit|invite|share|approve|confirm|authorize|upload|install|password|security|order|checkout|continue to checkout|subscribe|unsubscribe|donate|sign|trash|erase|reset|archive|discard|empty|format|revoke|deactivate|disable|withdraw|deposit|bid|call|dial|accept|agree|logout|log out|sign out|restart|shut down|force quit|replace|overwrite|don['’]?t save|turn off|repost|retweet|comment|connect|decline|bin|move to bin|cancel subscription|cancel membership|save|like|dislike|join|block)\b/;
+/**
+ * The consequential steps that always ask, whatever the user set: money
+ * leaving, something going out under the user's name, data or software
+ * disappearing, and account or security settings. No autonomy setting and
+ * no standing allowance reaches these, because a wrong one cannot be taken
+ * back by pressing undo.
+ */
+const irreversible =
+  /\b(send|publish|post|repost|retweet|pay|buy|purchase|transfer|order|checkout|continue to checkout|donate|withdraw|deposit|bid|subscribe|unsubscribe|cancel subscription|cancel membership|delete|remove|trash|erase|empty|bin|move to bin|format|reset|uninstall|install|revoke|password|security|invite|share|upload|call|dial|authorize|logout|log out|sign out|sign|agree|accept|approve|confirm)\b/;
+/**
+ * Steps a person undoes without thinking: saving, liking, archiving mail,
+ * joining a call. They ask in "ask" mode and in a run the user's own words
+ * did not describe; otherwise they run and are reported afterwards.
+ */
+const reversible =
+  /\b(save|like|dislike|archive|join|connect|comment|decline|block|disable|deactivate|turn off|replace|overwrite|don['’]?t save|discard|restart|shut down|force quit|submit)\b/;
+/**
+ * A consequential step, as the user's autonomy setting has it. In "ask" it
+ * always asks, as before. Otherwise a step that can be undone runs when the
+ * user's own words asked for it ("task") or whatever they said ("flow"),
+ * and the run reports it instead. Nothing here reaches the steps that
+ * cannot be undone: those ask in every mode.
+ */
+function consequentialDecision(
+  title: string,
+  settings: Settings,
+  context: PolicyContext,
+): Decision {
+  const asks: Decision = {
+    kind: "CONFIRM",
+    reason: consequentialReason(title),
+  };
+  if (settings.autonomy === "ask" || !reversibleLabel(title)) return asks;
+  if (settings.autonomy === "flow")
+    return {
+      kind: "ALLOW",
+      reason: `${quote(title)} can be undone: done without asking, and reported.`,
+    };
+  return askedForLabel(title, context.userWords)
+    ? {
+        kind: "ALLOW",
+        reason: `${quote(title)} is what you asked for and can be undone: reported, not asked.`,
+      }
+    : asks;
+}
+/** Whether a label's consequence can be undone (nothing irreversible in it). */
+export function reversibleLabel(text: string): boolean {
+  const label = text.toLowerCase();
+  return !irreversible.test(label) && reversible.test(label);
+}
+/**
+ * Whether the user's own words for this run already asked for this step:
+ * "save the draft" authorises the Save sheet it leads to. Only the user's
+ * own words count (never a rewrite, a proposal or a wake-up run), and only
+ * for a step that can be undone.
+ */
+export function askedForLabel(
+  label: string,
+  userWords: string | undefined,
+): boolean {
+  if (!userWords || !reversibleLabel(label)) return false;
+  const said = userWords.toLowerCase();
+  const matches = label.toLowerCase().match(new RegExp(reversible, "g")) ?? [];
+  return matches.some((word) => said.includes(word));
+}
 function consequentialReason(text: string): string {
   const has = (pattern: RegExp) => pattern.test(text);
   if (has(/\bsend\b/)) return "Send this message?";
@@ -865,6 +930,7 @@ function menuItemDecision(
   action: Action,
   surface: Surface,
   context: PolicyContext,
+  settings: Settings,
 ): Decision {
   if (action.type !== "menu_item") return { kind: "ALLOW", reason: "" };
   const named = action.path.join(" > ");
@@ -919,7 +985,7 @@ function menuItemDecision(
     surface.menuLabel ?? action.path[action.path.length - 1],
   );
   if (consequential.test(title))
-    return { kind: "CONFIRM", reason: consequentialReason(title) };
+    return consequentialDecision(title, settings, context);
   return {
     kind: "ALLOW",
     reason: "Choose a menu item this application publishes.",
@@ -1074,7 +1140,7 @@ export function evaluate(
         "No input was sent. The target is disabled. Choose an enabled control or an application shortcut from the fresh screenshot.",
     };
   if (action.type === "menu_item")
-    return menuItemDecision(action, surface, context);
+    return menuItemDecision(action, surface, context, settings);
   const namedRefusal = namedControlRefusal(action, surface);
   if (namedRefusal) return namedRefusal;
   if (["move", "scroll"].includes(action.type))
@@ -1211,7 +1277,7 @@ export function evaluate(
     if (surface.shortcutLabel) {
       const title = normalizeControlLabel(surface.shortcutLabel);
       if (consequential.test(title))
-        return { kind: "CONFIRM", reason: consequentialReason(title) };
+        return consequentialDecision(title, settings, context);
       return {
         kind: "ALLOW",
         reason: `This application's own shortcut for ${quote(surface.shortcutLabel)}.`,
@@ -1362,7 +1428,7 @@ export function evaluate(
       reason: "Discard the coding agent's changes?",
     };
   if (consequential.test(words))
-    return { kind: "CONFIRM", reason: consequentialReason(words) };
+    return consequentialDecision(words, settings, context);
   // Calculator keypad buttons only edit the displayed calculation. Sheets
   // (Print, Save Tape) and other buttons fall through to the normal rules.
   if (

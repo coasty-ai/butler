@@ -343,6 +343,16 @@ export const settingsSchema = z
      * on the configured model; "off" keeps the deterministic routing only.
      */
     conversation: z.enum(["model", "off"]).default("model"),
+    /**
+     * How often a run stops to ask. "ask": every consequential step, as
+     * before. "task" (the default): a step the user's own words asked for
+     * and that can be undone runs without asking, and is reported instead.
+     * "flow": every step that can be undone runs without asking. Money
+     * leaving, anything going out under the user's name, deletions,
+     * installs and account or security settings always ask, in every mode,
+     * and protected apps and websites are refused as before.
+     */
+    autonomy: z.enum(["ask", "task", "flow"]).default("task"),
     /** Text model for dialog and summaries; "" means the run model. */
     dialogModel: z.string().max(100).default(""),
     /** Hourly ceiling for dialog and summary calls, in estimated dollars. */
@@ -503,6 +513,7 @@ export const defaultSettings: Settings = {
   earlyStart: true,
   voiceSounds: true,
   conversation: "model",
+  autonomy: "task",
   dialogModel: "",
   dialogHourlyCost: 0.5,
   decisions: "auto",
