@@ -20,6 +20,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
   renameSync,
 } from "node:fs";
@@ -28,12 +29,14 @@ import {
   defaultSettings,
   kokoroVoices,
   settingsSchema,
+  toolServerSchema,
   type Frame,
   type Run,
   type RunOrigin,
   type Settings,
   type Snapshot,
   type TaskSource,
+  type ToolServer,
   type WatchContext,
 } from "../src/core/schema";
 import { normalizeAppName } from "../src/core/policy";
@@ -54,7 +57,16 @@ import {
   trace,
   type DiagnosticSink,
 } from "../src/core/diagnostics";
-import { validateProviderEndpoint } from "../src/core/privacy";
+import {
+  localToolSettings,
+  validateProviderEndpoint,
+  validateToolSettings,
+} from "../src/core/privacy";
+import { TOOL_ID, TOOL_LIMITS, type AppleConsent } from "../src/core/tools";
+import { toolFastPath } from "../src/assistant/tool-answers";
+import { RECIPES } from "../src/tools/providers";
+import { importServers, serverId } from "../src/tools/import";
+import { answerByTool, createToolLayer, type ToolLayer } from "./tools";
 import { networkFailure } from "../src/providers/network";
 import { scanText } from "../src/core/sanitize";
 import { Vault, seal, unseal, digest } from "../src/storage/vault";
@@ -179,12 +191,14 @@ import {
 import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
 import {
+  forgetToolSecrets,
   importLaunchCredentials,
   jevKey,
   providerKey,
   readCredentials,
   withJevKey,
   withProviderKey,
+  withToolSecret,
   type Credentials,
 } from "./credentials";
 import {
@@ -607,6 +621,114 @@ function getAgenda() {
       : join(app.getAppPath(), "native/bin/coarena-agenda"),
   );
   return agendaClient;
+}
+/**
+ * The tool layer (electron/tools.ts): the Apple bridge and the user's MCP
+ * servers, started a few seconds after the app is up and closed at quit. The
+ * runner gets it as RunnerExtras.tools; the Tools pane through the bridge.
+ */
+let toolLayer: ToolLayer | undefined;
+function getTools() {
+  toolLayer ??= createToolLayer({
+    settings: () => settings,
+    credentials: () => credentials,
+    paths: {
+      packaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+    },
+    home: app.getPath("home"),
+    version: app.getVersion(),
+    trace: debug,
+    // A server's first listing ticks its recipe's default tools; the pins
+    // are saved with the row so a changed tool is held back later.
+    onTicks: (id, tools) => {
+      settings = withToolServer(settings, id, (row) => ({ ...row, tools }));
+      saveConfig();
+      refreshSettingsView();
+    },
+  });
+  return toolLayer;
+}
+/** Settings with one server row replaced. */
+function withToolServer(
+  s: Settings,
+  id: string,
+  change: (row: ToolServer) => ToolServer,
+): Settings {
+  return {
+    ...s,
+    tools: {
+      ...s.tools,
+      servers: s.tools.servers.map((row) =>
+        row.id === id ? change(row) : row,
+      ),
+    },
+  };
+}
+function toolServer(id: string): ToolServer {
+  const row = settings.tools.servers.find((r) => r.id === id);
+  if (!row) throw new Error("That server is no longer configured.");
+  return row;
+}
+const addToolServerSchema = z.union([
+  z
+    .object({
+      recipe: z.string().max(40),
+      folder: z.string().max(500).optional(),
+    })
+    .strict(),
+  z.object({ paste: z.string().max(64 * 1024) }).strict(),
+  z.object({ claudeDesktop: z.literal(true) }).strict(),
+]);
+/**
+ * A row from a recipe (src/tools/providers): the folder is asked for here,
+ * in the Settings window, when the recipe needs one and none was given. The
+ * row is enabled but unconsented, so the pane shows its consent sheet next.
+ */
+async function serverFromRecipe(
+  recipeId: string,
+  folder?: string,
+): Promise<ToolServer> {
+  const recipe = RECIPES.find((r) => r.id === recipeId);
+  if (!recipe) throw new Error("That recipe is not available.");
+  if (settings.privacy === "PRIVATE_LOCAL" && !recipe.privateLocal)
+    throw new Error(`${recipe.name} is not available in Private local.`);
+  if (recipe.needsFolder && !folder) {
+    const picked = await dialog.showOpenDialog(window, {
+      properties: ["openDirectory"],
+      message: `Choose the folder ${recipe.name} may use.`,
+    });
+    folder = picked.canceled ? undefined : picked.filePaths[0];
+    if (!folder) throw new Error("Choose a folder first.");
+  }
+  return toolServerSchema.parse({
+    id: serverId(recipe.id, new Set(settings.tools.servers.map((r) => r.id))),
+    name: recipe.name,
+    transport: recipe.transport,
+    command: recipe.command ?? "",
+    args: (recipe.args ?? []).map((a) => a.replace("{folder}", folder ?? "")),
+    cwd: recipe.cwdFromFolder ? (folder ?? "") : "",
+    url: recipe.url ?? "",
+    secretEnv: recipe.secretEnv ?? [],
+    secretHeaders: recipe.secretHeaders ?? [],
+    enabled: true,
+    network: recipe.network,
+    recipe: recipe.id,
+    addedAt: Date.now(),
+  });
+}
+/** Claude Desktop's own configuration, read once and never kept. */
+function claudeDesktopConfig(): string {
+  const file = join(
+    app.getPath("home"),
+    "Library/Application Support/Claude/claude_desktop_config.json",
+  );
+  if (!existsSync(file) || statSync(file).size > 64 * 1024)
+    throw new Error(
+      "No Claude Desktop configuration was found (or it is larger than 64 KB).",
+    );
+  return readFileSync(file, "utf8");
 }
 /** The iMessage helper binary, packaged beside the other helpers. */
 function messagesBinary() {
@@ -2277,7 +2399,44 @@ async function planCommand(
   let decision: TurnDecision | undefined;
   let reply: ReplyHandle | undefined;
   let replyText: string | undefined;
-  if (!accepted && dialogEligible(base) && assistant.available(channel)) {
+  // Tools first: a request one builtin tool answers or does outright never
+  // reaches the dialog model or the screen. An answer is spoken as a reply
+  // and remembered as one; a step starts the run with that one tool_call.
+  // Anything the grammar does not match, or a read that fails, takes the
+  // path below unchanged.
+  let toolStep: { tool: string; args: Record<string, unknown> } | undefined;
+  let toolAnswer: string | undefined;
+  if (base.kind === "start" && !accepted && !snapshot.pending) {
+    const fast = toolFastPath(text, getTools().clock());
+    if (fast?.kind === "step") toolStep = { tool: fast.tool, args: fast.args };
+    else if (fast?.kind === "answer") {
+      const answered = await answerByTool(
+        getTools(),
+        fast,
+        text,
+        AbortSignal.timeout(TOOL_LIMITS.callTimeoutMs),
+      ).catch(() => undefined);
+      if (answered) {
+        toolAnswer = answered.said;
+        assistant.noteUser(text, channel);
+        assistant.noteAssistant(toolAnswer, channel, { untrusted: true });
+        debug("ToolAnswered", {
+          tool: fast.tool.split("__")[1],
+          resultItems: answered.outcome.resultItems,
+          durationMs: answered.outcome.durationMs,
+          answerTier: "deterministic",
+        });
+        plan = { kind: "reply", act: "answer", resume: false };
+      }
+    }
+  }
+  if (
+    !accepted &&
+    !toolStep &&
+    !toolAnswer &&
+    dialogEligible(base) &&
+    assistant.available(channel)
+  ) {
     const turnId = randomUUID();
     // One abort per turn: a new activation, a cancel or the emergency stop
     // ends the decision, and a decision that ends that way never acts.
@@ -2348,10 +2507,12 @@ async function planCommand(
     // Built before the plan runs: answering may resume the run. The status
     // template always reaches the pill; it is spoken only when the model
     // did not answer itself.
-    replyText: plan.kind === "status" ? statusText() : replyText,
+    replyText:
+      plan.kind === "status" ? statusText() : (toolAnswer ?? replyText),
     replyPending: !!reply && !!decision?.sentences,
     early: claim,
     invocation: fromVoice ? turnInvocation : undefined,
+    toolStep,
   };
   const outcome = await executePlan(plan, ctx);
   if (!outcome.ok) {
@@ -2393,6 +2554,8 @@ type PlanCtx = {
   early?: EarlyClaim;
   /** The voice activation this plan belongs to; a newer one cancels it. */
   invocation?: number;
+  /** The one builtin tool step the fast path decided for a start. */
+  toolStep?: { tool: string; args: Record<string, unknown> };
 };
 /**
  * Runs a turn plan. Never throws: callers that show failures (the voice
@@ -2829,6 +2992,7 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
             origin: ctx.origin,
             taskSource:
               (plan.kind === "start" && plan.taskSource) || ctx.taskSource,
+            ...(ctx.toolStep ? { toolStep: ctx.toolStep } : {}),
           },
           prelude,
         );
@@ -3044,6 +3208,15 @@ const startFromSchema = z
       .optional(),
     // The task is a spoken "undo" right after a run ended (runPlan).
     undo: z.boolean().optional(),
+    // One builtin tool step the fast path decided (planCommand); only runPlan
+    // passes it, and the runner still validates, gates and approves it.
+    toolStep: z
+      .object({
+        tool: z.string().regex(TOOL_ID),
+        args: z.record(z.string().max(64), z.unknown()),
+      })
+      .strict()
+      .optional(),
     // Why a watch woke the model; only the queue drain passes it.
     watch: z
       .object({
@@ -3143,6 +3316,8 @@ async function startRun(
       tutorial
         ? {}
         : {
+            // Connected tools do the steps they can; the screen is the fallback.
+            tools: getTools().access({ synthetic: false }),
             onMonitor: (binding, spec, run) =>
               watchers.start(binding, {
                 ...spec,
@@ -3168,6 +3343,7 @@ async function startRun(
         ...(prelude && !tutorial ? { prelude } : {}),
         ...(dictation ? { dictation } : {}),
         ...(from?.undo ? { undo: true } : {}),
+        ...(from?.toolStep ? { toolStep: from.toolStep } : {}),
       })
       .catch((error) => {
         debug("RunStartFailed", errorDetails(error));
@@ -3241,6 +3417,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         encrypted: true,
         voice: voiceInfo,
         messages: messages.status(),
+        tools: getTools().status(),
       };
     }
     case "saveSettings": {
@@ -3248,6 +3425,14 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       // The phone list is edited only through setRemoteDevice and
       // forgetRemoteDevice, so a save never carries a stale copy of it.
       next.remoteDevices = settings.remoteDevices;
+      // The Apple consents and the server list are edited only through their
+      // own bridge calls (setAppleTool, addToolServer, …): a save carries the
+      // master switch alone. Private local turns off the servers that reach
+      // the internet, and says so below.
+      next.tools = { ...settings.tools, enabled: next.tools.enabled };
+      const localTools = localToolSettings(next);
+      next.tools = localTools.settings.tools;
+      validateToolSettings(next);
       validateProviderEndpoint(next);
       // The dialog model shares the endpoint, so the same privacy gate holds.
       if (next.dialogModel) validateProviderEndpoint(textSettings(next));
@@ -3277,6 +3462,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         next.endpoint !== settings.endpoint ||
         next.model !== settings.model ||
         next.privacy !== settings.privacy ||
+        JSON.stringify(next.tools) !== JSON.stringify(settings.tools) ||
         providerKey(nextCredentials, next) !==
           providerKey(credentials, settings)
       )
@@ -3329,6 +3515,9 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       await remote.configure().catch((error) => {
         debug("RemoteSetupFailed", errorDetails(error));
       });
+      await getTools()
+        .configure()
+        .catch((error) => debug("ToolServerFailed", errorDetails(error)));
       let applyError: unknown;
       if (live) {
         const current = runner!;
@@ -3376,6 +3565,12 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
               ? messagesError.message
               : "try again."
           }`,
+        );
+      if (localTools.disabled.length)
+        throw new Error(
+          `Settings saved. Private local turned off ${localTools.disabled.join(", ")}: ${
+            localTools.disabled.length === 1 ? "it reaches" : "they reach"
+          } the internet.`,
         );
       return;
     }
@@ -3534,6 +3729,161 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     case "lockRemote":
       remote.lock();
       return remote.status();
+    // Tools (electron/tools.ts, src/tools). Settings window only: none of
+    // these is on the overlay allow-list.
+    case "toolsStatus":
+      return getTools().status();
+    case "setAppleTool": {
+      const consent = z
+        .enum(["calendar", "reminders", "notes", "mail"])
+        .parse(args[0]) satisfies AppleConsent;
+      const on = z.boolean().parse(args[1]);
+      settings = {
+        ...settings,
+        tools: {
+          ...settings.tools,
+          apple: { ...settings.tools.apple, [consent]: on },
+        },
+      };
+      saveConfig();
+      // Turning a consent on asks macOS for that app's grant: the only call
+      // here that may show a prompt.
+      if (on) await getTools().requestApple(consent);
+      else await getTools().configure();
+      refreshSettingsView();
+      return getTools().status();
+    }
+    case "addToolServer": {
+      const input = addToolServerSchema.parse(args[0]);
+      let rows: ToolServer[];
+      let secrets: { id: string; name: string; value: string }[] = [];
+      if ("recipe" in input)
+        rows = [await serverFromRecipe(input.recipe, input.folder)];
+      else {
+        const imported = importServers(
+          "paste" in input ? input.paste : claudeDesktopConfig(),
+          settings.tools.servers,
+          Date.now(),
+        );
+        rows = imported.rows;
+        secrets = imported.secrets;
+        debug("ToolImport", imported.counts);
+      }
+      const next = {
+        ...settings,
+        tools: {
+          ...settings.tools,
+          servers: [...settings.tools.servers, ...rows],
+        },
+      };
+      validateToolSettings(next);
+      settings = next;
+      for (const secret of secrets)
+        credentials = withToolSecret(
+          credentials,
+          secret.id,
+          "env",
+          secret.name,
+          secret.value,
+        );
+      saveConfig();
+      refreshSettingsView();
+      return getTools().status();
+    }
+    case "testToolServer":
+      return getTools().test(z.string().min(1).max(40).parse(args[0]));
+    case "approveToolServer": {
+      const row = toolServer(z.string().min(1).max(40).parse(args[0]));
+      // A run's tool list is part of what its model was told.
+      ensureIdle();
+      const approved = withToolServer(settings, row.id, (r) => ({
+        ...r,
+        enabled: true,
+        consented: true,
+        approvedCommand: getTools().approval(r),
+      }));
+      validateToolSettings(approved);
+      settings = approved;
+      saveConfig();
+      await getTools().configure();
+      refreshSettingsView();
+      return getTools().status();
+    }
+    case "setToolServer": {
+      const id = z.string().min(1).max(40).parse(args[0]);
+      const patch = z
+        .object({
+          enabled: z.boolean().optional(),
+          trust: z.enum(["ask", "reads_unattended"]).optional(),
+          network: z.enum(["none", "internet"]).optional(),
+          name: z.string().trim().min(1).max(40).optional(),
+        })
+        .strict()
+        .parse(args[1]);
+      const row = toolServer(id);
+      if (patch.enabled !== undefined || patch.network !== undefined)
+        ensureIdle();
+      const changed = withToolServer(settings, id, (r) => ({
+        ...r,
+        ...patch,
+        // The argv changes with the network declaration (--no-network), so the
+        // approval given for the old one no longer holds.
+        ...(patch.network !== undefined && patch.network !== r.network
+          ? { consented: false, approvedCommand: "" }
+          : {}),
+      }));
+      validateToolSettings(changed);
+      settings = changed;
+      saveConfig();
+      await getTools().configure();
+      // Re-enabling a stopped server is the pane's Retry.
+      if (patch.enabled && row.enabled) await getTools().retry(id);
+      refreshSettingsView();
+      return getTools().status();
+    }
+    case "setToolTicked": {
+      const id = z.string().min(1).max(40).parse(args[0]);
+      const tool = z.string().min(1).max(128).parse(args[1]);
+      const on = z.boolean().parse(args[2]);
+      const tools = getTools().tick(id, tool, on);
+      settings = withToolServer(settings, id, (r) => ({ ...r, tools }));
+      saveConfig();
+      refreshSettingsView();
+      return getTools().status();
+    }
+    case "setToolSecret": {
+      const id = toolServer(z.string().min(1).max(40).parse(args[0])).id;
+      const kind = z.enum(["env", "header"]).parse(args[1]);
+      const name = z
+        .string()
+        .regex(
+          kind === "env"
+            ? /^[A-Z_][A-Z0-9_]{0,63}$/
+            : /^[A-Za-z][A-Za-z0-9-]{0,63}$/,
+        )
+        .parse(args[2]);
+      credentials = withToolSecret(credentials, id, kind, name, args[3]);
+      saveConfig();
+      // The value reaches the server only at its next start.
+      await getTools().configure();
+      return;
+    }
+    case "forgetToolServer": {
+      const id = toolServer(z.string().min(1).max(40).parse(args[0])).id;
+      ensureIdle();
+      await getTools().forget(id);
+      settings = {
+        ...settings,
+        tools: {
+          ...settings.tools,
+          servers: settings.tools.servers.filter((r) => r.id !== id),
+        },
+      };
+      credentials = forgetToolSecrets(credentials, id);
+      saveConfig();
+      refreshSettingsView();
+      return getTools().status();
+    }
     case "agendaStatus":
       return getAgenda().status();
     case "requestAgendaAccess":
@@ -4274,6 +4624,9 @@ app
     // After any launch command, which would otherwise queue behind it; a run
     // that command started skips it.
     prewarmIndex();
+    // Connected tool servers come up once the app is idle, so the list a run
+    // freezes at its start already has them.
+    getTools().startSoon();
   })
   .catch(() => {
     dialog.showErrorBox(
@@ -4294,6 +4647,7 @@ app.on("before-quit", () => {
   if (shuttingDown) return;
   shuttingDown = true;
   messages.close();
+  void toolLayer?.closeAll();
   remote.close();
   debug("AppStopping");
   clearInterval(diagnosticHeartbeat);

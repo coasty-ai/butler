@@ -4,6 +4,7 @@ import type {
   MessagesInfo,
   RemoteStatus,
   SetupStatus,
+  ToolsStatus,
 } from "./api";
 import {
   defaultSettings,
@@ -40,6 +41,22 @@ const messagesUnavailable = {
 } satisfies MessagesInfo;
 const messagesMessage =
   "Text updates come from the macOS app. This preview never reads or sends messages.";
+/** The browser preview starts no server and asks macOS for nothing. */
+const toolsUnavailable: ToolsStatus = {
+  apple: {
+    state: "needs_install",
+    code: "preview",
+    access: {
+      calendar: "unknown",
+      reminders: "unknown",
+      notes: "unknown",
+      mail: "unknown",
+    },
+  },
+  servers: [],
+};
+const toolsMessage =
+  "Tools connect in the macOS app. This preview starts no server.";
 /** The browser preview never listens on a network. */
 const remoteUnavailable: RemoteStatus = {
   enabled: false,
@@ -148,6 +165,7 @@ export function previewBridge(): Bridge {
         kokoro: { ...kokoroUnsupported },
       },
       messages: { ...messagesUnavailable },
+      tools: structuredClone(toolsUnavailable),
     }),
     saveSettings: async (s) => {
       settings = s;
@@ -394,6 +412,35 @@ export function previewBridge(): Bridge {
     setRemoteDevice: async () => ({ ...remoteUnavailable }),
     forgetRemoteDevice: async () => ({ ...remoteUnavailable }),
     lockRemote: async () => ({ ...remoteUnavailable }),
+    toolsStatus: async () => structuredClone(toolsUnavailable),
+    setAppleTool: async () => {
+      throw new Error(toolsMessage);
+    },
+    addToolServer: async () => {
+      throw new Error(toolsMessage);
+    },
+    testToolServer: async () => ({
+      ok: false,
+      toolCount: 0,
+      argv: [],
+      tools: [],
+      code: "preview",
+    }),
+    approveToolServer: async () => {
+      throw new Error(toolsMessage);
+    },
+    setToolServer: async () => {
+      throw new Error(toolsMessage);
+    },
+    setToolTicked: async () => {
+      throw new Error(toolsMessage);
+    },
+    setToolSecret: async () => {
+      throw new Error(toolsMessage);
+    },
+    forgetToolServer: async () => {
+      throw new Error(toolsMessage);
+    },
     agendaStatus: async () => ({ calendar: "unknown", reminders: "unknown" }),
     requestAgendaAccess: async () => ({
       calendar: "unknown",

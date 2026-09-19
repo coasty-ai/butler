@@ -5,10 +5,13 @@ import { tmpdir } from "node:os";
 import { defaultSettings } from "../src/core/schema";
 import { selectProvider } from "../src/providers/catalog";
 import {
+  forgetToolSecrets,
   importEnvCredentials,
   importLaunchCredentials,
   providerKey,
+  toolSecrets,
   withProviderKey,
+  withToolSecret,
 } from "../electron/credentials";
 
 const roots: string[] = [];
@@ -109,5 +112,64 @@ describe("local credential import", () => {
         {},
       ),
     ).toThrow("no imported API key");
+  });
+});
+describe("tool server secrets", () => {
+  it("keeps one server's variables and headers in their own scopes", () => {
+    const openai = selectProvider(defaultSettings, "openai");
+    let keys = withProviderKey({}, openai, "provider-key");
+    keys = withToolSecret(keys, "github", "env", "GITHUB_TOKEN", "ghp_x");
+    keys = withToolSecret(
+      keys,
+      "github",
+      "header",
+      "Authorization",
+      "Bearer t",
+    );
+    keys = withToolSecret(keys, "slack", "header", "Authorization", "Bearer s");
+    expect(
+      Object.keys(keys)
+        .filter((k) => k.startsWith("mcp:"))
+        .sort(),
+    ).toEqual([
+      "mcp:github:env:GITHUB_TOKEN",
+      "mcp:github:header:Authorization",
+      "mcp:slack:header:Authorization",
+    ]);
+    expect(Object.keys(keys)).toHaveLength(4);
+    expect(toolSecrets(keys, "github")).toEqual({
+      env: { GITHUB_TOKEN: "ghp_x" },
+      headers: { Authorization: "Bearer t" },
+    });
+    expect(toolSecrets(keys, "slack")).toEqual({
+      env: {},
+      headers: { Authorization: "Bearer s" },
+    });
+    expect(toolSecrets(keys, "nobody")).toEqual({ env: {}, headers: {} });
+    // Never a provider key, never another server's secret.
+    expect(JSON.stringify(toolSecrets(keys, "github"))).not.toContain(
+      "provider-key",
+    );
+    expect(providerKey(keys, openai)).toBe("provider-key");
+    // An empty value deletes the scope.
+    const cleared = withToolSecret(keys, "github", "env", "GITHUB_TOKEN", "");
+    expect(toolSecrets(cleared, "github").env).toEqual({});
+  });
+  it("forgets every scope of one server and nothing else", () => {
+    let keys = withToolSecret({}, "github", "env", "A", "1");
+    keys = withToolSecret(keys, "github", "header", "B", "2");
+    keys = withToolSecret(keys, "github-2", "env", "A", "3");
+    keys = withProviderKey(
+      keys,
+      selectProvider(defaultSettings, "openai"),
+      "k",
+    );
+    const left = forgetToolSecrets(keys, "github");
+    expect(Object.keys(left).filter((k) => k.startsWith("mcp:"))).toEqual([
+      "mcp:github-2:env:A",
+    ]);
+    expect(providerKey(left, selectProvider(defaultSettings, "openai"))).toBe(
+      "k",
+    );
   });
 });

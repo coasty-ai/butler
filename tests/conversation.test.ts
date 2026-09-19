@@ -1923,6 +1923,29 @@ describe("conversation: model replies", () => {
     expect(t.texts()).toEqual(["Opening Spotify.", "Spotify is open."]);
   });
 
+  it("still speaks a quick run's short done line when a tool changed something", () => {
+    const t = setup({ conversation: "model" });
+    t.event({ event: "shortcut_down" });
+    const reply = expecting(t, { filler: undefined });
+    reply.attach(undefined, { acting: true, line: "Adding it." });
+    t.render(snapshot("capturing"));
+    t.conversation.acknowledge(
+      { kind: "start", text: "add milk to my reminders" },
+      { reply, source: "ptt" },
+    );
+    t.play();
+    t.advance(3000);
+    const done = snapshot("completed", {
+      summary: "Added Milk to Reminders.",
+      actions: 1,
+    });
+    done.run!.tools = { calls: 1, writes: 1 };
+    t.render(done);
+    // The words that say what was added were never on screen.
+    expect(t.texts()).toEqual(["Adding it.", "Added Milk to Reminders."]);
+    expect(t.traces.some((x) => x.data.code === "quick_run")).toBe(false);
+  });
+
   it("speaks two sentences of a summary and opens a window after it, hands-free with the model on", () => {
     const summary =
       "Friday flights start at one forty two. United is cheapest.";

@@ -50,6 +50,15 @@ const bridge: Bridge = {
   setRemoteDevice: (...a) => invoke("setRemoteDevice", ...a),
   forgetRemoteDevice: (...a) => invoke("forgetRemoteDevice", ...a),
   lockRemote: () => invoke("lockRemote"),
+  toolsStatus: () => invoke("toolsStatus"),
+  setAppleTool: (...a) => invoke("setAppleTool", ...a),
+  addToolServer: (...a) => invoke("addToolServer", ...a),
+  testToolServer: (...a) => invoke("testToolServer", ...a),
+  approveToolServer: (...a) => invoke("approveToolServer", ...a),
+  setToolServer: (...a) => invoke("setToolServer", ...a),
+  setToolTicked: (...a) => invoke("setToolTicked", ...a),
+  setToolSecret: (...a) => invoke("setToolSecret", ...a),
+  forgetToolServer: (...a) => invoke("forgetToolServer", ...a),
   subscribePill: (fn) => {
     const handler = (_e: unknown, s: any) => fn(s);
     ipcRenderer.on("pill", handler);

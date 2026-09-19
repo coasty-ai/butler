@@ -1,5 +1,84 @@
 import { z } from "zod";
 import type { Settings } from "./schema";
+import { RESERVED_PROVIDERS, TOOL_LIMITS } from "./tools";
+/**
+ * The rows a Private local switch has to turn off: servers that reach the
+ * internet or speak HTTP. Returns the settings with those rows disabled and
+ * the labels of what changed, so the save can say so.
+ */
+export function localToolSettings(s: Settings): {
+  settings: Settings;
+  disabled: string[];
+} {
+  if (s.privacy !== "PRIVATE_LOCAL") return { settings: s, disabled: [] };
+  const offending = (row: Settings["tools"]["servers"][number]) =>
+    row.enabled && (row.transport === "http" || row.network !== "none");
+  const disabled = s.tools.servers.filter(offending).map((row) => row.name);
+  if (!disabled.length) return { settings: s, disabled };
+  return {
+    settings: {
+      ...s,
+      tools: {
+        ...s.tools,
+        servers: s.tools.servers.map((row) =>
+          offending(row) ? { ...row, enabled: false } : row,
+        ),
+      },
+    },
+    disabled,
+  };
+}
+/**
+ * The tools gate at save time (electron/main.ts saveSettings and every
+ * server bridge call); toolsAllowed() is the gate at use time.
+ */
+export function validateToolSettings(
+  s: Pick<Settings, "privacy" | "tools">,
+): void {
+  const rows = s.tools.servers;
+  if (rows.length > TOOL_LIMITS.servers)
+    throw new Error(
+      `At most ${TOOL_LIMITS.servers} tool servers can be connected.`,
+    );
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (RESERVED_PROVIDERS.has(row.id) || ids.has(row.id))
+      throw new Error("Each tool server needs its own id.");
+    ids.add(row.id);
+    if (row.transport === "stdio" && !row.command.trim())
+      throw new Error(`${row.name} needs a command.`);
+    if (row.transport === "http") {
+      if (s.privacy === "PRIVATE_LOCAL" && row.enabled)
+        throw new Error(
+          "Remote tool servers are not available in Private local.",
+        );
+      let url: URL;
+      try {
+        url = new URL(row.url);
+      } catch {
+        throw new Error(`${row.name} needs an https address.`);
+      }
+      if (
+        url.protocol !== "https:" ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash
+      )
+        throw new Error(
+          `${row.name} needs an https address without credentials, query parameters or fragments.`,
+        );
+    }
+    if (s.privacy === "PRIVATE_LOCAL" && row.enabled && row.network !== "none")
+      throw new Error(
+        `${row.name} reaches the internet; Private local runs only local tool servers.`,
+      );
+    if (row.secretEnv.some((name) => name in row.env))
+      throw new Error(
+        `${row.name} names a variable both plainly and as a secret.`,
+      );
+  }
+}
 export function validateProviderEndpoint(s: Settings): URL {
   const u = new URL(s.endpoint);
   if (u.username || u.password || u.search || u.hash)

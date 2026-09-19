@@ -180,6 +180,36 @@ const fields = new Set([
   "linesPerTick",
   "tickMs",
   "ticks",
+  // Tools (src/tools): hashed server and tool codes, tiers, outcomes and the
+  // kind of question asked; counts, sizes and flags. Never an argument, a
+  // result, a description, a command, a path or a URL.
+  "server",
+  "tool",
+  "transport",
+  "toolTier",
+  "outcome",
+  "questionKind",
+  "providerState",
+  "answerTier",
+  "toolCount",
+  "unavailableCount",
+  "resultItems",
+  "toolCalls",
+  "toolWrites",
+  "entityCount",
+  "added",
+  "skippedRemote",
+  "refused",
+  "secretsMoved",
+  "argsBytes",
+  "resultBytes",
+  "stderrBytes",
+  "verified",
+  "sandboxed",
+  "disclaimed",
+  "pinned",
+  "finish",
+  "longRunning",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -198,6 +228,16 @@ const countFields = new Set([
   "channels",
   "micChannel",
   "count",
+  "toolCount",
+  "unavailableCount",
+  "resultItems",
+  "toolCalls",
+  "toolWrites",
+  "entityCount",
+  "added",
+  "skippedRemote",
+  "refused",
+  "secretsMoved",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
@@ -223,6 +263,9 @@ const numberFields = new Set([
   "leadMs",
   "linesPerTick",
   "tickMs",
+  "argsBytes",
+  "resultBytes",
+  "stderrBytes",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
@@ -237,6 +280,12 @@ const flagFields = new Set([
   "restoredWindow",
   "jevUsed",
   "early",
+  "verified",
+  "sandboxed",
+  "disclaimed",
+  "pinned",
+  "finish",
+  "longRunning",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -270,6 +319,14 @@ const codeFields = new Set([
   "jevCode",
   "settle",
   "direction",
+  "server",
+  "tool",
+  "transport",
+  "toolTier",
+  "outcome",
+  "questionKind",
+  "providerState",
+  "answerTier",
 ]);
 /**
  * The early step's own events keep only these keys, whatever else a caller
@@ -289,6 +346,14 @@ const memoryEvents = new Set([
   "PlanStepProposed",
   "PlanAbandoned",
   "PlanCompleted",
+]);
+/** The runner's tool events: hashed ids, codes, counts, sizes and flags only. */
+const toolEvents = new Set([
+  "ToolsListed",
+  "ToolStepProposed",
+  "ToolCallProposed",
+  "ToolCallFinished",
+  "ToolUndo",
 ]);
 const code = (value: unknown) =>
   typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value)
@@ -486,7 +551,10 @@ export class LocalDiagnostics {
         via: e.data.via,
         // A step taken before the run existed, while the user was speaking.
         early: e.data.early,
-        reason: e.data.reason,
+        // A tool question names the item it would add; the question stays in
+        // the encrypted journal and only its kind is written here.
+        reason: e.data.actionType === "tool_call" ? undefined : e.data.reason,
+        questionKind: code(e.data.questionKind),
         usage: e.data.usage,
         frameId: e.data.frame_id,
         geometry: e.data.geometry,
@@ -520,6 +588,25 @@ export class LocalDiagnostics {
               mode: code(e.data.mode),
               source: code(e.data.source),
               reason: code(e.data.reason),
+            }
+          : {}),
+        ...(toolEvents.has(e.type)
+          ? {
+              tool: code(e.data.tool),
+              server: code(e.data.server),
+              toolTier: code(e.data.toolTier),
+              outcome: code(e.data.outcome),
+              source: code(e.data.source),
+              toolCount: count(e.data.toolCount),
+              unavailableCount: count(e.data.unavailableCount),
+              entityCount: count(e.data.entityCount),
+              argsBytes: count(e.data.argsBytes),
+              resultBytes: count(e.data.resultBytes),
+              resultItems: count(e.data.resultItems),
+              durationMs: count(e.data.durationMs),
+              verified: e.data.verified,
+              finish: e.data.finish,
+              longRunning: e.data.longRunning,
             }
           : {}),
         // App names are user metadata; only the bundle id and flags are logged.
@@ -572,13 +659,19 @@ export class LocalDiagnostics {
         usage: s.run.usage,
         taskLength: s.run.task.length,
         appId: s.frame?.appId,
+        toolCalls: count(s.run.tools?.calls),
+        toolWrites: count(s.run.tools?.writes),
         // Verbose-only fields (not in the allow-list).
         task: s.run.task,
         message: s.message,
         summary: s.run.summary,
         corrections: s.run.corrections,
         pending: s.pending,
-        ...(s.run.status === "failed" ? { error: s.message } : {}),
+        // A failed run's message can quote a tool result or the screen, so it
+        // is written only for opt-in debugging; RunFailed carries the code.
+        ...(s.run.status === "failed" && this.verbose
+          ? { error: s.message }
+          : {}),
       });
     }
   }

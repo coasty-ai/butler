@@ -61,6 +61,7 @@ const coreFiles = srcFiles.filter((f) => f.startsWith("src/core/"));
 const providerFiles = srcFiles.filter((f) => f.startsWith("src/providers/"));
 const voiceFiles = srcFiles.filter((f) => f.startsWith("src/voice/"));
 const assistantFiles = srcFiles.filter((f) => f.startsWith("src/assistant/"));
+const toolFiles = srcFiles.filter((f) => f.startsWith("src/tools/"));
 
 /** Collect every violation so one run names them all. */
 function offenders(
@@ -83,6 +84,7 @@ describe("module boundaries", () => {
     expect(providerFiles.length).toBeGreaterThan(2);
     expect(voiceFiles.length).toBeGreaterThan(2);
     expect(assistantFiles.length).toBeGreaterThan(2);
+    expect(toolFiles.length).toBeGreaterThan(3);
     expect(srcFiles.length).toBeGreaterThan(20);
     expect(electronFiles.length).toBeGreaterThan(5);
   });
@@ -135,6 +137,28 @@ describe("module boundaries", () => {
         if (!specifier.startsWith(".")) return undefined;
         if (!/^src\/(?:voice|core)\//.test(resolved))
           return `src/voice may import only src/core, not ${resolved}`;
+        return undefined;
+      }),
+    ).toEqual([]);
+  });
+
+  /**
+   * src/tools is the tool layer under Electron main: the MCP client, the
+   * registry and the first-party tables. It knows the core contract, Node and
+   * the SDK, and nothing about the UI, the gym, the assistant or voice.
+   */
+  it("keeps src/tools to the core contract, Node and the MCP SDK", () => {
+    expect(
+      offenders(toolFiles, (specifier, resolved) => {
+        if (specifier === "electron" || specifier.startsWith("electron/"))
+          return "src/tools must not depend on Electron";
+        if (specifier.startsWith("node:")) return undefined;
+        if (!specifier.startsWith("."))
+          return specifier.startsWith("@modelcontextprotocol/")
+            ? undefined
+            : `src/tools may import only @modelcontextprotocol/* packages, not ${specifier}`;
+        if (!/^src\/(?:tools|core)\//.test(resolved))
+          return `src/tools may import only src/core and src/tools, not ${resolved}`;
         return undefined;
       }),
     ).toEqual([]);

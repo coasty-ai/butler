@@ -1407,6 +1407,9 @@ export class Conversation {
           this.lastReplyEndedAt !== undefined &&
           this.now() - this.lastReplyEndedAt < QUICK_RUN_MS &&
           run.actions <= QUICK_RUN_ACTIONS &&
+          // A tool changed something: the words that say what were never
+          // on screen, so "Added Milk to Reminders." is always spoken.
+          !run.tools?.writes &&
           text.split(/\s+/).length <= QUICK_RUN_WORDS
         ) {
           this.trace("VoiceReply", {

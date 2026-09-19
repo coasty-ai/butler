@@ -55,6 +55,55 @@ export function withJevKey(keys: Credentials, value: unknown): Credentials {
   return next;
 }
 
+/**
+ * One MCP server's secrets, in their own vault scopes: "mcp:<id>:env:<NAME>"
+ * for a variable the child receives and "mcp:<id>:header:<NAME>" for a
+ * request header. Resolved only at spawn or connect; never a provider key.
+ */
+export type ToolSecretKind = "env" | "header";
+const toolScope = (id: string, kind: ToolSecretKind, name: string) =>
+  `mcp:${id}:${kind}:${name}`;
+export function toolSecrets(
+  keys: Credentials,
+  id: string,
+): { env: Record<string, string>; headers: Record<string, string> } {
+  const env: Record<string, string> = {};
+  const headers: Record<string, string> = {};
+  const prefix = `mcp:${id}:`;
+  for (const [scope, value] of Object.entries(keys)) {
+    if (!scope.startsWith(prefix)) continue;
+    const rest = scope.slice(prefix.length);
+    const separator = rest.indexOf(":");
+    if (separator < 0) continue;
+    const kind = rest.slice(0, separator);
+    const name = rest.slice(separator + 1);
+    if (kind === "env") env[name] = value;
+    else if (kind === "header") headers[name] = value;
+  }
+  return { env, headers };
+}
+export function withToolSecret(
+  keys: Credentials,
+  id: string,
+  kind: ToolSecretKind,
+  name: string,
+  value: unknown,
+): Credentials {
+  const next = { ...keys };
+  const scope = toolScope(id, kind, name);
+  const key = keySchema.parse(value);
+  if (key) next[scope] = key;
+  else delete next[scope];
+  return next;
+}
+/** Every scope of one server and nothing else's. */
+export function forgetToolSecrets(keys: Credentials, id: string): Credentials {
+  const prefix = `mcp:${id}:`;
+  return Object.fromEntries(
+    Object.entries(keys).filter(([scope]) => !scope.startsWith(prefix)),
+  );
+}
+
 export function importEnvCredentials(
   file: string,
   keys: Credentials,

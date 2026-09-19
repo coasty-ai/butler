@@ -6,11 +6,22 @@ import type {
   Frame,
   JournalEvent,
 } from "../core/schema";
+import type { AppleConsent, ToolsStatus } from "../core/tools";
+import type { ToolServerTest } from "../tools/registry";
 import type { Bundle, Review } from "../contribution/bundle";
 import type { PillState } from "../voice/router";
 import type { MemoryData } from "../memory/types";
 import type { RemoteStatus } from "../remote/protocol";
-export type { RemoteStatus };
+export type { RemoteStatus, ToolsStatus, ToolServerTest };
+/**
+ * What the Tools pane adds: a recipe (main picks the folder when the recipe
+ * needs one and none is given), a pasted Claude Desktop block, or that app's
+ * own config file read once.
+ */
+export type AddToolServerInput =
+  | { recipe: string; folder?: string }
+  | { paste: string }
+  | { claudeDesktop: true };
 /** macOS access for the agenda helper, as the Settings window shows it. */
 export interface AgendaAccessInfo {
   calendar: string;
@@ -161,6 +172,8 @@ export interface AppInfo {
   };
   /** Text updates and texted commands; off until the user turns them on. */
   messages: MessagesInfo;
+  /** The Apple bridge and the user's MCP servers, as the Tools pane shows them. */
+  tools: ToolsStatus;
 }
 /**
  * First run (docs/MODULARITY.md §6). Everything below is the setup view's
@@ -499,6 +512,43 @@ export interface Bridge {
   forgetRemoteDevice(id: string): Promise<RemoteStatus>;
   /** Settings window only. Cuts every phone off and turns the remote off. */
   lockRemote(): Promise<RemoteStatus>;
+  /** Settings window only. The tool layer's state: labels, states, counts, resolved commands. */
+  toolsStatus(): Promise<ToolsStatus>;
+  /**
+   * Settings window only. One Apple consent, applied and saved at once; turning
+   * one on asks macOS for that app's grant (the only call that may prompt).
+   */
+  setAppleTool(consent: AppleConsent, on: boolean): Promise<ToolsStatus>;
+  /** Settings window only. Adds rows that still need the user's approval. */
+  addToolServer(input: AddToolServerInput): Promise<ToolsStatus>;
+  /**
+   * Settings window only. Connects once and lists the server's tools for the
+   * consent sheet; descriptions are shown here and never traced.
+   */
+  testToolServer(id: string): Promise<ToolServerTest>;
+  /** Settings window only. Pins the exact argv shown, consents, and starts the server. */
+  approveToolServer(id: string): Promise<ToolsStatus>;
+  /** Settings window only. A row's switches; a network change needs a new approval. */
+  setToolServer(
+    id: string,
+    patch: {
+      enabled?: boolean;
+      trust?: "ask" | "reads_unattended";
+      network?: "none" | "internet";
+      name?: string;
+    },
+  ): Promise<ToolsStatus>;
+  /** Settings window only. Ticks one tool at its current pin, or unticks it. */
+  setToolTicked(id: string, tool: string, on: boolean): Promise<ToolsStatus>;
+  /** Settings window only. A server's variable or header value into the vault; "" deletes. */
+  setToolSecret(
+    id: string,
+    kind: "env" | "header",
+    name: string,
+    value: string,
+  ): Promise<void>;
+  /** Settings window only. Removes the row, its vault scopes and its process. */
+  forgetToolServer(id: string): Promise<ToolsStatus>;
   subscribePill(fn: (state: PillState) => void): () => void;
   subscribeView(fn: (view: string) => void): () => void;
   /** Download progress and install changes for the natural voice. */

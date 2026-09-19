@@ -68,6 +68,7 @@ import {
 } from "./settings-voice";
 import { previewBridge } from "./preview";
 import { SettingsRemote } from "./settings-remote";
+import { SettingsTools } from "./settings-tools";
 import "@fontsource-variable/space-grotesk";
 import "./styles.css";
 import "./motion.css";
@@ -2277,6 +2278,7 @@ function SettingsPanel({
           busy={busy}
           refreshKey={info}
         />
+        <SettingsTools s={s} set={set} api={api} busy={busy} info={info} />
         <details className="setting-group">
           <summary>
             <span>
