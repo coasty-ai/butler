@@ -165,6 +165,10 @@ export const segmentInputSchema = z
     text: z.string().max(4000),
     atMs: z.number().min(0),
     previous: z.array(clauseSchema).max(64),
+    /** The caller asks for the `final` event (with `dropped`) for the finished text. */
+    final: z.boolean().optional(),
+    /** When the words last changed, so a stateless adapter can commit by stability. */
+    lastChangedAtMs: z.number().min(0).optional(),
   })
   .strict();
 export const segmentOutputSchema = z

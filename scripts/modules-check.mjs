@@ -105,10 +105,12 @@ const {
 } = await import("../src/voice/fast.ts");
 const { siteByKey, homeUrl } = await import("../src/voice/recipes.ts");
 const { webAddress } = await import("../src/core/schema.ts");
-const { PORTS, contracts } = await import("../src/modules/contracts.ts");
+const { PORTS, contracts, TOOL_SCHEMAS } =
+  await import("../src/modules/contracts.ts");
 
 const port = PORTS[portName];
-const contract = contracts[port.tool];
+// contracts is keyed by port ({input, output}); TOOL_SCHEMAS by tool.
+const contract = { ...TOOL_SCHEMAS[port.tool], ...contracts[portName] };
 const timeoutMs =
   Number(values.timeout) > 0 ? Number(values.timeout) : port.timeoutMs;
 const fixture = JSON.parse(readFileSync(values.fixtures, "utf8"));
@@ -571,7 +573,7 @@ const p95 = percentile(all, 0.95);
 const budget =
   p50 === undefined
     ? "no data"
-    : p50 <= port.budget.p50Ms && p95 <= port.budget.p95Ms
+    : p50 <= port.budgetMs && p95 <= port.timeoutMs
       ? "met"
       : "missed";
 const taken =
@@ -594,7 +596,7 @@ const data = {
   port: portName,
   tool: port.tool,
   adapter: adapter.kind,
-  budget: port.budget,
+  budget: { p50Ms: port.budgetMs, p95Ms: port.timeoutMs },
   timeoutMs,
   ...(listed ? { server: listed } : {}),
   cases: cases.map(({ latencies: _l, ...c }) => ({
@@ -614,7 +616,7 @@ if (values.json) {
 } else {
   const lines = [];
   lines.push(
-    `modules-check: port ${portName} (tool ${port.tool}) · adapter ${adapter.kind} · budget p50 ≤ ${port.budget.p50Ms} ms, p95 ≤ ${port.budget.p95Ms} ms · timeout ${timeoutMs} ms`,
+    `modules-check: port ${portName} (tool ${port.tool}) · adapter ${adapter.kind} · budget p50 ≤ ${port.budgetMs} ms, p95 ≤ ${port.timeoutMs} ms · timeout ${timeoutMs} ms`,
   );
   if (listed)
     lines.push(

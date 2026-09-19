@@ -48,7 +48,14 @@ register();
 const { createClauseStream } = await import("../../../src/voice/stream.ts");
 const { decideFast } = await import("../../../src/voice/fast.ts");
 const { webAddress } = await import("../../../src/core/schema.ts");
-const { contracts } = await import("../../../src/modules/contracts.ts");
+const { contracts, TOOL_SCHEMAS } =
+  await import("../../../src/modules/contracts.ts");
+// MOD1 keys `contracts` by port ({input, output}) and TOOL_SCHEMAS by tool
+// ({name, port, description, inputSchema, outputSchema}); one view by tool.
+const contractOf = (tool) =>
+  TOOL_SCHEMAS[tool]
+    ? { ...TOOL_SCHEMAS[tool], ...contracts[TOOL_SCHEMAS[tool].port] }
+    : undefined;
 
 const SERVER = { name: "mcp-modules-example", version: "0.1.0" };
 const READ_ONLY = {
@@ -73,9 +80,9 @@ const TOOLS = [
   },
 ].map((tool) => ({
   ...tool,
-  description: contracts[tool.name].description,
-  inputSchema: contracts[tool.name].inputSchema,
-  outputSchema: contracts[tool.name].outputSchema,
+  description: contractOf(tool.name).description,
+  inputSchema: contractOf(tool.name).inputSchema,
+  outputSchema: contractOf(tool.name).outputSchema,
 }));
 
 // segment_clauses is stateless on the wire: the caller sends back the clauses
@@ -139,7 +146,7 @@ const toolError = (code, value) => ({
 
 async function call(id, params) {
   const name = params?.name;
-  const contract = contracts[name];
+  const contract = typeof name === "string" ? contractOf(name) : undefined;
   if (
     typeof name !== "string" ||
     !contract ||
