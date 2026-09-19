@@ -37,6 +37,10 @@ export interface VoiceEvent {
   buffers?: number;
   rms?: number;
   engine?: boolean;
+  wakeAt?: number;
+  gapMs?: number;
+  maxGapMs?: number;
+  spanMs?: number;
   quietMs?: number;
   completeness?: string;
   patience?: string;

@@ -2336,6 +2336,14 @@ DispatchQueue.global().async {
     DispatchQueue.global().asyncAfter(deadline:.now()+2){releaseHeldInputAndExit()}
     commands.async{releaseHeldInputAndExit()}
 }
+// Vision loads its text model on first use (about half a second on the first capture of a
+// session, 2026-09-19 trial: ocr 558 ms cold, 136 ms warm). Warm it on a blank image now so
+// the first frame pays only the recognition.
+DispatchQueue.global(qos: .utility).async {
+    if let context = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue), let image = context.makeImage() {
+        _ = recognizeLines(image, region: nil, maxLines: 1)
+    }
+}
 RunLoop.main.run()
 }
 }

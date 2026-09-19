@@ -92,6 +92,27 @@ var securePaused = false
 // background speech never leaves this process.
 let standbyTrace = ProcessInfo.processInfo.environment["BUTLER_TRACE_STANDBY"] ?? ""
 var tapBuffers = 0, lastRms = 0.0, lastStandbyTraceAt = 0.0
+private let traceHey = try! NSRegularExpression(pattern: #"^(?:\#(wakeHeyPattern))[,.!?]*$"#, options: .caseInsensitive)
+private let traceName = try! NSRegularExpression(pattern: #"^(?:\#(wakeNamePattern))[,.!?]*$"#, options: .caseInsensitive)
+private func matches(_ expression: NSRegularExpression, _ text: String) -> Bool {
+    expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+}
+/// Where a wake phrase could begin a fresh utterance inside a running hypothesis: a "hey"+name
+/// pair whose segment starts at least 0.6 s after the previous segment ended. Trace only, for
+/// now: it tells whether Apple's segment timestamps can separate a wake phrase from the
+/// conversation that a standby request keeps transcribing around it.
+func wakeAfterPause(_ segments: [SFTranscriptionSegment]) -> (index: Int, gapMs: Int, maxGapMs: Int)? {
+    var maxGap = 0.0, found: (Int, Int)?
+    for i in 1..<max(1, segments.count) {
+        let gap = segments[i].timestamp - (segments[i - 1].timestamp + segments[i - 1].duration)
+        maxGap = max(maxGap, gap)
+        if found == nil, gap >= 0.6, i + 1 < segments.count, matches(traceHey, segments[i].substring), matches(traceName, segments[i + 1].substring) {
+            found = (i, Int((gap * 1000).rounded()))
+        }
+    }
+    guard let (index, gapMs) = found else { return nil }
+    return (index, gapMs, Int((maxGap * 1000).rounded()))
+}
 func traceStandby(_ kind: String, _ raw: String? = nil, error: String? = nil, extra: [String: Any] = [:]) {
     guard !standbyTrace.isEmpty else { return }
     var event: [String: Any] = ["event": "standby_trace", "kind": kind, "sinceStartMs": Int(((uptime() - startedAt) * 1000).rounded())]
@@ -478,7 +499,13 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
         case .standby:
             guard commandAfterWakePhrase(raw, ended: result.isFinal) != nil else {
                 // Do not emit background speech, partials, or microphone levels.
-                traceStandby(result.isFinal ? "final" : "partial", raw)
+                if !standbyTrace.isEmpty {
+                    let segments = result.bestTranscription.segments
+                    var extra: [String: Any] = ["segments": segments.count]
+                    if let last = segments.last { extra["spanMs"] = Int(((last.timestamp + last.duration - (segments.first?.timestamp ?? 0)) * 1000).rounded()) }
+                    if let pause = wakeAfterPause(segments) { extra["wakeAt"] = pause.index; extra["gapMs"] = pause.gapMs; extra["maxGapMs"] = pause.maxGapMs }
+                    traceStandby(result.isFinal ? "final" : "partial", raw, extra: extra)
+                }
                 if !trimmed(raw).isEmpty { lastTextAt = now }
                 pendingWake = !result.isFinal && wakePhraseAwaitingPause(raw)
                 if result.isFinal { clearSpeech(); scheduleStandby() }
