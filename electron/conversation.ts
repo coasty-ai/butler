@@ -222,6 +222,15 @@ interface Fragment {
   askedAt?: number;
 }
 
+/**
+ * Open for the whole of a spoken scroll (the helper's 90 s limit and a little
+ * over), for "stop", "faster", "slower" and "scroll up"; main.ts closes it
+ * with the scroll.
+ */
+export const SCROLL_WINDOW: Listen = {
+  kind: "scroll",
+  seconds: followUpSeconds("scroll"),
+};
 /** After a spoken result, hands-free with the model on: no wake word needed. */
 const AFTER_RESULT_SECONDS = 5;
 /** A filler that already played gives the streamed answer this long to wait for it. */
@@ -503,6 +512,7 @@ export class Conversation {
         "pause",
         "resume",
         "undo",
+        "scroll",
         "queue",
       ].includes(plan.kind)
     )
@@ -670,8 +680,19 @@ export class Conversation {
         // "Nothing to undo." as its pause or its result.
         case "undo":
           break;
+        // The page moving is the acknowledgement; its window opens below.
+        case "scroll":
+          break;
       }
     } else if (model) afterReply(undefined);
+    // A scroll listens for its own steering words for as long as it may run,
+    // whether it was spoken or typed; the window closes with the scroll.
+    if (
+      plan.kind === "scroll" &&
+      plan.request.act !== "stop" &&
+      this.windowsAllowed(handsFree)
+    )
+      void this.listen(SCROLL_WINDOW);
     // Listening has ended: a prompt held back while capturing may speak now,
     // unless a newer turn is already capturing (its end re-evaluates).
     if (s && !newerTurn) this.onSnapshot(s, { listening: false });

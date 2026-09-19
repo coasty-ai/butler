@@ -37,6 +37,7 @@ const actionable = new Set([
   "pause",
   "resume",
   "undo",
+  "scroll",
   "approve",
   "decline",
 ]);

@@ -19,6 +19,7 @@ const ACTIONABLE: ReadonlySet<VoiceIntentKind> = new Set([
   "pause",
   "resume",
   "undo",
+  "scroll",
   "approve",
   "decline",
 ]);

@@ -1000,6 +1000,9 @@ func handle(_ command: [String: Any]) {
                 }
                 if followUpExpired(now: now, deadline: windowDeadline, lastSpeech: lastSpeechAt) {
                     clearSpeech(windowReason: "timeout"); scheduleStandby(0.1)
+                } else if windowKind == .scroll && scrollWindowRotationDue(now: now, rotatedAt: rotatedAt, lastSpeech: lastSpeechAt) {
+                    // A scroll's long window outlives one request: continue in a fresh one.
+                    rotateRequest(reason: "cadence", preRoll: true)
                 }
             case .handsFree:
                 if IsSecureEventInputEnabled() {

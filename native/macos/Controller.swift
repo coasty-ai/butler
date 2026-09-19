@@ -1305,6 +1305,80 @@ func presence() -> [String: Any] {
                           displayAsleep: CGDisplayIsAsleep(CGMainDisplayID()) != 0,
                           displayHeldAwake: displayHeldAwake()).dictionary
 }
+// One wheel movement in the scroll action's sign: delta_y positive moves down the page.
+func postScroll(dx:Int,dy:Int) {
+    postInput(CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:2,wheel1:Int32(-dy),wheel2:Int32(-dx),wheel3:0))
+}
+// MARK: - Continuous scrolling (a spoken "scroll down")
+// The scroll under way, its timer and the window it scrolls (guarded by stateLock).
+var scrollSession: ScrollSession?
+var scrollTimer: DispatchSourceTimer?
+var scrollTarget: (pid: pid_t, window: AXUIElement)?
+var scrollSessions = 0
+let scrollQueue = DispatchQueue(label:"ai.coarena.controller.scroll",qos:.userInteractive)
+// Starts scrolling the window in front gently, or steers the scroll under way
+// (a new direction or pace, a fresh lease). The latch lifts so the tap watches
+// for the user's own input; every way the scroll ends latches again.
+func startContinuousScroll(_ command:[String:Any]) throws -> [String:Any] {
+    guard let direction = ScrollDirection(rawValue:command["direction"] as? String ?? "") else { throw ControlError("Invalid scroll direction.") }
+    let pacing = ScrollPacing(direction:direction, speed:command["speed"] as? Double ?? 1)
+    let now = ProcessInfo.processInfo.systemUptime
+    if let steered = withState({ () -> ScrollSession? in scrollSession?.steer(pacing, now:now); return scrollSession }) {
+        latch(false)
+        return steered.started()
+    }
+    guard AXIsProcessTrusted() else { throw ControlError("Accessibility permission is required.") }
+    guard installTap() else { throw ControlError("Emergency stop could not be registered. Input remains disabled.") }
+    try guardSurface()
+    guard let app = inputApplication(), app.processIdentifier != getppid(), app.bundleIdentifier != "ai.coarena.openassist" else { throw ControlError("No application is in front.") }
+    guard let window = attribute(AXUIElementCreateApplication(app.processIdentifier),kAXFocusedWindowAttribute).map({ $0 as! AXUIElement }),
+          let bounds = elementRect(window), !bounds.isEmpty else { throw ControlError("No window to scroll.") }
+    latch(false)
+    // The wheel goes to the window under the pointer: bring the pointer over
+    // the window in front when it rests elsewhere (the pill, another display).
+    if let pointer = CGEvent(source:nil)?.location, !bounds.contains(pointer) {
+        postInput(CGEvent(mouseEventSource:nil,mouseType:.mouseMoved,mouseCursorPosition:CGPoint(x:bounds.midX,y:bounds.midY),mouseButton:.left))
+    }
+    let timer = DispatchSource.makeTimerSource(queue:scrollQueue)
+    let session = withState { () -> ScrollSession in
+        scrollSessions += 1
+        let session = ScrollSession(id:scrollSessions, pacing:pacing, now:now)
+        scrollSession = session; scrollTarget = (app.processIdentifier, window); scrollTimer = timer
+        return session
+    }
+    timer.schedule(deadline: .now() + .milliseconds(ScrollPacing.tickMs), repeating: .milliseconds(ScrollPacing.tickMs), leeway: .milliseconds(10))
+    timer.setEventHandler { scrollTick() }
+    timer.resume()
+    return session.started()
+}
+// One tick: the scroll ends on the latch (a stop; the user's own input ends it
+// from the tap first), when another window came in front, at the lease's end,
+// or on a surface the floors refuse; otherwise one wheel movement goes out.
+func scrollTick() {
+    stateLock.lock(); let current = scrollSession, target = scrollTarget; stateLock.unlock()
+    guard let session = current, let target = target else { return }
+    if isStopped() { endContinuousScroll(.stop); return }
+    if session.expired(now:ProcessInfo.processInfo.systemUptime) { endContinuousScroll(.limit); return }
+    let window = attribute(AXUIElementCreateApplication(target.pid),kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid, sameElement(window, target.window) else { endContinuousScroll(.appChanged); return }
+    if session.guardsSurface {
+        do { try guardSurface() } catch { endContinuousScroll(.error, message:(error as? ControlError)?.message); return }
+    }
+    postScroll(dx:0, dy:session.pacing.deltaY)
+    withState { scrollSession?.posted() }
+}
+// Ends the scroll once, whoever gets there first (the tap on the user's input,
+// a stop request, the tick), and reports why and how far it got.
+func endContinuousScroll(_ reason:ScrollEndReason, message:String? = nil) {
+    stateLock.lock()
+    let session = scrollSession, timer = scrollTimer
+    scrollSession = nil; scrollTarget = nil; scrollTimer = nil
+    stateLock.unlock()
+    guard let session = session else { return }
+    timer?.cancel()
+    latch(true)
+    emit(session.ended(reason, message:message))
+}
 // Tells main when the user's manual input has gone quiet (idleMs 1000, then
 // 3000), so it can decide whether a paused run continues. Informational only:
 // nothing here changes the stop latch.
@@ -1342,7 +1416,7 @@ func installTap() -> Bool {
             guard let tap = tap else { return Unmanaged.passUnretained(event) }
             CGEvent.tapEnable(tap:tap, enable:true)
             if !CGEvent.tapIsEnabled(tap:tap) {latch(true);emit(["event":"emergency_stop"])}
-            else if !isStopped() {latch(true);emit(["event":"user_takeover","source":"tap_timeout","eventType":type.rawValue])}
+            else if !isStopped() {endContinuousScroll(.input);latch(true);emit(["event":"user_takeover","source":"tap_timeout","eventType":type.rawValue])}
             return Unmanaged.passUnretained(event)
         }
         let pointer = [.mouseMoved,.leftMouseDragged,.rightMouseDragged,.leftMouseDown,.rightMouseDown,.otherMouseDown].contains(type)
@@ -1382,7 +1456,8 @@ func installTap() -> Bool {
         if forwarded {emit(["event":"input_forwarded","source":"spotlight"]);return Unmanaged.passUnretained(event)}
         recordManualInput(manualInputKind(type:type, marked:marked))
         if escape {latch(true);emit(["event":"emergency_stop"])}
-        else if !isStopped() {latch(true);emit(["event":"user_takeover","source":type == .mouseMoved ? "mouse_move" : type == .keyDown ? "key" : type == .scrollWheel ? "scroll" : "mouse_button_or_drag","delta_x":event.getIntegerValueField(.mouseEventDeltaX),"delta_y":event.getIntegerValueField(.mouseEventDeltaY),"sourcePid":event.getIntegerValueField(.eventSourceUnixProcessID),"eventType":type.rawValue,"flags":event.flags.rawValue,"pointerDistance":pointerDistance])}
+        // The user's own hand ends a spoken scroll before the takeover is reported.
+        else if !isStopped() {endContinuousScroll(.input);latch(true);emit(["event":"user_takeover","source":type == .mouseMoved ? "mouse_move" : type == .keyDown ? "key" : type == .scrollWheel ? "scroll" : "mouse_button_or_drag","delta_x":event.getIntegerValueField(.mouseEventDeltaX),"delta_y":event.getIntegerValueField(.mouseEventDeltaY),"sourcePid":event.getIntegerValueField(.eventSourceUnixProcessID),"eventType":type.rawValue,"flags":event.flags.rawValue,"pointerDistance":pointerDistance])}
         return Unmanaged.passUnretained(event)
     }, userInfo:nil)
     guard let tap = tap else { return false }
@@ -1643,7 +1718,7 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> String
         for i in 1...20 {try ensureRunning();last = CGPoint(x:start.x+(end.x-start.x)*Double(i)/20,y:start.y+(end.y-start.y)*Double(i)/20);try mouse(.leftMouseDragged,last);Thread.sleep(forTimeInterval:duration/20000)}
     case "scroll":
         guard let dx = action["delta_x"] as? Int,let dy = action["delta_y"] as? Int,abs(dx)<=1000,abs(dy)<=1000 else {throw ControlError("Invalid scroll.")}
-        postInput(CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:2,wheel1:Int32(-dy),wheel2:Int32(-dx),wheel3:0))
+        postScroll(dx:dx,dy:dy)
     case "type_text":
         guard let text = action["text"] as? String,text.count<=2000 else {throw ControlError("Invalid text.")}
         // The stop latch, secure input and the exact focused element are checked
@@ -2234,6 +2309,8 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
     case "displays":var ids = [CGDirectDisplayID](repeating:0,count:16);var count:UInt32 = 0;CGGetActiveDisplayList(16,&ids,&count);return ["displays":ids.prefix(Int(count)).map{id in let b = CGDisplayBounds(id);return ["id":Int(id),"width":Int(b.width),"height":Int(b.height)]}]
     case "resume":guard AXIsProcessTrusted(),CGPreflightScreenCaptureAccess() else {throw ControlError("Grant Screen Recording and Accessibility permissions before starting.")};guard installTap() else {throw ControlError("Emergency stop could not be registered. Input remains disabled.")};latch(false);return ["resumed":true]
     case "stop":latch(true);return ["stopped":true]
+    // A spoken "scroll down": gentle wheel movements until stopped (scrollStop is answered off the queue).
+    case "scrollContinuous":return try startContinuousScroll(command)
     case "capture":if #available(macOS 14.0,*){return try await capture()}else{throw ControlError("macOS 14 or newer is required.")}
     case "execute":
         guard var action = command["action"] as? [String:Any] else {throw ControlError("Missing action.")}
@@ -2319,6 +2396,9 @@ DispatchQueue.global().async {
         // ahead of the queue: a capture or paced typing in flight would
         // otherwise hold it past that deadline and leave main a stale report.
         if command["method"] as? String == "presence" {emit(["id":command["id"] ?? "","result":presence()]);continue}
+        // A spoken stop must not wait behind a capture or paced typing: the
+        // scroll ends here, off the queue, under its own locks.
+        if command["method"] as? String == "scrollStop" {endContinuousScroll(.stop);emit(["id":command["id"] ?? "","result":["stopped":true]]);continue}
         // The system index is read-only (Spotlight metadata, application names,
         // standard folders; caches under withState) and sends no input, so it is
         // answered off the queue too: memory recall at run start then overlaps the

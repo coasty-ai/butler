@@ -84,7 +84,12 @@ import {
   type PrivacyPane,
   type SetupStatus,
 } from "../src/ui/api";
-import { NativeController, budgetDelay } from "./controller";
+import {
+  NativeController,
+  budgetDelay,
+  type ScrollDirection,
+  type ScrollEndReport,
+} from "./controller";
 import { EarlyStart, type EarlyClaim } from "./early-start";
 import { preferredBrowser } from "../src/memory/intents";
 import type { AppMatch } from "../src/voice/early";
@@ -252,6 +257,26 @@ const taskQueue = new TaskQueue();
 let lastFinished: Run | undefined;
 /** When it ended: "undo that" said within a minute of it means its last step. */
 let lastFinishedAt: number | undefined;
+/**
+ * The continuous scroll a spoken "scroll down" started, at the pace the
+ * helper confirmed. `held`: the stop latch ended it because an activation
+ * began, and the words on their way may steer it ("faster", "scroll up") or
+ * end it; any other outcome of that turn finishes it.
+ */
+let scrolling:
+  | {
+      session: number;
+      direction: ScrollDirection;
+      speed: number;
+      held: boolean;
+    }
+  | undefined;
+/**
+ * The latch's report may arrive a moment before the activation that caused
+ * it: a scroll it ended waits this long for one before it counts as over.
+ */
+let scrollHold: ReturnType<typeof setTimeout> | undefined;
+const SCROLL_HOLD_MS = 600;
 let drainTimer: ReturnType<typeof setTimeout> | undefined;
 const QUEUE_DRAIN_MS = 2000;
 const QUEUE_DRAIN_ATTEMPTS = 15;
@@ -842,6 +867,7 @@ async function steerFromRemote(
     now: Date.now(),
     run: planRun(),
     lastRun: lastRunInput(),
+    scrolling: !!scrolling,
     approvesAnyByVoice: approvesAnyByVoice(settings),
     proposal: assistant.proposal(),
   });
@@ -1218,6 +1244,7 @@ function getNative() {
       debug,
       {
         inputIdle: (report) => void resumeAfterManualInput(report),
+        scrollEnded,
         onUnavailable: () => {
           if (shuttingDown) return;
           const run = snapshot.run;
@@ -1274,6 +1301,58 @@ async function resumeAfterManualInput(report: InputIdleReport) {
   } catch (error) {
     debug("AutoResumeFailed", errorDetails(error));
   }
+}
+/**
+ * The helper's report that a spoken scroll ended. The stop latch closes one
+ * whenever the user activates (the helper latches before it listens), so a
+ * scroll that ended that way waits for the words: "faster" or "scroll up"
+ * starts it again, anything else finishes it. Every other reason (the user's
+ * own input, the window in front changing, the time limit, a surface it must
+ * not scroll) is final.
+ */
+function scrollEnded(report: ScrollEndReport) {
+  debug("ScrollEnded", { reason: report.reason, ticks: report.ticks });
+  // A report for a scroll already replaced by the next one changes nothing.
+  if (!scrolling || report.session !== scrolling.session) return;
+  if (report.reason !== "stop") {
+    finishScroll(report);
+    return;
+  }
+  scrolling.held = true;
+  if (!listening) scrollHold = setTimeout(() => finishScroll(), SCROLL_HOLD_MS);
+}
+/** The scroll is over: its window closes and the pill shows what is left. */
+function finishScroll(report?: ScrollEndReport) {
+  clearTimeout(scrollHold);
+  scrollHold = undefined;
+  if (!scrolling) return;
+  scrolling = undefined;
+  void voice?.call("endFollowUp").catch(() => {});
+  if (listening) return;
+  if (report?.reason === "error")
+    showFailure(report.message ?? "Scrolling stopped.");
+  else if (runActive()) renderPill(snapshot);
+  else
+    setPill({
+      phase: "done",
+      label: "Stopped.",
+      transcript: "",
+      canApprove: false,
+      closing: false,
+    });
+}
+/**
+ * Ends the scroll on the user's word (the helper's report then only logs);
+ * one the latch already ended needs no request.
+ */
+async function endScroll() {
+  if (!scrolling) return;
+  const { held } = scrolling;
+  clearTimeout(scrollHold);
+  scrollHold = undefined;
+  scrolling = undefined;
+  void voice?.call("endFollowUp").catch(() => {});
+  if (!held) await getNative().scrollStop();
 }
 function nativePid() {
   try {
@@ -1824,6 +1903,8 @@ async function showCommand() {
 }
 /** Listening ended without a plan: a prompt held back while capturing may speak. */
 function listeningEnded() {
+  // A scroll the activation latched had no steering words to wait for.
+  if (scrolling?.held) finishScroll();
   conversation.onSnapshot(snapshot, {
     listening: false,
     handsFree: settings.handsFree,
@@ -1877,6 +1958,9 @@ async function receiveVoice(event: VoiceEvent) {
       // The helper already latched input and stopped playback.
       conversation.onVoiceEvent(event);
       lastPartial = "";
+      // A scroll the latch just ended waits for this turn's words instead.
+      clearTimeout(scrollHold);
+      scrollHold = undefined;
       // A reply is likely soon: have the natural voice and the agenda ready.
       warmKokoro();
       warmAgenda();
@@ -2105,6 +2189,7 @@ async function planCommand(
     now: Date.now(),
     run: planRun(),
     lastRun: lastRunInput(),
+    scrolling: !!scrolling,
     approvesAnyByVoice: approvesAnyByVoice(settings),
     proposal: assistant.proposal(),
     followUpWindow: settings.followUpWindow,
@@ -2302,6 +2387,18 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       canApprove: false,
       closing: false,
     });
+  // Whatever else the user says while a page scrolls ends the scroll: a run
+  // must not resume, and no task start, over a helper still scrolling.
+  if (scrolling && plan.kind !== "scroll") {
+    const only = plan.kind === "stop" && !runActive();
+    await endScroll();
+    // With nothing running, "stop" means the scroll and nothing else.
+    if (only) {
+      voiceHeld = false;
+      idleCard("Stopped.");
+      return;
+    }
+  }
   switch (plan.kind) {
     case "stop":
       voiceHeld = false;
@@ -2417,6 +2514,55 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
           taskSource: ctx.taskSource,
           undo: true,
         });
+      return;
+    }
+    case "scroll": {
+      // The helper scrolls the window in front until the user says stop: no
+      // model call, no step of any run. A run under way waits, paused, for
+      // "continue"; the scroll is the user's own hand on the page.
+      voiceHeld = false;
+      const { request } = plan;
+      if (request.act === "stop") {
+        await endScroll();
+        if (runActive()) render();
+        else idleCard("Stopped.");
+        return;
+      }
+      // The activation already paused a working run; one waiting on an
+      // approval is paused here. The user's own pause, so nothing narrates it.
+      const active = runActive();
+      if (active && !runHeld()) runner!.pause();
+      // "Keep scrolling" and "faster" keep the direction; "scroll up" flips it.
+      const direction =
+        (request.act === "start" && request.direction) ||
+        scrolling?.direction ||
+        "down";
+      const speed = (scrolling?.speed ?? 1) * (request.factor ?? 1);
+      if (!(snapshot.run?.synthetic && active)) {
+        hide();
+        await native?.request("restoreRemembered");
+      }
+      const pace = await getNative().scroll(direction, speed);
+      clearTimeout(scrollHold);
+      scrollHold = undefined;
+      scrolling = {
+        session: pace.session,
+        direction,
+        speed: pace.speed,
+        held: false,
+      };
+      debug("ScrollStarted", {
+        direction,
+        linesPerTick: pace.linesPerTick,
+        tickMs: pace.tickMs,
+      });
+      show({
+        phase: "working",
+        label: `Scrolling ${direction}… say stop.`,
+        transcript: settings.handsFree ? "" : "Hold ⌥ Space and say “stop”.",
+        canApprove: false,
+        closing: false,
+      });
       return;
     }
     case "acknowledge":
@@ -2893,6 +3039,9 @@ async function startRun(
   try {
     await early.idle();
     ensureIdle();
+    // A queued, texted or watch-woken task must not begin over a helper
+    // still scrolling for the user.
+    await endScroll();
     task = z.string().trim().min(1).max(8000).parse(task);
     const from = startFromSchema.parse(source);
     const origin: RunOrigin = from?.origin ?? "typed";

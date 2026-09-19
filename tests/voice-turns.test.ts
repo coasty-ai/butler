@@ -38,6 +38,7 @@ const intents = [
   "pause",
   "resume",
   "undo",
+  "scroll",
   "approve",
   "decline",
   "unclear",

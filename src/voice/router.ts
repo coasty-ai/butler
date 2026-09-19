@@ -74,7 +74,8 @@ export {
   type VoiceIntentKind,
 } from "./turns";
 /** A short listening window after a reply or turn, without the wake phrase. */
-export type FollowUpKind = "answer" | "approval" | "continuation";
+/** "scroll": open for the whole of a spoken scroll, for its steering words. */
+export type FollowUpKind = "answer" | "approval" | "continuation" | "scroll";
 export type PillPhase =
   | "idle"
   | "text"

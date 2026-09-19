@@ -22,7 +22,7 @@ import {
  */
 
 export type SpeakPriority = "ack" | "result" | "urgent";
-export type FollowUpKind = "answer" | "approval" | "continuation";
+export type FollowUpKind = "answer" | "approval" | "continuation" | "scroll";
 export type SpeechEngine = "system" | "kokoro" | "openai";
 /**
  * How the cloud voice is asked to read a line: the persona for replies and

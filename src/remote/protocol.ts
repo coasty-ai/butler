@@ -255,6 +255,8 @@ export function remoteReply(
       return "Continuing.";
     case "undo":
       return "Taking the last step back on the Mac.";
+    case "scroll":
+      return "Scrolling on the Mac.";
     case "approve":
     case "needClick":
       return o.reason === "restricted"

@@ -278,6 +278,27 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
                    "that's all wrong", "open Safari", "Butler", "Hey Butler", "bye the way", "thanks Butler open notes", ""] {
         check(!endsConversation(phrase), "keeps the conversation: \(phrase)")
     }
+    // The scroll window: as long as the controller's 90 s lease and a little over, and its own turn context.
+    check(followUpSeconds(.scroll) == 95 && clampFollowUpSeconds(95, kind: .scroll) == 95 && clampFollowUpSeconds(200, kind: .scroll) == 95 && clampFollowUpSeconds(60, kind: .continuation) == 15,
+          "a scroll window may stay open 95 s; every other kind still stops at 15")
+    check(turnContext(for: .scroll) == .scroll && TurnContext.scroll.rawValue == "scroll", "a scroll window's turns are read in the scroll context")
+    for text in ["stop", "Stop scrolling", "faster", "slower", "scroll up", "keep scrolling", "enough", "slow down", "speed up", "continue", "wait"] {
+        check(followUpOnset(text: text, speechRun: 0.3, kind: .scroll), "a scroll window hears \"\(text)\"")
+    }
+    for text in ["the weather is nice", "a", "a bit", "that's what I said", "open Safari", "go home", "yes"] {
+        check(!followUpOnset(text: text, speechRun: 1.0, kind: .scroll), "a scroll window waits for a steering word: \"\(text)\" does not open a turn")
+    }
+    for text in ["a bit faster", "that's enough", "go faster"] {
+        check(followUpOnset(text: text, speechRun: 1.0, kind: .scroll), "\"\(text)\" opens a turn once heard whole, though its first word alone never does")
+    }
+    for text in ["scroll up", "faster", "stop scrolling", "keep scrolling down", "slow down"] {
+        check(utteranceCompleteness(text, context: .scroll) == .control, "in the scroll window \"\(text)\" ends as fast as a stop")
+    }
+    check(utteranceCompleteness("scroll up", context: .command) == .incomplete && utteranceCompleteness("scroll down", context: .command) == .complete,
+          "outside the window \"scroll down\" keeps a command's timing and \"scroll up\" may go on")
+    check(utteranceCompleteness("open Safari", context: .scroll) == .complete, "other speech in the scroll window keeps its own completeness")
+    check(scrollWindowRotateSeconds == 40 && scrollWindowRotationDue(now: 140, rotatedAt: 100, lastSpeech: 138) && !scrollWindowRotationDue(now: 139.9, rotatedAt: 100, lastSpeech: 100)
+          && !scrollWindowRotationDue(now: 140, rotatedAt: 100, lastSpeech: 139.5), "a scroll window's request rotates after 40 s, never while speech is under way")
     check(followUpOnset(text: "and search", speechRun: 0.24, kind: .continuation), "a continuation starter with enough energy opens a turn")
     check(followUpOnset(text: "um, actually use Safari", speechRun: 0.4, kind: .continuation), "fillers before a starter are skipped")
     check(followUpOnset(text: "Stop", speechRun: 0.3, kind: .continuation), "a control phrase continues a turn")
@@ -418,8 +439,15 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     func phrases(_ key: String) -> [String] { fixture[key] as? [String] ?? [] }
     check(!phrases("stop").isEmpty && !phrases("pause").isEmpty && !phrases("incomplete").isEmpty, "voice phrase fixture has categories")
     for phrase in phrases("stop") + phrases("pause") { check(isControlPhrase(phrase), "fixture control phrase: \(phrase)") }
-    for category in ["resume", "approve", "decline", "unclear", "acknowledge", "command"] {
+    for category in ["resume", "approve", "decline", "unclear", "acknowledge", "undo", "scroll", "command"] {
         for phrase in phrases(category) { check(!isControlPhrase(phrase), "fixture \(category) is not a control phrase: \(phrase)") }
+    }
+    check(!phrases("scroll").isEmpty, "voice phrase fixture has scroll phrases")
+    for phrase in phrases("scroll") {
+        check(isScrollPhrase(phrase) && utteranceCompleteness(phrase, context: .scroll) == .control, "fixture scroll phrase: \(phrase)")
+    }
+    for category in ["stop", "pause", "resume", "approve", "decline", "unclear", "acknowledge", "undo", "command"] {
+        for phrase in phrases(category) { check(!isScrollPhrase(phrase), "fixture \(category) is not a scroll phrase: \(phrase)") }
     }
     for category in ["resume", "approve", "decline", "acknowledge"] {
         for phrase in phrases(category) { check(utteranceCompleteness(phrase, context: .answer) == .shortAnswer, "fixture \(category) is a short answer: \(phrase)") }

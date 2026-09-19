@@ -127,6 +127,7 @@ export type VoiceIntentKind =
   | "pause"
   | "resume"
   | "undo"
+  | "scroll"
   | "approve"
   | "decline"
   | "unclear"
@@ -166,6 +167,60 @@ const undoObject =
 const UNDO_UTTERANCE = new RegExp(
   `^(?:(?:no|oops|wait|actually) )?(?:(?:can|could) you )?(?:(?:undo|revert)(?: (?:${undoObject}))?|take (?:it|that|this) back|(?:press|hit) undo)(?: (?:now|for me))?$`,
 );
+// Continuous scrolling, whole-utterance like stop (native isScrollPhrase
+// mirrors these): "scroll down", "keep scrolling", "scroll up slowly" start
+// it; "faster", "slower", "speed up" change its pace; "stop scrolling", "stop
+// there", "that's enough" end it. "Scroll down a bit", "scroll to the bottom",
+// "page down" and "stop scrolling and click Save" name a step or a correction
+// of their own and stay commands for the model.
+const scrollLead = "(?:(?:can|could) you )?(?:(?:just|now) )?";
+const scrollObject =
+  "(?: (?:it|(?:the |this )?(?:page|screen|window|list|feed|document)))?";
+const scrollPace = "faster|quicker|slower|more slowly";
+const SCROLL_START = new RegExp(
+  `^${scrollLead}(?:(?:start|keep|keep on|continue) )?scroll(?:ing)?${scrollObject}(?: (down|up)(?:wards?)?)?${scrollObject}(?: (?:slowly|gently|for me|now|${scrollPace}))*$`,
+);
+const SCROLL_FASTER = new RegExp(
+  `^(?:(?:scroll|go) )?(?:(?:a (?:bit|little)|much|even) )?(?:faster|quicker)$|^speed (?:it )?up$|^(?:thats |its )?too slow$`,
+);
+const SCROLL_SLOWER = new RegExp(
+  `^(?:(?:scroll|go) )?(?:(?:a (?:bit|little)|much|even) )?(?:slower|more slowly)$|^slow (?:it )?down$|^(?:thats |its )?too fast$|^slowly$`,
+);
+const SCROLL_STOP = new RegExp(
+  `^(?:(?:no|and) )?(?:(?:stop|quit|cancel|end) (?:the )?scroll(?:ing)?|stop (?:right )?(?:there|here)|(?:thats )?enough(?: scrolling)?)(?: (?:now|for me))?$`,
+);
+/**
+ * What a spoken scroll asks for: a start (with the direction named, if any,
+ * and a pace word said with it), a change of pace, or its end. The direction
+ * is left open by "keep scrolling" and "scroll": whoever runs it keeps the
+ * current one or defaults to down.
+ */
+export type ScrollRequest =
+  | { act: "start"; direction?: "down" | "up"; factor?: 2 | 0.5 }
+  | { act: "speed"; factor: 2 | 0.5 }
+  | { act: "stop" };
+function scrollRequestOf(key: string): ScrollRequest | undefined {
+  if (SCROLL_STOP.test(key)) return { act: "stop" };
+  if (SCROLL_FASTER.test(key)) return { act: "speed", factor: 2 };
+  if (SCROLL_SLOWER.test(key)) return { act: "speed", factor: 0.5 };
+  const start = SCROLL_START.exec(key);
+  if (!start) return undefined;
+  const direction = start[1] as "down" | "up" | undefined;
+  const factor = /\b(?:faster|quicker)\b/.test(key)
+    ? 2
+    : /\b(?:slower|more slowly)\b/.test(key)
+      ? 0.5
+      : undefined;
+  return {
+    act: "start",
+    ...(direction && { direction }),
+    ...(factor && { factor }),
+  };
+}
+/** The scroll request in the words, or undefined when they are not one. */
+export function scrollRequest(text: string): ScrollRequest | undefined {
+  return scrollRequestOf(intentKey(text));
+}
 const APPROVE_TOKENS = new Set(["yes", "yeah", "yep", "sure"]);
 const DECLINE_TOKENS = new Set(["no", "nope", "dont"]);
 const RESUME = new Set([
@@ -250,6 +305,7 @@ export function voiceIntent(text: string): VoiceIntent {
     return result("stop");
   if (PAUSE_UTTERANCE.test(k)) return result("pause");
   if (UNDO_UTTERANCE.test(k)) return result("undo");
+  if (scrollRequestOf(k)) return result("scroll");
   if (
     key.length <= 5 &&
     key.some((w) => APPROVE_TOKENS.has(w)) &&
@@ -276,7 +332,9 @@ export function isControlPhrase(text: string): boolean {
 
 export type Completeness =
   "control" | "shortAnswer" | "complete" | "incomplete";
-export type TurnContext = "command" | "answer" | "approval" | "continuation";
+/** "scroll": the window open while a spoken scroll runs (native FollowUpKind.scroll). */
+export type TurnContext =
+  "command" | "answer" | "approval" | "continuation" | "scroll";
 
 export const CONTINUATION_WORDS: ReadonlySet<string> = new Set(
   // Existing native list.
@@ -333,6 +391,10 @@ export function utteranceCompleteness(
 ): Completeness {
   const intent = voiceIntent(text);
   if (intent.kind === "stop" || intent.kind === "pause") return "control";
+  // While a page scrolls, "scroll up" and "faster" must land as quickly as
+  // "stop" does; said anywhere else, "scroll down" may go on ("…to the
+  // comments") and keeps a command's timing.
+  if (context === "scroll" && intent.kind === "scroll") return "control";
   const key = keyParts(text).key;
   const last = key.at(-1);
   const bigram =
@@ -709,6 +771,10 @@ export type TurnPlan =
   // short run of its own right after one ended. `words` are the user's own,
   // for that run's record.
   | { kind: "undo"; words: string }
+  // "Scroll down": the helper scrolls the window in front until the user says
+  // stop, with no model call; "faster", "slower" and "scroll up" steer it and
+  // "stop scrolling" ends it. A run under way pauses and waits for "continue".
+  | { kind: "scroll"; request: ScrollRequest }
   | { kind: "approve" }
   | { kind: "decline" }
   | { kind: "confirmAgain" }
@@ -808,6 +874,12 @@ export interface VoiceTurnInput {
   /** When the last run ended, whatever its outcome: an undo said soon after refers to it. */
   lastRun?: { endedAt: number };
   /**
+   * A spoken scroll is under way (or was just latched by this activation and
+   * waits for its words): "faster", "slower", "scroll up" and "stop scrolling"
+   * steer it instead of the run.
+   */
+  scrolling?: boolean;
+  /**
    * A task the assistant offered ("Want me to …?") that a "yes" accepts while
    * no approval is pending. Its text is the assistant's, so the run it starts
    * is marked taskSource "proposal", never the user's own words.
@@ -900,6 +972,8 @@ export function followUpSeconds(
   kind: FollowUpKind,
   window: FollowUpWindow = "short",
 ): number {
+  // A scroll window lasts the controller's lease whatever the setting.
+  if (kind === "scroll") return 95;
   if (window === "short") return kind === "continuation" ? 3 : 8;
   if (kind === "approval") return 12;
   return window === "long" ? 20 : 45;
@@ -1168,6 +1242,27 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
     (run || (input.lastRun && now - input.lastRun.endedAt <= UNDO_WINDOW_MS))
   )
     return { kind: "undo", words: typed ? text.trim() : cleanTaskText(text) };
+  // 4c. "Scroll down" scrolls the window in front until the user says stop,
+  // with no model call; a run under way pauses and waits for "continue".
+  // While it scrolls, "faster", "slower", "scroll up" and "stop scrolling"
+  // steer it, however faintly heard (ending or slowing a scroll is always
+  // safe). Starting one sends input, so speech needs the user's-words floor;
+  // heard less clearly, or asked from a phone with nobody at the screen, it
+  // is the model's task as before. Steering words with nothing scrolling
+  // correct the run under way ("stop scrolling" to a model that scrolls), or
+  // have nothing to act on.
+  if (intent.kind === "scroll" && !remote) {
+    const request = scrollRequest(text)!;
+    if (input.scrolling) return { kind: "scroll", request };
+    if (request.act !== "start") {
+      if (!run) return { kind: "nothingRunning" };
+    } else if (typed || input.confidence >= APPROVAL_MIN_CONFIDENCE)
+      return { kind: "scroll", request };
+  }
+  // The scroll's own window admits only its steering words and the control
+  // words above; anything else that reached it (talk nearby) does nothing.
+  if (source === "followup" && input.window === "scroll")
+    return { kind: "acknowledge" };
   // 5. "How's it going?" is answered, with or without a run, and never
   // becomes a correction to the run.
   if (isStatusQuestion(text)) return { kind: "status" };

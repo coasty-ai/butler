@@ -267,6 +267,24 @@ func isControlPhrase(_ text: String) -> Bool {
     return key.range(of: pauseUtterance, options: .regularExpression) != nil
 }
 
+// Continuous scrolling, on the same key and patterns as scrollRequest in
+// src/voice/turns.ts: "scroll down", "keep scrolling", "faster", "slower", "stop
+// scrolling", "that's enough". The scroll window admits them (followUpOnset) and
+// ends their turns as quickly as a stop (utteranceCompleteness in that context).
+private let scrollLead = "(?:(?:can|could) you )?(?:(?:just|now) )?"
+private let scrollObject = "(?: (?:it|(?:the |this )?(?:page|screen|window|list|feed|document)))?"
+private let scrollUtterances = [
+    "^(?:(?:no|and) )?(?:(?:stop|quit|cancel|end) (?:the )?scroll(?:ing)?|stop (?:right )?(?:there|here)|(?:thats )?enough(?: scrolling)?)(?: (?:now|for me))?$",
+    "^(?:(?:scroll|go) )?(?:(?:a (?:bit|little)|much|even) )?(?:faster|quicker)$|^speed (?:it )?up$|^(?:thats |its )?too slow$",
+    "^(?:(?:scroll|go) )?(?:(?:a (?:bit|little)|much|even) )?(?:slower|more slowly)$|^slow (?:it )?down$|^(?:thats |its )?too fast$|^slowly$",
+    "^\(scrollLead)(?:(?:start|keep|keep on|continue) )?scroll(?:ing)?\(scrollObject)(?: (?:down|up)(?:wards?)?)?\(scrollObject)(?: (?:slowly|gently|for me|now|faster|quicker|slower|more slowly))*$",
+]
+func isScrollPhrase(_ text: String) -> Bool {
+    let key = normalizeVoiceKey(text)
+    guard !key.isEmpty else { return false }
+    return scrollUtterances.contains { key.range(of: $0, options: .regularExpression) != nil }
+}
+
 // The input-stop latch is only ever sent to our own controller helper, never to a
 // recycled pid that now belongs to an unrelated process.
 func validControllerPath(_ path: String) -> Bool {

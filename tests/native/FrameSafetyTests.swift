@@ -21,6 +21,7 @@ import CoreGraphics
         launchSafetyChecks(check)
         fileSafetyChecks(check)
         inputIdleChecks(check)
+        scrollPacingChecks(check)
         presenceChecks(check)
         electronAccessibilityChecks(check)
         namedTargetChecks(check)

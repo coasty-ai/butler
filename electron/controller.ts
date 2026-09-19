@@ -519,6 +519,85 @@ export function probeResult(value: unknown): ProbeResult | undefined {
     idleMs: Number.isFinite(idleMs) && idleMs >= 0 ? idleMs : 0,
   };
 }
+export type ScrollDirection = "down" | "up";
+/**
+ * The pace the helper confirmed for a continuous scroll: which session it
+ * is (its end report names the same one), the speed factor it clamped, and
+ * what one tick posts (native ScrollPacing).
+ */
+export interface ScrollPace {
+  session: number;
+  speed: number;
+  linesPerTick: number;
+  tickMs: number;
+}
+const paceValue = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+const sessionId = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+export function scrollPace(value: unknown): ScrollPace | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  const session = sessionId(v.session),
+    speed = paceValue(v.speed),
+    linesPerTick = paceValue(v.linesPerTick),
+    tickMs = paceValue(v.tickMs);
+  if (
+    session === undefined ||
+    speed === undefined ||
+    linesPerTick === undefined ||
+    tickMs === undefined
+  )
+    return undefined;
+  return { session, speed, linesPerTick, tickMs };
+}
+/**
+ * Why a continuous scroll ended: the stop latch (a spoken stop, a new
+ * activation, Escape), the user's own mouse or keyboard, the window in front
+ * changing, the helper's time limit, or a surface it must not scroll.
+ */
+export type ScrollEndReason =
+  "stop" | "input" | "appChanged" | "limit" | "error";
+const scrollEndReasons = new Set<ScrollEndReason>([
+  "stop",
+  "input",
+  "appChanged",
+  "limit",
+  "error",
+]);
+export interface ScrollEndReport {
+  session: number;
+  reason: ScrollEndReason;
+  ticks: number;
+  /** The helper's sentence for an error, bounded. */
+  message?: string;
+}
+export function scrollEndReport(value: unknown): ScrollEndReport | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  const session = sessionId(v.session);
+  if (
+    session === undefined ||
+    typeof v.reason !== "string" ||
+    !scrollEndReasons.has(v.reason as ScrollEndReason) ||
+    typeof v.ticks !== "number" ||
+    !Number.isInteger(v.ticks) ||
+    v.ticks < 0
+  )
+    return undefined;
+  return {
+    session,
+    reason: v.reason as ScrollEndReason,
+    ticks: v.ticks,
+    ...(typeof v.message === "string" && v.message
+      ? { message: v.message.slice(0, 300) }
+      : {}),
+  };
+}
 /** Per-request deadlines. Typing is paced natively, so it scales with length. */
 export function nativeTimeout(
   method: string,
@@ -559,6 +638,8 @@ export class NativeController implements Controller {
       timeout?: typeof nativeTimeout;
       /** Manual input went idle (after 1 s, then 3 s) with the kinds seen. */
       inputIdle?: (report: { idleMs: number; kinds: string[] }) => void;
+      /** A continuous scroll ended, with why and how many ticks it posted. */
+      scrollEnded?: (report: ScrollEndReport) => void;
     } = {},
   ) {
     this.timeout = hooks.timeout ?? nativeTimeout;
@@ -611,6 +692,11 @@ export class NativeController implements Controller {
             pointerDistance: obj.pointerDistance,
           });
           manualInput();
+          return true;
+        }
+        if (obj.event === "scroll_ended") {
+          const report = scrollEndReport(obj);
+          if (report) hooks.scrollEnded?.(report);
           return true;
         }
         return typeof obj.event === "string";
@@ -764,6 +850,21 @@ export class NativeController implements Controller {
   }
   async focusWatch(token: string) {
     await this.request("focusWatch", { token });
+  }
+  /**
+   * Scrolls the window in front gently until stopped (a spoken "scroll
+   * down"), or steers the scroll already under way; the helper reports the
+   * end as a scroll_ended event. Returns the pace it settled on.
+   */
+  async scroll(direction: ScrollDirection, speed: number): Promise<ScrollPace> {
+    const pace = scrollPace(
+      await this.request("scrollContinuous", { direction, speed }),
+    );
+    if (!pace) throw new Error("Native controller returned no scroll pace.");
+    return pace;
+  }
+  async scrollStop() {
+    await this.request("scrollStop");
   }
   close() {
     this.helper.close(() => this.stop());

@@ -8,7 +8,8 @@ import Foundation
 // MARK: - Endpoint timing
 
 enum Patience: String { case quick, normal, relaxed }
-enum TurnContext: String { case command, answer, approval, continuation }
+// scroll: the window open while a spoken scroll runs, for its steering words.
+enum TurnContext: String { case command, answer, approval, continuation, scroll }
 enum Completeness: String { case control, shortAnswer, complete, incomplete }
 
 struct EndpointTiming: Equatable { let stable, quiet, textOnly: Double }
@@ -185,6 +186,9 @@ private func isReplyKey(key: String, base: String) -> Bool {
 
 func utteranceCompleteness(_ text: String, context: TurnContext) -> Completeness {
     if isControlPhrase(text) { return .control }
+    // While a page scrolls, "scroll up" and "faster" must land as quickly as "stop"; said
+    // anywhere else, "scroll down" may go on ("…to the comments") and keeps a command's timing.
+    if context == .scroll && isScrollPhrase(text) { return .control }
     let base = voiceKeyBase(text)
     let key = normalizeVoiceKey(text)
     let words = key.split(separator: " ").map(String.init)
@@ -378,7 +382,9 @@ func strippedWordCount(raw: String, command: String) -> Int {
 
 // MARK: - Follow-up windows
 
-enum FollowUpKind: String { case answer, approval, continuation }
+// scroll: open for the whole of a spoken scroll (the controller's 90 s lease and a little
+// over), so "stop", "faster", "slower" and "scroll up" are heard without the wake phrase.
+enum FollowUpKind: String { case answer, approval, continuation, scroll }
 // The "Keep listening" setting (settings.followUpWindow), received through configure.
 enum FollowUpWindow: String { case short, long, conversation }
 
@@ -387,11 +393,18 @@ let continuationWindowDelay = 0.25
 let followUpGraceSeconds = 1.5
 private let followUpStarters: Set<String> = ["and", "also", "oh", "actually", "wait", "no", "not", "stop", "then", "plus",
     "but", "instead", "sorry", "use", "with"]
+// The first words of a scroll's steering phrases and control words. Nothing that opens
+// ordinary conversation ("a", "that's", "go"): a long window must not turn talk nearby into
+// turns, so "a bit faster" and "that's enough" count only once heard whole (isScrollPhrase).
+private let scrollStarters: Set<String> = ["stop", "scroll", "scrolling", "faster", "quicker", "slower", "slowly", "slow",
+    "speed", "keep", "continue", "quit", "cancel", "end", "enough", "wait", "hold", "hang", "pause", "resume"]
 
 // Continuation and answer windows grow with the setting (mirrors followUpSeconds in
-// src/voice/turns.ts); an approval window stays bounded, since a "yes" inside it acts.
+// src/voice/turns.ts); an approval window stays bounded, since a "yes" inside it acts; a
+// scroll window is as long as the controller's lease whatever the setting.
 func followUpSeconds(_ kind: FollowUpKind, window: FollowUpWindow = .short) -> Double {
     switch (window, kind) {
+    case (_, .scroll): return 95.0
     case (.short, .continuation): return 3.0
     case (.short, .answer), (.short, .approval): return 8.0
     case (.long, .continuation), (.long, .answer): return 20.0
@@ -409,9 +422,13 @@ func followUpCapSeconds(_ window: FollowUpWindow) -> Double {
     }
 }
 
+func maxFollowUpSeconds(_ kind: FollowUpKind, window: FollowUpWindow = .short) -> Double {
+    kind == .scroll ? followUpSeconds(.scroll) : followUpCapSeconds(window)
+}
+
 func clampFollowUpSeconds(_ seconds: Double?, kind: FollowUpKind, window: FollowUpWindow = .short) -> Double {
     guard let seconds = seconds, seconds.isFinite else { return followUpSeconds(kind, window: window) }
-    return min(max(seconds, 0.5), followUpCapSeconds(window))
+    return min(max(seconds, 0.5), maxFollowUpSeconds(kind, window: window))
 }
 
 func turnContext(for kind: FollowUpKind) -> TurnContext {
@@ -419,7 +436,16 @@ func turnContext(for kind: FollowUpKind) -> TurnContext {
     case .answer: return .answer
     case .approval: return .approval
     case .continuation: return .continuation
+    case .scroll: return .scroll
     }
+}
+
+// A scroll window outlives one recognition request (standby recycles at 45 s for the same
+// reason): after this long without speech under way, the window continues in a fresh request
+// that first hears the ring's last moments, so a word at the seam is not lost.
+let scrollWindowRotateSeconds = 40.0
+func scrollWindowRotationDue(now: TimeInterval, rotatedAt: TimeInterval, lastSpeech: TimeInterval) -> Bool {
+    now - rotatedAt + 1e-6 >= scrollWindowRotateSeconds && now - lastSpeech >= 1.0
 }
 
 // Speech that turns an open window into a turn. A continuation must sound like one
@@ -437,6 +463,7 @@ func followUpOnset(text: String, speechRun: Double, kind: FollowUpKind, window: 
     switch kind {
     case .continuation: return window == .conversation || followUpStarters.contains(first) || isControlPhrase(text)
     case .answer, .approval: return true
+    case .scroll: return scrollStarters.contains(first) || isControlPhrase(text) || isScrollPhrase(text)
     }
 }
 

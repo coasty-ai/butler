@@ -166,6 +166,11 @@ const fields = new Set([
   "earlyMs",
   "leadMs",
   "early",
+  // A spoken scroll: its direction, pace and how many ticks it posted.
+  "direction",
+  "linesPerTick",
+  "tickMs",
+  "ticks",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -180,6 +185,7 @@ const countFields = new Set([
   "sentences",
   "dropped",
   "launchedWindows",
+  "ticks",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
@@ -201,6 +207,8 @@ const numberFields = new Set([
   "jevP",
   "earlyMs",
   "leadMs",
+  "linesPerTick",
+  "tickMs",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
@@ -245,6 +253,7 @@ const codeFields = new Set([
   "jevAct",
   "jevCode",
   "settle",
+  "direction",
 ]);
 /**
  * The early step's own events keep only these keys, whatever else a caller
