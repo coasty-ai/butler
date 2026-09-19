@@ -1212,6 +1212,98 @@ describe("dialog and streamed-speech fields", () => {
       expect(JSON.parse(lines[2]).data).toEqual({});
     }));
 
+  it("keeps the prepared first step's codes, kind, timings and cost, never the words", () =>
+    fixture((log) => {
+      log.write("SpeculationStarted", { text: "search for cats" });
+      log.write("SpeculationSkipped", {
+        code: "needs_model",
+        key: "search for cats",
+      });
+      log.write("SpeculationDiscarded", {
+        code: "text_changed",
+        kind: "model",
+        usage: { inputTokens: 1200, outputTokens: 40, cost: 0.0012 },
+        task: "search for cats",
+        reason: "search for cats and dogs",
+      });
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toMatch(/cats|dogs/i);
+      const [started, skipped, discarded] = raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).data);
+      expect(started).toEqual({});
+      expect(skipped).toEqual({ code: "needs_model" });
+      expect(discarded).toEqual({
+        code: "text_changed",
+        kind: "model",
+        usage: { inputTokens: 1200, outputTokens: 40, cost: 0.0012 },
+      });
+      // Only a code or a number passes through each field.
+      log.write("SpeculationDiscarded", {
+        code: "the words changed to search for dogs",
+        kind: "the model",
+        savedMs: "a lot",
+      });
+      expect(
+        JSON.parse(readFileSync(log.file, "utf8").trim().split("\n")[3]).data,
+      ).toEqual({});
+      // The run's own journal entry for an adopted step carries its numbers.
+      const id = crypto.randomUUID();
+      const snapshot: Snapshot = {
+        run: {
+          id,
+          task: "search for cats",
+          createdAt: new Date().toISOString(),
+          status: "thinking",
+          privacy: "PRIVATE_LOCAL",
+          provider: "openai",
+          model: "fixture",
+          synthetic: false,
+          actions: 0,
+          frames: 1,
+          usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          summary: "",
+        },
+        frame: null,
+        message: "",
+        events: [
+          {
+            event_id: crypto.randomUUID(),
+            run_id: id,
+            sequence_number: 1,
+            monotonic_timestamp: 0,
+            wall_clock_timestamp: new Date().toISOString(),
+            schema_version: 1,
+            type: "SpeculationAdopted",
+            data: {
+              kind: "model",
+              leadMs: 1310,
+              savedMs: 1180,
+              frameAgeMs: 1420,
+              task: "search for cats",
+            },
+          },
+        ],
+      };
+      log.snapshot(snapshot);
+      const adopted = readFileSync(log.file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .find((line) => line.event === "SpeculationAdopted");
+      expect(adopted.data).toEqual({
+        runId: id,
+        sequence: 1,
+        kind: "model",
+        leadMs: 1310,
+        savedMs: 1180,
+        frameAgeMs: 1420,
+        synthetic: false,
+      });
+      expect(readFileSync(log.file, "utf8")).not.toMatch(/cats/i);
+    }));
+
   it("keeps tool events content-free: hashed ids, tiers, outcomes, counts and flags, never a question, an argument or a result", () =>
     fixture((log) => {
       const id = crypto.randomUUID();

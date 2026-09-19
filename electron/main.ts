@@ -50,8 +50,17 @@ import {
   TARGET_HANDOFF_MESSAGE,
   terminal,
   type ApprovalSource,
+  type PreparedStep,
   type RunPrelude,
 } from "../src/core/runner";
+import {
+  SPECULATE_LIMITS,
+  hypothesisKey,
+  sameWords,
+  speculationCandidate,
+  speculationPlan,
+  type SpeculationCode,
+} from "../src/assistant/speculate";
 import { shouldAutoResume, type InputIdleReport } from "../src/core/resume";
 import { TutorialController, TutorialProvider } from "../src/core/tutorial";
 import { createDesktopProvider } from "./provider";
@@ -236,6 +245,7 @@ import {
   voiceIntent,
   voiceCommandConfidence,
   describeAction,
+  type FollowUpKind,
   type PillState,
 } from "../src/voice/router";
 if (process.env.COARENA_TEST_DATA_DIR)
@@ -364,26 +374,224 @@ const early = new EarlyStart({
     return begins === 1 ? "prefix" : begins ? "ambiguous" : "none";
   },
   browser: () => preferredBrowser(installedApps, memory?.data()).name,
-  blocked: () =>
-    shuttingDown
-      ? "unavailable"
-      : !listening
-        ? "cancelled"
-        : runActive() || (runner && !runner.settled)
-          ? "blocked_run"
-          : snapshot.pending
-            ? "blocked_approval"
-            : taskQueue.list(Date.now()).length
-              ? "blocked_queue"
-              : startingRun
-                ? "blocked_starting"
-                : undefined,
+  blocked: () => earlyBlocked(),
   onOpened: (name) => {
     if (listening && pill.phase === "listening")
       setPill({ label: `Opened ${name.slice(0, 40)} · Listening…` });
   },
   trace: debug,
 });
+/**
+ * main's reasons nothing may happen for the words still being spoken: the
+ * early step and the prepared first step both ask before touching the helper.
+ */
+function earlyBlocked() {
+  return shuttingDown
+    ? "unavailable"
+    : !listening
+      ? "cancelled"
+      : runActive() || (runner && !runner.settled)
+        ? "blocked_run"
+        : snapshot.pending
+          ? "blocked_approval"
+          : taskQueue.list(Date.now()).length
+            ? "blocked_queue"
+            : startingRun
+              ? "blocked_starting"
+              : undefined;
+}
+/**
+ * The run's first step prepared while the user is still talking
+ * (docs/VOICE_PRODUCT.md "Thinking ahead"; design endpoint-decider.md §3.3:
+ * speculate on computation, never on the turn). A hands-free turn ends about
+ * 2 s after its words last changed; when a hypothesis has stood unchanged
+ * for SPECULATE_LIMITS.stableMs and the router would start a run on those
+ * very words without the dialog model (a fast start), a Runner is built as
+ * startRun builds one and prepares that run's first capture and first model
+ * request. Nothing executes, speaks or shows: the pill keeps listening. At
+ * the final, runPlan hands the step to startRun when the words match by
+ * intent key (case, punctuation and fillers aside) and the run adopts its
+ * frame and proposal, which then go through validation, policy and approval
+ * like any model step; otherwise the request in flight is aborted and the
+ * frame dropped, and the final proceeds as today. At most one a turn; never
+ * on an approval or answer window, a push-to-talk turn, control words, a
+ * fragment, a status question, words with a credential, a turn whose early
+ * step is opening an app, or while a run is active, held or queued.
+ * Diagnostics carry codes, timings and token counts, never the words.
+ */
+interface Speculation {
+  invocation: number;
+  /** hypothesisKey of the words prepared for; a partial with another key discards it. */
+  key: string;
+  runner: Runner;
+  step: PreparedStep;
+}
+let speculation: Speculation | undefined;
+let speculationTimer: ReturnType<typeof setTimeout> | undefined;
+/** The activation a step was prepared in: one preparation a turn, whatever came of it. */
+let speculatedInvocation = -1;
+/** How the current turn was activated, for the rules above. */
+let activationSource: "ptt" | "wake" | "followup" = "wake";
+let activationWindow: FollowUpKind | undefined;
+let activationAt: number | undefined;
+/**
+ * A partial transcript of the current activation: a prepared step whose words
+ * it no longer says is let go at once (its request aborted), and the stable
+ * timer starts over.
+ */
+function watchHypothesis(invocation: number, text: string) {
+  clearTimeout(speculationTimer);
+  speculationTimer = undefined;
+  const s = speculation;
+  if (s && s.invocation === invocation && hypothesisKey(text) !== s.key)
+    discardSpeculation("text_changed");
+  if (!text.trim()) return;
+  speculationTimer = setTimeout(() => {
+    speculationTimer = undefined;
+    onStableHypothesis(invocation);
+  }, SPECULATE_LIMITS.stableMs);
+}
+/** The words have stood still for the stable time. */
+function onStableHypothesis(invocation: number) {
+  if (!listening || invocation !== voiceInvocation) return;
+  const text = lastPartial;
+  if (!text.trim()) return;
+  // The dialog's early request for words the model decides, from the first
+  // stable moment rather than only at endpoint_near (design E2 a); its own
+  // guards keep control words, fragments and fast starts out.
+  assistant.preempt(text, "voice");
+  void speculate(invocation, text);
+}
+async function speculate(invocation: number, text: string) {
+  const skip = (code: SpeculationCode) => debug("SpeculationSkipped", { code });
+  if (!listening || invocation !== voiceInvocation) return;
+  if (speculatedInvocation === invocation) return;
+  speculatedInvocation = invocation;
+  // The same choice that lets the early step act on partials.
+  if (!settings.earlyStart) return skip("disabled");
+  // A push-to-talk turn ends on release, not on a pause in the words.
+  if (activationSource === "ptt") return skip("ptt");
+  // Words in an approval or answer window answer something; never a run.
+  if (activationWindow === "approval" || activationWindow === "answer")
+    return skip("window");
+  if (earlyBlocked()) return skip("blocked");
+  // A turn whose leading clause is opening an app keeps to that one step.
+  if (early.engaged(invocation)) return skip("early_step");
+  const candidate = speculationCandidate(text);
+  if ("code" in candidate) return skip(candidate.code);
+  // Words for a coding agent start no run (codingTurn).
+  if (codingRequest(text)) return skip("coding");
+  // The router's plan for these words as if they were the final, from the
+  // same facts planCommand would give it; only a fast start is certain
+  // enough to prepare for.
+  const now = Date.now();
+  const base = planVoiceTurn({
+    text,
+    confidence: 1,
+    segments: 1,
+    recovered: false,
+    gateMatches: false,
+    now,
+    run: planRun(),
+    lastRun: lastRunInput(),
+    scrolling: !!scrolling,
+    approvesAnyByVoice: approvesAnyByVoice(settings),
+    proposal: assistant.proposal(),
+    followUpWindow: settings.followUpWindow,
+    source: activationSource,
+    window: activationWindow,
+    turnMs:
+      activationSource === "followup" && activationAt !== undefined
+        ? now - activationAt
+        : undefined,
+    fragment: conversation.fragment,
+    lastTurn: conversation.lastTurn,
+  });
+  const plan = speculationPlan(base, text);
+  if ("code" in plan) return skip(plan.code);
+  // Tools first, as planCommand: an answer starts no run; a step is proposed
+  // on the frame without the model.
+  const fast = toolFastPath(text, getTools().clock());
+  if (fast?.kind === "answer") return skip("tool_answer");
+  const toolStep =
+    fast?.kind === "step" ? { tool: fast.tool, args: fast.args } : undefined;
+  const task = plan.task;
+  const dictation = dictationRequest(task);
+  const background = settings.workInBackground && presence.current() !== "away";
+  // The runner's native calls wait for the early step's sections to close,
+  // as a run's do (startRun).
+  await early.idle();
+  if (!listening || invocation !== voiceInvocation || earlyBlocked())
+    return skip("blocked");
+  let prepared: Runner;
+  try {
+    prepared = await buildRunner(false);
+  } catch {
+    return skip("native_error");
+  }
+  if (!listening || invocation !== voiceInvocation) return skip("cancelled");
+  const step = prepared.prepare(task, {
+    origin: "voice",
+    taskSource: "user_words",
+    ...(dictation ? { dictation } : {}),
+    ...(toolStep ? { toolStep } : {}),
+    ...(background ? { background: true } : {}),
+  });
+  const s: Speculation = {
+    invocation,
+    key: candidate.key,
+    runner: prepared,
+    step,
+  };
+  speculation = s;
+  debug("SpeculationStarted", {});
+  // A preparation that gave up on its own (a protected surface in front, a
+  // native error) is logged as let go, with its reason.
+  void step.ready.then(() => {
+    if (speculation === s && step.code)
+      discardSpeculation(step.code as SpeculationCode);
+  });
+}
+/** Lets the prepared step go, content-free: the reason, its kind and what its request cost. */
+function discardSpeculation(code: SpeculationCode) {
+  const s = speculation;
+  speculation = undefined;
+  if (!s) return;
+  s.step.discard(code);
+  debug("SpeculationDiscarded", {
+    code,
+    kind: s.step.kind,
+    ...(s.step.usage ? { usage: s.step.usage } : {}),
+  });
+}
+/**
+ * The final words' claim on the prepared step (runPlan, for a start with
+ * nothing running): the step is the run's when it was prepared in this very
+ * activation for the same words and no early step preceded it; otherwise it
+ * is let go here and the run starts as it always did.
+ */
+function claimSpeculation(
+  invocation: number | undefined,
+  task: string,
+  hasPrelude: boolean,
+): Speculation | undefined {
+  const s = speculation;
+  if (!s) return undefined;
+  if (invocation === undefined || s.invocation !== invocation) {
+    discardSpeculation("superseded");
+    return undefined;
+  }
+  if (hasPrelude) {
+    discardSpeculation("early_step");
+    return undefined;
+  }
+  if (!sameWords(task, s.step.task)) {
+    discardSpeculation("text_changed");
+    return undefined;
+  }
+  speculation = undefined;
+  return s;
+}
 /** The OpenAI key, used for the optional natural voice only. */
 function openaiKey() {
   return (
@@ -2233,6 +2441,7 @@ function cancelVoiceCapture() {
   voiceInvocation += 1;
   voiceGate = undefined;
   early.cancel("cancelled");
+  discardSpeculation("cancelled");
   void voice?.call("cancel").catch(() => {});
 }
 function interruptForVoice() {
@@ -2446,6 +2655,21 @@ async function receiveVoice(event: VoiceEvent) {
       // The helper already latched input and stopped playback.
       conversation.onVoiceEvent(event);
       lastPartial = "";
+      // A new turn: the last one's prepared step, if any, is let go.
+      clearTimeout(speculationTimer);
+      speculationTimer = undefined;
+      discardSpeculation("reactivated");
+      activationSource =
+        event.event === "shortcut_down"
+          ? "ptt"
+          : event.event === "wake_detected"
+            ? "wake"
+            : "followup";
+      activationWindow =
+        event.event === "followup_detected"
+          ? (event.kind as FollowUpKind | undefined)
+          : undefined;
+      activationAt = Date.now();
       // A scroll the latch just ended waits for this turn's words instead.
       clearTimeout(scrollHold);
       scrollHold = undefined;
@@ -2497,6 +2721,7 @@ async function receiveVoice(event: VoiceEvent) {
         lastPartial = event.text ?? "";
         setPill({ transcript: lastPartial, closing: false });
         early.partial(voiceInvocation, lastPartial);
+        watchHypothesis(voiceInvocation, lastPartial);
       }
     } else if (event.event === "audio_level") {
       pill.inputLevel = event.level ?? 0;
@@ -2515,6 +2740,7 @@ async function receiveVoice(event: VoiceEvent) {
       voiceInvocation += 1;
       // An app the early step already opened stays open.
       early.cancel("cancelled");
+      discardSpeculation("cancelled");
       // A decision still in flight for the cancelled words must not act.
       abortTurn();
       voiceHeld = false;
@@ -2550,6 +2776,7 @@ async function receiveVoice(event: VoiceEvent) {
       });
     } else if (event.event === "transcript_unconfirmed") {
       early.cancel("no_final");
+      discardSpeculation("no_final");
       if (!listening) return;
       listening = false;
       const text = transcriptRequest(event).text;
@@ -2577,6 +2804,7 @@ async function receiveVoice(event: VoiceEvent) {
       }
     } else if (event.event === "voice_error" || event.event === "wake_error") {
       early.cancel("no_final");
+      discardSpeculation("no_final");
       listening = false;
       if (event.code === "empty") {
         if (runHeld()) showFailure("Didn’t hear anything.");
@@ -2595,6 +2823,7 @@ async function receiveVoice(event: VoiceEvent) {
   } catch (error) {
     listening = false;
     early.cancel("native_error");
+    discardSpeculation("native_error");
     showFailure(
       error instanceof Error ? error.message : "Something went wrong.",
     );
@@ -2652,6 +2881,9 @@ async function command(
   } finally {
     // A no-op once the run took the step.
     claim?.release("plan_not_start");
+    // Likewise the prepared first step: only a start adopts it (runPlan).
+    if (speculation?.invocation === turnInvocation)
+      discardSpeculation("plan_not_start");
   }
 }
 async function planCommand(
@@ -3289,6 +3521,13 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
         debug("EarlyStartEnded", { phase: "cancelled", code: "reactivated" });
         return;
       }
+      // The first step prepared while the user spoke is this run's when the
+      // final says the same words (else let go here); a revise never takes it.
+      const adopt =
+        plan.kind === "start" && !active
+          ? claimSpeculation(ctx.invocation, plan.text, prelude !== undefined)
+          : undefined;
+      if (!adopt) discardSpeculation("plan_not_start");
       if (!(snapshot.run?.synthetic && active)) {
         hide();
         await native?.request("restoreRemembered");
@@ -3319,6 +3558,7 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
             ...(ctx.toolStep ? { toolStep: ctx.toolStep } : {}),
           },
           prelude,
+          adopt,
         );
       return;
     }
@@ -3597,11 +3837,74 @@ const startFromSchema = z
  * may start meanwhile. Only runPlan passes a prelude: the step a voice turn
  * took while the user was still speaking, kept by the final words.
  */
+/**
+ * A Runner as startRun gives every run: the native controller configured
+ * with the settings (the voice helper told its pid), the run provider, the
+ * vault, the recent tasks, memory and the tool layer. The prepared first step
+ * (speculate) builds its runner here too, so what it prepares is what the run
+ * would have made.
+ */
+async function buildRunner(tutorial: boolean): Promise<Runner> {
+  const controller = tutorial ? new TutorialController() : getNative();
+  if (!tutorial) {
+    await getNative().configure(settings);
+    // Voice is optional for a run; typed commands still work without it.
+    try {
+      await getVoice().call("configure", {
+        controllerPID: getNative().pid,
+      });
+    } catch (error) {
+      debug("VoiceSetupFailed", errorDetails(error));
+    }
+  }
+  const provider = tutorial
+    ? new TutorialProvider()
+    : createDesktopProvider(
+        settings,
+        providerKey(credentials, settings),
+        debug,
+      );
+  const recentTasks = vault
+    .list()
+    .filter((r) => !r.synthetic)
+    .slice(0, 3)
+    .map((r) => ({ task: r.task.slice(0, 500), status: r.status }));
+  return new Runner(
+    controller,
+    provider,
+    vault,
+    settings,
+    emit,
+    recentTasks,
+    // The synthetic tutorial never recalls or learns.
+    tutorial ? undefined : runMemory(),
+    // A monitor step hands its window to the detached watch and ends.
+    tutorial
+      ? {}
+      : {
+          // Connected tools do the steps they can; the screen is the fallback.
+          tools: getTools().access({ synthetic: false }),
+          onMonitor: (binding, spec, run) =>
+            watchers.start(binding, {
+              ...spec,
+              runId: run.id,
+              task: run.task,
+              taskSource: run.taskSource,
+              origin: run.origin,
+              appName: run.appName,
+              notes: handoffNotes(run.steps),
+              corrections: run.corrections,
+              ...(run.chain ? { chain: run.chain } : {}),
+            }),
+        },
+  );
+}
 async function startRun(
   task: string,
   tutorial: boolean,
   source?: unknown,
   prelude?: RunPrelude,
+  adopt?: Speculation,
 ) {
   startingRun = true;
   try {
@@ -3627,59 +3930,10 @@ async function startRun(
       throw new Error(
         "Remove credentials from the task. Enter passwords manually during takeover.",
       );
-    const controller = tutorial ? new TutorialController() : getNative();
-    if (!tutorial) {
-      await getNative().configure(settings);
-      // Voice is optional for a run; typed commands still work without it.
-      try {
-        await getVoice().call("configure", {
-          controllerPID: getNative().pid,
-        });
-      } catch (error) {
-        debug("VoiceSetupFailed", errorDetails(error));
-      }
-    }
-    const provider = tutorial
-      ? new TutorialProvider()
-      : createDesktopProvider(
-          settings,
-          providerKey(credentials, settings),
-          debug,
-        );
-    const recentTasks = vault
-      .list()
-      .filter((r) => !r.synthetic)
-      .slice(0, 3)
-      .map((r) => ({ task: r.task.slice(0, 500), status: r.status }));
-    runner = new Runner(
-      controller,
-      provider,
-      vault,
-      settings,
-      emit,
-      recentTasks,
-      // The synthetic tutorial never recalls or learns.
-      tutorial ? undefined : runMemory(),
-      // A monitor step hands its window to the detached watch and ends.
-      tutorial
-        ? {}
-        : {
-            // Connected tools do the steps they can; the screen is the fallback.
-            tools: getTools().access({ synthetic: false }),
-            onMonitor: (binding, spec, run) =>
-              watchers.start(binding, {
-                ...spec,
-                runId: run.id,
-                task: run.task,
-                taskSource: run.taskSource,
-                origin: run.origin,
-                appName: run.appName,
-                notes: handoffNotes(run.steps),
-                corrections: run.corrections,
-                ...(run.chain ? { chain: run.chain } : {}),
-              }),
-          },
-    );
+    // The runner that prepared this run's first step while the user spoke
+    // is the run's; the step rides in as `prepared` and the runner decides
+    // whether it still fits (SpeculationAdopted or SpeculationDiscarded).
+    runner = adopt && !tutorial ? adopt.runner : await buildRunner(tutorial);
     voiceHeld = false;
     window.hide();
     // Work in the bound window in the background while the user is at the
@@ -3702,6 +3956,7 @@ async function startRun(
         ...(from?.undo ? { undo: true } : {}),
         ...(from?.toolStep ? { toolStep: from.toolStep } : {}),
         ...(background ? { background: true } : {}),
+        ...(adopt && !tutorial ? { prepared: adopt.step } : {}),
       })
       .catch((error) => {
         debug("RunStartFailed", errorDetails(error));
@@ -3715,6 +3970,10 @@ async function startRun(
           canApprove: false,
         });
       });
+  } catch (error) {
+    // The run never started: the prepared step is let go, request and all.
+    adopt?.step.discard("not_started");
+    throw error;
   } finally {
     startingRun = false;
   }

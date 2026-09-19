@@ -252,6 +252,16 @@ export class EarlyStart {
       },
     };
   }
+  /**
+   * Whether this activation's leading clause settled on a step that is
+   * being taken or was taken: the turn then keeps to that one step, and the
+   * prepared first step (electron/main.ts speculate) stays out of its way.
+   */
+  engaged(invocation: number): boolean {
+    const turn = this.turn;
+    if (!turn || turn.invocation !== invocation || !turn.settle) return false;
+    return !!turn.executing || !turn.closed;
+  }
   /** Resolves when no early native section is open or queued. */
   async idle(): Promise<void> {
     for (let last: Promise<void> | undefined; last !== this.chain;) {

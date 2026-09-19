@@ -244,6 +244,10 @@ const fields = new Set([
   "longRunning",
   // A coding delegation's folder as a hashed code, never its path.
   "project",
+  // The first step prepared while the user spoke (Speculation* events): how
+  // much of it was done when the run started and how old its frame was.
+  "savedMs",
+  "frameAgeMs",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -316,6 +320,8 @@ const numberFields = new Set([
   "argsBytes",
   "resultBytes",
   "stderrBytes",
+  "savedMs",
+  "frameAgeMs",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
@@ -398,6 +404,27 @@ const earlyFields = new Set([
   "earlyMs",
   "leadMs",
   "durationMs",
+]);
+/**
+ * The first step prepared while the user spoke keeps only these keys: a
+ * code, its kind, timings and what its request cost. Never the words.
+ */
+const speculationEvents = new Set([
+  "SpeculationStarted",
+  "SpeculationSkipped",
+  "SpeculationAdopted",
+  "SpeculationDiscarded",
+]);
+const speculationFields = new Set([
+  "runId",
+  "sequence",
+  "synthetic",
+  "code",
+  "kind",
+  "leadMs",
+  "savedMs",
+  "frameAgeMs",
+  "usage",
 ]);
 const memoryEvents = new Set([
   "MemoryRecalled",
@@ -528,7 +555,13 @@ export class LocalDiagnostics {
               ? Object.fromEntries(
                   Object.entries(data).filter(([key]) => earlyFields.has(key)),
                 )
-              : data,
+              : speculationEvents.has(event) && !this.verbose
+                ? Object.fromEntries(
+                    Object.entries(data).filter(([key]) =>
+                      speculationFields.has(key),
+                    ),
+                  )
+                : data,
           ),
         }) + "\n";
       if (this.bytes + Buffer.byteLength(line) > this.maxBytes) {
@@ -609,6 +642,16 @@ export class LocalDiagnostics {
         via: e.data.via,
         // A step taken before the run existed, while the user was speaking.
         early: e.data.early,
+        // The first step prepared while the user spoke, adopted or let go by
+        // the run: its kind and timings (Speculation* events).
+        ...(speculationEvents.has(e.type)
+          ? {
+              kind: code(e.data.kind),
+              leadMs: count(e.data.leadMs),
+              savedMs: count(e.data.savedMs),
+              frameAgeMs: count(e.data.frameAgeMs),
+            }
+          : {}),
         // A tool question names the item it would add; the question stays in
         // the encrypted journal and only its kind is written here.
         reason: e.data.actionType === "tool_call" ? undefined : e.data.reason,

@@ -563,8 +563,8 @@ describe("the spoken scroll: main.ts wiring", () => {
     );
   });
 
-  it("tells the planner a scroll is under way, on the Mac and from the phone", () => {
-    expect(source.match(/scrolling: !!scrolling,/g)).toHaveLength(2);
+  it("tells the planner a scroll is under way, on the Mac, from the phone and for the hypothesis a first step is prepared for", () => {
+    expect(source.match(/scrolling: !!scrolling,/g)).toHaveLength(3);
   });
 
   it("logs the helper's end report and waits for the words after a latch", () => {

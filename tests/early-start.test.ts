@@ -1173,14 +1173,22 @@ describe("early start: main.ts wiring", () => {
     expect(take).toBeGreaterThan(0);
     expect(restore).toBeGreaterThan(take);
     expect(start).toContain('ctx.early?.release("run_active_at_final");');
-    expect(start).toMatch(/await startRun\([\s\S]*?prelude,\s*\);/);
+    // The prelude and the prepared first step (tests/assistant-speculate.test.ts)
+    // ride in together, on the voice start alone.
+    expect(start).toMatch(/await startRun\([\s\S]*?prelude,\s*adopt,\s*\);/);
   });
   it("starts a Runner only once the early sections are closed", () => {
     const startRun = fn("startRun");
     const idle = startRun.indexOf("await early.idle();");
     expect(startRun.indexOf("startingRun = true;")).toBeLessThan(idle);
     expect(idle).toBeGreaterThan(0);
-    expect(startRun.indexOf("new Runner(")).toBeGreaterThan(idle);
+    // The Runner is built (buildRunner) only after the sections closed, or
+    // was the one that prepared this run's first step while the user spoke.
+    expect(startRun.indexOf("await buildRunner(tutorial)")).toBeGreaterThan(
+      idle,
+    );
+    expect(fn("buildRunner")).toContain("new Runner(");
+    expect(source.match(/new Runner\(/g)).toHaveLength(1);
     expect(startRun).toMatch(/finally \{\s*startingRun = false;/);
     // The IPC, queue, remote and watch entry never passes a prelude.
     const dispatch = source.slice(
@@ -1194,10 +1202,13 @@ describe("early start: main.ts wiring", () => {
     );
   });
   it("gates the step on everything that runs, waits or starts", () => {
-    const gate = source.slice(
+    const deps = source.slice(
       source.indexOf("const early = new EarlyStart("),
       source.indexOf("trace: debug,"),
     );
+    // One gate, shared with the prepared first step (speculate).
+    expect(deps).toContain("blocked: () => earlyBlocked(),");
+    const gate = fn("earlyBlocked") + deps;
     for (const code of [
       '"unavailable"',
       '"cancelled"',

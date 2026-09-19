@@ -16,6 +16,7 @@ import type {
   ScreenContext,
   Observation,
   Surface,
+  ScreenshotUse,
   MemoryContext,
   TargetSpec,
   TaskSource,
@@ -869,6 +870,122 @@ export interface RunPrelude {
   /** The final words were exactly this step ("Open Slack."). */
   completes: boolean;
 }
+/**
+ * A run's first step prepared before its words were final (docs/VOICE_PRODUCT.md
+ * "Thinking ahead"; design .data/design/endpoint-decider.md §3.3). Runner.prepare
+ * takes the first capture and, when that step needs one, sends the model's
+ * first request for the hypothesis, exactly as start() would, and holds every
+ * effect: nothing is journaled, shown, spoken or executed until
+ * start(task, { prepared }) adopts the step for the final words, and a step
+ * the final does not keep is let go with discard(). A prepared proposal is
+ * never more than a proposal: the adopting run validates it, fetches its
+ * surface and takes it through policy and approval like any model step.
+ */
+export interface PreparedStep {
+  /** The words the step was prepared for (the router's task text). */
+  readonly task: string;
+  /**
+   * "model" once the model's first request is in flight; "frame" while, or
+   * when, the frame alone is prepared (a recalled plan, a dictation into a
+   * focused field, a listed tool step or an undo proposes without the model).
+   */
+  readonly kind: "model" | "frame";
+  /**
+   * Resolves once the preparation has done what it can (never rejects): the
+   * frame taken and the request sent, or the step given up.
+   */
+  readonly ready: Promise<void>;
+  /** Why the preparation gave up, if it did; undefined while it stands. */
+  readonly code: string | undefined;
+  /** What the request cost, once it answered; undefined before, and for a frame. */
+  readonly usage: Usage | undefined;
+  /** Lets the step go: the request in flight is aborted, the frame dropped, nothing journaled. */
+  discard(code: string): void;
+}
+/** A prepared frame older than this when the run starts is dropped (native refuses at 30 s). */
+export const PREPARED_FRAME_MAX_AGE_MS = 20_000;
+/** What one prepare() holds until start() or discard() decides. */
+interface Preparation {
+  handle?: PreparedStep;
+  task: string;
+  run: Run;
+  abort: AbortController;
+  startedAt: number;
+  /** The journal, in order, written only once a run adopts the step. */
+  deferred: (
+    { type: string; data: Record<string, unknown> } | { frame: Frame }
+  )[];
+  kind: "model" | "frame";
+  frame?: Frame;
+  capturedAt?: number;
+  screenshot?: ScreenshotUse;
+  proposal?: Promise<ProviderResult>;
+  /** When the proposal arrived, if it has. */
+  proposedAt?: number;
+  usage?: Usage;
+  /** Set once the preparation ended without a step to adopt. */
+  code?: string;
+  ready: Promise<void>;
+}
+/** The words of two task texts, compared: case, punctuation and spacing aside. */
+const taskWords = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+/** What Runner.start is told about the run it begins. */
+export interface StartOptions {
+  origin?: RunOrigin;
+  taskSource?: TaskSource;
+  /** Set on a run a detached watch woke (electron/watch.ts). */
+  watch?: WatchContext;
+  /** The chain that watch belongs to, for a watch this run starts. */
+  chain?: WatchChain;
+  /** A step taken while the user was still speaking (electron/early-start.ts). */
+  prelude?: RunPrelude;
+  /**
+   * The words only asked to type this text ("type see you at six",
+   * src/voice/dictation.ts): with a known text field focused on the first
+   * frame it is typed there without a model call and the run is over.
+   */
+  dictation?: string;
+  /**
+   * The task is the user's spoken "undo" right after a run ended: the one
+   * step is Edit > Undo, without a model call, and the run ends with what
+   * happened.
+   */
+  undo?: boolean;
+  /**
+   * One tool step decided before the run (src/assistant/tool-answers.ts toolFastPath): proposed on
+   * the first frame as { type: "tool_call", tool, args, finish: true } with no model call; validation,
+   * policy and approval apply as to any step, and a tool missing from the frozen list leaves it to the model.
+   */
+  toolStep?: { tool: string; args: Record<string, unknown> };
+  /**
+   * Work in a bound window in the background (design §2.2): the window
+   * the words name ("in Slack"), the one the prelude opened, or the one
+   * focused when the wake word ended. Asked for when the setting is on
+   * and the user is at the Mac; the run takes the screen as before when
+   * no window binds.
+   */
+  background?: boolean;
+  /**
+   * The first step this runner prepared for these words while the user was
+   * still speaking (Runner.prepare): its frame is the run's first frame and
+   * its proposal, if it made one, the first model result, so the first
+   * action comes that much sooner. Dropped, with the run capturing afresh,
+   * when the step gave up, the words differ, a prelude preceded it, the
+   * frame is older than PREPARED_FRAME_MAX_AGE_MS or another application
+   * is in front. Never with a tutorial.
+   */
+  prepared?: PreparedStep;
+}
+/** What Runner.prepare is told; a prelude, a watch or another preparation never joins one. */
+export type PrepareOptions = Omit<
+  StartOptions,
+  "watch" | "chain" | "prelude" | "prepared"
+>;
 /** Executed actions kept for a monitor handoff. */
 const HANDOFF_STEPS = 12;
 /** Hooks outside the run loop (increment 5A: the detached watch). */
@@ -1012,6 +1129,13 @@ export class Runner {
   private foregroundSteps: number[] = [];
   /** Routes memory says applications drop in the background, by bundle id. */
   private backgroundKnowledge?: Record<string, BackgroundKnowledge>;
+  /** The first step prepared before the words were final, until start() or discard() decides. */
+  private preparation?: Preparation;
+  /**
+   * While a preparation's placeholder run stands in the snapshot: journal
+   * entries go here instead of the recorder, and nothing is saved or shown.
+   */
+  private deferring?: Preparation["deferred"];
   /** Routes memory pruned that the pill has named this run. */
   private routesNoted = new Set<BackgroundRoute>();
   /** The bound window is in front for a step: the user's input anywhere pauses the run, as it always did. */
@@ -1137,10 +1261,18 @@ export class Runner {
     return true;
   }
   private publish() {
+    // A preparation's run was never begun: nobody is shown it.
+    if (this.deferring) return;
     this.emit(structuredClone(this.snapshot));
   }
   private event(type: string, data: Record<string, unknown> = {}) {
-    const e = this.recorder.append(this.snapshot.run!.id, type, data);
+    if (this.deferring) {
+      this.deferring.push({ type, data });
+      return;
+    }
+    // A preparation's placeholder run was dropped under a late continuation.
+    if (!this.snapshot.run) return;
+    const e = this.recorder.append(this.snapshot.run.id, type, data);
     this.snapshot.events.push(e);
     this.publish();
   }
@@ -1150,6 +1282,7 @@ export class Runner {
     if (terminal(this.snapshot.run.status)) return;
     this.snapshot.run.status = status;
     if (message) this.snapshot.message = message;
+    if (this.deferring) return;
     this.recorder.save(this.snapshot.run);
     this.publish();
   }
@@ -2397,6 +2530,11 @@ export class Runner {
       if (!this.active()) return;
       try {
         const target = await this.controller.bindTarget!(spec);
+        // Stopped, or a preparation let go, while the helper bound: release it.
+        if (!this.active()) {
+          void this.controller.unbindTarget?.(target.token).catch(() => {});
+          return;
+        }
         this.target = target;
         run.target = { ...target, background: true };
         this.event("TargetBound", {
@@ -2404,7 +2542,7 @@ export class Runner {
           windowId: target.windowId,
           by,
         });
-        this.recorder.save(run);
+        if (!this.deferring) this.recorder.save(run);
         return;
       } catch (error) {
         if (!(error instanceof TargetError) || by !== "words") continue;
@@ -2887,50 +3025,9 @@ export class Runner {
         "I seem to be stuck repeating the same steps. Say continue with a hint.",
       );
   }
-  async start(
-    task: string,
-    options: {
-      origin?: RunOrigin;
-      taskSource?: TaskSource;
-      /** Set on a run a detached watch woke (electron/watch.ts). */
-      watch?: WatchContext;
-      /** The chain that watch belongs to, for a watch this run starts. */
-      chain?: WatchChain;
-      /** A step taken while the user was still speaking (electron/early-start.ts). */
-      prelude?: RunPrelude;
-      /**
-       * The words only asked to type this text ("type see you at six",
-       * src/voice/dictation.ts): with a known text field focused on the first
-       * frame it is typed there without a model call and the run is over.
-       */
-      dictation?: string;
-      /**
-       * The task is the user's spoken "undo" right after a run ended: the one
-       * step is Edit > Undo, without a model call, and the run ends with what
-       * happened.
-       */
-      undo?: boolean;
-      /**
-       * One tool step decided before the run (src/assistant/tool-answers.ts toolFastPath): proposed on
-       * the first frame as { type: "tool_call", tool, args, finish: true } with no model call; validation,
-       * policy and approval apply as to any step, and a tool missing from the frozen list leaves it to the model.
-       */
-      toolStep?: { tool: string; args: Record<string, unknown> };
-      /**
-       * Work in a bound window in the background (design §2.2): the window
-       * the words name ("in Slack"), the one the prelude opened, or the one
-       * focused when the wake word ended. Asked for when the setting is on
-       * and the user is at the Mac; the run takes the screen as before when
-       * no window binds.
-       */
-      background?: boolean;
-    } = {},
-  ) {
-    if (this.active()) throw new Error("A run is already active.");
-    this.settled = false;
-    this.watchContext = options.watch;
-    this.watchChain = options.chain;
-    this.undoRequest = options.undo ? { own: true } : undefined;
+  /** The state every run (and every preparation) begins from. */
+  private resetState(undo?: boolean) {
+    this.undoRequest = undo ? { own: true } : undefined;
     this.executed = [];
     this.started = Date.now();
     this.heldMs = 0;
@@ -2942,7 +3039,9 @@ export class Runner {
     this.resetCounters();
     this.resetLoop();
     this.resetMemory();
-    const run: Run = {
+  }
+  private newRun(task: string, options: StartOptions): Run {
+    return {
       id: crypto.randomUUID(),
       task,
       createdAt: new Date().toISOString(),
@@ -2964,6 +3063,270 @@ export class Runner {
       origin: options.origin ?? "typed",
       ...(options.taskSource ? { taskSource: options.taskSource } : {}),
     };
+  }
+  /**
+   * Whether this run recalls and learns. A wake-up run does neither: its
+   * objective is a follow-up that quotes the watched request, and a plan
+   * recalled for that request would replay its steps with nobody at the Mac.
+   * An undo run's one step is fixed, so there is nothing to recall or learn
+   * for it either.
+   */
+  private usesMemory(run: Run, options: StartOptions): boolean {
+    return (
+      !!this.memory &&
+      !run.synthetic &&
+      run.origin !== "watch" &&
+      !options.undo &&
+      this.controller.kind !== "tutorial" &&
+      this.settings.memory !== false
+    );
+  }
+  /**
+   * The tool layer for a run: a dictation types, an undo takes back and a
+   * practice run drives a simulated screen, so none of them lists tools.
+   */
+  private toolsFor(run: Run, options: StartOptions): ToolAccess | undefined {
+    return run.synthetic || options.dictation !== undefined || options.undo
+      ? undefined
+      : this.extras.tools;
+  }
+  /**
+   * Prepares a run's first step before its words are final (PreparedStep):
+   * the memory recall, the tool list, the first capture and, when that step
+   * needs one, the model's first request for `task`, made exactly as start()
+   * would make them and held with every effect. No run is begun, saved or
+   * shown, nothing is journaled, no input is sent, and the helper's stop
+   * latch is lifted for the capture alone and closed again right after it.
+   * The step is adopted by start(task, { prepared }) or let go by discard();
+   * a preparation nobody adopts by the next start() is let go then. One at a
+   * time, and never while a run is active.
+   */
+  prepare(task: string, options: PrepareOptions = {}): PreparedStep {
+    if (this.active() || this.preparation)
+      throw new Error("A run is already active.");
+    this.watchContext = undefined;
+    this.watchChain = undefined;
+    this.resetState(options.undo);
+    const run = this.newRun(task, options);
+    this.snapshot = {
+      run,
+      frame: null,
+      events: [],
+      message: "Starting a private run.",
+    };
+    let finish!: () => void;
+    const p: Preparation = {
+      task,
+      run,
+      abort: this.abort,
+      startedAt: Date.now(),
+      deferred: [],
+      kind: "frame",
+      ready: new Promise<void>((resolve) => (finish = resolve)),
+    };
+    p.handle = {
+      task,
+      get kind() {
+        return p.kind;
+      },
+      get ready() {
+        return p.ready;
+      },
+      get code() {
+        return p.code;
+      },
+      get usage() {
+        return p.usage;
+      },
+      discard: (code) => this.endPreparation(p, code),
+    };
+    this.preparation = p;
+    this.deferring = p.deferred;
+    void this.prepareStep(p, options)
+      .catch(() => this.failPreparation(p, "native_error"))
+      .finally(finish);
+    return p.handle;
+  }
+  private async prepareStep(p: Preparation, options: PrepareOptions) {
+    const { run, task } = p;
+    const live = () => this.preparation === p && !p.code && this.active();
+    this.memoryRun = this.usesMemory(run, options);
+    const tools = this.toolsFor(run, options);
+    if (
+      options.background &&
+      this.settings.workInBackground &&
+      !run.synthetic &&
+      this.controller.bindTarget
+    )
+      await this.bindTarget(run);
+    if (!live()) return;
+    const recalled = this.memoryRun ? this.recall(task) : undefined;
+    const listed = tools ? this.listTools(tools, task) : undefined;
+    // The read-only capture, as capture() takes it: never while a protected,
+    // terminal or secure input surface is in front, which simply ends the
+    // preparation (the run, if one starts, will say so itself).
+    let frame: Frame;
+    try {
+      const surface = await this.surfaceNow();
+      if (!live()) return;
+      this.lastSurface = surface;
+      if (surfacePolicy(surface, this.settings).kind !== "ALLOW")
+        return this.failPreparation(p, "surface");
+      const target = this.boundTarget();
+      await this.controller.resume();
+      try {
+        frame = target
+          ? await this.controller.captureTarget!(target.token)
+          : await this.controller.capture();
+      } finally {
+        this.controller.stop();
+      }
+    } catch {
+      return this.failPreparation(
+        p,
+        p.abort.signal.aborted ? (p.code ?? "discarded") : "native_error",
+      );
+    }
+    if (!live()) return;
+    if (frame.context) frame.context.recentTasks = this.recentTasks;
+    p.frame = frame;
+    p.capturedAt = Date.now();
+    await recalled;
+    await listed;
+    if (!live()) return;
+    p.deferred.push({ frame });
+    // Whether the first step asks the model at all: a recalled plan, a
+    // dictation into a focused field, a tool step on the frozen list and an
+    // undo all propose on the frame themselves (the loop's own order).
+    const proposesItself =
+      !!this.plan ||
+      !!options.undo ||
+      (!!options.toolStep &&
+        !!this.toolList?.tools.some((t) => t.id === options.toolStep!.tool)) ||
+      (options.dictation !== undefined && focusedTextField(this.lastSurface!));
+    if (proposesItself) return;
+    const screenshot = screenshotUse({
+      mode: this.settings.visionMode,
+      frame,
+      surface: this.lastSurface,
+      shown: this.shown,
+      sinceImage: this.sinceImage,
+      executed: this.lastStep,
+    });
+    this.event("ModelRequestStarted", {
+      screenshot: screenshot.send,
+      screenshotReason: screenshot.reason,
+      early: true,
+    });
+    p.screenshot = screenshot;
+    p.kind = "model";
+    p.proposal = this.provider.next(
+      {
+        screenshot,
+        task,
+        frame: this.modelFrame(frame),
+        history: modelHistory(this.history),
+        ...(this.memoryContext ? { memory: this.memoryContext } : {}),
+        ...(tools &&
+        this.toolList &&
+        (this.toolList.tools.length || this.toolList.unavailable.length)
+          ? { tools: this.toolObservation(tools, this.toolList) }
+          : {}),
+      },
+      p.abort.signal,
+    );
+    p.proposal.then(
+      (result) => {
+        p.proposedAt = Date.now();
+        p.usage = result.usage;
+      },
+      () => {},
+    );
+  }
+  /**
+   * The preparation gave up on its own (a protected surface in front, a
+   * native error): its request, if any, is aborted and its code set. It stays
+   * this runner's until start() or discard() logs why and clears it.
+   */
+  private failPreparation(p: Preparation, code: string) {
+    if (p.code) return;
+    p.code = code;
+    p.abort.abort();
+    p.proposal?.catch(() => {});
+  }
+  /**
+   * Ends a preparation without a run: the request in flight is aborted, a
+   * bound window released, the placeholder run dropped. Idempotent.
+   */
+  private endPreparation(p: Preparation, code: string) {
+    this.failPreparation(p, code);
+    if (this.preparation !== p) return;
+    this.preparation = undefined;
+    this.deferring = undefined;
+    const token = p.run.target?.token;
+    if (token) void this.controller.unbindTarget?.(token).catch(() => {});
+    this.target = undefined;
+    this.snapshot = {
+      run: null,
+      frame: null,
+      events: [],
+      message: "Ready when you are.",
+    };
+  }
+  /**
+   * Whether the prepared step still fits the run about to start: it stood,
+   * these are its words, no early step preceded it, its frame is young
+   * enough, and the application in front is the one it saw. Awaits a capture
+   * still in flight (the run would take one anyway).
+   */
+  private async adoptable(
+    p: Preparation,
+    task: string,
+    options: StartOptions,
+  ): Promise<string | undefined> {
+    await p.ready;
+    if (p.code) return p.code;
+    if (!p.frame || p.capturedAt === undefined) return "native_error";
+    if (options.prelude) return "early_step";
+    if (taskWords(task) !== taskWords(p.task)) return "text_changed";
+    if (Date.now() - p.capturedAt > PREPARED_FRAME_MAX_AGE_MS) return "stale";
+    try {
+      const surface = await this.surfaceNow();
+      if (p.code) return p.code;
+      if (surface.appId !== p.frame.appId) return "screen_changed";
+      this.lastSurface = surface;
+    } catch {
+      return "native_error";
+    }
+    return undefined;
+  }
+  async start(task: string, options: StartOptions = {}) {
+    const preparation = this.preparation;
+    if (this.active() && this.snapshot.run !== preparation?.run)
+      throw new Error("A run is already active.");
+    // A prepared step this start was not given is let go: a start for other
+    // words, or a preparation nobody discarded.
+    const offered =
+      preparation && options.prepared && options.prepared === preparation.handle
+        ? preparation
+        : undefined;
+    if (preparation && !offered) this.endPreparation(preparation, "superseded");
+    this.settled = false;
+    const rejected = offered
+      ? await this.adoptable(offered, task, options)
+      : undefined;
+    if (offered && rejected) this.endPreparation(offered, rejected);
+    const adopting = offered && !rejected ? offered : undefined;
+    this.preparation = undefined;
+    this.deferring = undefined;
+    this.watchContext = options.watch;
+    this.watchChain = options.chain;
+    if (!adopting) this.resetState(options.undo);
+    // The run's clock starts now, not when its step was prepared.
+    else this.started = Date.now();
+    const run = this.newRun(task, options);
+    // The window the preparation bound, if any, is this run's.
+    if (adopting?.run.target) run.target = adopting.run.target;
     this.snapshot = {
       run,
       frame: null,
@@ -2978,17 +3341,46 @@ export class Runner {
     });
     this.schedule();
     const history = this.history;
-    // A wake-up run neither recalls nor learns: its objective is a follow-up
-    // that quotes the watched request, and a plan recalled for that request
-    // would replay its steps with nobody at the Mac. An undo run's one step
-    // is fixed, so there is nothing to recall or learn for it either.
-    this.memoryRun =
-      !!this.memory &&
-      !run.synthetic &&
-      run.origin !== "watch" &&
-      !options.undo &&
-      this.controller.kind !== "tutorial" &&
-      this.settings.memory !== false;
+    this.memoryRun = this.usesMemory(run, options);
+    if (offered && rejected)
+      this.event("SpeculationDiscarded", {
+        code: rejected,
+        kind: offered.kind,
+        ...(offered.usage ? { usage: offered.usage } : {}),
+      });
+    // The prepared step's journal, in its order, then the step itself for
+    // the loop's first iteration: its frame stands in for the capture and
+    // its proposal, if it has one, for the model call.
+    let adopted:
+      | {
+          frame: Frame;
+          proposal?: Promise<ProviderResult>;
+          screenshot?: ScreenshotUse;
+        }
+      | undefined;
+    if (adopting) {
+      let frame: Frame | null = null;
+      for (const entry of adopting.deferred) {
+        if ("frame" in entry) frame = this.recordFrame(entry.frame);
+        else this.event(entry.type, entry.data);
+      }
+      const now = Date.now();
+      const done =
+        adopting.proposedAt ??
+        (adopting.kind === "frame" ? adopting.capturedAt : undefined);
+      this.event("SpeculationAdopted", {
+        kind: adopting.kind,
+        leadMs: now - adopting.startedAt,
+        savedMs: Math.max(0, Math.min(done ?? now, now) - adopting.startedAt),
+        frameAgeMs: now - adopting.capturedAt!,
+      });
+      if (frame)
+        adopted = {
+          frame,
+          proposal: adopting.proposal,
+          screenshot: adopting.screenshot,
+        };
+    }
     // Abandon a proposed plan step that did not execute.
     const planFail = (reason: string) => {
       if (this.planPending !== undefined) this.abandonPlan(reason);
@@ -3005,32 +3397,38 @@ export class Runner {
     // A tool step decided before the run, proposed on the first frame or
     // left to the model for good.
     let toolStep = options.toolStep;
-    // The tool layer: a dictation types, an undo takes back and a practice
-    // run drives a simulated screen, so none of them lists tools.
-    const tools =
-      run.synthetic || dictation !== undefined || options.undo
-        ? undefined
-        : this.extras.tools;
+    const tools = this.toolsFor(run, options);
     try {
-      if (options.prelude && !run.synthetic) this.applyPrelude(options.prelude);
-      if (
-        options.background &&
-        this.settings.workInBackground &&
-        !run.synthetic &&
-        this.controller.bindTarget
-      )
-        await this.bindTarget(run, options.prelude);
+      // An adopted step bound its window, recalled and listed already.
+      if (!adopting) {
+        if (options.prelude && !run.synthetic)
+          this.applyPrelude(options.prelude);
+        if (
+          options.background &&
+          this.settings.workInBackground &&
+          !run.synthetic &&
+          this.controller.bindTarget
+        )
+          await this.bindTarget(run, options.prelude);
+      }
       // Recall and the tool list overlap the first capture (the helper
       // answers the index off its queue); both are awaited before anything
       // decides on the frame, so a recalled plan, memory and the frozen tool
       // list are in place exactly as if they had come first.
-      let recalled = this.memoryRun ? this.recall(task) : undefined;
-      let listed = tools ? this.listTools(tools, task) : undefined;
+      let recalled =
+        this.memoryRun && !adopting ? this.recall(task) : undefined;
+      let listed = tools && !adopting ? this.listTools(tools, task) : undefined;
       if (!this.active()) return;
       await this.controller.resume();
       while (this.active()) {
         await this.ready();
         const epoch = this.epoch;
+        // The step prepared before the run stands in on the first pass
+        // alone; a pause meanwhile aborted its request, and the pass then
+        // captures afresh like any other.
+        const first =
+          adopted && !this.abort.signal.aborted ? adopted : undefined;
+        adopted = undefined;
         // A pause, correction, takeover or stop during the re-aim drops it.
         if (reaim && (reaim.epoch !== epoch || reaim.handsOn !== this.handsOn))
           reaim = undefined;
@@ -3041,13 +3439,15 @@ export class Runner {
             : "Seeing the selected surface.",
         );
         let frame: Frame | null;
-        try {
-          frame = reaim ? reaim.frame : await this.capture();
-        } catch (error) {
-          if (this.held || epoch !== this.epoch) continue;
-          if (await this.recoverNative(error, epoch)) continue;
-          throw error;
-        }
+        if (first) frame = first.frame;
+        else
+          try {
+            frame = reaim ? reaim.frame : await this.capture();
+          } catch (error) {
+            if (this.held || epoch !== this.epoch) continue;
+            if (await this.recoverNative(error, epoch)) continue;
+            throw error;
+          }
         if (!frame || epoch !== this.epoch) continue;
         if (recalled || listed) {
           await recalled;
@@ -3059,7 +3459,8 @@ export class Runner {
         // Advice only, before the model sees this step's history. A re-aim is
         // the same step: it neither ends nor starts a no-progress streak.
         if (!reaim) this.trackProgress(frame);
-        this.abort = new AbortController();
+        // The prepared request rides on the controller it was sent with.
+        if (!first) this.abort = new AbortController();
         if (this.planPending !== undefined) this.abandonPlan("interrupted");
         if (this.plan && this.planIndex >= this.plan.steps.length) {
           const plan = this.plan;
@@ -3210,48 +3611,60 @@ export class Runner {
         }
         if (!result) {
           this.status("thinking", "Choosing the next action.");
-          const screenshot = screenshotUse({
-            mode: this.settings.visionMode,
-            frame,
-            surface: this.lastSurface,
-            shown: this.shown,
-            sinceImage: this.sinceImage,
-            executed: this.lastStep,
-          });
+          // The request prepared before the run is this step's, with the
+          // screenshot use it was sent with; its ModelRequestStarted was
+          // journaled with the rest of the prepared step.
+          const prepared = first?.proposal ? first : undefined;
+          const screenshot =
+            prepared?.screenshot ??
+            screenshotUse({
+              mode: this.settings.visionMode,
+              frame,
+              surface: this.lastSurface,
+              shown: this.shown,
+              sinceImage: this.sinceImage,
+              executed: this.lastStep,
+            });
           this.lastStep = undefined;
-          this.event("ModelRequestStarted", {
-            screenshot: screenshot.send,
-            screenshotReason: screenshot.reason,
-          });
+          if (!prepared)
+            this.event("ModelRequestStarted", {
+              screenshot: screenshot.send,
+              screenshotReason: screenshot.reason,
+            });
           try {
-            result = await this.provider.next(
-              {
-                screenshot,
-                // run.task, not the start() argument: amendTask may replace it.
-                task:
-                  run.task +
-                  (run.corrections?.length
-                    ? "\nUser corrections, in order. Preserve earlier constraints unless explicitly superseded:\n" +
-                      run.corrections.map((c) => c.text).join("\n")
-                    : ""),
-                // Why a watch woke this run, and the background note of a
-                // bound one, stay visible on every step, since the model only
-                // sees one screenshot and the last few history entries whole.
-                // Only the model's copy carries them: the panel text never
-                // enters a Snapshot, a trace or a saved frame.
-                frame: this.modelFrame(frame),
-                history: modelHistory(history),
-                ...(this.memoryContext ? { memory: this.memoryContext } : {}),
-                // The frozen tool list and the clock it runs on, on the
-                // model's copy only, like context.watch above.
-                ...(tools &&
-                this.toolList &&
-                (this.toolList.tools.length || this.toolList.unavailable.length)
-                  ? { tools: this.toolObservation(tools, this.toolList) }
-                  : {}),
-              },
-              this.abort.signal,
-            );
+            result = prepared
+              ? await prepared.proposal!
+              : await this.provider.next(
+                  {
+                    screenshot,
+                    // run.task, not the start() argument: amendTask may replace it.
+                    task:
+                      run.task +
+                      (run.corrections?.length
+                        ? "\nUser corrections, in order. Preserve earlier constraints unless explicitly superseded:\n" +
+                          run.corrections.map((c) => c.text).join("\n")
+                        : ""),
+                    // Why a watch woke this run, and the background note of a
+                    // bound one, stay visible on every step, since the model only
+                    // sees one screenshot and the last few history entries whole.
+                    // Only the model's copy carries them: the panel text never
+                    // enters a Snapshot, a trace or a saved frame.
+                    frame: this.modelFrame(frame),
+                    history: modelHistory(history),
+                    ...(this.memoryContext
+                      ? { memory: this.memoryContext }
+                      : {}),
+                    // The frozen tool list and the clock it runs on, on the
+                    // model's copy only, like context.watch above.
+                    ...(tools &&
+                    this.toolList &&
+                    (this.toolList.tools.length ||
+                      this.toolList.unavailable.length)
+                      ? { tools: this.toolObservation(tools, this.toolList) }
+                      : {}),
+                  },
+                  this.abort.signal,
+                );
           } catch (e) {
             if (this.held || epoch !== this.epoch) continue;
             if (!(e instanceof ProviderTransientError)) throw e;

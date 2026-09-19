@@ -574,8 +574,8 @@ describe("the spoken undo: main.ts wiring", () => {
     );
   });
 
-  it("tells the planner when the last run ended, on the Mac and from the phone", () => {
-    expect(source.match(/lastRun: lastRunInput\(\),/g)).toHaveLength(2);
+  it("tells the planner when the last run ended, on the Mac, from the phone and for the hypothesis a first step is prepared for", () => {
+    expect(source.match(/lastRun: lastRunInput\(\),/g)).toHaveLength(3);
     expect(source).toContain("lastFinishedAt = Date.now();");
     expect(source).toContain("...(from?.undo ? { undo: true } : {}),");
   });
