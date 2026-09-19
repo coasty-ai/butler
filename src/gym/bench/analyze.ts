@@ -497,7 +497,7 @@ const NOTE: Record<string, string> = {
     "The runner handed off after repeated targets it could not identify.",
   HANDOFF_POLICY: "The policy handed control to the user.",
   HANDOFF_SURFACE:
-    "The frontmost surface could not be driven (secure input, a protected app), so the run handed off.",
+    "The frontmost surface could not be driven (secure input, a protected app or site, a browser page whose address could not be read), so the run handed off.",
   MANUAL_INPUT_UNSEEN:
     "The tap saw real input around the attempt that no event reported; the attempt is the environment's.",
   UNCLASSIFIED: "The run ended without a recognizable reason in the log.",

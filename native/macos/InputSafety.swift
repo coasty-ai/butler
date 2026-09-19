@@ -3,6 +3,43 @@ import CoreGraphics
 
 let browserAppIDs = ["com.apple.Safari", "com.google.Chrome", "com.google.Chrome.canary", "org.mozilla.firefox", "com.brave.Browser", "com.microsoft.edgemac"]
 
+// MARK: The page a browser window shows
+
+/**
+ What a window's or web area's URL attribute says about the page: the host it
+ names (lowercased and alone, as `domain` carries it: never the path, the
+ query or the port), a page whose URL names no host (about:blank, a file,
+ which is known local), or nothing readable at all (no attribute, or a value
+ that is not a URL). WebKit publishes AXURL as a URL, some views as a string.
+ */
+enum PageURL: Equatable { case host(String), local, unreadable }
+func pageURL(_ value: Any?) -> PageURL {
+    guard let value else { return .unreadable }
+    // Foundation parses almost any string as a relative URL; only an absolute
+    // one (a scheme) is a page address that was read.
+    guard let url = (value as? URL) ?? (value as? String).flatMap({ URL(string: $0) }), url.scheme != nil else { return .unreadable }
+    guard let host = url.host?.lowercased(), !host.isEmpty else { return .local }
+    return .host(host)
+}
+/// The host a URL attribute names, else nil.
+func pageHost(_ value: Any?) -> String? {
+    if case .host(let host) = pageURL(value) { return host }
+    return nil
+}
+/**
+ Whether a browser window shows a page the policy cannot tell from a protected
+ one: no host was read from the window or any web area, and a web area was
+ there that published no readable URL. A page whose URL names no host is known
+ local, and a window with no web area shows no page, so neither is unknown.
+ Never outside a browser: Mail's message view is WebKit and publishes no URL.
+ The policy hands off on an unknown page while any domain is protected, as
+ watchDomainRefused does for a watch, so an unreadable address is never taken
+ for a safe one (Safari, 2026-09-19: no host on any page, and nothing said so).
+ */
+func pageHostUnknown(browser: Bool, host: String?, unreadableWebArea: Bool) -> Bool {
+    return browser && host == nil && unreadableWebArea
+}
+
 func independentNavigationShortcut(_ action:[String:Any], appId:String) -> Bool {
     // open_app launches a natively verified bundle; it does not target pixels.
     if action["type"] as? String == "open_app" {return true}

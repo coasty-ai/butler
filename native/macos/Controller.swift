@@ -378,38 +378,76 @@ func hitMatches(_ expected: AXUIElement, at point: CGPoint, application: AXUIEle
     }
     return false
 }
-// Breadth-first, bounded search for the first web area's URL host.
-func webAreaHost(_ window: AXUIElement) -> String? {
+// Breadth-first, bounded walk over the web areas under a window, in tree
+// order, stopping at the first the visitor accepts. Toolbars can hold many
+// nodes and never contain the page, so they are not entered. Safari holds its
+// page under an AXTabGroup (the tab container), so tab groups are entered like
+// any group: until 2026-09-19 they were skipped with toolbars and Safari, which
+// sets no window-level URL, reported no host on any page (cycle
+// 20260919-0816-a839d34, every Safari attempt). A web area is never descended
+// into, so the page's own tree is not walked here.
+func visitWebAreas(_ window: AXUIElement, _ accept: (AXUIElement) -> Bool) {
     let started = ProcessInfo.processInfo.systemUptime
     var queue: [(AXUIElement, Int)] = [(window, 0)], index = 0
     while index < queue.count && index < 1500 && ProcessInfo.processInfo.systemUptime - started < 0.12 {
         let (node, depth) = queue[index]; index += 1
         let role = attribute(node, kAXRoleAttribute) as? String ?? ""
-        if role == "AXWebArea" {
-            let url = attribute(node, "AXURL")
-            let host = (url as? URL)?.host ?? (url as? String).flatMap { URL(string: $0)?.host }
-            // A hostless area (Web Inspector, blank tab) is not the page; keep looking.
-            if let host = host, !host.isEmpty { return host.lowercased() }
-            continue
-        }
-        // Tab bars and toolbars can hold many nodes and never contain the page.
-        guard depth < 12, !["AXToolbar", "AXTabGroup"].contains(role) else { continue }
+        if role == "AXWebArea" { if accept(node) { return }; continue }
+        guard depth < 12, role != "AXToolbar" else { continue }
         for child in (attribute(node, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(40) { queue.append((child, depth + 1)) }
     }
-    return nil
 }
-// Host of the web page that contains an element (nearest AXWebArea ancestor).
-func enclosingWebHost(_ element: AXUIElement) -> String? {
+// The first web area's URL host under a window. A hostless area (Web
+// Inspector, a blank tab) is not the page; the walk keeps looking.
+func webAreaHost(_ window: AXUIElement) -> String? {
+    var host: String? = nil
+    visitWebAreas(window) { area in host = pageHost(attribute(area, "AXURL")); return host != nil }
+    return host
+}
+// The web page that contains an element (nearest AXWebArea ancestor), if any.
+func enclosingWebArea(_ element: AXUIElement) -> AXUIElement? {
     var node: AXUIElement? = element
     for _ in 0..<40 {
         guard let current = node else { return nil }
-        if attribute(current, kAXRoleAttribute) as? String == "AXWebArea" {
-            let url = attribute(current, "AXURL")
-            return ((url as? URL)?.host ?? (url as? String).flatMap { URL(string: $0)?.host })?.lowercased()
-        }
+        if attribute(current, kAXRoleAttribute) as? String == "AXWebArea" { return current }
         node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
     }
     return nil
+}
+// Host of the web page that contains an element.
+func enclosingWebHost(_ element: AXUIElement) -> String? {
+    enclosingWebArea(element).flatMap { pageHost(attribute($0, "AXURL")) }
+}
+/**
+ The page a window shows, for the policy's protected-website rule: its host,
+ and whether a web area is there that published no readable URL at all. Read
+ from the window's own document URL first (Chromium publishes one), else from
+ the web area holding focus when it sits in this window (Safari's active tab,
+ reached whatever the walk's budget finds; a web area of another window, an
+ extension's popover, says nothing about this one), else the first web area
+ under the window with a host. The address field is never a source: its value
+ is what was typed there, by the user or by the run itself, not the page that
+ is committed. `unreadable` is what pageHostUnknown turns into the surface's
+ hostUnknown for a browser; a page whose URL names no host (about:blank, a
+ file) is known local and a window with no web area shows no page.
+ */
+func pageIdentity(window: AXUIElement, focused: AXUIElement?) -> (host: String?, unreadable: Bool) {
+    if let host = pageHost(attribute(window, "AXDocument")) ?? pageHost(attribute(window, "AXURL")) { return (host, false) }
+    var unreadable = false
+    func read(_ area: AXUIElement) -> String? {
+        switch pageURL(attribute(area, "AXURL")) {
+        case .host(let host): return host
+        case .unreadable: unreadable = true; return nil
+        case .local: return nil
+        }
+    }
+    if let focused, let area = enclosingWebArea(focused) {
+        let areaWindow = attribute(area, kAXWindowAttribute)
+        if areaWindow == nil || CFEqual(areaWindow, window), let host = read(area) { return (host, false) }
+    }
+    var host: String? = nil
+    visitWebAreas(window) { area in host = read(area); return host != nil }
+    return (host, host == nil && unreadable)
 }
 // True when a sheet, dialog or alert is part of the focused window or contains
 // the element: keypad-style shortcuts must not confirm those.
@@ -867,22 +905,24 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
         terminalFocus = terminalFocusEvidence(roleDescription: attribute(el, kAXRoleDescriptionAttribute) as? String ?? "", label: fieldLabel(el),
                                               domClasses: attribute(el, "AXDOMClassList") as? [String] ?? [], ide: ideFamily(app.bundleIdentifier ?? "") != nil)
     }
-    var domain: String? = nil
-    if let window = attribute(element, kAXFocusedWindowAttribute) {
-        if let url = attribute(window as! AXUIElement, "AXDocument") as? String { domain = URL(string:url)?.host?.lowercased() }
-        if domain == nil, let url = attribute(window as! AXUIElement, "AXURL") as? URL { domain = url.host?.lowercased() }
-        // Safari sets no window-level document URL; only its AXWebArea carries
-        // the page URL. Without this, protected domains are never detected there.
-        if domain == nil { domain = webAreaHost(window as! AXUIElement) }
+    let focusedWindow = attribute(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
+    let focusedElement = attribute(element, kAXFocusedUIElementAttribute).map { $0 as! AXUIElement }
+    // The page's host (Chromium's window document, else the web area: Safari
+    // sets no window-level URL), and, in a browser, whether a page is there
+    // whose address could not be read, which the policy never takes for safe.
+    var domain: String? = nil, hostUnknown = false
+    if let window = focusedWindow {
+        let page = pageIdentity(window: window, focused: focusedElement)
+        domain = page.host
+        hostUnknown = pageHostUnknown(browser: browserAppIDs.contains(app.bundleIdentifier ?? ""), host: page.host, unreadableWebArea: page.unreadable)
     }
     var result: [String: Any] = ["appId":app.bundleIdentifier ?? "unknown", "pid":Int(app.processIdentifier), "secureInput":secure, "unknown":!AXIsProcessTrusted()]
     // Display name, so an approval question can name the application the user
     // sees ("Spotify") rather than its bundle identifier.
     if let name = app.localizedName, !name.isEmpty { result["appName"] = utf16Prefix(name, 100) }
-    let focusedWindow = attribute(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
-    let focusedElement = attribute(element, kAXFocusedUIElementAttribute).map { $0 as! AXUIElement }
     if modalContext(window: focusedWindow, element: focusedElement) { result["modal"] = true }
     if let domain = domain { result["domain"] = domain }
+    if hostUnknown { result["hostUnknown"] = true }
     if let role = focusedRole {result["focusedRole"] = role}
     if let subrole = focusedSubrole, !subrole.isEmpty {result["focusedSubrole"] = subrole}
     if !focusedLabel.isEmpty {result["focusedLabel"] = focusedLabel}
@@ -1216,6 +1256,9 @@ func guardSurface() throws {
     if s["secureInput"] as? Bool == true { throw ControlError("Sensitive input is active; capture and input are blocked.", code: "SURFACE_BLOCKED") }
     if protectedApps.contains(where:{ app.contains($0.lowercased()) }) { throw ControlError("Protected application. Switch applications and resume.", code: "SURFACE_BLOCKED") }
     if let domain = s["domain"] as? String, protectedDomains.contains(where:{ domain == $0 || domain.hasSuffix("."+$0) }) { throw ControlError("Protected domain. Take over manually.", code: "SURFACE_BLOCKED") }
+    // A browser page whose address could not be read is not taken for safe:
+    // refused while any domain is protected, as a watch is (watchDomainRefused).
+    if s["hostUnknown"] as? Bool == true, watchDomainRefused(domain: nil, browser: true, protectedDomains: protectedDomains) { throw ControlError("The page's address could not be read. Take over manually.", code: "SURFACE_BLOCKED") }
 }
 // The text a window shows, shallow and bounded, never a secure field's.
 func windowVisibleText(_ window: AXUIElement) -> String {
@@ -2111,11 +2154,9 @@ func watchWindowElement(pid: pid_t, windowID: CGWindowID) -> AXUIElement? {
     return (attribute(element, kAXWindowsAttribute) as? [AXUIElement] ?? []).first { elementRect($0).map { nearly($0, rect) } == true }
 }
 // The domain of the page a window shows, read the way surface() reads it for
-// the focused window (its document, its URL, else its web area).
+// the focused window (its document, its URL, else its web areas).
 func windowDomain(_ window: AXUIElement) -> String? {
-    if let url = attribute(window, "AXDocument") as? String, let host = URL(string: url)?.host?.lowercased(), !host.isEmpty { return host }
-    if let url = attribute(window, "AXURL") as? URL, let host = url.host?.lowercased(), !host.isEmpty { return host }
-    return webAreaHost(window)
+    pageIdentity(window: window, focused: nil).host
 }
 // Whether the window shows a page a watch may not read; nil for a window that
 // cannot be found, which is the caller's window_gone.
@@ -2632,19 +2673,13 @@ func insideWebArea(_ element: AXUIElement) -> Bool {
     }
     return false
 }
-// Whether a window holds web content at all (Mail's message view is WebKit),
-// which stops drawing while fully covered. Bounded like webAreaHost.
+// Whether a window holds web content at all (Mail's message view is WebKit,
+// Safari's page sits under its tab group), which stops drawing while fully
+// covered. The same bounded walk as webAreaHost.
 func containsWebArea(_ window: AXUIElement) -> Bool {
-    let started = ProcessInfo.processInfo.systemUptime
-    var queue: [(AXUIElement, Int)] = [(window, 0)], index = 0
-    while index < queue.count && index < 1500 && ProcessInfo.processInfo.systemUptime - started < 0.12 {
-        let (node, depth) = queue[index]; index += 1
-        let role = attribute(node, kAXRoleAttribute) as? String ?? ""
-        if role == "AXWebArea" { return true }
-        guard depth < 12, !["AXToolbar", "AXTabGroup"].contains(role) else { continue }
-        for child in (attribute(node, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(40) { queue.append((child, depth + 1)) }
-    }
-    return false
+    var found = false
+    visitWebAreas(window) { _ in found = true; return true }
+    return found
 }
 // The element of the bound application under a screen point, climbing to the
 // nearest ancestor that offers the action (or the element itself with none
@@ -3079,7 +3114,9 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
                                  domClasses: attribute(focused, "AXDOMClassList") as? [String] ?? [], ide: ideFamily(bound.appId) != nil) { result["terminalFocus"] = true }
     }
     result["secureInput"] = secure
-    if let domain = windowDomain(bound.window) { result["domain"] = domain }
+    let page = pageIdentity(window: bound.window, focused: state.focused)
+    if let domain = page.host { result["domain"] = domain }
+    if pageHostUnknown(browser: browserAppIDs.contains(bound.appId), host: page.host, unreadableWebArea: page.unreadable) { result["hostUnknown"] = true }
     if modalContext(window: bound.window, element: state.focused) { result["modal"] = true }
     if let a = action, let x = a["x"] as? Double, let y = a["y"] as? Double, let point = windowPoint(x: x, y: y, in: frame) {
         for (key, value) in hitTargetFacts(element, at: point) { result[key] = value }

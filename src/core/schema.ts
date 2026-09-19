@@ -898,7 +898,16 @@ export interface Surface {
   appId: string;
   pid: number;
   secureInput: boolean;
+  /** Host of the page the frontmost (or bound) window shows, lowercased and alone. */
   domain?: string;
+  /**
+   * A browser shows a web page whose address the helper could not read (a
+   * web area publishing no URL), so `domain` says nothing about it. Not set
+   * for a page whose URL names no host (about:blank, a file) nor when no page
+   * is showing (a start page, a blank window). The policy hands off on it
+   * while any website is protected, as it would on the protected site itself.
+   */
+  hostUnknown?: boolean;
   unknown: boolean;
   targetRole?: string;
   targetSubrole?: string;

@@ -174,6 +174,20 @@ func ideSafetyChecks(_ check: (Bool, String) -> Void) {
     check(watchDomainRefused(domain: "", browser: true, protectedDomains: banks), "an empty host is no better")
     check(!watchDomainRefused(domain: nil, browser: true, protectedDomains: []), "unless nothing is protected")
     check(!watchDomainRefused(domain: nil, browser: false, protectedDomains: banks), "a window that is not a browser's has no page to tell")
+    // The page a browser window shows (InputSafety.swift): its host alone, a
+    // page known local, or one whose address cannot be read.
+    check(pageURL(URL(string: "https://Secure.Chase.com/login?next=/accounts")!) == .host("secure.chase.com"), "a URL names its host, lowercased, never the path or query")
+    check(pageURL("https://www.example.com:8443/a/b#c") == .host("www.example.com"), "a string URL the same, without the port")
+    check(pageHost("http://127.0.0.1:47831/checkin") == "127.0.0.1", "the fixture server's loopback address is a host")
+    check(pageURL("about:blank") == .local && pageURL(URL(string: "file:///Users/me/page.html")!) == .local, "a blank page or a file names no host and is known local")
+    check(pageURL(nil) == .unreadable, "no URL attribute at all cannot be read")
+    check(pageURL("not a url at all") == .unreadable && pageURL(42) == .unreadable, "nor can a value that is not a URL")
+    check(pageHost(nil) == nil && pageHost("about:blank") == nil && pageHost("not a url at all") == nil, "none of those names a host")
+    check(pageHostUnknown(browser: true, host: nil, unreadableWebArea: true), "a browser page with a web area that publishes no URL is unknown")
+    check(!pageHostUnknown(browser: true, host: "example.com", unreadableWebArea: true), "not when a host was read from the window or another area")
+    check(!pageHostUnknown(browser: true, host: nil, unreadableWebArea: false), "not when every web area named a local page, or none was found")
+    check(!pageHostUnknown(browser: false, host: nil, unreadableWebArea: true), "never outside a browser: Mail's message view is WebKit and publishes no URL")
+    check(watchDomainRefused(domain: nil, browser: true, protectedDomains: banks) == pageHostUnknown(browser: true, host: nil, unreadableWebArea: true), "an unknown page is refused by the rule a watch already applies while any domain is protected")
 
     // A folder in a named application: an editor may take it (the policy asks
     // first), a terminal, a system tool or a protected app never.

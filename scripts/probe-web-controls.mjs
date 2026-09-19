@@ -48,6 +48,9 @@ try {
       appId: surface.appId,
       accessibility: surface.accessibility ?? "(no verdict)",
       hasDomain: surface.domain !== undefined,
+      // A page whose address the helper could not read: with hasDomain false,
+      // true means the run would hand off here, false a window with no page.
+      hostUnknown: surface.hostUnknown === true,
       focusedRole: surface.focusedRole ?? "(none)",
       unknown: surface.unknown,
     }),

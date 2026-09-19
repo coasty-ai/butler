@@ -620,8 +620,29 @@ export function surfacePolicy(surface: Surface, settings: Settings): Decision {
       kind: "USER_TAKEOVER",
       reason: "A protected website is active. Please take over.",
     };
+  // The rule above reads the page's address; a browser page whose address
+  // the helper could not read is not taken for safe. While any website is
+  // protected the run hands off before a capture, as on the protected site
+  // itself (the rule a watch already applies: watchDomainRefused in
+  // native/macos/IdeSafety.swift); with nothing protected there is nothing
+  // the address could have matched, so the page is worked like any other.
+  // The helper sets the flag only for a web area that publishes no URL, never
+  // for a start page, a blank window or a local file, and only in a browser.
+  // Live 2026-09-19: Safari reported no host on any page (the helper's walk
+  // skipped the tab group its web area sits under), so this floor never fired
+  // there and nothing said so; the surface now says so and the run stops.
+  if (
+    surface.hostUnknown &&
+    !surface.domain &&
+    browsers.includes(surface.appId) &&
+    settings.protectedDomains.length > 0
+  )
+    return { kind: "USER_TAKEOVER", reason: UNREADABLE_PAGE_TAKEOVER };
   return { kind: "ALLOW", reason: "" };
 }
+/** The hand-off for a browser page whose address could not be read. */
+export const UNREADABLE_PAGE_TAKEOVER =
+  "This page's address could not be read, so it cannot be told from a protected website. Please take over.";
 function verifiedFolder(targetURL: string | undefined): boolean {
   if (!targetURL) return false;
   let url: URL;
