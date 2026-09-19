@@ -72,6 +72,7 @@ import {
   PASTE_ALLOWED,
   type Decision,
 } from "./policy";
+import { approvalCode } from "./approval-codes";
 import { watchSpec, type WatchChain, type WatchSpec } from "./monitor";
 import {
   TOOL_LIMITS,
@@ -1689,6 +1690,8 @@ export class Runner {
   ) {
     this.event("UserDenied", {
       source,
+      // The question as a code (src/core/approval-codes.ts), never its text.
+      approvalCode: approvalCode(question),
       ...(action.type === "tool_call" ? { actionType: action.type } : {}),
     });
     this.reject({
@@ -4000,6 +4003,7 @@ export class Runner {
           this.status("confirming", decision.reason);
           this.event("PolicyConfirmationRequested", {
             reason: decision.reason,
+            approvalCode: approvalCode(decision.reason),
             actionType: action.type,
             appId: actionSurface.appId,
             targetRole: actionSurface.targetRole,

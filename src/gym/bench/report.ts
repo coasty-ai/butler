@@ -8,6 +8,17 @@ import type {
   TakeoverSource,
 } from "./types";
 
+/**
+ * How one kind of policy question was answered during an attempt, keyed by
+ * the question's code (src/core/approval-codes.ts approvalCode): how often it
+ * was asked, and how the harness answered. asked = approved + declined.
+ */
+export interface ApprovalTally {
+  asked: number;
+  approved: number;
+  declined: number;
+}
+
 /** One graded attempt at one task (results schema 2). */
 export interface AttemptResult {
   taskId: string;
@@ -60,6 +71,12 @@ export interface AttemptResult {
   modelCalls: number;
   approvals: number;
   approvalsDeclined: number;
+  /**
+   * The questions asked, by code (SAVE_CHANGES, PLACE_ORDER, CLICK_CONTROL,
+   * ...), with how each was answered; absent when nothing was asked. Never
+   * the question's text or the label it quoted.
+   */
+  approvalCodes?: Record<string, ApprovalTally>;
   retries: number;
   /**
    * Retries on a surface that reported no accessibility at all (the
@@ -290,6 +307,8 @@ export interface Aggregate extends CellTotals {
   totalSeconds: number;
   approvals: number;
   approvalsDeclined: number;
+  /** Every attempt's questions summed, by code. */
+  approvalCodes: Record<string, ApprovalTally>;
   retries: number;
   takeovers: number;
   loops: number;
@@ -384,6 +403,18 @@ export function aggregate(results: AttemptResult[]): Aggregate {
   for (const result of results)
     for (const code of new Set(result.leftovers ?? []))
       leftovers[code] = (leftovers[code] ?? 0) + 1;
+  const approvalCodes: Record<string, ApprovalTally> = {};
+  for (const result of results)
+    for (const [code, tally] of Object.entries(result.approvalCodes ?? {})) {
+      const total = (approvalCodes[code] ??= {
+        asked: 0,
+        approved: 0,
+        declined: 0,
+      });
+      total.asked += tally.asked;
+      total.approved += tally.approved;
+      total.declined += tally.declined;
+    }
   const sum = (pick: (r: AttemptResult) => number) =>
     results.reduce((total, result) => total + pick(result), 0);
   const totalsOf = (groups: Record<string, AttemptResult[]>) =>
@@ -396,6 +427,7 @@ export function aggregate(results: AttemptResult[]): Aggregate {
     totalSeconds: sum((r) => r.seconds),
     approvals: sum((r) => r.approvals),
     approvalsDeclined: sum((r) => r.approvalsDeclined),
+    approvalCodes,
     retries: sum((r) => r.retries),
     takeovers: sum((r) => r.takeovers),
     loops: sum((r) => r.loops),
@@ -422,6 +454,23 @@ const MARK: Record<GradeStatus, string> = {
 const money = (value: number) => "$" + value.toFixed(3);
 const pad = (value: string, width: number, right = false) =>
   right ? value.padStart(width) : value.padEnd(width);
+
+/**
+ * "declined SAVE_CHANGES 15, CLICK_CONTROL 2": the questions an attempt was
+ * refused, by code, most declined first; empty when none was. Codes only.
+ */
+export function declinedCodes(
+  result: Pick<AttemptResult, "approvalCodes">,
+): string {
+  const declined = Object.entries(result.approvalCodes ?? {})
+    .filter(([, tally]) => tally.declined > 0)
+    .sort((a, b) => b[1].declined - a[1].declined || (a[0] < b[0] ? -1 : 1));
+  if (!declined.length) return "";
+  return (
+    "declined " +
+    declined.map(([code, tally]) => `${code} ${tally.declined}`).join(", ")
+  );
+}
 
 /**
  * The per-attempt table. It holds task ids, model ids, counts, durations,
@@ -455,10 +504,13 @@ export function renderTable(results: AttemptResult[]): string {
     String(result.retries),
     String(result.takeovers),
     result.endingCode,
-    // A skip for an open application says which, so the line is actionable.
+    // A skip for an open application says which, and a failed attempt names
+    // the questions it was refused, so the line is actionable.
     result.status === "passed"
       ? ""
-      : [result.reason ?? "", ...(result.openApps ?? [])].join(" ").trim(),
+      : [result.reason ?? "", ...(result.openApps ?? []), declinedCodes(result)]
+          .join(" ")
+          .trim(),
   ]);
   const widths = header.map((name, column) =>
     Math.max(name.length, ...rows.map((row) => row[column].length)),
@@ -522,6 +574,19 @@ export function renderSummary(totals: Aggregate): string {
     lines.push(
       "failure codes  " +
         failures.map(([code, count]) => `${code} ${count}`).join("  "),
+    );
+  const asked = Object.entries(totals.approvalCodes).sort(
+    (a, b) => b[1].asked - a[1].asked || (a[0] < b[0] ? -1 : 1),
+  );
+  if (asked.length)
+    lines.push(
+      "approvals by reason  " +
+        asked
+          .map(
+            ([code, tally]) =>
+              `${code} asked ${tally.asked} declined ${tally.declined}`,
+          )
+          .join("  "),
     );
   const line = leftoversLine(totals);
   if (line) lines.push(line);

@@ -1208,7 +1208,7 @@ function backgroundRefusal(
     };
   return undefined;
 }
-const PROTECTED_SITE_QUESTION = "Open a protected website?";
+export const PROTECTED_SITE_QUESTION = "Open a protected website?";
 export function withoutAsking(
   decision: Decision,
   settings: Settings,

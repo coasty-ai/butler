@@ -257,7 +257,10 @@ describe("approval source", () => {
       if (runner.snapshot.run?.status === "paused") await runner.resume();
       await running;
       expect(c.execute).not.toHaveBeenCalled();
-      expect(m.of("UserDenied").map((e) => e.data)).toEqual([{ source }]);
+      // Beside who answered, the question as a code, never its text.
+      expect(m.of("UserDenied").map((e) => e.data)).toEqual([
+        { source, approvalCode: expect.stringMatching(/^[A-Z][A-Z0-9_]+$/) },
+      ]);
     }
   });
 

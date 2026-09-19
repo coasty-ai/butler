@@ -23,6 +23,18 @@ function code(value: unknown): string | undefined {
     ? value
     : undefined;
 }
+/**
+ * The declined-approval pattern with the question's code behind it:
+ * APPROVAL_DECLINED_SAVE_CHANGES beside APPROVAL_DECLINED. The suffix is one
+ * of src/core/approval-codes.ts's codes as the runner stamped it on the event.
+ */
+export const APPROVAL_DECLINED_PREFIX = "APPROVAL_DECLINED_";
+/** An upper-snake approval code, so the pattern built from it stays one. */
+function approvalCodeOf(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{1,39}$/.test(value)
+    ? value
+    : undefined;
+}
 /** A bundle identifier; anything without the reverse-DNS shape is dropped. */
 function bundleId(value: unknown): string | undefined {
   return typeof value === "string" &&
@@ -140,11 +152,17 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       return ["ACTION_REAIMED"];
     case "PolicyConfirmationRequested":
       return ["APPROVAL_REQUESTED"];
-    case "UserDenied":
+    case "UserDenied": {
       // A declined approval names who answered ("approval" in older journals,
       // now voice, pill, typed, message or remote); a policy denial carries
-      // only the reason.
-      return code(d.source) ? ["APPROVAL_DECLINED"] : ["POLICY_DENIED"];
+      // only the reason. The question's code (src/core/approval-codes.ts)
+      // splits the declines by what was asked, never by its text.
+      if (!code(d.source)) return ["POLICY_DENIED"];
+      const asked = approvalCodeOf(d.approvalCode);
+      return asked
+        ? ["APPROVAL_DECLINED", `${APPROVAL_DECLINED_PREFIX}${asked}`]
+        : ["APPROVAL_DECLINED"];
+    }
     case "UserCorrectionRecorded":
       return ["USER_CORRECTION"];
     case "UserTakeoverStarted": {
@@ -372,9 +390,14 @@ export const OWNER: Record<string, string> = {
   INTERRUPTED: "harness",
   MANUAL_INPUT_UNSEEN: "user",
 };
-/** The owner of a code: listed, or the agent's. */
+/** The owner of a code: listed, or the agent's. A declined question's is its decline's. */
 export function ownerOf(code: string): string {
-  return OWNER[code] ?? "agent";
+  return (
+    OWNER[code] ??
+    (code.startsWith(APPROVAL_DECLINED_PREFIX)
+      ? OWNER.APPROVAL_DECLINED
+      : "agent")
+  );
 }
 /** Authored one-line explanations. None of this comes from the log. */
 const NOTE: Record<string, string> = {
@@ -479,7 +502,10 @@ const NOTE: Record<string, string> = {
 };
 /** The authored note for a code, or the unclassified one. */
 export function noteFor(code: string): string {
-  return NOTE[code] ?? NOTE.UNCLASSIFIED;
+  if (code in NOTE) return NOTE[code];
+  if (code.startsWith(APPROVAL_DECLINED_PREFIX))
+    return `An approval was declined; the suffix is the policy's question as a code (src/core/approval-codes.ts). Declined on a task that lists no such approval, it is the task's design; asked and declined attempt after attempt for a control the policy should have classified (CLICK_CONTROL, ACTIVATE_CONTROL), it is a policy false positive.`;
+  return NOTE.UNCLASSIFIED;
 }
 
 /** Classifies why one run ended, from its statuses and its tail of events. */

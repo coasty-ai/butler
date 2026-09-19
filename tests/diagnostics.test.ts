@@ -1331,6 +1331,7 @@ describe("dialog and streamed-speech fields", () => {
             actionType: "tool_call",
             reason: hostile,
             questionKind: "calendar_add",
+            approvalCode: "TOOL_CALENDAR_ADD",
             action: {
               type: "tool_call",
               tool: "apple__calendar_create_event",
@@ -1437,6 +1438,7 @@ describe("dialog and streamed-speech fields", () => {
         synthetic: false,
         actionType: "tool_call",
         questionKind: "calendar_add",
+        approvalCode: "TOOL_CALENDAR_ADD",
       });
       expect(byEvent.PolicyAllowed.reason).toBeUndefined();
       expect(byEvent.ActionExecuted).toMatchObject({ actionType: "tool_call" });
@@ -1499,6 +1501,31 @@ describe("dialog and streamed-speech fields", () => {
         readFileSync(log.file, "utf8").trim().split("\n").at(-2)!,
       );
       expect(last.data.reason).toBe("Send this message?");
+    }));
+  it("keeps a policy question's code on the question and on its decline, and drops one that is not a code", () =>
+    fixture((log) => {
+      const hostile = "Click “Confirm reservation for SECRETWORD”?";
+      log.write("PolicyConfirmationRequested", {
+        approvalCode: "CLICK_CONTROL",
+        actionType: "click",
+      });
+      log.write("UserDenied", {
+        source: "pill",
+        approvalCode: "CLICK_CONTROL",
+      });
+      log.write("UserDenied", { source: "pill", approvalCode: hostile });
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toContain("SECRETWORD");
+      expect(
+        raw
+          .trim()
+          .split("\n")
+          .map((x) => JSON.parse(x).data),
+      ).toEqual([
+        { approvalCode: "CLICK_CONTROL", actionType: "click" },
+        { source: "pill", approvalCode: "CLICK_CONTROL" },
+        { source: "pill" },
+      ]);
     }));
   it("drops text placed in the tool code, count, size and flag fields, and keeps the hashed ids only when they are codes", () =>
     fixture((log) => {

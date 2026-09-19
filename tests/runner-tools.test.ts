@@ -406,7 +406,11 @@ describe("a tool step the model proposes", () => {
     await running;
     expect(h.tools!.calls).toEqual([]);
     expect(h.m.of("UserDenied").map((e) => e.data)).toEqual([
-      { source: "voice", actionType: "tool_call" },
+      {
+        source: "voice",
+        actionType: "tool_call",
+        approvalCode: "TOOL_CALENDAR_ADD",
+      },
     ]);
     // The model hears which question was declined and its two routes left.
     expect(h.provider.observations[1].history.at(-1)).toEqual({

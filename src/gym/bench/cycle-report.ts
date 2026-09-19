@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { noteFor, ownerOf, type AnalysisReport } from "./analyze";
+import {
+  APPROVAL_DECLINED_PREFIX,
+  noteFor,
+  ownerOf,
+  type AnalysisReport,
+} from "./analyze";
 import {
   compareModels,
   type ProbeReason,
@@ -18,6 +23,7 @@ import {
   ran,
   renderTable,
   type Aggregate,
+  type ApprovalTally,
   type AttemptResult,
   type CellTotals,
 } from "./report";
@@ -269,6 +275,12 @@ function attemptCodes(
     if (result.approvalsDeclined)
       add("APPROVAL_DECLINED", "friction", result.approvalsDeclined);
   }
+  // The questions declined, by the policy's question as a code: from the
+  // row with or without the log, since the attempt answered each one itself
+  // and knows exactly what it was. APPROVAL_DECLINED keeps its own count.
+  for (const [code, tally] of Object.entries(result.approvalCodes ?? {}))
+    if (tally.declined)
+      add(`${APPROVAL_DECLINED_PREFIX}${code}`, "friction", tally.declined);
   // Harness-only codes the analyzer does not classify.
   if (result.noProgress) add("NO_PROGRESS", "friction", result.noProgress);
   if (result.falseDone) add("FALSE_DONE", "friction");
@@ -508,6 +520,30 @@ const codeOnly = (value: string | undefined) =>
   value !== undefined && CODE.test(value) ? value : undefined;
 const keysOnly = <T>(record: Record<string, T>, shape: RegExp) =>
   Object.fromEntries(Object.entries(record).filter(([key]) => shape.test(key)));
+const tallyCount = (value: unknown) =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0;
+/** Approval tallies under a code key with three whole counts; anything else is dropped. */
+const talliesOnly = (
+  record: Record<string, ApprovalTally>,
+): Record<string, ApprovalTally> =>
+  Object.fromEntries(
+    Object.entries(record)
+      .filter(
+        ([key, tally]) =>
+          CODE.test(key) &&
+          !!tally &&
+          typeof tally === "object" &&
+          [tally.asked, tally.approved, tally.declined].every(tallyCount),
+      )
+      .map(([key, tally]) => [
+        key,
+        {
+          asked: tally.asked,
+          approved: tally.approved,
+          declined: tally.declined,
+        },
+      ]),
+  );
 
 /**
  * A row reduced to what may leave the machine. Every field is built from
@@ -531,6 +567,7 @@ export function contentFree(row: AttemptResult): AttemptResult {
         ),
       )
     : undefined;
+  const approvalCodes = row.approvalCodes && talliesOnly(row.approvalCodes);
   const {
     reason: _r,
     pausedAfter: _p,
@@ -539,6 +576,7 @@ export function contentFree(row: AttemptResult): AttemptResult {
     openApps: _a,
     strayDocuments: _s,
     leftoverWindows: _w,
+    approvalCodes: _c,
     ...rest
   } = row;
   return {
@@ -551,6 +589,9 @@ export function contentFree(row: AttemptResult): AttemptResult {
     ...(strayDocuments?.length ? { strayDocuments } : {}),
     ...(leftoverWindows && Object.keys(leftoverWindows).length
       ? { leftoverWindows }
+      : {}),
+    ...(approvalCodes && Object.keys(approvalCodes).length
+      ? { approvalCodes }
       : {}),
     endingCode: codeOnly(row.endingCode) ?? "UNCLASSIFIED",
     checks: keysOnly(row.checks, CHECK),
@@ -682,6 +723,59 @@ const topEntries = (entries: Record<string, { attempts: number }>, limit = 3) =>
     .slice(0, limit)
     .map(([key, value]) => `${key} ${value.attempts}`)
     .join(", ");
+
+/** One row of the approvals table: a question's code over the whole cycle. */
+export interface ApprovalReasonRow extends ApprovalTally {
+  code: string;
+  /** Task ids the question came up in, with how often it was asked there. */
+  tasks: [string, number][];
+}
+
+/**
+ * Every question the policy asked during the cycle, by code, most declined
+ * first: how often it was asked, approved and declined, and the tasks it
+ * came up in. Codes and task ids only.
+ */
+export function approvalsByReason(
+  results: Pick<AttemptResult, "taskId" | "approvalCodes">[],
+): ApprovalReasonRow[] {
+  const rows = new Map<
+    string,
+    ApprovalTally & { tasks: Map<string, number> }
+  >();
+  for (const result of results)
+    for (const [code, tally] of Object.entries(result.approvalCodes ?? {})) {
+      if (!CODE.test(code)) continue;
+      let row = rows.get(code);
+      if (!row) {
+        row = { asked: 0, approved: 0, declined: 0, tasks: new Map() };
+        rows.set(code, row);
+      }
+      row.asked += tally.asked;
+      row.approved += tally.approved;
+      row.declined += tally.declined;
+      row.tasks.set(
+        result.taskId,
+        (row.tasks.get(result.taskId) ?? 0) + tally.asked,
+      );
+    }
+  return [...rows.entries()]
+    .map(([code, row]) => ({
+      code,
+      asked: row.asked,
+      approved: row.approved,
+      declined: row.declined,
+      tasks: [...row.tasks.entries()].sort(
+        (a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1),
+      ),
+    }))
+    .sort(
+      (a, b) =>
+        b.declined - a.declined ||
+        b.asked - a.asked ||
+        (a.code < b.code ? -1 : 1),
+    );
+}
 
 export function renderCycleReport(cycle: CycleResults): string {
   const { cycle: info, aggregate: totals, results } = cycle;
@@ -970,6 +1064,37 @@ export function renderCycleReport(cycle: CycleResults): string {
       out.push("");
     }
   }
+
+  // 5b. Approvals, by the policy's question as a code
+  out.push("## Approvals asked, by reason");
+  out.push("");
+  const asked = approvalsByReason(results);
+  if (!asked.length)
+    out.push("None: the policy asked no attempt for an approval.");
+  else {
+    const named = (tasks: [string, number][]) =>
+      tasks
+        .slice(0, 6)
+        .map(([id, n]) => `${id} ${n}`)
+        .join(", ") + (tasks.length > 6 ? ` and ${tasks.length - 6} more` : "");
+    out.push(
+      table(
+        ["code", "asked", "approved", "declined", "tasks"],
+        asked.map((row) => [
+          row.code,
+          String(row.asked),
+          String(row.approved),
+          String(row.declined),
+          named(row.tasks),
+        ]),
+      ),
+    );
+    out.push("");
+    out.push(
+      "The code is the policy's question (`src/core/approval-codes.ts` `approvalCode`), never its text or the label it quoted; `OTHER` is a question the table does not know. A declined `SAVE_CHANGES` on a task that lists no approval is the task's design, not a fault, and `APPROVAL_DECLINED_<code>` under Failure classes says which runs the declines cost. A `CLICK_CONTROL` or `ACTIVATE_CONTROL` declined attempt after attempt on the same task is the policy asking about a control it could not classify: a false positive to fix at its CONFIRM site. A `PLACE_ORDER`, `SEND_MESSAGE` or `PROTECTED_SITE` on a task that should never reach one is a run that went where it should not have.",
+    );
+  }
+  out.push("");
 
   // 6. Unknowns
   out.push("## Unknowns");

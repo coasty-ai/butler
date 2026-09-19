@@ -12,6 +12,7 @@ import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import type { PresenceReport } from "../../../electron/controller";
 import type { MemoryAccess } from "../../core/memory";
 import { nullRecorder } from "../../core/recorder";
+import { approvalCode } from "../../core/approval-codes";
 import { Runner, terminal } from "../../core/runner";
 import {
   settingsSchema,
@@ -46,6 +47,7 @@ import {
   endingCode,
   honesty,
   pausedAfterCode,
+  type ApprovalTally,
   type AttemptResult,
 } from "./report";
 import type {
@@ -462,6 +464,8 @@ export async function runAttempt(
   const counters = {
     approvals: 0,
     approvalsDeclined: 0,
+    /** By the policy's question as a code, never its text. */
+    approvalCodes: {} as Record<string, ApprovalTally>,
     retries: 0,
     blindRetries: 0,
     takeovers: 0,
@@ -737,6 +741,17 @@ export async function runAttempt(
             frameAppId: snapshot.frame?.appId,
           });
         if (!approve) counters.approvalsDeclined++;
+        // What was asked, as a code, and how it was answered: the ledger
+        // otherwise says only how many questions were declined, which cannot
+        // tell a task's own unlisted Save from a policy false positive.
+        const tally = (counters.approvalCodes[approvalCode(reason)] ??= {
+          asked: 0,
+          approved: 0,
+          declined: 0,
+        });
+        tally.asked++;
+        if (approve) tally.approved++;
+        else tally.declined++;
         setTimeout(() => runner.confirm(approve), 0);
       }
       if (status === "paused" || status === "takeover") {
@@ -906,6 +921,9 @@ export async function runAttempt(
       modelCalls: journal.modelCalls,
       approvals: journal.approvals,
       approvalsDeclined: journal.approvalsDeclined,
+      ...(Object.keys(counters.approvalCodes).length
+        ? { approvalCodes: counters.approvalCodes }
+        : {}),
       retries: journal.retries,
       ...(counters.blindRetries ? { blindRetries: counters.blindRetries } : {}),
       handoffs: {

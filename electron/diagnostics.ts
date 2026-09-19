@@ -221,6 +221,9 @@ const fields = new Set([
   "toolTier",
   "outcome",
   "questionKind",
+  // A policy question as a code (src/core/approval-codes.ts), on the
+  // question asked and on its decline; the question's text stays out.
+  "approvalCode",
   "providerState",
   "answerTier",
   "toolCount",
@@ -386,6 +389,7 @@ const codeFields = new Set([
   "toolTier",
   "outcome",
   "questionKind",
+  "approvalCode",
   "providerState",
   "answerTier",
   "project",
@@ -656,6 +660,7 @@ export class LocalDiagnostics {
         // the encrypted journal and only its kind is written here.
         reason: e.data.actionType === "tool_call" ? undefined : e.data.reason,
         questionKind: code(e.data.questionKind),
+        approvalCode: code(e.data.approvalCode),
         usage: e.data.usage,
         screenshot: e.data.screenshot,
         screenshotReason: e.data.screenshotReason,

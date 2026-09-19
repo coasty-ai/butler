@@ -59,6 +59,7 @@ import {
 import {
   HARNESS_CODES,
   aggregate,
+  declinedCodes,
   endingCode,
   honesty,
   median,
@@ -73,6 +74,8 @@ import {
   analyze,
   budgetCode,
   frictionCodes,
+  noteFor,
+  ownerOf,
   parseDiagnostics,
   renderAnalysis,
 } from "../src/gym/bench/analyze";
@@ -948,6 +951,40 @@ const attempt = (over: Partial<AttemptResult> = {}): AttemptResult => ({
 });
 
 describe("aggregation", () => {
+  it("names a failed attempt's declined questions on its line and sums them under the table", () => {
+    const rows = [
+      attempt({
+        status: "failed",
+        reason: "HOST_MISMATCH",
+        approvals: 3,
+        approvalsDeclined: 3,
+        approvalCodes: {
+          SAVE_CHANGES: { asked: 2, approved: 0, declined: 2 },
+          CLICK_CONTROL: { asked: 1, approved: 0, declined: 1 },
+        },
+      }),
+      attempt({
+        taskId: "notes-open",
+        approvals: 1,
+        approvalCodes: {
+          SUBMIT_AUTHORIZE: { asked: 1, approved: 1, declined: 0 },
+        },
+      }),
+    ];
+    const table = renderTable(rows);
+    expect(table).toMatch(
+      /HOST_MISMATCH declined SAVE_CHANGES 2, CLICK_CONTROL 1$/m,
+    );
+    // A passing attempt's line stays empty, approved or not.
+    expect(table).not.toContain("SUBMIT_AUTHORIZE");
+    expect(renderSummary(aggregate(rows))).toContain(
+      "approvals by reason  SAVE_CHANGES asked 2 declined 2  CLICK_CONTROL asked 1 declined 1  SUBMIT_AUTHORIZE asked 1 declined 0",
+    );
+    expect(declinedCodes(attempt({}))).toBe("");
+    expect(renderSummary(aggregate([attempt({})]))).not.toContain(
+      "approvals by reason",
+    );
+  });
   it("computes a median for odd, even and empty samples", () => {
     expect(median([5, 1, 3])).toBe(3);
     expect(median([4, 1, 3, 2])).toBe(2.5);
@@ -968,6 +1005,7 @@ describe("aggregation", () => {
         retries: 2,
         approvals: 1,
         approvalsDeclined: 1,
+        approvalCodes: { SAVE_CHANGES: { asked: 1, approved: 0, declined: 1 } },
         failures: { STATE_CHANGED: 3 },
       }),
       attempt({
@@ -1005,6 +1043,9 @@ describe("aggregation", () => {
     expect(totals.retries).toBe(2);
     expect(totals.approvals).toBe(1);
     expect(totals.approvalsDeclined).toBe(1);
+    expect(totals.approvalCodes).toEqual({
+      SAVE_CHANGES: { asked: 1, approved: 0, declined: 1 },
+    });
     expect(totals.failures).toEqual({ STATE_CHANGED: 4, INVALID_ACTION: 1 });
     expect(totals.byCategory.calculator).toMatchObject({
       attempts: 1,
@@ -1839,6 +1880,40 @@ describe("run analyzer", () => {
     expect(
       frictionCodes({ event: "UserDenied", data: { source: "approval" } }),
     ).toEqual(["APPROVAL_DECLINED"]);
+    // The runner stamps the question's code on the decline, and the pattern
+    // carries it beside the plain one. Only an upper-snake code: a question's
+    // text or a lowercase kind never becomes a pattern.
+    expect(
+      frictionCodes({
+        event: "UserDenied",
+        data: { source: "pill", approvalCode: "SAVE_CHANGES" },
+      }),
+    ).toEqual(["APPROVAL_DECLINED", "APPROVAL_DECLINED_SAVE_CHANGES"]);
+    expect(
+      frictionCodes({
+        event: "UserDenied",
+        data: { source: "pill", approvalCode: "Save these changes?" },
+      }),
+    ).toEqual(["APPROVAL_DECLINED"]);
+    expect(
+      frictionCodes({
+        event: "UserDenied",
+        data: { source: "pill", approvalCode: "calendar_add" },
+      }),
+    ).toEqual(["APPROVAL_DECLINED"]);
+    // A policy denial carries no source, whatever else it carries.
+    expect(
+      frictionCodes({
+        event: "UserDenied",
+        data: { approvalCode: "SAVE_CHANGES" },
+      }),
+    ).toEqual(["POLICY_DENIED"]);
+    expect(ownerOf("APPROVAL_DECLINED_SAVE_CHANGES")).toBe("user");
+    expect(ownerOf("APPROVAL_DECLINED")).toBe("user");
+    expect(noteFor("APPROVAL_DECLINED_SAVE_CHANGES")).toContain(
+      "approval-codes",
+    );
+    expect(noteFor("APPROVAL_DECLINED")).toBe("An approval was declined.");
     // The default allow-list drops this event's source, so a bare hand-off is
     // reported as ambiguous rather than blamed on the agent.
     expect(frictionCodes({ event: "UserTakeoverStarted", data: {} })).toEqual([

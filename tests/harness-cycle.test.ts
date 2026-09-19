@@ -111,6 +111,7 @@ import {
 import {
   HARNESS_VERSION,
   autonomyLine,
+  approvalsByReason,
   buildCycleResults,
   catalogueHash,
   classRates,
@@ -533,15 +534,32 @@ describe("one attempt through the real runner", () => {
       const listed = await run("Save these changes?", true);
       expect(listed.clicked).toBe(true);
       expect(listed.result.approvalsDeclined).toBe(0);
+      // The row says what was asked, as a code, and how it was answered.
+      expect(listed.result.approvalCodes).toEqual({
+        SAVE_CHANGES: { asked: 1, approved: 1, declined: 0 },
+      });
       // Same shape of question, not on the list: declined, and answered
       // once although the runner publishes the prompt in two snapshots.
       const order = await run("Place this order?", true);
       expect(order.clicked).toBe(false);
       expect(order.result.approvals).toBe(1);
       expect(order.result.approvalsDeclined).toBe(1);
+      expect(order.result.approvalCodes).toEqual({
+        PLACE_ORDER: { asked: 1, approved: 0, declined: 1 },
+      });
       const off = await run("Save these changes?", false);
       expect(off.clicked).toBe(false);
       expect(off.result.approvalsDeclined).toBe(1);
+      expect(off.result.approvalCodes).toEqual({
+        SAVE_CHANGES: { asked: 1, approved: 0, declined: 1 },
+      });
+      // A question the table does not know is counted, as OTHER.
+      const other = await run("Feed the cat?", true);
+      expect(other.clicked).toBe(false);
+      expect(other.result.approvalCodes).toEqual({
+        OTHER: { asked: 1, approved: 0, declined: 1 },
+      });
+      expect(JSON.stringify(other.result)).not.toContain("Feed the cat");
     } finally {
       policy.evaluate = undefined;
     }
@@ -3141,6 +3159,132 @@ describe("results.json and report.md", () => {
     expect(quiet).toEqual([]);
   });
 
+  it("names the declined question beside APPROVAL_DECLINED, from the row, with and without the log", () => {
+    const declined = {
+      approvals: 3,
+      approvalsDeclined: 3,
+      approvalCodes: { SAVE_CHANGES: { asked: 3, approved: 0, declined: 3 } },
+    };
+    const rows = [
+      failedRow({ reason: "ATTACHMENT_NOT_SAVED", ...declined }),
+      failedRow({
+        approvals: 1,
+        approvalsDeclined: 0,
+        approvalCodes: {
+          SUBMIT_AUTHORIZE: { asked: 1, approved: 1, declined: 0 },
+        },
+      }),
+      row({
+        approvals: 2,
+        approvalsDeclined: 2,
+        approvalCodes: {
+          CLICK_CONTROL: { asked: 2, approved: 0, declined: 2 },
+        },
+      }),
+    ];
+    const byCode = (classes: ReturnType<typeof failureClasses>) =>
+      Object.fromEntries(classes.map((c) => [c.code, c]));
+    const plain = byCode(failureClasses(rows));
+    // The class that was there keeps its count and owner.
+    expect(plain.APPROVAL_DECLINED).toMatchObject({
+      attempts: 1,
+      events: 3,
+      owner: "user",
+    });
+    expect(plain.APPROVAL_DECLINED_SAVE_CHANGES).toMatchObject({
+      attempts: 1,
+      events: 3,
+      owner: "user",
+      source: "friction",
+    });
+    expect(plain.APPROVAL_DECLINED_SAVE_CHANGES.note).toContain(
+      "approval-codes",
+    );
+    // An approved question is no failure class, and a decline in a passing
+    // run is not one either.
+    expect(plain.APPROVAL_DECLINED_SUBMIT_AUTHORIZE).toBeUndefined();
+    expect(plain.APPROVAL_DECLINED_CLICK_CONTROL).toBeUndefined();
+    // With the cycle's log the analyzer's frictions stand in for the row's
+    // counters; the question's code still comes from the row.
+    const logged = byCode(
+      failureClasses([failedRow({ runId: RUN_B, ...declined })], analysis),
+    );
+    expect(logged.APPROVAL_DECLINED_SAVE_CHANGES).toMatchObject({
+      attempts: 1,
+      events: 3,
+    });
+  });
+
+  it("tables the approvals by reason and names a failed attempt's declined codes on its line", () => {
+    const rows = [
+      ...results,
+      failedRow({
+        taskId: "mail-save-attachment",
+        reason: "ATTACHMENT_NOT_SAVED",
+        approvals: 17,
+        approvalsDeclined: 17,
+        approvalCodes: {
+          SAVE_CHANGES: { asked: 15, approved: 0, declined: 15 },
+          CLICK_CONTROL: { asked: 2, approved: 0, declined: 2 },
+        },
+      }),
+      row({
+        taskId: "docs-edit",
+        approvals: 1,
+        approvalCodes: { SAVE_CHANGES: { asked: 1, approved: 1, declined: 0 } },
+      }),
+    ];
+    const cycle = buildCycleResults({ cycle: info(), results: rows, analysis });
+    const md = renderCycleReport(cycle);
+    expect(md).toContain("## Approvals asked, by reason");
+    expect(md).toContain("| code | asked | approved | declined | tasks |");
+    expect(md).toContain(
+      "| SAVE_CHANGES | 16 | 1 | 15 | mail-save-attachment 15, docs-edit 1 |",
+    );
+    expect(md).toContain(
+      "| CLICK_CONTROL | 2 | 0 | 2 | mail-save-attachment 2 |",
+    );
+    expect(md).toMatch(
+      /ATTACHMENT_NOT_SAVED declined SAVE_CHANGES 15, CLICK_CONTROL 2$/m,
+    );
+    expect(cycle.aggregate.approvalCodes).toEqual({
+      SAVE_CHANGES: { asked: 16, approved: 1, declined: 15 },
+      CLICK_CONTROL: { asked: 2, approved: 0, declined: 2 },
+    });
+    // Most declined first.
+    expect(approvalsByReason(rows).map((r) => r.code)).toEqual([
+      "SAVE_CHANGES",
+      "CLICK_CONTROL",
+    ]);
+    // Without a question asked the section says so.
+    expect(
+      renderCycleReport(
+        buildCycleResults({ cycle: info(), results, analysis }),
+      ),
+    ).toContain("None: the policy asked no attempt for an approval.");
+    // The writer keeps only code keys with three whole counts.
+    const clean = contentFree(
+      row({
+        approvalCodes: {
+          "Save these changes?": { asked: 1, approved: 0, declined: 1 },
+          SAVE_CHANGES: { asked: 1, approved: 0, declined: 1 },
+          PLACE_ORDER: { asked: Number.NaN, approved: 0, declined: 1 },
+        },
+      }),
+    );
+    expect(clean.approvalCodes).toEqual({
+      SAVE_CHANGES: { asked: 1, approved: 0, declined: 1 },
+    });
+    expect(contentFree(row({})).approvalCodes).toBeUndefined();
+    expect(
+      contentFree(
+        row({
+          approvalCodes: { "x y": { asked: 1, approved: 0, declined: 1 } },
+        }),
+      ).approvalCodes,
+    ).toBeUndefined();
+  });
+
   it("renders every section, the honesty 2x2 and the unknowns", () => {
     const text = renderCycleReport(
       buildCycleResults({ cycle: info(), results, analysis }),
@@ -3221,6 +3365,12 @@ describe("results.json and report.md", () => {
         // Not the shape windows.ts writes a path in: dropped, not published.
         strayDocuments: [`${MARK} ~/Documents/plan.txt`, `~/${MARK}\n`],
         leftoverWindows: { [`${MARK} window`]: 1 },
+        approvals: 3,
+        approvalsDeclined: 3,
+        approvalCodes: {
+          [`${MARK} question?`]: { asked: 1, approved: 0, declined: 1 },
+          SAVE_CHANGES: { asked: 2, approved: 0, declined: 2 },
+        },
       }),
     ];
     const cycle = buildCycleResults({
@@ -3235,6 +3385,8 @@ describe("results.json and report.md", () => {
     expect(md).toContain("LEFTOVER_FILES 1");
     // The code-shaped parts of the row survive.
     expect(json).toContain("STATE_CHANGED");
+    expect(json).toContain("APPROVAL_DECLINED_SAVE_CHANGES");
+    expect(md).toContain("| SAVE_CHANGES | 2 | 0 | 2 | calculator-open 2 |");
   });
 
   it("counts the APPS_OPEN rows by application under Unknowns, bundle ids only", () => {
