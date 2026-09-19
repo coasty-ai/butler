@@ -159,9 +159,10 @@ function clean(text: string): string {
     .replace(/\s*[—–]\s*/g, ", ")
     .replace(QUOTES, "");
   // Never the wake phrase itself. The product name ("I'm Butler") is fine:
-  // listening pauses while replies play, and the wake phrase must start an
-  // utterance with "hey". The name is never respelled for the ear here: this
-  // text also goes to iMessage and the phone, where it must read Butler.
+  // listening pauses while replies play, and the name wakes only at the start
+  // of an utterance, behind its gate. The name is never respelled for the ear
+  // here: this text also goes to iMessage and the phone, where it must read
+  // Butler.
   s = s.replace(WAKE_PHRASE_ALL, "");
   return s
     .replace(/\s+([.,!?;:])/g, "$1")

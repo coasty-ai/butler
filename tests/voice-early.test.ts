@@ -88,6 +88,7 @@ describe("leadingClause", () => {
     ["and open Slack and", open("Slack", "boundary")],
     ["Okay, so open Slack and", open("Slack", "boundary")],
     ["Hey Butler open Slack and", open("Slack", "boundary")],
+    ["Butler, open Slack and", open("Slack", "boundary")],
     ["um open uh Slack and", open("Slack", "boundary")],
     // Every early verb, for an app.
     ["open up Slack and", open("Slack", "boundary")],
@@ -188,6 +189,7 @@ describe("leadingClause", () => {
     ["open up", undefined],
     ["go to", undefined],
     ["Hey Butler", undefined],
+    ["Butler", undefined],
     ["stop", undefined],
     ["", undefined],
   ];
@@ -808,6 +810,7 @@ describe("ClauseTracker", () => {
       "Start a timer and",
       "Type hello and",
       "Hey Butler",
+      "Butler",
     ])
       expect(
         play([

@@ -1,15 +1,16 @@
 import Foundation
 
-// MARK: - The wake phrase: "Hey Butler"
+// MARK: - The wake phrase: "Hey Butler", or just "Butler"
 //
-// The product is written Butler and its wake phrase is "Hey Butler" (BUT-ler), but people read
-// Butler aloud three ways: BUT-ler, EYE-sah and the letters Butler. The matcher accepts every
-// spelling a recognizer wrote for any of the three in the speech test, and nothing more
-// (.data/names/butler-speech.log §4, §6; tests/fixtures/voice-phrases.json "wake" pins them
-// for native and TypeScript alike). "Butler" has the shape of "is a", "ice a", "eyes a" and
-// "easy": biased toward the name, a recognizer writes "Hey, is a table free?" as "Hey Butler
-// table free?". So the name counts only when a pause (punctuation, or a hesitation such
-// as "um"), the end of the utterance, a task verb or a question opener follows it.
+// The product is written Butler and answers to "Hey Butler" or to the bare name at the start
+// of an utterance (the owner, 2026-09-19: "start phrase to be hey butler or butler"); the
+// "Hey" is optional, never required. The matcher accepts every spelling a recognizer wrote
+// for the name in the speech test, and nothing more (.data/names/butler-speech.log §4, §6;
+// tests/fixtures/voice-phrases.json "wake" pins them for native and TypeScript alike).
+// Biased toward the name, a recognizer writes "Hey, is a table free?" as "Hey Butler table
+// free?", and a sentence about a butler can open with the word. So the name counts only when
+// a pause (punctuation, or a hesitation such as "um"), the end of the utterance, a task verb,
+// a control or reply word or a question opener follows it, with or without the "Hey".
 
 // The name as the recognizer writes it: Butler, Butler, Butler, Butler, and the BUT-ler and
 // EYE-sah spellings. Never "is a", "Lisa", "Isaac", "Aisha", "ISO", "USA" or "the Butler".
@@ -21,6 +22,8 @@ let wakeNamePattern = #"(?:butt?l[ae]r|budler|butla|batala)"#
 // No spelling runs "Hey" into "Butler": the fused branch never matches.
 let fusedWakePattern = #"(?!)"#
 let wakeHeyPattern = #"(?:hey|hay|hi|hei)"#
+// The wake phrase as spoken: the name after its lead, or the name alone.
+let wakePhrasePattern = #"(?:\#(wakeHeyPattern)[\s,]+)?\#(wakeNamePattern)"#
 let wakeOpeners = ["what", "whats", "when", "where", "who", "why", "how", "can", "could", "would", "will", "please",
     "tell", "give", "i", "im", "let", "lets",
     // Yes/no and status questions: "Hey Butler anything on my calendar", "is Slack open",
@@ -45,19 +48,19 @@ private func wakeGate(openers: Bool, ended: Bool) -> String {
     let apart = ended ? #"(?=\s*(?:\#(wakePause)|$))"# : #"(?=\s*\#(wakePause))"#
     let verb = #"(?=\s+(?:\#(wakeVerbs))\b)"#
     // A question opener, or the wake phrase said again ("Hey Butler hey Butler open Safari").
-    let opener = #"(?=\s+(?:\#(wakeOpenersPattern))\b|\s+\#(wakeHeyPattern)[\s,]+\#(wakeNamePattern)(?![a-z]))"#
+    let opener = #"(?=\s+(?:\#(wakeOpenersPattern))\b|\s+\#(wakePhrasePattern)(?![a-z]))"#
     return "(?:" + apart + "|" + verb + (openers ? "|" + opener : "") + ")"
 }
 private func wakeRegex(_ pattern: String) -> NSRegularExpression {
     try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
 }
 private func activation(ended: Bool) -> NSRegularExpression {
-    wakeRegex(#"^\s*(?:\#(wakeHeyPattern)[\s,]+\#(wakeNamePattern)(?![a-z])\#(wakeGate(openers: true, ended: ended))|\#(fusedWakePattern)(?![a-z])\#(wakeGate(openers: false, ended: ended)))[\s,.:;!?—-]*"#)
+    wakeRegex(#"^\s*(?:\#(wakePhrasePattern)(?![a-z])\#(wakeGate(openers: true, ended: ended))|\#(fusedWakePattern)(?![a-z])\#(wakeGate(openers: false, ended: ended)))[\s,.:;!?—-]*"#)
 }
 private let endedActivation = activation(ended: true)
 private let liveActivation = activation(ended: false)
-private let wakePrefix = wakeRegex(#"^\s*(?:\#(wakeHeyPattern)[\s,]+\#(wakeNamePattern)|\#(fusedWakePattern))(?![a-z])[\s,.:;!?—-]*"#)
-private let wakeAlone = wakeRegex(#"^\s*(?:\#(wakeHeyPattern)[\s,]+\#(wakeNamePattern)|\#(fusedWakePattern))(?![a-z])\s*$"#)
+private let wakePrefix = wakeRegex(#"^\s*(?:\#(wakePhrasePattern)|\#(fusedWakePattern))(?![a-z])[\s,.:;!?—-]*"#)
+private let wakeAlone = wakeRegex(#"^\s*(?:\#(wakePhrasePattern)|\#(fusedWakePattern))(?![a-z])\s*$"#)
 
 private func textAfter(_ expression: NSRegularExpression, in text: String) -> String? {
     guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
@@ -66,16 +69,18 @@ private func textAfter(_ expression: NSRegularExpression, in text: String) -> St
 }
 
 // Background words never leave the voice process. The wake phrase must start an utterance;
-// mentioning it inside a sentence cannot turn that sentence into a task. ended: the text is
-// the whole utterance (a final result, or a finished segment). A live partial that stops
-// right at the name is not "apart" yet: the next word may still be "table free?", so it
-// waits for that word, a final, or a real pause (wakePhraseAwaitingPause).
+// mentioning it inside a sentence cannot turn that sentence into a task ("the butler did it",
+// "my butler is late"). ended: the text is the whole utterance (a final result, or a finished
+// segment). A live partial that stops right at the name is not "apart" yet: the next word may
+// still be "table free?", so it waits for that word, a final, or a real pause
+// (wakePhraseAwaitingPause). Inside a turn already listening, a later segment that opens this
+// way is the user starting over (requestSegments, TurnPolicy.swift): the same test.
 func commandAfterWakePhrase(_ text: String, ended: Bool = true) -> String? {
     textAfter(ended ? endedActivation : liveActivation, in: text)
 }
 
-// A live partial that is the wake phrase and nothing else ("Hey Butler" said, then silence).
-// The caller activates once wakePauseElapsed says the speaker really paused.
+// A live partial that is the wake phrase and nothing else ("Hey Butler", or "Butler", said,
+// then silence). The caller activates once wakePauseElapsed says the speaker really paused.
 func wakePhraseAwaitingPause(_ text: String) -> Bool {
     wakeAlone.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
 }
@@ -99,8 +104,9 @@ func wakePauseElapsed(now: TimeInterval, lastText: TimeInterval, lastSpeech: Tim
 let standbyUtteranceGapSeconds = 0.6
 /// The offset in `current` at which the latest utterance begins. It moves to the end of
 /// `previous` when whole new words were appended after a pause, unless the words since the
-/// last boundary are "Hey" or the wake phrase itself (the speaker, or the recognizer, paused
-/// there: live 2026-09-19, "Hey" arrived, the rest 0.8 s later). A first word still being
+/// last boundary are "Hey" or the wake phrase itself, "Hey Butler" or the bare name (the
+/// speaker, or the recognizer, paused there: live 2026-09-19, "Hey" arrived, the rest 0.8 s
+/// later). A first word still being
 /// spelled out ("He" then "Hey Butler") is the recognizer catching up, not a pause. A revision
 /// of earlier text keeps the boundary while it still fits: a misplaced boundary can only miss.
 func utteranceBoundary(previous: String, current: String, boundary: Int, gapSeconds: Double) -> Int {
@@ -116,28 +122,6 @@ private let openerAlone = wakeRegex(#"^\s*\#(wakeHeyPattern)[,.!?]*\s*$"#)
 /// "Hey" and nothing else yet: the wake phrase may be on its way.
 func wakeOpenerAlone(_ text: String) -> Bool {
     openerAlone.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
-}
-
-// Inside a turn that is already listening, a later segment that opens by addressing
-// the assistant again is the user starting over: the wake phrase itself, or the bare
-// name, which is how the recognizer reports a repeated "Hey Butler" at a segment start
-// (live, with the old name: "…at 6 PM" then "Assist open calendar and put an event…").
-// The bare name counts only when it stands apart (punctuation or nothing after it) or a
-// task verb follows it, so "Butler's number is 555" and "ESA launched a satellite" are
-// words. The echo spellings ("Hey sir", "I say", "I saw") never restart: they are
-// ordinary speech, and only the first segment's echo strip, right after a real
-// activation, may drop them. Activation from standby is not widened.
-private let bareWakeName = wakeRegex(#"^\s*(?:\#(wakeNamePattern)|\#(fusedWakePattern))(?![a-z])"#)
-func commandAfterWakeRestart(_ text: String) -> String? {
-    if let rest = commandAfterWakePhrase(text) { return rest }
-    guard let match = bareWakeName.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-          let end = Range(match.range, in: text)?.upperBound else { return nil }
-    let after = text[end...].drop(while: { $0.isWhitespace })
-    let rest = String(after.drop(while: { $0.isWhitespace || ",.:;!?—-".contains($0) })).trimmingCharacters(in: .whitespacesAndNewlines)
-    // The letters form swallows its own final dot ("Butler"), so a dot here is a real pause.
-    let apart = rest.isEmpty || after.first.map { ",.:;!?—-".contains($0) } == true
-    let next = rest.split(whereSeparator: { $0.isWhitespace }).first.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) } ?? ""
-    return apart || actionVerbs.contains(next) ? rest : nil
 }
 
 // Once the wake phrase has opened a command window, the recognizer may report
@@ -178,8 +162,9 @@ func recognizerVocabulary(_ phrases: [String]) -> [String] {
 // toward app names costs any wake detections is for the live trial. A command turn (push-to-talk,
 // or a rotation inside a turn) carries the vocabulary alone: the wake phrase is not a command
 // word, and biased toward the name a recognizer once wrote "this is a test" as "this ISA test".
-// The bare name is in the vocabulary so a restart ("Butler, open Notes") is heard.
-func recognizerContext(ambient: Bool, vocabulary: [String]) -> [String] { ambient ? ["Hey Butler"] + vocabulary : vocabulary }
+// The wake phrase is biased with and without its lead, since the bare name wakes too; with the
+// vocabulary's 90 that is 92 phrases, within Apple's 100.
+func recognizerContext(ambient: Bool, vocabulary: [String]) -> [String] { ambient ? ["Hey Butler", "Butler"] + vocabulary : vocabulary }
 
 // Whether a recognizer result opens with the wake phrase: diagnostics labels, and the words the
 // self-echo filter never drops (isSelfEcho). Activation itself keeps its gate.

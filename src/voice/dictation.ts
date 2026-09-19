@@ -19,7 +19,7 @@
  * rather than words to put down ("write an email to Dana", "write back"), a
  * pointer alone ("type that again"), and any mention of a password.
  */
-import { WAKE_HEY, WAKE_NAME, restartedTurn } from "./turns";
+import { WAKE_CALL, restartedTurn } from "./turns";
 
 /**
  * Spoken marks, of one or two words, and what they write. Every quote phrase
@@ -121,9 +121,9 @@ export function normalizeDictation(text: string): string {
   return out.trim();
 }
 
-/** The activation phrase at the start, as native strips it (WakePolicy.swift). */
+/** The wake phrase at the start, with or without "hey", as native strips it (WakePolicy.swift). */
 const LEADING_WAKE = new RegExp(
-  String.raw`^\s*${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z])[\s,.:;!?—-]*`,
+  String.raw`^\s*${WAKE_CALL}(?![a-z])[\s,.:;!?—-]*`,
   "iu",
 );
 const LEAD =

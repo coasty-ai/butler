@@ -35,8 +35,7 @@ import {
   domainHost,
 } from "../core/places";
 import {
-  WAKE_HEY,
-  WAKE_NAME,
+  WAKE_CALL,
   isWakePhraseOnly,
   restartedTurn,
   voiceIntent,
@@ -98,9 +97,9 @@ export const EARLY_GENERIC_NAMES = wordSet(
 const TRANSPARENT = wordSet("please now");
 const APP_WORDS = wordSet("app application");
 const FOLDER_WORD = "folder";
-/** The activation phrase at the start, as native strips it (WakePolicy.swift). */
+/** The wake phrase at the start, with or without "hey", as native strips it (WakePolicy.swift). */
 const LEADING_WAKE = new RegExp(
-  String.raw`^\s*${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z])[\s,.:;!?—-]*`,
+  String.raw`^\s*${WAKE_CALL}(?![a-z])[\s,.:;!?—-]*`,
   "iu",
 );
 

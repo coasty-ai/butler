@@ -172,7 +172,7 @@
     "search for cats"
   ],
   "wake": {
-    "_note": "Hey Butler: the spellings whisper wrote for \"Butler\" across six voices (.data/names/butler-speech.log, .data/names/asr/out-*.results.tsv for Butler), plus the gate and the everyday phrases that must never wake it. Read by tests/native/TurnPolicyTests.swift and tests/voice-turns.test.ts.",
+    "_note": "Hey Butler, or just Butler (the owner, 2026-09-19): the spellings whisper wrote for \"Butler\" across six voices (.data/names/butler-speech.log, .data/names/asr/out-*.results.tsv for Butler), plus the gate and the everyday phrases that must never wake it. Read by tests/native/TurnPolicyTests.swift and tests/voice-turns.test.ts.",
     "names": [
       "Butler",
       "butler",
@@ -296,6 +296,30 @@
       {
         "in": "hey butler do I have meetings today",
         "out": "do I have meetings today"
+      },
+      {
+        "in": "Butler, open Notes",
+        "out": "open Notes"
+      },
+      {
+        "in": "butler what time is it",
+        "out": "what time is it"
+      },
+      {
+        "in": "Butler",
+        "out": ""
+      },
+      {
+        "in": "Butler stop",
+        "out": "stop"
+      },
+      {
+        "in": "Butler sure go for it",
+        "out": "sure go for it"
+      },
+      {
+        "in": "Buttler open Safari",
+        "out": "open Safari"
       }
     ],
     "activateFused": [],
@@ -318,7 +342,12 @@
       "Hey, but I saw your message.",
       "Hey sir, can I help you with that?",
       "his assistant will send it",
-      "assist the customer with the move"
+      "assist the customer with the move",
+      "Butler's number is 555",
+      "Butlers are rare these days",
+      "a butler opened the door",
+      "my butler is late",
+      "the butler did it"
     ],
     "restart": [
       {
@@ -395,7 +424,13 @@
         "out": "A sister told me"
       }
     ],
-    "liveWaits": ["Hey Butler", "hey butler", "Hey, Buttler", "Hey Batala"],
+    "liveWaits": [
+      "Hey Butler",
+      "hey butler",
+      "Hey, Buttler",
+      "Hey Batala",
+      "Butler"
+    ],
     "liveActivates": [
       {
         "in": "Hey Butler open",
@@ -420,9 +455,24 @@
       {
         "in": "Hey Butler thanks",
         "out": "thanks"
+      },
+      {
+        "in": "Butler open",
+        "out": "open"
+      },
+      {
+        "in": "Butler,",
+        "out": ""
       }
     ],
-    "liveNever": ["Hey Butler's", "Hey Butlers", "Hey", "Butler", "Hey but a"]
+    "liveNever": [
+      "Hey Butler's",
+      "Hey Butlers",
+      "Hey",
+      "Butler's",
+      "Butlers",
+      "Hey but a"
+    ]
   },
   "assistantPhrases": [
     "On it.",

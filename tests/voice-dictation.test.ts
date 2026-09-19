@@ -45,6 +45,7 @@ describe("dictationRequest", () => {
     ["please type hello world", "Hello world"],
     ["okay so can you type hello world", "Hello world"],
     ["Hey Butler type hello world", "Hello world"],
+    ["Butler, type hello world", "Hello world"],
     ["type: hello", "Hello"],
     ["type, hello", "Hello"],
     ["dictate see you at six comma maybe seven", "See you at six, maybe seven"],

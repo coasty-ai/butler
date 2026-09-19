@@ -95,6 +95,10 @@ describe("intent normalization", () => {
       "Hi Buttler",
       "hey hey butler butler",
       "Hey Batala",
+      // The bare name is the wake phrase too.
+      "Butler",
+      "butler.",
+      "Butler!",
     ]) {
       expect(isWakePhraseOnly(text)).toBe(true);
       expect(
@@ -128,8 +132,10 @@ describe("intent normalization", () => {
   });
   // tests/fixtures/voice-phrases.json "wake": the same accept, gate and
   // never-accept cases native reads (TurnPolicyTests.swift). Native activates
-  // at the start of an utterance; here the same phrase said again inside a
-  // turn restarts it, gated the same way.
+  // at the start of an utterance, on "Hey Butler" or the bare name; here the
+  // phrase with its lead said again inside a turn restarts it, gated the same
+  // way, and the bare name inside a turn is a word unless the request repeats
+  // after it.
   describe("the shared wake fixture", () => {
     const wake = fixture.wake;
     it("restarts at every spelling of the name, gated like native activation", () => {
@@ -144,6 +150,7 @@ describe("intent normalization", () => {
         const gated = `open mail hey ${name} the weather`;
         expect(restartedTurn(gated, 1)).toEqual({ text: gated, segments: 1 });
         expect([name, isWakePhraseOnly(`Hey ${name}`)]).toEqual([name, true]);
+        expect([name, isWakePhraseOnly(name)]).toEqual([name, true]);
         expect(
           restartedTurn(`open calendar at 6 ${name} open calendar at 7`).text,
         ).toBe("open calendar at 7");
@@ -153,9 +160,13 @@ describe("intent normalization", () => {
     });
     it("splits where native activation strips", () => {
       for (const { in: said, out } of wake.activate) {
-        const heard = restartedTurn(`open mail ${said}`, 1);
-        // The same phrase said twice leaves its second copy to native's strip.
-        const expected = out.replace(/^hey butler\s+/i, "") || "open mail";
+        const text = `open mail ${said}`;
+        const heard = restartedTurn(text, 1);
+        // The same phrase said twice leaves its second copy to native's strip;
+        // the bare name inside a turn leaves the turn as it was.
+        const expected = /^(?:hey|hay|hi|hei)\b/i.test(said)
+          ? out.replace(/^hey butler\s+/i, "") || "open mail"
+          : text;
         expect([said, heard.text]).toEqual([said, expected]);
         expect([said, isWakePhraseOnly(said)]).toEqual([said, out === ""]);
       }

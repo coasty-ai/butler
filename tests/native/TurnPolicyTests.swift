@@ -560,7 +560,7 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
         let completeness = utteranceCompleteness(phrase, context: .command)
         check(completeness == (isControlPhrase(phrase) ? .control : .complete), "fixture complete: \(phrase)")
     }
-    // "Hey Butler": the accept, gate and never-accept lists TypeScript reads too (voice-turns.test.ts).
+    // "Hey Butler", or just "Butler": the accept, gate and never-accept lists TypeScript reads too (voice-turns.test.ts).
     let wake = fixture["wake"] as? [String: Any] ?? [:]
     func strings(_ key: String) -> [String] { wake[key] as? [String] ?? [] }
     func pairs(_ key: String) -> [(String, String)] {
@@ -572,8 +572,10 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     for name in strings("names") {
         check(commandAfterWakePhrase("Hey \(name), open Notes") == "open Notes", "every spelling of the name wakes: Hey \(name)")
         check(commandAfterWakePhrase("Hey \(name) the weather") == nil, "the gate applies to every spelling: Hey \(name) the weather")
-        check(commandAfterWakeRestart("\(name) open Notes") == "open Notes" && commandAfterWakePhrase("\(name) open Notes") == nil,
-              "the bare name restarts but never wakes: \(name)")
+        check(commandAfterWakePhrase("\(name) open Notes") == "open Notes" && commandAfterWakePhrase("\(name) the weather") == nil,
+              "the bare name wakes, behind the same gate: \(name)")
+        check(commandAfterWakePhrase("\(name)", ended: false) == nil && wakePhraseAwaitingPause("\(name)") && commandAfterWakePhrase("\(name)") == "",
+              "a lone bare name waits for the pause like a lone wake phrase: \(name)")
         check(stripWakeEcho("Hey \(name), open Notes") == "open Notes", "the first segment's strip knows every spelling: \(name)")
     }
     for fused in strings("fused") {
@@ -589,8 +591,9 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     for input in strings("neverActivate") {
         check(commandAfterWakePhrase(input) == nil && commandAfterWakePhrase(input, ended: false) == nil, "fixture never wakes: \(input)")
     }
-    for (input, output) in pairs("restart") { check(commandAfterWakeRestart(input) == output, "fixture restart: \(input)") }
-    for input in strings("neverRestart") { check(commandAfterWakeRestart(input) == nil, "fixture never restarts: \(input)") }
+    // A later segment that opens with the wake phrase restarts the turn on the activation test (requestSegments).
+    for (input, output) in pairs("restart") { check(commandAfterWakePhrase(input) == output, "fixture restart: \(input)") }
+    for input in strings("neverRestart") { check(commandAfterWakePhrase(input) == nil, "fixture never restarts: \(input)") }
     for (input, output) in pairs("echo") {
         check(stripWakeEcho(input) == output, "fixture wake echo: \(input)")
         if input != output && input.lowercased().hasPrefix("hey ") {

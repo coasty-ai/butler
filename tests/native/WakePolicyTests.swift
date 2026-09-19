@@ -16,11 +16,27 @@ func wakePolicyChecks(_ check: (Bool, String) -> Void) {
           "a task verb or a question opener after the name passes the gate")
     check(commandAfterWakePhrase("Yes") == nil, "ambient approval cannot wake assistant")
     check(commandAfterWakePhrase("Stop") == nil, "ambient command cannot wake assistant")
+    // The bare name at the start of an utterance activates like "Hey Butler", with the same gate
+    // (the owner, 2026-09-19: "start phrase to be hey butler or butler").
+    check(commandAfterWakePhrase("Butler, open Notes.") == "open Notes." && commandAfterWakePhrase("Butler open Notes") == "open Notes",
+          "the bare name at the start of an utterance activates like the wake phrase")
+    check(commandAfterWakePhrase("Butler") == "" && commandAfterWakePhrase("butler what time is it") == "what time is it",
+          "a lone name opens the command window; a question opener after it passes the gate")
+    check(commandAfterWakePhrase("Butler the weather") == nil && commandAfterWakePhrase("Butler table free?") == nil,
+          "the bare name keeps the gate: an ordinary word after it stays asleep")
+    check(commandAfterWakePhrase("Butler's number is 555") == nil && commandAfterWakePhrase("Butlers are rare these days") == nil,
+          "a possessive or plural is a word")
+    check(commandAfterWakePhrase("the butler did it") == nil && commandAfterWakePhrase("my butler is late") == nil,
+          "the name inside a sentence about a butler never activates")
+    check(commandAfterWakePhrase("Butler is late") == "is late", "the known false accept: a sentence about a butler that opens with the name and a question word wakes it, as \"Hey Butler is late\" would")
     // Live partials: a hypothesis that stops right at the name waits for the next word or a pause.
     check(commandAfterWakePhrase("Hey Butler", ended: false) == nil && wakePhraseAwaitingPause("Hey Butler"), "a live \"Hey Butler\" waits")
+    check(commandAfterWakePhrase("Butler", ended: false) == nil && wakePhraseAwaitingPause("Butler"), "a live lone \"Butler\" waits like a lone \"Hey Butler\"")
     check(commandAfterWakePhrase("Hey Butler open", ended: false) == "open", "a task verb arriving activates at once")
+    check(commandAfterWakePhrase("Butler open", ended: false) == "open" && commandAfterWakePhrase("Butler,", ended: false) == "",
+          "the bare name follows the live rules: a verb or recognizer punctuation activates at once")
     check(commandAfterWakePhrase("Hey Butler,", ended: false) == "", "recognizer punctuation is a pause")
-    check(!wakePhraseAwaitingPause("Hey Butler table") && !wakePhraseAwaitingPause("Butler") && !wakePhraseAwaitingPause("Hey"), "only the wake phrase alone waits for a pause")
+    check(!wakePhraseAwaitingPause("Hey Butler table") && !wakePhraseAwaitingPause("Butler's") && !wakePhraseAwaitingPause("Hey"), "only the wake phrase alone waits for a pause")
     check(!wakePauseElapsed(now: 10.59, lastText: 10, lastSpeech: 10) && wakePauseElapsed(now: 10.6, lastText: 10, lastSpeech: 10.3),
           "a lone wake phrase activates after 0.6 s of unchanged text and 0.3 s of quiet")
     check(!wakePauseElapsed(now: 11.1, lastText: 10, lastSpeech: 11.0), "speech still arriving keeps it waiting")
@@ -33,6 +49,8 @@ func wakePolicyChecks(_ check: (Bool, String) -> Void) {
           "words appended without a pause continue the utterance")
     check(utteranceBoundary(previous: "the meeting moved Hey Butler", current: "the meeting moved Hey Butler open Notes", boundary: 18, gapSeconds: 0.9) == 18,
           "a pause after a lone wake phrase keeps the utterance at the wake phrase")
+    check(utteranceBoundary(previous: "the meeting moved Butler", current: "the meeting moved Butler open Notes", boundary: 18, gapSeconds: 0.9) == 18,
+          "a pause after a lone bare name keeps the utterance at the name")
     check(utteranceBoundary(previous: "", current: "Hey Butler", boundary: 0, gapSeconds: 5) == 0, "the first words start at the start")
     check(utteranceBoundary(previous: "Hey", current: "Hey Butler what time is it", boundary: 0, gapSeconds: 0.8) == 0,
           "a stall after \"Hey\" keeps the utterance whole (live 2026-09-19)")
@@ -46,35 +64,34 @@ func wakePolicyChecks(_ check: (Bool, String) -> Void) {
           "a revision of earlier words keeps the boundary while it fits")
     check(commandAfterWakePhrase(String("the meeting moved to Thursday Hey Butler open Notes".dropFirst(29)), ended: false) == "open Notes",
           "the utterance after the boundary activates as if it had started the hypothesis")
-    check(recognizerContext(ambient: true, vocabulary: []) == ["Hey Butler"] && recognizerContext(ambient: false, vocabulary: []).isEmpty,
-          "without a vocabulary the recognizer is biased toward the wake phrase only while listening for it")
-    check(recognizerContext(ambient: true, vocabulary: ["TextEdit", "Calculator"]) == ["Hey Butler", "TextEdit", "Calculator"]
+    check(recognizerContext(ambient: true, vocabulary: []) == ["Hey Butler", "Butler"] && recognizerContext(ambient: false, vocabulary: []).isEmpty,
+          "without a vocabulary the recognizer is biased toward the wake phrase, with and without its lead, only while listening for it")
+    check(recognizerContext(ambient: true, vocabulary: ["TextEdit", "Calculator"]) == ["Hey Butler", "Butler", "TextEdit", "Calculator"]
           && recognizerContext(ambient: false, vocabulary: ["TextEdit", "Calculator"]) == ["TextEdit", "Calculator"],
           "the vocabulary rides on every request: ambient listening keeps the wake phrase first, a command turn carries the vocabulary alone")
     check(recognizerVocabulary(["  TextEdit ", "", "   ", "Visual  Studio\tCode", "textedit", String(repeating: "x", count: 41), String(repeating: "y", count: 40)])
           == ["TextEdit", "Visual Studio Code", String(repeating: "y", count: 40)],
           "the vocabulary is trimmed, collapsed, deduplicated regardless of case, and rid of empty or overlong phrases")
     let manyPhrases = (1...120).map { "App \($0)" }
-    check(recognizerVocabulary(manyPhrases) == Array(manyPhrases.prefix(90)) && recognizerContext(ambient: true, vocabulary: recognizerVocabulary(manyPhrases)).count == 91,
+    check(recognizerVocabulary(manyPhrases) == Array(manyPhrases.prefix(90)) && recognizerContext(ambient: true, vocabulary: recognizerVocabulary(manyPhrases)).count == 92,
           "at most 90 phrases are kept in the order sent, so with the wake phrase a request stays within Apple's 100")
-    check(commandAfterWakeRestart("Butler open calendar and put an event") == "open calendar and put an event", "the bare name restarts a turn already listening")
-    check(commandAfterWakeRestart("Butler, open Notes.") == "open Notes.", "restart ignores case and punctuation")
-    check(commandAfterWakeRestart("Hey, Butler! Stop.") == "Stop.", "the full wake phrase restarts")
-    check(commandAfterWakeRestart("Butler. Open Safari") == "Open Safari" && commandAfterWakeRestart("Butler — open, then close") == "open, then close", "the name set apart restarts")
-    check(commandAfterWakeRestart("Butler") == "" && commandAfterWakeRestart("Butler.") == "", "a lone wake phrase leaves nothing yet")
-    check(commandAfterWakeRestart("Butler open Safari") == "open Safari" && commandAfterWakeRestart("Butler in the UK, the allowance is twenty thousand pounds") == nil,
-          "the letters form keeps its own final dot, so a sentence about the savings account is not a restart")
-    check(commandAfterWakeRestart("Butler the weather in Denver") == nil && commandAfterWakeRestart("Esa launched a new satellite") == nil,
-          "the bare name followed by anything but a task verb is a word")
-    check(commandAfterWakeRestart("Butler's number is 555") == nil, "a possessive is a word")
-    check(commandAfterWakeRestart("Hey sir, can I help you with that?") == nil && commandAfterWakeRestart("I say we leave at six") == nil,
-          "an echo spelling never restarts")
-    check(commandAfterWakeRestart("go to Butler settings") == nil && commandAfterWakeRestart("ask it to assist") == nil, "the name inside a request does not restart")
-    check(commandAfterWakePhrase("Butler open Notes") == nil, "activation is not widened by restarts")
+    // A later segment inside a listening turn that opens with the wake phrase starts the request
+    // over (requestSegments): the same test as activation, so the same gate.
+    check(commandAfterWakePhrase("Butler open calendar and put an event") == "open calendar and put an event", "the bare name before a task verb")
+    check(commandAfterWakePhrase("Hey, Butler! Stop.") == "Stop.", "the full wake phrase, case and punctuation")
+    check(commandAfterWakePhrase("Butler. Open Safari") == "Open Safari" && commandAfterWakePhrase("Butler — open, then close") == "open, then close", "the name set apart")
+    check(commandAfterWakePhrase("Butler.") == "", "a lone name with its pause leaves nothing yet")
+    check(commandAfterWakePhrase("Butler in the UK, the allowance is twenty thousand pounds") == nil, "a sentence about the savings account is not addressed to it")
+    check(commandAfterWakePhrase("Butler the weather in Denver") == nil && commandAfterWakePhrase("Esa launched a new satellite") == nil,
+          "the bare name followed by an ordinary word is a word")
+    check(commandAfterWakePhrase("Hey sir, can I help you with that?") == nil && commandAfterWakePhrase("I say we leave at six") == nil,
+          "an echo spelling never activates or restarts")
+    check(commandAfterWakePhrase("go to Butler settings") == nil && commandAfterWakePhrase("ask it to assist") == nil, "the name inside a request is a word")
     check(activatedVoiceCommand("Hey Butler, open Notes") == "open Notes", "activated session strips repeated wake prefix")
+    check(activatedVoiceCommand("Butler, open Notes") == "open Notes", "activated session strips the bare name too")
     check(activatedVoiceCommand("Hey Butler the weather in Denver") == "the weather in Denver",
           "after a real activation the prefix goes whatever follows it (\"Hey Butler\", a pause, then the request)")
-    check(startsWithWakePhrase("Hey Butler table") && !startsWithWakePhrase("open notes"), "diagnostics label wake-prefixed segments")
+    check(startsWithWakePhrase("Hey Butler table") && startsWithWakePhrase("Butler table") && !startsWithWakePhrase("open notes"), "diagnostics label wake-prefixed segments")
     check(activatedVoiceCommand("Open Notes") == "Open Notes", "activated session retains a new command-only speech segment")
     check(activatedVoiceCommand("Yes") == "Yes", "activated approval remains available for final confidence gating")
     check(resolveVoiceFinal(command:"", latest:"Open Notes and write a note", released:true) == .recovered("Open Notes and write a note"), "empty final marker retains an endpointed command")

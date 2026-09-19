@@ -261,10 +261,12 @@ struct TurnTranscript: Equatable {
 
 /**
  The segments the request is made of, oldest first, with their confidences (nil when
- never finalized). A later segment that opens with the wake phrase is the user starting
- over (live: the request, then "Assist open calendar and put an event…" merged into one
- doubled task), so only the words after the last one count. A wake phrase with nothing
- after it yet leaves the request as it was; the segment that follows it starts over.
+ never finalized). A later segment that opens with the wake phrase ("Hey Butler" or the bare
+ name, behind the activation gate) is the user starting over (live: the request, then "Assist
+ open calendar and put an event…" merged into one doubled task), so only the words after the
+ last one count. A wake phrase with nothing after it yet leaves the request as it was; the
+ segment that follows it starts over. The echo spellings ("Hey sir", "I say") never restart:
+ they are ordinary speech, and only the first segment's echo strip may drop them.
  */
 func requestSegments(_ transcript: TurnTranscript) -> [(text: String, confidence: Double?)] {
     let heard: [(String, Double?)] = zip(transcript.committed, transcript.confidences).map { ($0, $1) } + [(transcript.current, nil)]
@@ -272,7 +274,7 @@ func requestSegments(_ transcript: TurnTranscript) -> [(text: String, confidence
     for (segment, confidence) in heard {
         let clean = segment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { continue }
-        if !kept.isEmpty || restarting, let rest = commandAfterWakeRestart(clean) {
+        if !kept.isEmpty || restarting, let rest = commandAfterWakePhrase(clean) {
             if rest.isEmpty { restarting = true } else { kept = [(rest, confidence)]; restarting = false }
         } else if restarting {
             kept = [(clean, confidence)]; restarting = false

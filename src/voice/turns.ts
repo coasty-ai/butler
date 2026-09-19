@@ -900,20 +900,22 @@ const TERMINAL = new Set(["completed", "cancelled", "failed"]);
  * calls Conversation.acknowledge(plan).
  */
 /**
- * The wake name as a recognizer writes it, for all three readings of Butler
- * (BUT-ler, EYE-sah and the letters Butler), exactly as native wakeNamePattern
+ * The wake name as a recognizer writes it, exactly as native wakeNamePattern
  * (WakePolicy.swift): the speech test's accept list
  * (.data/names/butler-speech.log §6). tests/fixtures/voice-phrases.json "wake"
  * pins both sides. Never "but a lot", "butter", "bottle", "Butlers" or "Butler's".
- * The spelled form keeps its own final dot: a(?:\.|(?!\.)) cannot hand it
- * back to the gate as a pause.
  */
 export const WAKE_NAME = String.raw`(?:butt?l[ae]r|budler|butla|batala)`;
 /** No spelling runs "Hey" into "Butler": mirrors native fusedWakePattern. */
-// No spelling runs "Hey" into "Butler": the fused branch never matches.
 export const FUSED_WAKE = String.raw`(?!)`;
 /** The words that may lead the name. */
 export const WAKE_HEY = "(?:hey|hay|hi|hei)";
+/**
+ * The wake phrase as spoken, "Hey Butler" or just "Butler": the name after its
+ * lead, or the name alone (native wakePhrasePattern). The lead is optional,
+ * never required.
+ */
+export const WAKE_CALL = String.raw`(?:${WAKE_HEY}[\s,]+)?${WAKE_NAME}`;
 const WAKE_FOLLOWERS = [
   ...ACTION_VERBS,
   // Control words (native wakeControlWords): "Hey Butler stop" never waits.
@@ -931,17 +933,17 @@ const WAKE_FOLLOWERS = [
 ];
 /**
  * The gate: "Butler" has the shape of "is a", so a biased recognizer writes
- * "Hey, is a table free?" as "Hey Butler table free?". The name counts only when
- * a pause (punctuation, or a hesitation such as "um"), the end, a task or
- * control verb, a question opener or the wake phrase again follows it
- * (native wakeGate).
+ * "Hey, is a table free?" as "Hey Butler table free?", and a sentence about a
+ * butler can open with the word. The name counts only when a pause
+ * (punctuation, or a hesitation such as "um"), the end, a task or control
+ * verb, a question opener or the wake phrase again follows it (native wakeGate).
  */
-const WAKE_GATE = String.raw`(?=\s*(?:[,.:;!?—-]|(?:um|uh|uhm|umm|er|erm|hmm|hm|mm)\b|$)|\s+(?:${WAKE_FOLLOWERS.join("|")})\b|\s+${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z]))`;
+const WAKE_GATE = String.raw`(?=\s*(?:[,.:;!?—-]|(?:um|uh|uhm|umm|er|erm|hmm|hm|mm)\b|$)|\s+(?:${WAKE_FOLLOWERS.join("|")})\b|\s+${WAKE_CALL}(?![a-z]))`;
 
 /**
  * A turn that is only the wake phrase, in any accepted spelling ("Hey Butler",
- * "Hey Butler"), matched on intentKey, which has already dropped a
- * leading "hey" and spelled "Butler" out as "i s a".
+ * "Hi Buttler", or the bare "Butler"), matched on intentKey, which has already
+ * dropped a leading "hey".
  */
 const WAKE_ONLY =
   /^(?:(?:hay|hi|hei|his|a)\s+)?(?:butler|buttler|butlar|budler|butla|batala)$/;
@@ -984,9 +986,10 @@ export function isWakePhraseOnly(text: string): boolean {
 }
 
 /**
- * The activation phrase anywhere in spoken text, gated as native
- * commandAfterWakePhrase (WakePolicy.swift) gates it at the start. "Hey"
- * run into the name counts only at the very start, which native handles.
+ * The wake phrase with its lead anywhere in spoken text, gated as native
+ * commandAfterWakePhrase (WakePolicy.swift) gates it at the start. Native
+ * also takes the bare name at the start of an utterance; inside a sentence
+ * the bare name is a word unless the request repeats after it (BARE_NAME).
  */
 const WAKE_PHRASE = new RegExp(
   String.raw`\b${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z])${WAKE_GATE}[\s,.:;!?—-]*`,
