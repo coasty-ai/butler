@@ -187,12 +187,121 @@ describe("runner recovery from model output", () => {
     });
     expect(m.of("ActionFailed")[0].data).toEqual({
       code: "MALFORMED_RESPONSE",
+      problem: "Expected one action",
     });
     const last = p.observations[1].history.at(-1)!;
     expect(last.type).toBe("rejected");
     expect(last.result).toContain("Expected one action");
     expect(last.result).toContain("the frame_id from the current context");
     expect(JSON.stringify(p.observations[1].history)).not.toMatch(/frame-\d/);
+  });
+  // Live 2026-09-19 (two gpt-5.4-mini cycles, 11 of 733 model calls): the
+  // provider answered "The action arguments were not valid JSON." and the
+  // runner asked again with a generic line. The reply now carries the
+  // provider's own remedy for its request format, the failure event carries
+  // the fixed problem, and the corrected step runs on the very next call.
+  it("asks again after a malformed reply with the provider's remedy, then executes the corrected step", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller();
+    const p = scripted([
+      () => ({
+        action: undefined,
+        problem: "The action arguments were not valid JSON.",
+        remedy:
+          "Call coarena_action once with action set to the action object itself.",
+        usage: { inputTokens: 10, outputTokens: 5, cost: 0.01 },
+      }),
+      act({ type: "click", x: 0.5, y: 0.5 }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    const watched = new Set([
+      "ModelRequestStarted",
+      "ModelResponseReceived",
+      "ActionFailed",
+      "ActionExecuted",
+      "RunPaused",
+    ]);
+    expect(m.events.map((e) => e.type).filter((t) => watched.has(t))).toEqual([
+      "ModelRequestStarted",
+      "ModelResponseReceived",
+      "ActionFailed",
+      "ModelRequestStarted",
+      "ModelResponseReceived",
+      "ActionExecuted",
+      "ModelRequestStarted",
+      "ModelResponseReceived",
+    ]);
+    expect(m.of("ActionFailed")[0].data).toEqual({
+      code: "MALFORMED_RESPONSE",
+      problem: "The action arguments were not valid JSON.",
+    });
+    const rejection = p.observations[1].history.at(-1)!;
+    expect(rejection.type).toBe("rejected");
+    expect(rejection.result).toContain("not valid JSON");
+    expect(rejection.result).toContain("action set to the action object");
+    expect(rejection.result).toContain("the frame_id from the current context");
+    expect(c.execute).toHaveBeenCalledTimes(1);
+  });
+  it("treats a repaired object the schema rejects as a malformed reply, not an invalid action", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller();
+    const p = scripted([
+      (o) => ({
+        // The provider dug this out of prose or a fence: a guess, not a
+        // clean reply, so a schema failure is the reply's fault.
+        action: { type: "launch_rocket", frame_id: o.frame.id, payload: "x" },
+        repaired: true,
+        remedy: "Reply with one JSON action object and nothing else.",
+      }),
+      act({ type: "click", x: 0.5, y: 0.5 }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("ActionFailed").map((e) => e.data.code)).toEqual([
+      "MALFORMED_RESPONSE",
+    ]);
+    expect(typeof m.of("ActionFailed")[0].data.problem).toBe("string");
+    const rejection = p.observations[1].history.at(-1)!;
+    expect(rejection.type).toBe("rejected");
+    expect(rejection.action).toBeUndefined();
+    expect(rejection.result).toContain("not exactly one action");
+    expect(rejection.result).toContain("one JSON action object");
+    expect(JSON.stringify(p.observations[1].history)).not.toContain(
+      "launch_rocket",
+    );
+    expect(c.execute).toHaveBeenCalledTimes(1);
+  });
+  it("keeps a clean invalid action an INVALID_ACTION with its cause, and pauses at the shared budget of four", async () => {
+    const m = memory();
+    const p = scripted([
+      () => ({ action: undefined, problem: "No tool call" }),
+      act({ type: "launch_rocket" }),
+      () => ({ action: undefined, problem: "No tool call" }),
+      act({ type: "launch_rocket" }),
+      // Never reached before the pause: the budget is four, not five.
+      act({ type: "launch_rocket" }),
+    ]);
+    const runner = new Runner(controller(), p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(p.next).toHaveBeenCalledTimes(4);
+    expect(m.of("ActionFailed").map((e) => e.data.code)).toEqual([
+      "MALFORMED_RESPONSE",
+      "INVALID_ACTION",
+      "MALFORMED_RESPONSE",
+      "INVALID_ACTION",
+    ]);
+    expect(m.of("ActionFailed")[1].data.cause).toBe("UNKNOWN_TYPE");
+    expect(m.of("ActionFailed")[3].data.cause).toBe("UNKNOWN_TYPE");
+    expect(m.of("RunPaused")).toHaveLength(1);
+    await runner.resume();
+    await running;
+    expect(runner.snapshot.run?.status).toBe("completed");
   });
   it("pauses after four consecutive invalid replies instead of failing", async () => {
     const m = memory();

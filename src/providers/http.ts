@@ -15,13 +15,29 @@ import { redactSecrets } from "../core/sanitize";
 import { ProviderTransientError } from "../core/errors";
 import { networkFailure, retryDelay } from "./network";
 import { errorDetails, trace, type DiagnosticSink } from "../core/diagnostics";
+import {
+  normalizeActionObject,
+  repairJsonObject,
+  strictActionParameters,
+  type ArgumentShape,
+} from "./action-format";
+export { singleJsonObject } from "./action-format";
 
 class ProviderResponseError extends Error {}
 /**
  * The HTTP exchange succeeded but the model did not produce one usable action.
- * The message is always one of the fixed, content-free problem strings below.
+ * The message is always one of the fixed, content-free problem strings below;
+ * the shape, when the arguments were not JSON, describes them by counts,
+ * flags and a code (src/providers/action-format.ts), never by their text.
  */
-class ModelOutputProblem extends Error {}
+class ModelOutputProblem extends Error {
+  constructor(
+    message: string,
+    readonly shape?: ArgumentShape,
+  ) {
+    super(message);
+  }
+}
 export const providerProblems = {
   noCall: "The response contained no action tool call.",
   multiple: "The response contained more than one action.",
@@ -29,6 +45,26 @@ export const providerProblems = {
   truncated: "The response was truncated before an action was produced.",
   refused: "The model declined this step.",
 } as const;
+/**
+ * What the model reads after a reply that was not one action: how to shape
+ * the next one for the request format this provider uses. Fixed text; the
+ * runner writes it into the rejection in history.
+ */
+export const providerRemedies = {
+  object:
+    "Call coarena_action once with action set to the action object itself, never JSON text; in a tool_call, args_json holds the tool's arguments as one JSON-encoded object.",
+  encoded:
+    "Call coarena_action once with action_json set to one JSON-encoded action object: escape every quote and newline inside it, and add no prose, code fence or second object.",
+  plain:
+    "Reply with one JSON action object and nothing else: no prose, code fence or second object.",
+} as const;
+export function remedyFor(kind: Settings["provider"]): string {
+  return kind === "openai"
+    ? providerRemedies.object
+    : kind === "ollama"
+      ? providerRemedies.plain
+      : providerRemedies.encoded;
+}
 
 // Shared by every provider. It must not contain per-request data so provider
 // prompt caches stay warm across steps and runs.
@@ -48,6 +84,12 @@ Actions (each is a JSON object with type and frame_id plus only the listed field
 const toolInstruction =
   core +
   " Return exactly one action per response by calling coarena_action once with action_json set to the JSON-encoded action object.";
+// OpenAI: the tool's schema is the action itself (strictActionParameters), so
+// the call carries the object, not its JSON text; only tool_call's free-form
+// arguments still travel encoded, in args_json.
+const objectToolInstruction =
+  core +
+  ' Return exactly one action per response by calling coarena_action once with action set to the action object itself, never as JSON text; in a tool_call, args_json holds the tool\'s arguments as one JSON-encoded object ("{}" when it takes none).';
 const jsonInstruction =
   core +
   " Reply with only the JSON action object, without prose, wrappers or code fences.";
@@ -87,45 +129,6 @@ export function frameAlias(id: string) {
 
 const uuidPattern =
   /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-
-/**
- * Returns the only complete top-level JSON object embedded in text, or
- * undefined when there is none or more than one.
- */
-export function singleJsonObject(text: string): unknown {
-  const objects: string[] = [];
-  let depth = 0,
-    start = -1,
-    quoted = false,
-    escaped = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (c === "\\") escaped = true;
-      else if (c === '"') quoted = false;
-      continue;
-    }
-    if (c === '"') quoted = depth > 0;
-    else if (c === "{") {
-      if (depth++ === 0) start = i;
-    } else if (c === "}" && depth > 0 && --depth === 0)
-      objects.push(text.slice(start, i + 1));
-  }
-  if (objects.length !== 1 || depth !== 0 || quoted) return undefined;
-  // Outside the object allow only whitespace, a Markdown fence and stray
-  // closing braces; prose around it may negate or qualify the action.
-  const outside = text.replace(objects[0], "");
-  if (!/^[\s`}]*(?:json)?[\s`}]*$/i.test(outside)) return undefined;
-  try {
-    const value = JSON.parse(objects[0]);
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? value
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 const boundedText = (value: unknown, max: number): string | undefined => {
   if (typeof value !== "string") return undefined;
@@ -509,7 +512,7 @@ export function buildRequest(
         body: {
           model: settings.model,
           store: false,
-          instructions: toolInstruction,
+          instructions: objectToolInstruction,
           // Automatic prefix caching (1024 tokens and up) covers the
           // instruction, the tools and the workspace part; one fixed key
           // routes every step to the same cache.
@@ -531,7 +534,12 @@ export function buildRequest(
               type: "function",
               name: "coarena_action",
               description: "Propose one GUI action.",
-              parameters: schema,
+              // The action's own schema under strict mode: the arguments are
+              // guaranteed to parse and to match it. Live 2026-09-19 the
+              // encoded form (schema above) failed on 11 of 733 calls when
+              // the model mis-escaped the JSON inside action_json; strict
+              // mode had only covered the outer object.
+              parameters: strictActionParameters,
               strict: true,
             },
           ],
@@ -715,7 +723,7 @@ export function parseResponse(
   kind: Settings["provider"],
   data: Json,
   settings: Settings,
-): { action: unknown; usage: Usage } {
+): { action: unknown; usage: Usage; repaired: boolean } {
   // Usage first: a billed response must count against the budget even when
   // its content is rejected.
   const usage = parseUsage(kind, data, settings);
@@ -723,28 +731,44 @@ export function parseResponse(
   if (refused(kind, data))
     throw new ModelOutputProblem(providerProblems.refused);
   const cut = truncated(kind, data);
-  const fail = (problem: string): never => {
-    throw new ModelOutputProblem(cut ? providerProblems.truncated : problem);
+  const fail = (problem: string, shape?: ArgumentShape): never => {
+    throw new ModelOutputProblem(
+      cut ? providerProblems.truncated : problem,
+      shape,
+    );
   };
-  const json = (text: unknown) => {
+  // Whether any part of the action had to be dug out of surrounding text: a
+  // guess the runner treats differently from a clean reply when the schema
+  // rejects it.
+  let repaired = false;
+  const json = (text: unknown): Json => {
     if (typeof text !== "string") return fail(providerProblems.badJson);
-    try {
-      return JSON.parse(text);
-    } catch {
-      // Models occasionally wrap the object in prose, a code fence or trailing
-      // characters. Accept exactly one complete top-level object; the action
-      // schema still validates it strictly.
-      const object = singleJsonObject(text);
-      if (object !== undefined) return object;
-      return fail(providerProblems.badJson);
-    }
+    // Models occasionally wrap the object in prose, a code fence or trailing
+    // characters; the repair pass takes exactly one complete top-level
+    // object and refuses two or a cut one, with the text's shape for the
+    // diagnostics. The action schema still validates it strictly.
+    const repair = repairJsonObject(text);
+    if (!repair.object)
+      return fail(providerProblems[repair.problem], repair.shape);
+    if (repair.repaired) repaired = true;
+    return repair.object;
+  };
+  // The object as the runner expects it: nulls dropped, args_json decoded.
+  const finish = (object: Json) => {
+    const normalized = normalizeActionObject(object);
+    if (!normalized.action)
+      return fail(providerProblems.badJson, normalized.shape);
+    if (normalized.repaired) repaired = true;
+    return normalized.action;
   };
   const unpack = (args: unknown) => {
     if (typeof args === "string") args = json(args);
     if (!isObject(args)) return fail(providerProblems.badJson);
-    // Some models emit the object itself instead of its JSON encoding.
-    if (isObject(args.action_json)) return args.action_json;
-    return json(args.action_json);
+    // The strict schema carries the action itself under action; the encoded
+    // form carries its JSON text under action_json. Some models emit the
+    // object where the text was asked for, and that is read too.
+    const carried = args.action !== undefined ? args.action : args.action_json;
+    return finish(isObject(carried) ? carried : json(carried));
   };
   const one = (calls: unknown, name: (call: Json) => unknown) => {
     const list = Array.isArray(calls) ? calls.filter(isObject) : [];
@@ -764,13 +788,13 @@ export function parseResponse(
         .replace(/^```[a-zA-Z]*\s*/, "")
         .replace(/\s*```$/, ""),
     );
-    if (!isObject(parsed)) fail(providerProblems.badJson);
     // Small local models often wrap the action; unwrap one level only.
-    if (parsed.type === undefined && "action_json" in parsed)
+    if (
+      parsed.type === undefined &&
+      ("action_json" in parsed || isObject(parsed.action))
+    )
       action = unpack(parsed);
-    else if (parsed.type === undefined && isObject(parsed.action))
-      action = parsed.action;
-    else action = parsed;
+    else action = finish(parsed);
   } else if (kind === "anthropic") {
     const calls = Array.isArray(data?.content)
       ? data.content.filter((x: Json) => x?.type === "tool_use")
@@ -791,7 +815,7 @@ export function parseResponse(
     const calls = data?.choices?.[0]?.message?.tool_calls;
     action = unpack(one(calls, (c) => c.function?.name).function.arguments);
   }
-  return { action, usage };
+  return { action, usage, repaired };
 }
 
 // Diagnostics may carry provider enum values but never content strings.
@@ -1052,7 +1076,7 @@ export class HttpProvider implements Provider {
             throw new ProviderResponseError(
               "Provider returned a malformed response.",
             );
-          let result: { action: unknown; usage: Usage };
+          let result: { action: unknown; usage: Usage; repaired: boolean };
           try {
             result = parseResponse(this.settings.provider, data, this.settings);
           } catch (error) {
@@ -1075,10 +1099,19 @@ export class HttpProvider implements Provider {
               bytes,
               usage,
               ...responseShape(this.settings.provider, data),
+              // Arguments that were not JSON, by shape alone: counts, flags
+              // and a fixed parse-error code (src/providers/action-format.ts).
+              ...(error instanceof ModelOutputProblem &&
+                error.shape && { argumentShape: error.shape }),
             });
             return problem === providerProblems.refused
               ? { action: undefined, usage, problem, refused: true }
-              : { action: undefined, usage, problem };
+              : {
+                  action: undefined,
+                  usage,
+                  problem,
+                  remedy: remedyFor(this.settings.provider),
+                };
           }
           const action = this.unalias(result.action, o.frame.id);
           const candidate = isObject(action) ? action : {};
@@ -1089,6 +1122,7 @@ export class HttpProvider implements Provider {
             durationMs: Math.round(performance.now() - started),
             bytes,
             usage: result.usage,
+            repaired: result.repaired,
             actionType: candidate.type,
             x: candidate.x,
             y: candidate.y,
@@ -1097,7 +1131,14 @@ export class HttpProvider implements Provider {
                 ? candidate.text.length
                 : undefined,
           });
-          return { action, usage: result.usage };
+          return {
+            action,
+            usage: result.usage,
+            ...(result.repaired && {
+              repaired: true,
+              remedy: remedyFor(this.settings.provider),
+            }),
+          };
         } catch (error) {
           if (controller.signal.aborted) throw error;
           if (

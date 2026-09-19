@@ -6,12 +6,21 @@ import {
   singleJsonObject,
   HttpProvider,
   providerProblems,
+  providerRemedies,
   quotaExhausted,
   retryAfter,
 } from "../src/providers/http";
+import {
+  describeArguments,
+  normalizeActionObject,
+  repairJsonObject,
+  strictActionParameters,
+} from "../src/providers/action-format";
 import { ProviderTransientError } from "../src/core/errors";
 import {
+  actionSchema,
   defaultSettings,
+  validateAction,
   type Observation,
   type Settings,
 } from "../src/core/schema";
@@ -1572,22 +1581,478 @@ describe("provider-neutral adapters", () => {
     for (const wrapped of [
       "```json\n" + JSON.stringify(action) + "\n```",
       JSON.stringify(action) + "}",
-      "  " + JSON.stringify(action) + "\n",
-    ])
-      expect(
-        parseResponse("openai", call(wrapped), s("openai")).action,
-      ).toEqual(action);
-    for (const wrapped of [
+      // Prose around the one object is stripped; the object still has to
+      // pass the action schema in the runner, flagged as repaired.
       "Not " + JSON.stringify(action) + " yet; I need to wait",
-      JSON.stringify(action) + '\n{"type":"type_text","text":"hel',
-    ])
-      expect(() =>
-        parseResponse("openai", call(wrapped), s("openai")),
-      ).toThrow();
+    ]) {
+      const parsed = parseResponse("openai", call(wrapped), s("openai"));
+      expect(parsed.action).toEqual(action);
+      expect(parsed.repaired).toBe(true);
+    }
+    // Surrounding whitespace is JSON; nothing was repaired.
+    for (const clean of [
+      JSON.stringify(action),
+      "  " + JSON.stringify(action) + "\n",
+    ]) {
+      const parsed = parseResponse("openai", call(clean), s("openai"));
+      expect(parsed.action).toEqual(action);
+      expect(parsed.repaired).toBe(false);
+    }
+    // A second object, complete or cut, is never taken as the first.
+    expect(() =>
+      parseResponse(
+        "openai",
+        call(JSON.stringify(action) + '\n{"type":"type_text","text":"hel'),
+        s("openai"),
+      ),
+    ).toThrow(providerProblems.badJson);
+    expect(() =>
+      parseResponse(
+        "openai",
+        call(JSON.stringify(action) + "\n" + JSON.stringify(action)),
+        s("openai"),
+      ),
+    ).toThrow(providerProblems.multiple);
     expect(singleJsonObject('{"a":"}{"} {"b":1}')).toBeUndefined();
     expect(singleJsonObject('say "{not json}"')).toBeUndefined();
     expect(singleJsonObject('{"text":"a \\"quoted\\" }"}')).toEqual({
       text: 'a "quoted" }',
     });
+  });
+});
+
+/*
+ * Live 2026-09-19, two gpt-5.4-mini cycles: 11 of 733 model calls came back
+ * HTTP 200 with "The action arguments were not valid JSON." The tool schema
+ * asked for action_json, a JSON-encoded string, so OpenAI's strict mode could
+ * only guarantee the outer object; the model mis-escaped the action inside it
+ * (9 of the 11 in Finder tasks, whose labels and paths carry quotes). The
+ * action is now the tool's own schema, so the arguments are the action.
+ */
+describe("the action's wire format", () => {
+  const frame = { ...o.frame, id: "frame" };
+  const usageOf = (provider: Settings["provider"]) => ({
+    inputTokens: 10,
+    outputTokens: 2,
+    cost: 0.000014,
+    ...(provider !== "ollama" && { cachedInputTokens: 0 }),
+  });
+  it("sends OpenAI the action itself as a strict tool schema and asks for the object", () => {
+    const body = buildRequest(s("openai"), "SECRET", o).body;
+    expect(body.tools).toHaveLength(1);
+    expect(body.tools[0]).toMatchObject({
+      type: "function",
+      name: "coarena_action",
+      strict: true,
+      parameters: strictActionParameters,
+    });
+    expect(body.tool_choice).toEqual({
+      type: "function",
+      name: "coarena_action",
+    });
+    expect(body.instructions).toContain("with action set to the action object");
+    expect(body.instructions).toContain("args_json");
+    expect(body.instructions).not.toContain("action_json");
+    // The other providers keep the encoded form and its instruction.
+    const anthropic = buildRequest(s("anthropic"), "K", o).body;
+    expect(anthropic.tools[0].input_schema.properties.action_json).toEqual({
+      type: "string",
+      description: expect.any(String),
+    });
+    expect(anthropic.system[0].text).toContain("action_json set to");
+    expect(
+      buildRequest(s("compatible"), "K", o).body.tools[0].function.parameters
+        .properties.action_json,
+    ).toBeDefined();
+    expect(
+      buildRequest(s("google"), "K", o).body.tools[0].functionDeclarations[0]
+        .parameters.properties.action_json,
+    ).toBeDefined();
+  });
+  // developers.openai.com/api/docs/guides/structured-outputs#supported-schemas:
+  // an object root (no anyOf there), every property required, optionals as a
+  // type union with null, additionalProperties false on every object, the
+  // types string/number/integer/boolean/object/array/enum/anyOf, at most 10
+  // levels and 1000 enum values, and none of allOf/not/if/then/else; of the
+  // constraints only minimum/maximum and minItems/maxItems are used here.
+  it("keeps the strict schema inside OpenAI's supported subset", () => {
+    const keywords = new Set([
+      "type",
+      "description",
+      "properties",
+      "required",
+      "additionalProperties",
+      "items",
+      "enum",
+      "anyOf",
+      "minimum",
+      "maximum",
+      "minItems",
+      "maxItems",
+    ]);
+    const types = new Set([
+      "string",
+      "number",
+      "integer",
+      "boolean",
+      "object",
+      "array",
+      "null",
+    ]);
+    let enumValues = 0,
+      deepest = 0;
+    const walk = (node: any, depth: number) => {
+      deepest = Math.max(deepest, depth);
+      expect(depth).toBeLessThanOrEqual(10);
+      for (const key of Object.keys(node)) expect(keywords).toContain(key);
+      if (node.anyOf) {
+        expect(node.type).toBeUndefined();
+        for (const branch of node.anyOf) walk(branch, depth);
+        return;
+      }
+      const listed = Array.isArray(node.type) ? node.type : [node.type];
+      for (const t of listed) expect(types).toContain(t);
+      if (node.enum) enumValues += node.enum.length;
+      if (listed.includes("object")) {
+        expect(node.additionalProperties).toBe(false);
+        expect(node.required?.slice().sort()).toEqual(
+          Object.keys(node.properties).sort(),
+        );
+        for (const property of Object.values(node.properties))
+          walk(property, depth + 1);
+      }
+      if (listed.includes("array")) walk(node.items, depth + 1);
+    };
+    expect(strictActionParameters.type).toBe("object");
+    expect((strictActionParameters as any).anyOf).toBeUndefined();
+    walk(strictActionParameters, 1);
+    expect(enumValues).toBeLessThanOrEqual(1000);
+    expect(deepest).toBeGreaterThanOrEqual(4);
+  });
+  it("covers every action of the zod schema with the same fields, optionals as null unions, and validates a sample of each", () => {
+    const branches: any[] = (strictActionParameters as any).properties.action
+      .anyOf;
+    const byType = new Map<string, any>(
+      branches.map((b) => [b.properties.type.enum[0], b]),
+    );
+    expect(byType.size).toBe(branches.length);
+    expect([...byType.keys()].sort()).toEqual(
+      actionSchema.options
+        .map((option) => (option.shape.type as any).def.values[0] as string)
+        .sort(),
+    );
+    const optional = (field: any) =>
+      field.def.type === "optional" ||
+      (field.def.type === "pipe" && field.def.out?.def?.type === "optional");
+    for (const option of actionSchema.options) {
+      const type = (option.shape.type as any).def.values[0] as string;
+      const branch = byType.get(type)!;
+      // The tool's free-form arguments travel as one JSON-encoded string:
+      // strict mode has no open object.
+      const zodKeys = Object.keys(option.shape).map((k) =>
+        k === "args" ? "args_json" : k,
+      );
+      expect(Object.keys(branch.properties).sort()).toEqual(zodKeys.sort());
+      for (const [key, field] of Object.entries(option.shape)) {
+        const property = branch.properties[key === "args" ? "args_json" : key];
+        const nullable =
+          Array.isArray(property.type) && property.type.includes("null");
+        expect([type, key, nullable]).toEqual([type, key, optional(field)]);
+      }
+      // A sample the strict schema allows is a valid action once the
+      // provider drops the nulls and decodes args_json.
+      const sample = (node: any, key: string): unknown => {
+        const listed = Array.isArray(node.type) ? node.type : [node.type];
+        if (listed.includes("null")) return null;
+        if (node.enum) return node.enum[0];
+        switch (listed[0]) {
+          case "string":
+            return key === "frame_id"
+              ? frame.id
+              : key === "path"
+                ? "~/Documents/Notes.txt"
+                : key === "tool"
+                  ? "apple__calendar.create"
+                  : key === "args_json"
+                    ? '{"title":"x"}'
+                    : "Notes";
+          case "integer":
+          case "number":
+            return node.minimum ?? 0;
+          case "boolean":
+            return false;
+          case "array":
+            return Array.from({ length: node.minItems ?? 1 }, () =>
+              sample(node.items, key),
+            );
+        }
+        throw new Error(`unsampled ${listed[0]}`);
+      };
+      const raw = Object.fromEntries(
+        Object.entries(branch.properties).map(([key, node]) => [
+          key,
+          sample(node, key),
+        ]),
+      );
+      const normalized = normalizeActionObject(raw);
+      expect(normalized.repaired).toBe(false);
+      expect(() => validateAction(normalized.action, frame)).not.toThrow();
+      expect(validateAction(normalized.action, frame).type).toBe(
+        type === "hotkey" ? "key" : type,
+      );
+    }
+  });
+  it("accepts a strict reply: the action object with nulls dropped and args_json decoded", () => {
+    const reply = (action: unknown) => ({
+      output: [
+        {
+          type: "function_call",
+          name: "coarena_action",
+          arguments: JSON.stringify({ action }),
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 2 },
+    });
+    const control = parseResponse(
+      "openai",
+      reply({
+        type: "click_control",
+        frame_id: "frame",
+        label: "Save",
+        role: null,
+        x: null,
+        y: null,
+      }),
+      s("openai"),
+    );
+    expect(control.action).toEqual({
+      type: "click_control",
+      frame_id: "frame",
+      label: "Save",
+    });
+    expect(control.repaired).toBe(false);
+    expect(
+      parseResponse(
+        "openai",
+        reply({
+          type: "tool_call",
+          frame_id: "frame",
+          tool: "apple__calendar.create",
+          args_json: '{"title":"Standup","when":{"hour":9}}',
+          finish: false,
+        }),
+        s("openai"),
+      ).action,
+    ).toEqual({
+      type: "tool_call",
+      frame_id: "frame",
+      tool: "apple__calendar.create",
+      args: { title: "Standup", when: { hour: 9 } },
+      finish: false,
+    });
+    // Arguments that are not an object, or not JSON, are the reply's fault.
+    for (const args_json of ["{SECRET", "[1,2]", '"text"', ""])
+      expect(() =>
+        parseResponse(
+          "openai",
+          reply({
+            type: "tool_call",
+            frame_id: "frame",
+            tool: "apple__calendar.create",
+            args_json,
+            finish: false,
+          }),
+          s("openai"),
+        ),
+      ).toThrow(providerProblems.badJson);
+    // The encoded form is still read, for a model that ignores the schema.
+    expect(
+      parseResponse(
+        "openai",
+        {
+          output: [
+            {
+              type: "function_call",
+              name: "coarena_action",
+              arguments: JSON.stringify({
+                action_json: JSON.stringify(action),
+              }),
+            },
+          ],
+        },
+        s("openai"),
+      ).action,
+    ).toEqual(action);
+  });
+  it("repairs fenced or prose-wrapped arguments into the one object and refuses two or a cut one", () => {
+    const good = JSON.stringify(action);
+    for (const text of [
+      "```json\n" + good + "\n```",
+      "Here is the action: " + good + " — done.",
+      good + "}",
+    ])
+      expect(repairJsonObject(text)).toEqual({
+        object: action,
+        repaired: true,
+      });
+    for (const text of [good, "  " + good + "\n"])
+      expect(repairJsonObject(text)).toEqual({
+        object: action,
+        repaired: false,
+      });
+    for (const [text, problem] of [
+      [good + "\n" + good, "multiple"],
+      ['{"a":"}{"} {"b":1}', "multiple"],
+      [good.slice(0, -3), "badJson"],
+      [good + '\n{"type":"type_text","text":"hel', "badJson"],
+      ['say "{not json}"', "badJson"],
+      ["no object here", "badJson"],
+      ["[" + good + "]", "badJson"],
+    ] as const) {
+      const result = repairJsonObject(text);
+      expect(result.object).toBeUndefined();
+      expect(result.problem).toBe(problem);
+      expect(result.shape).toEqual(describeArguments(text));
+    }
+  });
+  it("describes unparseable arguments by shape only, never their text", () => {
+    const raw =
+      '{"type":"type_text","frame_id":"f1","text":"SECRET line\nnext"}';
+    const shape = describeArguments(raw);
+    expect(shape).toEqual({
+      length: raw.length,
+      startsWithBrace: true,
+      endsWithBrace: true,
+      parseError: "BAD_CONTROL_CHARACTER",
+      parseOffset: raw.indexOf("\n"),
+      openBraces: 1,
+      closeBraces: 1,
+      quotes: 12,
+      backslashes: 0,
+      newlines: 1,
+      backticks: 0,
+      controls: 0,
+      objects: 1,
+      depthAtEnd: 0,
+      quotedAtEnd: false,
+      leadingProse: 0,
+      trailingProse: 0,
+    });
+    expect(JSON.stringify(shape)).not.toContain("SECRET");
+    const cut = describeArguments('Sure! ```json\n{"type":"click","x":0.5');
+    expect(cut).toMatchObject({
+      startsWithBrace: false,
+      endsWithBrace: false,
+      parseError: "UNEXPECTED_TOKEN",
+      objects: 0,
+      depthAtEnd: 1,
+      quotedAtEnd: false,
+      backticks: 3,
+      leadingProse: 5,
+    });
+    expect(cut.parseOffset).toBeUndefined();
+    expect(describeArguments('{"a":"x').parseError).toBe("UNTERMINATED_STRING");
+    expect(describeArguments('{"a":"x').quotedAtEnd).toBe(true);
+    expect(describeArguments('{"a":1} {"b":2}')).toMatchObject({
+      parseError: "TRAILING_CONTENT",
+      objects: 2,
+    });
+    expect(describeArguments("").parseError).toBe("UNEXPECTED_END");
+    expect(describeArguments('{"a":"he said "hi""}').parseError).toBe(
+      "EXPECTED_COMMA_OR_BRACE",
+    );
+    expect(describeArguments('{"a":"\\q"}').parseError).toBe("BAD_ESCAPE");
+    expect(describeArguments("{a:1}").parseError).toBe(
+      "EXPECTED_PROPERTY_NAME",
+    );
+    expect(
+      describeArguments(JSON.stringify(action)).parseError,
+    ).toBeUndefined();
+  });
+  it("logs the shape of unparseable arguments, never their text, and tells the model how to reply", async () => {
+    const encoded = (kind: Settings["provider"], text: string) =>
+      kind === "openai"
+        ? {
+            status: "completed",
+            output: [
+              {
+                type: "function_call",
+                name: "coarena_action",
+                arguments: JSON.stringify({ action_json: text }),
+              },
+            ],
+            usage: { input_tokens: 10, output_tokens: 2 },
+          }
+        : kind === "anthropic"
+          ? {
+              content: [
+                {
+                  type: "tool_use",
+                  name: "coarena_action",
+                  input: { action_json: text },
+                },
+              ],
+              stop_reason: "tool_use",
+              usage: { input_tokens: 10, output_tokens: 2 },
+            }
+          : {
+              message: { content: text },
+              prompt_eval_count: 10,
+              eval_count: 2,
+            };
+    const text = '{"type":"type_text","frame_id":"f1","text":"SECRET\nline"}';
+    for (const [kind, remedy] of [
+      ["openai", providerRemedies.object],
+      ["anthropic", providerRemedies.encoded],
+      ["ollama", providerRemedies.plain],
+    ] as const) {
+      const events: [string, Record<string, unknown>][] = [];
+      const result = await new HttpProvider(
+        s(kind),
+        kind === "ollama" ? "" : "key",
+        vi
+          .fn()
+          .mockResolvedValue(new Response(JSON.stringify(encoded(kind, text)))),
+        (name, data = {}) => events.push([name, data]),
+      ).next(o, new AbortController().signal);
+      expect(result).toEqual({
+        action: undefined,
+        usage: usageOf(kind),
+        problem: providerProblems.badJson,
+        remedy,
+      });
+      const malformed = events.find(([name]) => name === "ProviderMalformed")!;
+      expect(malformed[1].argumentShape).toEqual(describeArguments(text));
+      expect(malformed[1].argumentShape).toMatchObject({
+        parseError: "BAD_CONTROL_CHARACTER",
+        newlines: 1,
+        objects: 1,
+      });
+      expect(JSON.stringify(events)).not.toContain("SECRET");
+    }
+    // A repaired reply is reported as such, so a cycle can count the saves.
+    const events: [string, Record<string, unknown>][] = [];
+    const repaired = await new HttpProvider(
+      s("anthropic"),
+      "key",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            JSON.stringify(
+              encoded(
+                "anthropic",
+                "```json\n" + JSON.stringify(action) + "\n```",
+              ),
+            ),
+          ),
+        ),
+      (name, data = {}) => events.push([name, data]),
+    ).next(o, new AbortController().signal);
+    expect(repaired).toMatchObject({ action, repaired: true });
+    expect(repaired.problem).toBeUndefined();
+    expect(
+      events.find(([name]) => name === "ProviderResponse")![1].repaired,
+    ).toBe(true);
   });
 });

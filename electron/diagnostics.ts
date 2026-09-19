@@ -95,6 +95,28 @@ const fields = new Set([
   "nameLength",
   "noteLength",
   "problem",
+  // ProviderMalformed: the shape of arguments that were not JSON (counts,
+  // flags and a parse-error code, src/providers/action-format.ts), and
+  // ProviderResponse: whether the action had to be repaired out of text.
+  "argumentShape",
+  "length",
+  "startsWithBrace",
+  "endsWithBrace",
+  "parseError",
+  "parseOffset",
+  "openBraces",
+  "closeBraces",
+  "quotes",
+  "backslashes",
+  "newlines",
+  "backticks",
+  "controls",
+  "objects",
+  "depthAtEnd",
+  "quotedAtEnd",
+  "leadingProse",
+  "trailingProse",
+  "repaired",
   "normalized",
   "exitCode",
   "signal",
@@ -247,6 +269,20 @@ const countFields = new Set([
   "skippedRemote",
   "refused",
   "secretsMoved",
+  // The shape of unparseable model arguments: every one a count.
+  "length",
+  "parseOffset",
+  "openBraces",
+  "closeBraces",
+  "quotes",
+  "backslashes",
+  "newlines",
+  "backticks",
+  "controls",
+  "objects",
+  "depthAtEnd",
+  "leadingProse",
+  "trailingProse",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
@@ -296,6 +332,11 @@ const flagFields = new Set([
   "pinned",
   "finish",
   "longRunning",
+  // Unparseable arguments: how they begin and end; a reply's action repaired.
+  "startsWithBrace",
+  "endsWithBrace",
+  "quotedAtEnd",
+  "repaired",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -338,6 +379,8 @@ const codeFields = new Set([
   "providerState",
   "answerTier",
   "project",
+  // The JSON parser's complaint about model arguments, as a fixed code.
+  "parseError",
 ]);
 /**
  * The early step's own events keep only these keys, whatever else a caller

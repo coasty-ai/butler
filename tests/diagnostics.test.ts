@@ -298,6 +298,104 @@ describe("local diagnostic stream", () => {
         period: 2,
       });
     }));
+  it("keeps the shape of unparseable model arguments as counts, flags and a code, never their text", () =>
+    fixture((log) => {
+      const requestId = crypto.randomUUID();
+      log.write("ProviderMalformed", {
+        requestId,
+        provider: "openai",
+        model: "fixture",
+        attempt: 1,
+        problem: "The action arguments were not valid JSON.",
+        httpStatus: 200,
+        durationMs: 1887,
+        bytes: 18797,
+        usage: { inputTokens: 6271, outputTokens: 167, cost: 0.0036 },
+        status: "completed",
+        outputTypes: ["reasoning", "function_call"],
+        argumentShape: {
+          length: 143,
+          startsWithBrace: true,
+          endsWithBrace: true,
+          parseError: "BAD_CONTROL_CHARACTER",
+          parseOffset: 97,
+          openBraces: 1,
+          closeBraces: 1,
+          quotes: 12,
+          backslashes: 0,
+          newlines: 1,
+          backticks: 0,
+          controls: 0,
+          objects: 1,
+          depthAtEnd: 0,
+          quotedAtEnd: false,
+          leadingProse: 0,
+          trailingProse: 0,
+          // Smuggled text or a sentence in a code slot is dropped.
+          text: "private typed words",
+          sample: '{"type":"type_text"',
+        },
+        arguments: '{"type":"type_text","text":"private typed words',
+      });
+      log.write("ProviderResponse", {
+        requestId,
+        provider: "openai",
+        model: "fixture",
+        attempt: 1,
+        repaired: true,
+        actionType: "click",
+        action: { type: "click", text: "private" },
+      });
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toContain("private");
+      expect(raw).not.toContain("type_text");
+      const [malformed, response] = raw
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(malformed.data.argumentShape).toEqual({
+        length: 143,
+        startsWithBrace: true,
+        endsWithBrace: true,
+        parseError: "BAD_CONTROL_CHARACTER",
+        parseOffset: 97,
+        openBraces: 1,
+        closeBraces: 1,
+        quotes: 12,
+        backslashes: 0,
+        newlines: 1,
+        backticks: 0,
+        controls: 0,
+        objects: 1,
+        depthAtEnd: 0,
+        quotedAtEnd: false,
+        leadingProse: 0,
+        trailingProse: 0,
+      });
+      expect(malformed.data.arguments).toBeUndefined();
+      expect(malformed.data.problem).toBe(
+        "The action arguments were not valid JSON.",
+      );
+      expect(response.data).toMatchObject({
+        repaired: true,
+        actionType: "click",
+      });
+      expect(response.data.action).toBeUndefined();
+      // A sentence where the parse-error code belongs, and text where a
+      // count belongs, are dropped rather than written.
+      log.write("ProviderMalformed", {
+        requestId,
+        argumentShape: {
+          parseError: "Unexpected token 'p', \"private\" is not valid JSON",
+          newlines: "private",
+          quotedAtEnd: "private",
+        },
+      });
+      const last = JSON.parse(
+        readFileSync(log.file, "utf8").trim().split("\n").at(-1)!,
+      );
+      expect(last.data).toEqual({ requestId, argumentShape: {} });
+    }));
   it("keeps a native refusal's kind of change on its NativeError line", () =>
     fixture((log) => {
       log.write(

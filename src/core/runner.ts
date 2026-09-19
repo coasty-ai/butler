@@ -274,6 +274,21 @@ function describeStep(entry: History[number]): string {
                 : "done";
   return `${type}${detail} (${outcome})`;
 }
+/**
+ * The line the model reads after a reply that was not one action: the fixed
+ * problem, the provider's remedy for its own request format, and the frame
+ * rule. Never a concrete frame id.
+ */
+function malformedRejection(problem: string, remedy?: string): string {
+  return `No input was executed. Your last reply was not exactly one action (${bound(problem, 200)}). ${remedy ? bound(remedy, 300) + " " : ""}Return exactly one action object using the frame_id from the current context.`;
+}
+/**
+ * A repaired reply (ProviderResult.repaired) whose object the schema then
+ * rejected: the guess was wrong, so the reply was malformed rather than the
+ * model having chosen an invalid action.
+ */
+const REPAIRED_INVALID =
+  "The reply's action had to be dug out of surrounding text, and it was not a valid action.";
 /** Explain a validateAction failure by cause without echoing model text. */
 function invalidReason(
   error: unknown,
@@ -3285,10 +3300,15 @@ export class Runner {
             continue;
           }
           if (result.problem) {
-            this.event("ActionFailed", { code: "MALFORMED_RESPONSE" });
+            // The fixed problem rides on the event (the diagnostics write it
+            // for this code alone) and the provider's remedy on the line the
+            // model reads; the next call is the retry, within countInvalid's
+            // budget of four in a row.
+            const problem = bound(String(result.problem), 200);
+            this.event("ActionFailed", { code: "MALFORMED_RESPONSE", problem });
             history.push({
               type: "rejected",
-              result: `No input was executed. Your last reply was not exactly one action (${bound(String(result.problem), 200)}). Return exactly one action object using the frame_id from the current context.`,
+              result: malformedRejection(problem, result.remedy),
             });
             this.countInvalid();
             continue;
@@ -3307,6 +3327,23 @@ export class Runner {
         try {
           action = validateAction(normalized.action, frame);
         } catch (error) {
+          if (result.repaired) {
+            // The provider guessed this object out of surrounding text and
+            // the guess is not an action: a malformed reply, with no echo of
+            // what was guessed. A clean reply's schema failure stays an
+            // INVALID_ACTION with its cause below.
+            planFail("invalid_action");
+            this.event("ActionFailed", {
+              code: "MALFORMED_RESPONSE",
+              problem: REPAIRED_INVALID,
+            });
+            history.push({
+              type: "rejected",
+              result: malformedRejection(REPAIRED_INVALID, result.remedy),
+            });
+            this.countInvalid();
+            continue;
+          }
           const { cause, message } = invalidReason(
             error,
             normalized.action,

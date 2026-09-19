@@ -1070,6 +1070,19 @@ export interface ProviderResult {
    * Retrying the same observation will not help; the run should pause.
    */
   refused?: boolean;
+  /**
+   * A fixed, content-free line telling the model how to shape its next reply
+   * for this provider's request format. Sent with a problem, and with a
+   * repaired action so a schema failure on it can be explained the same way.
+   * The runner writes it into the rejection in history.
+   */
+  remedy?: string;
+  /**
+   * The action was dug out of prose, a code fence or trailing text rather
+   * than parsed as sent: a guess. When the schema rejects it the runner
+   * counts a malformed reply, not an invalid action the model chose.
+   */
+  repaired?: boolean;
 }
 export interface Provider {
   next(observation: Observation, signal: AbortSignal): Promise<ProviderResult>;
