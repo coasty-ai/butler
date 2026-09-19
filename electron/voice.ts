@@ -42,13 +42,19 @@ export interface VoiceEvent {
   wakeHead?: string;
   preRollMs?: number;
   /**
-   * voice_processing, once per helper run (BUTLER_FULL_DUPLEX): echo cancellation on the
-   * microphone, with the input format it gives the recognizer, or `enabled: false` with
-   * `reason` (off, unsupported, start_failed, format). standby_trace level and begin carry
-   * `voiceProcessing` too, beside the RMS scale it changes.
+   * voice_processing (BUTLER_FULL_DUPLEX): echo cancellation on the microphone, with the
+   * input format the tap gets, the channel of it the recognizer reads and that channel's
+   * level (RMS x 1000) over the first 200 ms; or `enabled: false` with `reason` (off,
+   * unsupported, start_failed, format, silent: an enabled report is followed by this one
+   * when the processed input stayed at exactly 0 for 3 s). standby_trace level and begin
+   * carry `voiceProcessing` too, beside the RMS scale it changes; begin carries the input's
+   * channel count and the channel read.
    */
   sampleRate?: number;
   channels?: number;
+  interleaved?: boolean;
+  micChannel?: number;
+  micLevel?: number;
   voiceProcessing?: boolean;
   quietMs?: number;
   completeness?: string;

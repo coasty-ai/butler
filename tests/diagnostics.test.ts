@@ -628,11 +628,15 @@ describe("local diagnostic stream", () => {
     }));
   it("keeps the helper's echo-cancellation report and the RMS scale beside it, never text", () =>
     fixture((log) => {
+      // The seven-channel input of 2026-09-19: the channel read and its level beside the format.
       log.write("VoiceEvent", {
         phase: "voice_processing",
         enabled: true,
         sampleRate: 48000,
-        channels: 1,
+        channels: 7,
+        interleaved: false,
+        micChannel: 3,
+        micLevel: 12,
         text: "the Zephyr plan",
       });
       log.write("VoiceEvent", {
@@ -642,6 +646,11 @@ describe("local diagnostic stream", () => {
         error: "The operation couldn’t be completed. (-10875)",
       });
       log.write("VoiceEvent", {
+        phase: "voice_processing",
+        enabled: false,
+        code: "silent",
+      });
+      log.write("VoiceEvent", {
         phase: "standby_trace",
         kind: "level",
         noiseFloor: 0.0041,
@@ -649,16 +658,27 @@ describe("local diagnostic stream", () => {
         voiceProcessing: true,
         speaking: true,
       });
+      log.write("VoiceEvent", {
+        phase: "standby_trace",
+        kind: "begin",
+        mode: "standby",
+        voiceProcessing: true,
+        channels: 7,
+        micChannel: 3,
+      });
       // Text smuggled into the new fields is dropped, not written.
       log.write("VoiceEvent", {
         phase: "voice_processing",
         sampleRate: "the Zephyr plan",
         channels: "the Zephyr plan",
+        interleaved: "the Zephyr plan",
+        micChannel: "the Zephyr plan",
+        micLevel: "the Zephyr plan",
         voiceProcessing: "the Zephyr plan",
       });
       const raw = readFileSync(log.file, "utf8");
       expect(raw).not.toContain("Zephyr");
-      const [on, off, level, hostile] = raw
+      const [on, off, silent, level, begin, hostile] = raw
         .trim()
         .split("\n")
         .map((x) => JSON.parse(x).data);
@@ -666,12 +686,20 @@ describe("local diagnostic stream", () => {
         phase: "voice_processing",
         enabled: true,
         sampleRate: 48000,
-        channels: 1,
+        channels: 7,
+        interleaved: false,
+        micChannel: 3,
+        micLevel: 12,
       });
       expect(off).toMatchObject({
         phase: "voice_processing",
         enabled: false,
         code: "start_failed",
+      });
+      expect(silent).toEqual({
+        phase: "voice_processing",
+        enabled: false,
+        code: "silent",
       });
       expect(level).toEqual({
         phase: "standby_trace",
@@ -680,6 +708,14 @@ describe("local diagnostic stream", () => {
         threshold: 0.0123,
         voiceProcessing: true,
         speaking: true,
+      });
+      expect(begin).toEqual({
+        phase: "standby_trace",
+        kind: "begin",
+        mode: "standby",
+        voiceProcessing: true,
+        channels: 7,
+        micChannel: 3,
       });
       expect(hostile).toEqual({ phase: "voice_processing" });
     }));

@@ -1986,6 +1986,9 @@ async function receiveVoice(event: VoiceEvent) {
       preRollMs: event.preRollMs,
       sampleRate: event.sampleRate,
       channels: event.channels,
+      interleaved: event.interleaved,
+      micChannel: event.micChannel,
+      micLevel: event.micLevel,
       voiceProcessing: event.voiceProcessing,
       count: event.count,
     });

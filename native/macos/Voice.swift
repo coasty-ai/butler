@@ -143,7 +143,13 @@ func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespace
 // devices: err -10875) turns it off for good, and the helper is half duplex again.
 let fullDuplexRequested = ProcessInfo.processInfo.environment["BUTLER_FULL_DUPLEX"] == "1"
 var voiceProcessing = false
-var voiceProcessingReported = false
+// The last outcome reported (voice_processing): enabled or not.
+var voiceProcessingReported: Bool?
+// The channel of voice processing's multi-channel input the tap reads (ChannelChoice), chosen in the
+// first 200 ms of capture and kept for the sessions after; a device change chooses again. And the
+// watch that turns voice processing off when what it delivers is silence (SilenceWatch).
+var tapChoice = ChannelChoice()
+var silenceWatch = SilenceWatch()
 // Listening continues through a reply only when voice processing has that reply as its reference:
 // PCM through the shared engine. The system voice plays outside it and keeps the half-duplex guard.
 var listenWhileSpeaking: Bool { fullDuplexRequested && voiceProcessing && speaker.echoCancelled }
@@ -170,7 +176,8 @@ func startEngine() throws {
         disableVoiceProcessing(reason: "start_failed", error: error)
         engine.prepare(); try engine.start()
     }
-    reportVoiceProcessing()
+    // Enabled is reported by the tap, once it has chosen the channel it reads (channelChosen).
+    if !voiceProcessing { reportVoiceProcessing() }
 }
 // The engine stops when nothing needs it: the microphone tap, or under full duplex a reply or an
 // earcon still playing.
@@ -178,20 +185,38 @@ func stopEngineIfIdle() {
     guard engine.isRunning, !audioTapInstalled, !speaker.holdsEngine, !earconSounding(at: uptime()) else { return }
     engine.stop()
 }
-// Once, at the first outcome: enabled with the input format the tap gets, or not, with why. Without
-// the flag the reason is "off", so a trace says which arm of the A/B it comes from.
-func reportVoiceProcessing(reason: String? = nil, error: Error? = nil) {
-    guard !voiceProcessingReported else { return }
-    voiceProcessingReported = true
+// At each outcome, never the same one twice: enabled, with the format the tap gets and the channel
+// it reads with that channel's level over the first 200 ms; or not, with why. Without the flag the
+// reason is "off", so a trace says which arm of the A/B it comes from. A tap that turns out silent
+// follows the enabled report with a disabled one ("silent").
+func reportVoiceProcessing(reason: String? = nil, error: Error? = nil, format: AVAudioFormat? = nil, choice: ChannelChoice? = nil) {
+    guard voiceProcessingReported != voiceProcessing else { return }
+    voiceProcessingReported = voiceProcessing
     var event: [String: Any] = ["event": "voice_processing", "enabled": voiceProcessing]
-    if voiceProcessing {
-        let format = engine.inputNode.outputFormat(forBus: 0)
-        event["sampleRate"] = format.sampleRate; event["channels"] = Int(format.channelCount)
+    if let format, let choice {
+        event["sampleRate"] = format.sampleRate; event["channels"] = Int(format.channelCount); event["interleaved"] = format.isInterleaved
+        event["micChannel"] = choice.channel; event["micLevel"] = Int((choice.level * 1000).rounded())
     } else {
         event["reason"] = reason ?? "off"
         if let error = error { event["message"] = error.localizedDescription }
     }
     output(event)
+}
+// The tap's first 200 ms under voice processing chose the channel it reads: kept for the sessions
+// after (the next tap starts decided), and the enabled outcome reported with it.
+func channelChosen(_ choice: ChannelChoice, format: AVAudioFormat) {
+    guard voiceProcessing else { return }
+    tapChoice = choice
+    reportVoiceProcessing(format: format, choice: choice)
+}
+// Nine minutes of buffers with an RMS of exactly 0 (2026-09-19): voice processing that delivers
+// silence is turned off for good, and capture resumes in the input's own format (resumeInput: a
+// fresh request, the tap in that format), on the engine a queued reply may already have started.
+// The tap comes off first: the engine's next start must not find it in the format that is gone.
+func voiceProcessingSilent() {
+    if audioTapInstalled { engine.inputNode.removeTap(onBus: 0); audioTapInstalled = false }
+    disableVoiceProcessing(reason: "silent")
+    resumeInput()
 }
 // Voice processing can only change while the engine is stopped; a reply playing through it ends
 // as cancelled, as it does when a route change stops the engine, and only after the change, since
@@ -485,7 +510,12 @@ func beginAudio(_ nextMode: ListenMode, muteSeconds: Double = 0, knownAvailable:
     let now = uptime()
     startedAt = now; lastSpeechAt = now; lastTextAt = now; rotatedAt = now
     startRecognition()
-    if ambient { traceStandby("begin", extra: ["mode": nextMode == .standby ? "standby" : "followUp", "voiceProcessing": voiceProcessing]) }
+    if ambient {
+        var extra: [String: Any] = ["mode": nextMode == .standby ? "standby" : "followUp", "voiceProcessing": voiceProcessing,
+                                    "channels": Int(engine.inputNode.outputFormat(forBus: 0).channelCount)]
+        if voiceProcessing && tapChoice.decided { extra["micChannel"] = tapChoice.channel }
+        traceStandby("begin", extra: extra)
+    }
     if let failure = startInput(muteSeconds: muteSeconds) {
         audioFailed(failure, code: "mic", ambient: ambient); return false
     }
@@ -503,6 +533,33 @@ func copied(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
     }
     return copy
 }
+// Voice processing's input, as one channel: each buffer's chosen channel (ChannelChoice) copied into
+// a mono Float32 buffer at the node's sample rate, which the recognizer, the ring and the level read.
+// Only from Float32 samples, the format the input node gives: the recognizer takes one format per
+// request, and floatChannelData is nil for any other.
+final class TapDownmix {
+    let mono: AVAudioFormat
+    var choice: ChannelChoice
+    init?(_ format: AVAudioFormat, choice: ChannelChoice) {
+        guard format.commonFormat == .pcmFormatFloat32, format.sampleRate > 0, format.channelCount > 0,
+              let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false) else { return nil }
+        self.mono = mono
+        // A choice made on another channel count belongs to another device.
+        self.choice = choice.channels == Int(format.channelCount) ? choice : ChannelChoice()
+    }
+    func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let frames = Int(buffer.frameLength)
+        guard frames > 0, let data = buffer.floatChannelData, let out = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buffer.frameLength),
+              let target = out.floatChannelData?[0] else { return nil }
+        let stride = Int(buffer.stride)
+        let channels = (0..<Int(buffer.format.channelCount)).map { UnsafePointer(data[$0]) }
+        let channel = choice.decided ? choice.channel
+            : choice.observe(energies: channelEnergies(channels, stride: stride, frames: frames), frames: frames, sampleRate: buffer.format.sampleRate)
+        copyChannel(channels[channel], stride: stride, frames: frames, into: target)
+        out.frameLength = buffer.frameLength
+        return out
+    }
+}
 // Installs the tap for the input device's current format and starts the microphone for the
 // current session. Returns the user-facing failure, or nil once capture runs.
 func startInput(muteSeconds: Double) -> String? {
@@ -510,29 +567,43 @@ func startInput(muteSeconds: Double) -> String? {
     setTapInput(request, muteSeconds: muteSeconds)
     let input = engine.inputNode
     var format = input.outputFormat(forBus: 0)
-    if voiceProcessing && !(format.sampleRate > 0 && format.channelCount > 0) {
-        // Voice processing left the input without a format the tap can use: half duplex instead.
-        disableVoiceProcessing(reason: "format"); format = input.outputFormat(forBus: 0)
-    }
+    // Voice processing's format reaches the recognizer and the level as one channel; one the tap
+    // cannot read that way leaves the input to half duplex.
+    let downmix = voiceProcessing ? TapDownmix(format, choice: tapChoice) : nil
+    if voiceProcessing && downmix == nil { disableVoiceProcessing(reason: "format"); format = input.outputFormat(forBus: 0) }
     guard format.sampleRate > 0, format.channelCount > 0 else { return "Microphone unavailable. Check your input device." }
+    if voiceProcessing { silenceWatch = SilenceWatch() }
+    let tapFormat = format
     var lastLevelAt: TimeInterval = 0
+    var choiceReported = downmix?.choice.decided ?? true
     input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
         let now = uptime()
-        // The engine reuses the tap's buffer once this returns: the ring keeps a copy, appended
-        // beside the live request read so a rotation between two callbacks sees every buffer once.
-        let copy = copied(buffer)
+        // The engine reuses the tap's buffer once this returns: the ring keeps a copy (under voice
+        // processing the mono buffer, which is the tap's own), appended beside the live request read
+        // so a rotation between two callbacks sees every buffer once.
+        let fed: AVAudioPCMBuffer, copy: AVAudioPCMBuffer?
+        if let downmix {
+            guard let mono = downmix.convert(buffer) else { return }
+            fed = mono; copy = mono
+        } else {
+            fed = buffer; copy = copied(buffer)
+        }
         tapLock.lock(); let live = tapRequest, admitted = tapMute.admits(at: now); tapBuffers += 1
         if admitted, let copy { tapRing.append(copy, seconds: Double(copy.frameLength) / copy.format.sampleRate) }
         tapLock.unlock()
+        if let downmix, !choiceReported, downmix.choice.decided {
+            choiceReported = true
+            let choice = downmix.choice
+            DispatchQueue.main.async { channelChosen(choice, format: tapFormat) }
+        }
         // Pre-roll right after barge-in may still hold the reply's tail: never transcribe it.
         if !admitted { return }
-        live?.append(buffer)
+        live?.append(fed)
         guard now - lastLevelAt > 0.08 else { return }; lastLevelAt = now
-        let count = Int(buffer.frameLength)
-        guard let values = buffer.floatChannelData?[0], count > 0 else { return }
-        var sum: Float = 0; for i in 0..<count { sum += values[i] * values[i] }
-        let rms = Double(sqrt(sum / Float(count)))
-        DispatchQueue.main.async { observeLevel(rms, at: now, session: session) }
+        let count = Int(fed.frameLength)
+        guard let values = fed.floatChannelData?[0], count > 0 else { return }
+        let level = rms(values, count: count)
+        DispatchQueue.main.async { observeLevel(level, at: now, session: session) }
     }
     audioTapInstalled = true
     // Under full duplex a reply may already have the engine running: the tap joins it live.
@@ -551,6 +622,8 @@ func inputConfigurationChanged() {
     if (current == .handsFree || current == .pushToTalk) && released { return }
     if engine.isRunning { engine.stop() }
     if audioTapInstalled { engine.inputNode.removeTap(onBus: 0); audioTapInstalled = false }
+    // Another device may carry the microphone on another channel.
+    tapChoice = ChannelChoice()
     inputRestart?.cancel()
     let session = generation
     let work = DispatchWorkItem {
@@ -604,6 +677,8 @@ func defaultOutputIsBluetooth() -> Bool {
 }
 func observeLevel(_ rms: Double, at now: TimeInterval, session: Int) {
     guard session == generation, let current = mode else { return }
+    // Voice processing whose buffers are digital silence is deaf: half duplex hears.
+    if voiceProcessing, silenceWatch.observe(rms: rms, at: now) { voiceProcessingSilent(); return }
     let isSpeech = noiseFloor.observe(rms: rms)
     lastRms = rms
     if isSpeech { lastSpeechAt = now }

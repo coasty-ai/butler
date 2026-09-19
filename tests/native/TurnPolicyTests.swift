@@ -344,6 +344,67 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(!standbyAllowed(speaking: false, now: 0, echoGuardUntil: 10, fullDuplex: false), "half duplex still waits out the guard")
     check(standbyAllowed(speaking: false, now: 100, echoGuardUntil: 0, fullDuplex: false), "half duplex listens once speech and the guard are over")
     check(selfEchoRecentSeconds == 1.5, "a reply's words count as its echo for 1.5 s after it ends")
+    // Voice processing's multi-channel input, read as one channel (2026-09-19: seven channels, channel 0 silent).
+    check(channelPickSeconds == 0.2 && deafSeconds == 3.0, "the channel is chosen over 200 ms and silence turns voice processing off after 3 s")
+    let left: [Float] = [0.5, -0.5, 0.5, -0.5], right: [Float] = [0.1, 0.1, -0.1, -0.1], empty = [Float](repeating: 0, count: 4)
+    let interleaved: [Float] = (0..<4).flatMap { [empty[$0], left[$0], right[$0]] }
+    empty.withUnsafeBufferPointer { emptyPointer in
+        left.withUnsafeBufferPointer { leftPointer in
+            right.withUnsafeBufferPointer { rightPointer in
+                let planes = [emptyPointer.baseAddress!, leftPointer.baseAddress!, rightPointer.baseAddress!]
+                let energies = channelEnergies(planes, stride: 1, frames: 4)
+                check(energies.count == 3 && energies[0] == 0 && near(energies[1], 1.0, 1e-6) && near(energies[2], 0.04, 1e-6),
+                      "deinterleaved planes: the energy of every channel")
+                var mono = [Float](repeating: 9, count: 4)
+                mono.withUnsafeMutableBufferPointer { copyChannel(planes[2], stride: 1, frames: 4, into: $0.baseAddress!) }
+                check(mono == right, "a deinterleaved channel is copied as it is")
+                mono.withUnsafeBufferPointer { check(near(rms($0.baseAddress!, count: 4), 0.1, 1e-6), "the RMS of the mono result") }
+                check(rms(emptyPointer.baseAddress!, count: 0) == 0, "an empty run has an RMS of 0")
+            }
+        }
+    }
+    interleaved.withUnsafeBufferPointer { frames in
+        let base = frames.baseAddress!
+        let planes = [base, base + 1, base + 2]
+        let energies = channelEnergies(planes, stride: 3, frames: 4)
+        check(energies[0] == 0 && near(energies[1], 1.0, 1e-6) && near(energies[2], 0.04, 1e-6), "interleaved frames: the same energies through the stride")
+        var mono = [Float](repeating: 9, count: 4)
+        mono.withUnsafeMutableBufferPointer { copyChannel(planes[1], stride: 3, frames: 4, into: $0.baseAddress!) }
+        check(mono == left, "an interleaved channel is gathered through the stride")
+        mono.withUnsafeBufferPointer { check(near(rms($0.baseAddress!, count: 4), 0.5, 1e-6), "the RMS of the gathered channel") }
+    }
+    var pick = ChannelChoice()
+    check(!pick.decided && pick.channel == 0 && pick.channels == 0 && pick.level == 0, "before any buffer the choice is channel 0, undecided")
+    // 100 ms buffers at 48 kHz: the microphone on channel 3 of seven, the rest silent.
+    let quiet = [Double](repeating: 0, count: 7)
+    var mic = quiet; mic[3] = 4800 * 0.01 * 0.01
+    check(pick.observe(energies: mic, frames: 4800, sampleRate: 48000) == 3 && !pick.decided, "the first buffer already reads the channel with signal")
+    check(pick.observe(energies: mic, frames: 4800, sampleRate: 48000) == 3 && pick.decided && pick.channels == 7, "200 ms of capture decide the choice")
+    check(near(pick.level, 0.01, 1e-9), "the level reported is the chosen channel's RMS over the window")
+    var louder = quiet; louder[5] = 100
+    check(pick.observe(energies: louder, frames: 4800, sampleRate: 48000) == 3 && near(pick.level, 0.01, 1e-9), "a decided choice ignores a channel that grows louder later")
+    var early = ChannelChoice()
+    _ = early.observe(energies: [0, 1, 0], frames: 1024, sampleRate: 48000)
+    check(early.observe(energies: [3, 0, 0], frames: 1024, sampleRate: 48000) == 0 && !early.decided, "until decided, each buffer reads the channel with the most energy so far")
+    var tie = ChannelChoice()
+    check(tie.observe(energies: [2, 2, 2], frames: 9600, sampleRate: 48000) == 0 && tie.decided, "equal channels choose the first")
+    var deaf = ChannelChoice()
+    check(deaf.observe(energies: quiet, frames: 9600, sampleRate: 48000) == 0 && deaf.decided && deaf.level == 0, "silence on every channel chooses channel 0 at level 0")
+    var single = ChannelChoice()
+    check(single.observe(energies: [0.5], frames: 9600, sampleRate: 48000) == 0 && single.channels == 1, "a mono input has one channel to choose")
+    var idle = ChannelChoice()
+    check(idle.observe(energies: [1, 2], frames: 0, sampleRate: 48000) == 0 && idle == ChannelChoice(), "an empty buffer observes nothing")
+    // SilenceWatch: digital silence for deafSeconds, sampled every 80 ms; any level resets it.
+    var watch = SilenceWatch()
+    var deafAt: Double?
+    for step in 0..<40 where deafAt == nil { if watch.observe(rms: 0, at: 10 + Double(step) * 0.08) { deafAt = Double(step) * 0.08 } }
+    check(deafAt != nil && deafAt! >= 3.0 && deafAt! < 3.1, "3 s of exactly 0 is deaf, not sooner")
+    var interrupted = SilenceWatch()
+    for step in 0..<30 { _ = interrupted.observe(rms: 0, at: 10 + Double(step) * 0.08) }
+    check(!interrupted.observe(rms: 0.0004, at: 12.5) && !interrupted.observe(rms: 0, at: 15.4), "a level, however low, restarts the watch")
+    var noise = SilenceWatch(), heard = true
+    for step in 0..<200 { heard = heard && !noise.observe(rms: 0.003, at: Double(step) * 0.08) }
+    check(heard && noise == SilenceWatch(), "a room's floor is never deaf and leaves the watch idle")
     // The self-echo filter: the reply's own words, never the owner's.
     let reply = "The weather in Denver is sunny and warm today, sir."
     check(isSelfEcho("The weather in Denver is sunny and warm today sir", spoken: reply), "the whole reply heard back is its echo")

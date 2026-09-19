@@ -557,6 +557,82 @@ struct PreRollMute: Equatable {
 // Option released while Space is still held does not end push-to-talk.
 func shouldEndOnOptionRelease(spaceStillDown: Bool) -> Bool { !spaceStillDown }
 
+// MARK: - Voice-processing capture
+
+// Voice processing exposes the input node in a multi-channel format (seven channels at 48 kHz on a
+// MacBook's built-in pair, 2026-09-19) that the tap must take as it is: a tap format on the input
+// node's bus is an error and the node converts nothing (AVAudioNode.h installTapOnBus:,
+// AVAudioIONode.h). No header says which channel carries the microphone, and channel 0 was digital
+// silence for nine minutes while two replies played. So the recognizer, the ring and the level read
+// one channel of every buffer: the one with the most energy over the first channelPickSeconds of
+// capture, buffer by buffer until then, and that one for good after.
+let channelPickSeconds = 0.2
+struct ChannelChoice: Equatable {
+    private(set) var energy: [Double] = []
+    private(set) var frames = 0
+    private(set) var seconds = 0.0
+    var channels: Int { energy.count }
+    var decided: Bool { seconds >= channelPickSeconds }
+    // The channel with the most energy so far; the first of equals, so silence chooses channel 0.
+    var channel: Int {
+        var best = 0
+        for index in energy.indices where energy[index] > energy[best] { best = index }
+        return best
+    }
+    // The chosen channel's RMS over what was observed, for the report.
+    var level: Double { frames > 0 && !energy.isEmpty ? (energy[channel] / Double(frames)).squareRoot() : 0 }
+    // One buffer's energy (sum of squares) per channel; returns the channel this buffer uses. A
+    // decided choice observes nothing more.
+    mutating func observe(energies: [Double], frames: Int, sampleRate: Double) -> Int {
+        if !decided, frames > 0, sampleRate > 0 {
+            if energy.isEmpty { energy = Array(repeating: 0, count: energies.count) }
+            for (index, value) in zip(energy.indices, energies) { energy[index] += value }
+            self.frames += frames; seconds += Double(frames) / sampleRate
+        }
+        return channel
+    }
+}
+
+// The energy (sum of squares) of every channel of one buffer. channels[c] points at the channel's
+// first sample; its samples are `stride` apart: 1 in a deinterleaved buffer, the channel count in
+// an interleaved one (AVAudioPCMBuffer.floatChannelData and .stride).
+func channelEnergies(_ channels: [UnsafePointer<Float>], stride: Int, frames: Int) -> [Double] {
+    channels.map { samples in
+        var sum: Float = 0
+        for frame in 0..<frames { let value = samples[frame * stride]; sum += value * value }
+        return Double(sum)
+    }
+}
+
+// Copies one channel into a mono run of samples.
+func copyChannel(_ samples: UnsafePointer<Float>, stride: Int, frames: Int, into mono: UnsafeMutablePointer<Float>) {
+    for frame in 0..<frames { mono[frame] = samples[frame * stride] }
+}
+
+// The RMS of a mono run of samples: the level meter's measure.
+func rms(_ samples: UnsafePointer<Float>, count: Int) -> Double {
+    guard count > 0 else { return 0 }
+    var sum: Float = 0
+    for index in 0..<count { sum += samples[index] * samples[index] }
+    return Double(sqrt(sum / Float(count)))
+}
+
+// Voice processing that delivers digital silence is deaf: on 2026-09-19 its buffers arrived
+// steadily with an RMS of exactly 0 for nine minutes while nothing was heard. deafSeconds of it,
+// sampled every ~80 ms, and the helper is half duplex again (disableVoiceProcessing "silent"). A
+// microphone in a room is never exactly 0; a muted one is, and half duplex loses nothing then.
+let deafSeconds = 3.0
+struct SilenceWatch: Equatable {
+    private(set) var since: TimeInterval?
+    // Whether every level up to now, for deafSeconds, was silence.
+    mutating func observe(rms: Double, at now: TimeInterval) -> Bool {
+        guard rms == 0 else { since = nil; return false }
+        let start = since ?? now
+        since = start
+        return now - start >= deafSeconds
+    }
+}
+
 // MARK: - Speech output decisions
 
 enum SpeakPriority: Int {

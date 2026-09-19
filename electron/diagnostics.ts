@@ -133,10 +133,14 @@ const fields = new Set([
   "utteranceId",
   "remainingMs",
   // The helper's echo cancellation (voice_processing, standby_trace): on or
-  // off, and the microphone format it gives the recognizer.
+  // off, the microphone format the tap gets, the channel of it the recognizer
+  // reads and that channel's level.
   "voiceProcessing",
   "sampleRate",
   "channels",
+  "interleaved",
+  "micChannel",
+  "micLevel",
   // The phone remote: route names, verdict and tier codes, and a hashed
   // device code. Never a login, an address, a token or a line of text.
   "route",
@@ -192,11 +196,13 @@ const countFields = new Set([
   "launchedWindows",
   "ticks",
   "channels",
+  "micChannel",
   "count",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
   "sampleRate",
+  "micLevel",
   "textLength",
   "taskLength",
   "durationMs",
@@ -224,6 +230,7 @@ const flagFields = new Set([
   "merged",
   "speaking",
   "voiceProcessing",
+  "interleaved",
   "fallback",
   "preempt",
   "stream",
