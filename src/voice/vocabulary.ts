@@ -1,6 +1,16 @@
 import { normalizeAppName } from "../core/policy";
 import type { SystemIndex } from "../core/memory";
-import type { AppUsage } from "../memory/types";
+
+/**
+ * How often an app was opened, as memory records it (src/memory/types.ts
+ * AppUsage, structurally); src/voice imports nothing above src/core.
+ */
+export interface AppUsage {
+  bundleId: string;
+  name: string;
+  count: number;
+  lastUsed: string;
+}
 
 /**
  * The phrases the voice helper hands Apple's on-device recognizer as
