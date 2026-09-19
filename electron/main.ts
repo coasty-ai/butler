@@ -1826,10 +1826,7 @@ async function receiveVoice(event: VoiceEvent) {
       buffers: event.buffers,
       rms: event.rms,
       engine: event.engine,
-      wakeAt: event.wakeAt,
-      gapMs: event.gapMs,
-      maxGapMs: event.maxGapMs,
-      spanMs: event.spanMs,
+      boundary: event.boundary,
     });
   try {
     if (event.event === "wake_status") {

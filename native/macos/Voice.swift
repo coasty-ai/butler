@@ -92,27 +92,9 @@ var securePaused = false
 // background speech never leaves this process.
 let standbyTrace = ProcessInfo.processInfo.environment["BUTLER_TRACE_STANDBY"] ?? ""
 var tapBuffers = 0, lastRms = 0.0, lastStandbyTraceAt = 0.0
-private let traceHey = try! NSRegularExpression(pattern: #"^(?:\#(wakeHeyPattern))[,.!?]*$"#, options: .caseInsensitive)
-private let traceName = try! NSRegularExpression(pattern: #"^(?:\#(wakeNamePattern))[,.!?]*$"#, options: .caseInsensitive)
-private func matches(_ expression: NSRegularExpression, _ text: String) -> Bool {
-    expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
-}
-/// Where a wake phrase could begin a fresh utterance inside a running hypothesis: a "hey"+name
-/// pair whose segment starts at least 0.6 s after the previous segment ended. Trace only, for
-/// now: it tells whether Apple's segment timestamps can separate a wake phrase from the
-/// conversation that a standby request keeps transcribing around it.
-func wakeAfterPause(_ segments: [SFTranscriptionSegment]) -> (index: Int, gapMs: Int, maxGapMs: Int)? {
-    var maxGap = 0.0, found: (Int, Int)?
-    for i in 1..<max(1, segments.count) {
-        let gap = segments[i].timestamp - (segments[i - 1].timestamp + segments[i - 1].duration)
-        maxGap = max(maxGap, gap)
-        if found == nil, gap >= 0.6, i + 1 < segments.count, matches(traceHey, segments[i].substring), matches(traceName, segments[i + 1].substring) {
-            found = (i, Int((gap * 1000).rounded()))
-        }
-    }
-    guard let (index, gapMs) = found else { return nil }
-    return (index, gapMs, Int((maxGap * 1000).rounded()))
-}
+// Standby: the hypothesis as last seen, when it last changed, where its latest utterance
+// begins (utteranceBoundary), and the offset the activated turn strips as the room's words.
+var standbyRaw = "", standbyChangedAt = 0.0, standbyBoundary = 0, wakeOffset = 0
 func traceStandby(_ kind: String, _ raw: String? = nil, error: String? = nil, extra: [String: Any] = [:]) {
     guard !standbyTrace.isEmpty else { return }
     var event: [String: Any] = ["event": "standby_trace", "kind": kind, "sinceStartMs": Int(((uptime() - startedAt) * 1000).rounded())]
@@ -340,6 +322,7 @@ func endCommand(_ reason: TurnEndReason) {
 func startRecognition() -> Bool {
     guard let recognizer = speech else { return false }
     segmentGeneration += 1
+    standbyRaw = ""; standbyBoundary = 0; wakeOffset = 0; standbyChangedAt = uptime()
     let session = generation, segment = segmentGeneration
     let next = SFSpeechAudioBufferRecognitionRequest()
     next.shouldReportPartialResults = true; next.requiresOnDeviceRecognition = true; next.taskHint = .dictation
@@ -497,21 +480,24 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
         let now = uptime()
         switch current {
         case .standby:
-            guard commandAfterWakePhrase(raw, ended: result.isFinal) != nil else {
+            // Nearby conversation keeps one hypothesis running; words appended after a pause
+            // in the partials begin a new utterance, and only that utterance is tested.
+            if raw != standbyRaw {
+                standbyBoundary = utteranceBoundary(previous: standbyRaw, current: raw, boundary: standbyBoundary, gapSeconds: now - standbyChangedAt)
+                standbyRaw = raw; standbyChangedAt = now
+            }
+            let utterance = standbyBoundary > 0 ? String(raw.dropFirst(standbyBoundary)) : raw
+            guard commandAfterWakePhrase(utterance, ended: result.isFinal) != nil else {
                 // Do not emit background speech, partials, or microphone levels.
-                if !standbyTrace.isEmpty {
-                    let segments = result.bestTranscription.segments
-                    var extra: [String: Any] = ["segments": segments.count]
-                    if let last = segments.last { extra["spanMs"] = Int(((last.timestamp + last.duration - (segments.first?.timestamp ?? 0)) * 1000).rounded()) }
-                    if let pause = wakeAfterPause(segments) { extra["wakeAt"] = pause.index; extra["gapMs"] = pause.gapMs; extra["maxGapMs"] = pause.maxGapMs }
-                    traceStandby(result.isFinal ? "final" : "partial", raw, extra: extra)
-                }
+                traceStandby(result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
                 if !trimmed(raw).isEmpty { lastTextAt = now }
-                pendingWake = !result.isFinal && wakePhraseAwaitingPause(raw)
+                pendingWake = !result.isFinal && wakePhraseAwaitingPause(utterance)
+                if pendingWake { wakeOffset = standbyBoundary }
                 if result.isFinal { clearSpeech(); scheduleStandby() }
                 return
             }
-            traceStandby("wake", raw)
+            traceStandby("wake", raw, extra: ["boundary": standbyBoundary])
+            wakeOffset = standbyBoundary
             activateWake(context: .command, window: nil)
         case .followUp:
             if commandAfterWakePhrase(raw, ended: result.isFinal) != nil {
@@ -557,7 +543,10 @@ func activateFollowUp() {
     output(["event": "followup_detected", "kind": kind.rawValue])
     output(["event": "followup_closed", "kind": kind.rawValue, "endReason": "detected"])
 }
-func absorbRecognition(_ result: SFSpeechRecognitionResult, raw: String, now: TimeInterval) {
+func absorbRecognition(_ result: SFSpeechRecognitionResult, raw full: String, now: TimeInterval) {
+    // A wake phrase that began a new utterance inside a running standby hypothesis: the words
+    // before it were the room's, never part of the command (utteranceBoundary).
+    let raw = containsWakePhrase && segmentGeneration == wakeSegment && wakeOffset > 0 && wakeOffset < full.count ? String(full.dropFirst(wakeOffset)) : full
     // A reply in a follow-up window that turns out to start with the wake phrase is a new
     // command: switch to wake timing and let main treat it as a wake activation.
     if mode == .handsFree, !containsWakePhrase, turn.text.isEmpty, commandAfterWakePhrase(raw, ended: result.isFinal) != nil {
@@ -574,7 +563,7 @@ func absorbRecognition(_ result: SFSpeechRecognitionResult, raw: String, now: Ti
         output(["event": "recognition_final", "textLength": command.count,
                 "source": startsWithWakePhrase(raw) ? "wake_prefixed_segment" : "command_segment"])
         let segments = result.bestTranscription.segments
-        let relevant = segments.dropFirst(min(strippedWordCount(raw: raw, command: command), segments.count))
+        let relevant = segments.dropFirst(min(strippedWordCount(raw: full, command: command), segments.count))
         let confidence = relevant.isEmpty ? 0 : relevant.map { Double($0.confidence) }.reduce(0, +) / Double(relevant.count)
         if released {
             if command.isEmpty { completeTurn(trimmed(turn.current).isEmpty ? .final : .emptyFinal); return }

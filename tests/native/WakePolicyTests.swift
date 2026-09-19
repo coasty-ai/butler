@@ -25,6 +25,19 @@ func wakePolicyChecks(_ check: (Bool, String) -> Void) {
           "a lone wake phrase activates after 0.6 s of unchanged text and 0.3 s of quiet")
     check(!wakePauseElapsed(now: 11.1, lastText: 10, lastSpeech: 11.0), "speech still arriving keeps it waiting")
     check(wakePauseElapsed(now: 11.2, lastText: 10, lastSpeech: 11.2), "steady background sound cannot hold it past 1.2 s of unchanged text")
+    // Standby: words appended after a pause in the partials begin a new utterance (2026-09-19:
+    // one hypothesis ran through a whole conversation and swallowed every wake phrase in it).
+    check(utteranceBoundary(previous: "the meeting moved to Thursday", current: "the meeting moved to Thursday Hey Butler", boundary: 0, gapSeconds: 0.7) == 29,
+          "words appended after a 0.6 s pause begin a new utterance")
+    check(utteranceBoundary(previous: "the meeting moved", current: "the meeting moved to Thursday", boundary: 0, gapSeconds: 0.2) == 0,
+          "words appended without a pause continue the utterance")
+    check(utteranceBoundary(previous: "the meeting moved Hey Butler", current: "the meeting moved Hey Butler open Notes", boundary: 18, gapSeconds: 0.9) == 18,
+          "a pause after a lone wake phrase keeps the utterance at the wake phrase")
+    check(utteranceBoundary(previous: "", current: "Hey Butler", boundary: 0, gapSeconds: 5) == 0, "the first words start at the start")
+    check(utteranceBoundary(previous: "the meeting moved to Thursday Hey Butler", current: "the meeting moved to Tuesday Hey Butler open", boundary: 29, gapSeconds: 0.1) == 29,
+          "a revision of earlier words keeps the boundary while it fits")
+    check(commandAfterWakePhrase(String("the meeting moved to Thursday Hey Butler open Notes".dropFirst(29)), ended: false) == "open Notes",
+          "the utterance after the boundary activates as if it had started the hypothesis")
     check(recognizerContext(ambient: true) == ["Hey Butler"] && recognizerContext(ambient: false).isEmpty,
           "the recognizer is biased toward the wake phrase only while listening for it")
     check(commandAfterWakeRestart("Butler open calendar and put an event") == "open calendar and put an event", "the bare name restarts a turn already listening")

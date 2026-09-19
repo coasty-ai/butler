@@ -91,6 +91,24 @@ func wakePauseElapsed(now: TimeInterval, lastText: TimeInterval, lastSpeech: Tim
     return (stable >= wakePauseStableSeconds && quiet >= wakePauseQuietSeconds) || stable >= wakePauseTextOnlySeconds
 }
 
+// Apple's on-device request keeps one hypothesis running through nearby conversation, and its
+// partial segments carry no real timing (10 ms each in the 2026-09-19 trace). The pause before
+// a wake phrase shows in the partials' arrival instead: the text unchanged for
+// standbyUtteranceGapSeconds, then more words appended. Those words begin a new utterance, and
+// the wake phrase may start it, where it could never start the hypothesis.
+let standbyUtteranceGapSeconds = 0.6
+/// The offset in `current` at which the latest utterance begins. It moves to the end of
+/// `previous` when new words were appended after a pause, unless the words since the last
+/// boundary are the wake phrase itself (the speaker paused after "Hey Butler"). A revision of
+/// earlier text keeps the boundary while it still fits: a misplaced boundary can only miss.
+func utteranceBoundary(previous: String, current: String, boundary: Int, gapSeconds: Double) -> Int {
+    let kept = min(boundary, current.count)
+    guard current.count > previous.count, current.hasPrefix(previous), !previous.isEmpty,
+          gapSeconds >= standbyUtteranceGapSeconds else { return kept }
+    if wakePhraseAwaitingPause(String(previous.dropFirst(min(boundary, previous.count)))) { return kept }
+    return previous.count
+}
+
 // Inside a turn that is already listening, a later segment that opens by addressing
 // the assistant again is the user starting over: the wake phrase itself, or the bare
 // name, which is how the recognizer reports a repeated "Hey Butler" at a segment start
