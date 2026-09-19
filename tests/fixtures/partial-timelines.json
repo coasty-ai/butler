@@ -1,0 +1,408 @@
+{
+  "notes": [
+    "Utterances as the recognizer delivers them: each sample is the whole partial heard so far with the time it arrived (words 60-200 ms apart; the last word of a sentence often later). A sample that repeats the previous text at a later time is the caller re-pushing the last partial so a clause can commit by stability; the stream keeps no timer.",
+    "The harness (tests/voice-stream.test.ts) drives createClauseStream and decideFast: every committed clause is decided at once with ctx, and after an open_url the ctx's frontHost becomes that URL's host, as the executor knows where it just sent the browser. atSample is the index of the sample whose push produced the event.",
+    "finalActions are the decisions on clauses the final commits that never committed while speaking; superseded lists rewrites of committed words. An action equal to the last one issued for the same clause index (a replacement deciding to the same URL) is a repeat and is not issued again. scripts/streaming-report.mjs (lane S3) reads the same shape."
+  ],
+  "timelines": [
+    {
+      "id": "owner-youtube",
+      "about": "The owner's sentence: YouTube by the boundary at 'play' (word 4), the results for 'midwest safety' by stability before 'video' arrives; 'video' then supersedes the clause with the same URL, which the executor drops as a repeat.",
+      "ctx": { "protectedHosts": ["paypal.com", "chase.com"] },
+      "samples": [
+        { "text": "go", "atMs": 0 },
+        { "text": "go to", "atMs": 120 },
+        { "text": "go to youtube", "atMs": 300 },
+        { "text": "go to youtube and", "atMs": 480 },
+        { "text": "go to youtube and play", "atMs": 640 },
+        { "text": "go to youtube and play a", "atMs": 760 },
+        { "text": "go to youtube and play a midwest", "atMs": 920 },
+        { "text": "go to youtube and play a midwest safety", "atMs": 1100 },
+        { "text": "go to youtube and play a midwest safety", "atMs": 1460 },
+        {
+          "text": "go to youtube and play a midwest safety video",
+          "atMs": 1500
+        }
+      ],
+      "final": {
+        "text": "go to youtube and play a midwest safety video",
+        "atMs": 2300
+      },
+      "expect": {
+        "commits": [
+          {
+            "index": 0,
+            "text": "go to youtube",
+            "by": "boundary",
+            "atSample": 4
+          },
+          {
+            "index": 1,
+            "text": "play a midwest safety",
+            "by": "stable",
+            "atSample": 8
+          }
+        ],
+        "superseded": [{ "index": 1, "atSample": 9 }],
+        "actions": [
+          {
+            "index": 0,
+            "kind": "open_url",
+            "siteKey": "youtube",
+            "url": "https://www.youtube.com/"
+          },
+          {
+            "index": 1,
+            "kind": "open_url",
+            "siteKey": "youtube",
+            "url": "https://www.youtube.com/results?search_query=midwest%20safety"
+          }
+        ],
+        "finalClauses": ["go to youtube", "play a midwest safety video"],
+        "finalActions": [],
+        "dropped": []
+      }
+    },
+    {
+      "id": "recognizer-rewrite",
+      "about": "'you too' committed by stability and acted on (an app of that name, which nothing opens), then rewritten to 'youtube' as 'play' arrives: superseded, recommitted by boundary and decided afresh.",
+      "ctx": { "protectedHosts": ["paypal.com"] },
+      "samples": [
+        { "text": "go", "atMs": 0 },
+        { "text": "go to", "atMs": 130 },
+        { "text": "go to you", "atMs": 290 },
+        { "text": "go to you too", "atMs": 400 },
+        { "text": "go to you too", "atMs": 800 },
+        { "text": "go to youtube and play", "atMs": 900 },
+        { "text": "go to youtube and play a midwest", "atMs": 1100 },
+        { "text": "go to youtube and play a midwest safety", "atMs": 1300 }
+      ],
+      "final": {
+        "text": "go to youtube and play a midwest safety video",
+        "atMs": 2200
+      },
+      "expect": {
+        "commits": [
+          {
+            "index": 0,
+            "text": "go to you too",
+            "by": "stable",
+            "atSample": 4
+          },
+          {
+            "index": 0,
+            "text": "go to youtube",
+            "by": "boundary",
+            "atSample": 5
+          }
+        ],
+        "superseded": [{ "index": 0, "atSample": 5 }],
+        "actions": [
+          { "index": 0, "kind": "open_app", "name": "you too" },
+          {
+            "index": 0,
+            "kind": "open_url",
+            "siteKey": "youtube",
+            "url": "https://www.youtube.com/"
+          }
+        ],
+        "finalClauses": ["go to youtube", "play a midwest safety video"],
+        "finalActions": [
+          {
+            "index": 1,
+            "kind": "open_url",
+            "siteKey": "youtube",
+            "url": "https://www.youtube.com/results?search_query=midwest%20safety"
+          }
+        ],
+        "dropped": []
+      }
+    },
+    {
+      "id": "consequential-clause",
+      "about": "'and send it' never yields a fast action: 'send it' has no object beyond a pronoun, so it never commits by stability, and at the final the consequential word refuses it.",
+      "ctx": { "protectedHosts": ["paypal.com"] },
+      "samples": [
+        { "text": "open", "atMs": 0 },
+        { "text": "open slack", "atMs": 150 },
+        { "text": "open slack and", "atMs": 350 },
+        { "text": "open slack and send", "atMs": 500 },
+        { "text": "open slack and send it", "atMs": 650 },
+        { "text": "open slack and send it", "atMs": 1100 }
+      ],
+      "final": { "text": "open slack and send it", "atMs": 1800 },
+      "expect": {
+        "commits": [
+          { "index": 0, "text": "open slack", "by": "boundary", "atSample": 3 }
+        ],
+        "superseded": [],
+        "actions": [{ "index": 0, "kind": "open_app", "name": "slack" }],
+        "finalClauses": ["open slack", "send it"],
+        "finalActions": [
+          { "index": 1, "kind": "none", "reason": "not_navigational" }
+        ],
+        "dropped": []
+      }
+    },
+    {
+      "id": "protected-host",
+      "about": "A spoken domain on the protected list: the clause commits, and the decider refuses it as protected; the browser never goes there before the final.",
+      "ctx": { "protectedHosts": ["paypal.com", "chase.com"] },
+      "samples": [
+        { "text": "go", "atMs": 0 },
+        { "text": "go to", "atMs": 100 },
+        { "text": "go to paypal", "atMs": 280 },
+        { "text": "go to paypal dot", "atMs": 400 },
+        { "text": "go to paypal dot com", "atMs": 560 },
+        { "text": "go to paypal dot com and", "atMs": 700 },
+        { "text": "go to paypal dot com and check", "atMs": 860 },
+        { "text": "go to paypal dot com and check my", "atMs": 1000 },
+        { "text": "go to paypal dot com and check my balance", "atMs": 1150 }
+      ],
+      "final": {
+        "text": "go to paypal dot com and check my balance",
+        "atMs": 2000
+      },
+      "expect": {
+        "commits": [
+          {
+            "index": 0,
+            "text": "go to paypal dot com",
+            "by": "boundary",
+            "atSample": 6
+          }
+        ],
+        "superseded": [],
+        "actions": [{ "index": 0, "kind": "none", "reason": "protected" }],
+        "finalClauses": ["go to paypal dot com", "check my balance"],
+        "finalActions": [
+          { "index": 1, "kind": "none", "reason": "not_navigational" }
+        ],
+        "dropped": []
+      }
+    },
+    {
+      "id": "fragment",
+      "about": "A pointer at the screen: no verb, so nothing commits while speaking and the final's clause is not navigational.",
+      "ctx": { "protectedHosts": [] },
+      "samples": [
+        { "text": "the", "atMs": 0 },
+        { "text": "the one", "atMs": 150 },
+        { "text": "the one on", "atMs": 300 },
+        { "text": "the one on the", "atMs": 450 },
+        { "text": "the one on the right", "atMs": 600 },
+        { "text": "the one on the right", "atMs": 1100 }
+      ],
+      "final": { "text": "the one on the right", "atMs": 1500 },
+      "expect": {
+        "commits": [],
+        "superseded": [],
+        "actions": [],
+        "finalClauses": ["the one on the right"],
+        "finalActions": [
+          { "index": 0, "kind": "none", "reason": "not_navigational" }
+        ],
+        "dropped": []
+      }
+    },
+    {
+      "id": "open-and-scroll",
+      "about": "'open Slack and scroll down' (design §5): Slack by the boundary at 'scroll', the scroll by stability.",
+      "ctx": { "protectedHosts": [] },
+      "samples": [
+        { "text": "open", "atMs": 0 },
+        { "text": "open Slack", "atMs": 160 },
+        { "text": "open Slack and", "atMs": 340 },
+        { "text": "open Slack and scroll", "atMs": 500 },
+        { "text": "open Slack and scroll down", "atMs": 660 },
+        { "text": "open Slack and scroll down", "atMs": 1050 }
+      ],
+      "final": { "text": "open Slack and scroll down", "atMs": 1700 },
+      "expect": {
+        "commits": [
+          { "index": 0, "text": "open Slack", "by": "boundary", "atSample": 3 },
+          { "index": 1, "text": "scroll down", "by": "stable", "atSample": 5 }
+        ],
+        "superseded": [],
+        "actions": [
+          { "index": 0, "kind": "open_app", "name": "Slack" },
+          { "index": 1, "kind": "scroll", "direction": "down" }
+        ],
+        "finalClauses": ["open Slack", "scroll down"],
+        "finalActions": [],
+        "dropped": []
+      }
+    },
+    {
+      "id": "google-weather",
+      "about": "'search google for the weather in austin' (design §5): one clause, committed by stability 400 ms after its last word.",
+      "ctx": { "protectedHosts": [] },
+      "samples": [
+        { "text": "search", "atMs": 0 },
+        { "text": "search google", "atMs": 170 },
+        { "text": "search google for", "atMs": 300 },
+        { "text": "search google for the", "atMs": 420 },
+        { "text": "search google for the weather", "atMs": 600 },
+        { "text": "search google for the weather in", "atMs": 740 },
+        { "text": "search google for the weather in austin", "atMs": 900 },
+        { "text": "search google for the weather in austin", "atMs": 1300 }
+      ],
+      "final": {
+        "text": "search google for the weather in austin",
+        "atMs": 1900
+      },
+      "expect": {
+        "commits": [
+          {
+            "index": 0,
+            "text": "search google for the weather in austin",
+            "by": "stable",
+            "atSample": 7
+          }
+        ],
+        "superseded": [],
+        "actions": [
+          {
+            "index": 0,
+            "kind": "open_url",
+            "siteKey": "google",
+            "url": "https://www.google.com/search?q=the%20weather%20in%20austin"
+          }
+        ],
+        "finalClauses": ["search google for the weather in austin"],
+        "finalActions": [],
+        "dropped": []
+      }
+    },
+    {
+      "id": "spoken-correction",
+      "about": "'go to youtube, no, go to gmail' (design §5): YouTube opened by stability, then the correction discards the clause; the replacement commits and opens Gmail. The final says only 'go to gmail'; the superseded event, not `dropped`, is what tells the executor YouTube was a mistake.",
+      "ctx": { "protectedHosts": [] },
+      "samples": [
+        { "text": "go", "atMs": 0 },
+        { "text": "go to", "atMs": 120 },
+        { "text": "go to youtube", "atMs": 300 },
+        { "text": "go to youtube", "atMs": 700 },
+        { "text": "go to youtube no", "atMs": 800 },
+        { "text": "go to youtube no go", "atMs": 950 },
+        { "text": "go to youtube no go to", "atMs": 1080 },
+        { "text": "go to youtube no go to gmail", "atMs": 1250 },
+        { "text": "go to youtube no go to gmail", "atMs": 1650 }
+      ],
+      "final": { "text": "go to youtube no go to gmail", "atMs": 2300 },
+      "expect": {
+        "commits": [
+          {
+            "index": 0,
+            "text": "go to youtube",
+            "by": "stable",
+            "atSample": 3
+          },
+          { "index": 0, "text": "go to gmail", "by": "stable", "atSample": 8 }
+        ],
+        "superseded": [{ "index": 0, "atSample": 5 }],
+        "actions": [
+          {
+            "index": 0,
+            "kind": "open_url",
+            "siteKey": "youtube",
+            "url": "https://www.youtube.com/"
+          },
+          {
+            "index": 0,
+            "kind": "open_url",
+            "siteKey": "gmail",
+            "url": "https://mail.google.com/"
+          }
+        ],
+        "finalClauses": ["go to gmail"],
+        "finalActions": [],
+        "dropped": []
+      }
+    },
+    {
+      "id": "and-inside-object",
+      "about": "'and' followed by a noun is part of the object, so 'salt and pepper' is one clause; the browser in front lets a bare search go to Google.",
+      "ctx": { "protectedHosts": [], "frontAppId": "com.apple.Safari" },
+      "samples": [
+        { "text": "search", "atMs": 0 },
+        { "text": "search for", "atMs": 140 },
+        { "text": "search for salt", "atMs": 320 },
+        { "text": "search for salt and", "atMs": 480 },
+        { "text": "search for salt and pepper", "atMs": 640 },
+        { "text": "search for salt and pepper", "atMs": 1000 }
+      ],
+      "final": { "text": "search for salt and pepper", "atMs": 1600 },
+      "expect": {
+        "commits": [
+          {
+            "index": 0,
+            "text": "search for salt and pepper",
+            "by": "stable",
+            "atSample": 5
+          }
+        ],
+        "superseded": [],
+        "actions": [
+          {
+            "index": 0,
+            "kind": "open_url",
+            "siteKey": "google",
+            "url": "https://www.google.com/search?q=salt%20and%20pepper"
+          }
+        ],
+        "finalClauses": ["search for salt and pepper"],
+        "finalActions": [],
+        "dropped": []
+      }
+    },
+    {
+      "id": "second-verb-no-connector",
+      "about": "'open youtube play midwest safety': a media verb after a whole early clause splits without a connector; YouTube by the boundary at 'play', the results by stability with the front host now YouTube.",
+      "ctx": { "protectedHosts": [] },
+      "samples": [
+        { "text": "open", "atMs": 0 },
+        { "text": "open youtube", "atMs": 180 },
+        { "text": "open youtube play", "atMs": 360 },
+        { "text": "open youtube play midwest", "atMs": 520 },
+        { "text": "open youtube play midwest safety", "atMs": 700 },
+        { "text": "open youtube play midwest safety", "atMs": 1100 }
+      ],
+      "final": { "text": "open youtube play midwest safety", "atMs": 1800 },
+      "expect": {
+        "commits": [
+          {
+            "index": 0,
+            "text": "open youtube",
+            "by": "boundary",
+            "atSample": 2
+          },
+          {
+            "index": 1,
+            "text": "play midwest safety",
+            "by": "stable",
+            "atSample": 5
+          }
+        ],
+        "superseded": [],
+        "actions": [
+          {
+            "index": 0,
+            "kind": "open_url",
+            "siteKey": "youtube",
+            "url": "https://www.youtube.com/"
+          },
+          {
+            "index": 1,
+            "kind": "open_url",
+            "siteKey": "youtube",
+            "url": "https://www.youtube.com/results?search_query=midwest%20safety"
+          }
+        ],
+        "finalClauses": ["open youtube", "play midwest safety"],
+        "finalActions": [],
+        "dropped": []
+      }
+    }
+  ]
+}

@@ -358,7 +358,7 @@ const navigationKeys = [
   "PAGEDOWN",
   "TAB",
 ];
-const consequential =
+export const consequential =
   /\b(send|publish|pay|buy|purchase|transfer|delete|remove|uninstall|submit|invite|share|approve|confirm|authorize|upload|install|password|security|order|checkout|continue to checkout|subscribe|unsubscribe|donate|sign|trash|erase|reset|archive|discard|empty|format|revoke|deactivate|disable|withdraw|deposit|bid|call|dial|accept|agree|logout|log out|sign out|restart|shut down|force quit|replace|overwrite|don['’]?t save|turn off|repost|retweet|comment|connect|decline|bin|move to bin|cancel subscription|cancel membership|save|like|dislike|join|block)\b/;
 /**
  * The consequential steps that always ask, whatever the user set: money
@@ -367,7 +367,7 @@ const consequential =
  * no standing allowance reaches these, because a wrong one cannot be taken
  * back by pressing undo.
  */
-const irreversible =
+export const irreversible =
   /\b(send|publish|post|repost|retweet|pay|buy|purchase|transfer|order|checkout|continue to checkout|donate|withdraw|deposit|bid|subscribe|unsubscribe|cancel subscription|cancel membership|delete|remove|trash|erase|empty|bin|move to bin|format|reset|uninstall|install|revoke|password|security|invite|share|upload|call|dial|authorize|logout|log out|sign out|sign|agree|accept|approve|confirm)\b/;
 /**
  * Steps a person undoes without thinking: saving, liking, archiving mail,
