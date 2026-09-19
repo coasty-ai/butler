@@ -69,14 +69,23 @@ const nullable = <T extends { type: string }>(schema: T) => ({
 });
 const key = { type: "string", enum: [...supportedKeys] };
 const button = { type: "string", enum: ["left", "right"] };
+// Every action may carry a note (schema base.note): a value read on this
+// screen for a later step. Strict mode has no optional field, so it is a
+// null union; normalizeActionObject drops the null.
+const note = nullable({
+  type: "string",
+  description:
+    "A value read on this screen that a later step must type or compare (at most 200 characters), or null.",
+});
 const variant = (type: string, properties: Json) => ({
   type: "object",
   properties: {
     type: { type: "string", enum: [type] },
     frame_id: frameId,
     ...properties,
+    note,
   },
-  required: ["type", "frame_id", ...Object.keys(properties)],
+  required: ["type", "frame_id", ...Object.keys(properties), "note"],
   additionalProperties: false,
 });
 
