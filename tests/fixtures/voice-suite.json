@@ -1,0 +1,1412 @@
+{
+  "schema": 1,
+  "wake": "Hey Butler",
+  "categories": [
+    "app",
+    "dictation",
+    "browsing",
+    "question",
+    "correction",
+    "multi-step",
+    "system",
+    "wake",
+    "noisy"
+  ],
+  "tags": [
+    "fast-start",
+    "dictation",
+    "browsing",
+    "question",
+    "correction",
+    "multi-step",
+    "system",
+    "noisy",
+    "follow-up",
+    "policy",
+    "barge-in"
+  ],
+  "paragraphs": {
+    "weather": "The forecast for the weekend looks mild, with light cloud in the morning and some sunshine by early afternoon. Temperatures should sit around eighteen degrees, and the breeze from the west will stay gentle. Rain is unlikely before Monday, though the evenings will feel cooler than last week.",
+    "gardening": "The tomatoes have finally started to ripen along the back fence, and the basil next to them is doing well in the warmer soil. The roses need a little pruning after the last bloom, and the lavender by the gate is drawing bees every afternoon. Watering in the early morning has kept everything green."
+  },
+  "tasks": [
+    {
+      "id": "app-open-notes",
+      "category": "app",
+      "say": "open Notes",
+      "heard": "\\bnotes?\\b",
+      "expect": {
+        "outcome": "run",
+        "earlyStart": true,
+        "frontmost": "com.apple.Notes",
+        "maxActions": 3
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Notes\") as string",
+          "record": "notesWasRunning"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if \"{state.notesWasRunning}\" is \"false\" and application \"Notes\" is running then tell application \"Notes\" to quit"
+        }
+      ],
+      "tags": ["fast-start"],
+      "notes": "The fast-start verb: Notes should come forward before the sentence ends. Quits Notes only if the loop opened it."
+    },
+    {
+      "id": "app-switch-safari",
+      "category": "app",
+      "say": "switch to Safari",
+      "heard": "safari",
+      "expect": {
+        "outcome": "run",
+        "earlyStart": true,
+        "frontmost": "com.apple.Safari",
+        "maxActions": 3,
+        "noMutation": true
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
+          "record": "win",
+          "timeoutMs": 15000
+        },
+        {
+          "kind": "sh",
+          "script": "open -a TextEdit && sleep 1"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit"
+        }
+      ],
+      "tags": ["fast-start"],
+      "notes": "A switch, not a launch: Safari is behind TextEdit at the start. No typing or clicking should be needed."
+    },
+    {
+      "id": "app-new-window-textedit",
+      "category": "app",
+      "say": "open a new TextEdit window",
+      "heard": "text ?edit",
+      "expect": {
+        "outcome": "run",
+        "frontmost": "com.apple.TextEdit",
+        "state": [
+          {
+            "name": "windowGrew",
+            "kind": "osascript",
+            "script": "tell application \"TextEdit\" to return ((count windows) > {state.windowsBefore}) as string",
+            "expect": "equals",
+            "value": "true",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "sh",
+          "script": "open -a TextEdit && sleep 1"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\" to return (count windows) as string",
+          "record": "windowsBefore"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\" to return (count documents) as string",
+          "record": "docsBefore"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\"\n  set extra to (count documents) - {state.docsBefore}\n  repeat while extra > 0 and (exists (first document whose path is missing value))\n    close (first document whose path is missing value) saving no\n    set extra to extra - 1\n  end repeat\nend tell"
+        }
+      ],
+      "tags": ["fast-start"],
+      "notes": "A new untitled window in an app already open. Closes only untitled documents beyond the count seen before."
+    },
+    {
+      "id": "app-close-window",
+      "category": "app",
+      "say": "close this window",
+      "heard": "close",
+      "expect": {
+        "outcome": "run",
+        "state": [
+          {
+            "name": "windowFell",
+            "kind": "osascript",
+            "script": "tell application \"TextEdit\" to return ((count windows) < {state.windowsBefore}) as string",
+            "expect": "equals",
+            "value": "true",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\" to return (count documents) as string",
+          "record": "docsBefore"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\"\n  activate\n  make new document\n  delay 0.5\n  return (count windows) as string\nend tell",
+          "record": "windowsBefore"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\"\n  set extra to (count documents) - {state.docsBefore}\n  repeat while extra > 0 and (exists (first document whose path is missing value))\n    close (first document whose path is missing value) saving no\n    set extra to extra - 1\n  end repeat\nend tell"
+        }
+      ],
+      "tags": ["policy"],
+      "notes": "An empty untitled document has no save sheet, so closing it needs no confirmation; one here is NEEDS_CLICK."
+    },
+    {
+      "id": "app-quit-calculator",
+      "category": "app",
+      "say": "quit Calculator",
+      "heard": "quit.*calculator",
+      "expect": {
+        "outcome": "confirmation",
+        "alsoAccept": ["run"],
+        "confirmReason": "quit this application",
+        "runCompleted": false,
+        "noConfirmation": false,
+        "state": [
+          {
+            "name": "calculatorGone",
+            "kind": "osascript",
+            "script": "tell application \"System Events\" to return (not (exists process \"Calculator\")) as string",
+            "expect": "equals",
+            "value": "true",
+            "when": "run"
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Calculator\") as string",
+          "record": "calcWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "open -a Calculator && sleep 1"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if \"{state.calcWasRunning}\" is \"false\" and application \"Calculator\" is running then tell application \"Calculator\" to quit"
+        }
+      ],
+      "tags": ["policy"],
+      "notes": "CMD+Q always asks (policy.ts). Either the policy asks and the loop declines with stop, or the run quits it outright. Never approved."
+    },
+    {
+      "id": "dictate-textedit-sentence",
+      "category": "dictation",
+      "say": "type the quick brown fox in the document",
+      "heard": "quick.*fox",
+      "expect": {
+        "outcome": "run",
+        "frontmost": "com.apple.TextEdit",
+        "state": [
+          {
+            "name": "hasPhrase",
+            "kind": "osascript",
+            "script": "tell application \"TextEdit\" to return text of (first document whose name is \"dictation.txt\")",
+            "expect": "contains",
+            "value": "quick brown fox",
+            "primary": true
+          },
+          {
+            "name": "keptHeading",
+            "kind": "osascript",
+            "script": "tell application \"TextEdit\" to return text of (first document whose name is \"dictation.txt\")",
+            "expect": "contains",
+            "value": "{token}"
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "sh",
+          "script": "mkdir -p \"{benchDir}\" && printf 'Voice loop {token}\\n' > \"{benchDir}/dictation.txt\" && open -a TextEdit \"{benchDir}/dictation.txt\" && sleep 1.5"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"dictation.txt\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -rf \"{benchDir}\""
+        }
+      ],
+      "tags": ["dictation"],
+      "notes": "Dictation into a plain text document the loop made; the heading with the token must survive."
+    },
+    {
+      "id": "dictate-textedit-append-line",
+      "category": "dictation",
+      "say": "add a line that says milk and eggs",
+      "heard": "milk.*eggs",
+      "expect": {
+        "outcome": "run",
+        "state": [
+          {
+            "name": "appended",
+            "kind": "osascript",
+            "script": "tell application \"TextEdit\" to return text of (first document whose name is \"list.txt\")",
+            "expect": "matches",
+            "value": "shopping .*milk.*eggs",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "sh",
+          "script": "mkdir -p \"{benchDir}\" && printf 'Shopping {token}\\n' > \"{benchDir}/list.txt\" && open -a TextEdit \"{benchDir}/list.txt\" && sleep 1.5"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"list.txt\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -rf \"{benchDir}\""
+        }
+      ],
+      "tags": ["dictation"],
+      "notes": "Appending under an existing heading: the order matters, the heading must come first."
+    },
+    {
+      "id": "dictate-notes-line",
+      "category": "dictation",
+      "say": "write buy oat milk tomorrow in the note",
+      "heard": "oat milk",
+      "expect": {
+        "outcome": "run",
+        "frontmost": "com.apple.Notes",
+        "creates": "notes",
+        "state": [
+          {
+            "name": "bodyHasPhrase",
+            "kind": "osascript",
+            "script": "tell application \"Notes\" to return plaintext of (first note whose name contains \"{token}\")",
+            "expect": "contains",
+            "value": "oat milk",
+            "primary": true
+          },
+          {
+            "name": "oneNote",
+            "kind": "osascript",
+            "script": "tell application \"Notes\" to return (count (notes whose name contains \"{token}\")) as string",
+            "expect": "equals",
+            "value": "1"
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Notes\") as string",
+          "record": "notesWasRunning"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"Notes\"\n  activate\n  set n to make new note at folder \"Notes\" of default account with properties {body:\"Voice loop {token}\"}\n  show n\nend tell",
+          "timeoutMs": 15000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Notes\" to delete (every note whose name contains \"{token}\")"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.notesWasRunning}\" is \"false\" and application \"Notes\" is running then tell application \"Notes\" to quit"
+        }
+      ],
+      "tags": ["dictation"],
+      "probes": ["notes-automation"],
+      "notes": "Dictation into a note the loop created and named with the token. Skipped when Notes automation is denied."
+    },
+    {
+      "id": "dictate-follow-up-bold",
+      "category": "dictation",
+      "turns": [
+        {
+          "say": "write hello there in the document",
+          "withWake": true,
+          "heard": "hello there",
+          "expect": { "outcome": "run", "runCompleted": false }
+        },
+        {
+          "say": "and make it bold",
+          "withWake": false,
+          "after": {
+            "event": "followup_open",
+            "kind": "continuation",
+            "plus": 300
+          },
+          "heard": "bold",
+          "expect": {
+            "outcome": "revise",
+            "state": [
+              {
+                "name": "hasPhrase",
+                "kind": "osascript",
+                "script": "tell application \"TextEdit\" to return text of document 1",
+                "expect": "contains",
+                "value": "hello there"
+              },
+              {
+                "name": "isBold",
+                "kind": "osascript",
+                "script": "tell application \"TextEdit\"\n  try\n    return font of attribute run 1 of text of document 1\n  on error\n    return \"\"\n  end try\nend tell",
+                "expect": "matches",
+                "value": "bold",
+                "primary": true
+              }
+            ]
+          }
+        }
+      ],
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\" to return (count documents) as string",
+          "record": "docsBefore"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\"\n  activate\n  make new document\nend tell"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"TextEdit\"\n  set extra to (count documents) - {state.docsBefore}\n  repeat while extra > 0 and (exists (first document whose path is missing value))\n    close (first document whose path is missing value) saving no\n    set extra to extra - 1\n  end repeat\nend tell"
+        }
+      ],
+      "tags": ["dictation", "follow-up"],
+      "notes": "A continuation inside the 3 s window with no wake phrase: the second line must amend the first run, not start a new one."
+    },
+    {
+      "id": "browse-goto-example",
+      "category": "browsing",
+      "say": "go to example dot com",
+      "heard": "example",
+      "expect": {
+        "outcome": "run",
+        "frontmost": "com.apple.Safari",
+        "state": [
+          {
+            "name": "urlIsExample",
+            "kind": "osascript",
+            "script": "tell application \"Safari\" to return URL of current tab of (first window whose id is {state.win})",
+            "expect": "contains",
+            "value": "example com",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
+          "record": "win",
+          "timeoutMs": 15000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        }
+      ],
+      "tags": ["browsing"],
+      "notes": "A plain navigation in a window the loop opened; the URL is read by Apple Events, never the page."
+    },
+    {
+      "id": "browse-search-wikipedia",
+      "category": "browsing",
+      "say": "search Wikipedia for Ada Lovelace",
+      "heard": "wikipedia.*lovelace",
+      "expect": {
+        "outcome": "run",
+        "maxActions": 12,
+        "state": [
+          {
+            "name": "urlIsWikipedia",
+            "kind": "osascript",
+            "script": "tell application \"Safari\" to return URL of current tab of (first window whose id is {state.win})",
+            "expect": "contains",
+            "value": "wikipedia org",
+            "primary": true
+          },
+          {
+            "name": "urlHasQuery",
+            "kind": "osascript",
+            "script": "tell application \"Safari\" to return URL of current tab of (first window whose id is {state.win})",
+            "expect": "contains",
+            "value": "lovelace",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
+          "record": "win",
+          "timeoutMs": 15000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        }
+      ],
+      "tags": ["browsing"],
+      "notes": "A search on a read-only site; the URL must name both the site and the query."
+    },
+    {
+      "id": "browse-scroll-down",
+      "category": "browsing",
+      "say": "scroll down",
+      "heard": "scroll",
+      "expect": {
+        "outcome": "run",
+        "actionTypes": ["scroll"],
+        "maxActions": 4,
+        "state": [
+          {
+            "name": "scrolled",
+            "kind": "osascript",
+            "script": "tell application \"Safari\" to return (do JavaScript \"window.scrollY\" in current tab of (first window whose id is {state.win})) as string",
+            "expect": "gt",
+            "value": 200,
+            "optional": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://en.wikipedia.org/wiki/Ada_Lovelace\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Lovelace\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
+          "record": "win",
+          "timeoutMs": 30000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        }
+      ],
+      "tags": ["browsing"],
+      "notes": "The journal must show a scroll action; the page offset is read only where Safari allows JavaScript from Apple Events."
+    },
+    {
+      "id": "browse-back",
+      "category": "browsing",
+      "say": "go back",
+      "heard": "back",
+      "expect": {
+        "outcome": "run",
+        "maxActions": 4,
+        "state": [
+          {
+            "name": "urlIsExample",
+            "kind": "osascript",
+            "script": "tell application \"Safari\" to return URL of current tab of (first window whose id is {state.win})",
+            "expect": "contains",
+            "value": "example com",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://example.com/\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Example\" then exit repeat\n    delay 0.5\n  end repeat\n  set URL of current tab of window 1 to \"https://en.wikipedia.org/wiki/Ada_Lovelace\"\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Lovelace\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
+          "record": "win",
+          "timeoutMs": 45000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        }
+      ],
+      "tags": ["browsing"],
+      "notes": "History navigation: two pages are loaded in order, the run must return to the first."
+    },
+    {
+      "id": "browse-click-first-result",
+      "category": "browsing",
+      "say": "click the first result",
+      "heard": "first.*result",
+      "expect": {
+        "outcome": "run",
+        "state": [
+          {
+            "name": "urlIsArticle",
+            "kind": "osascript",
+            "script": "tell application \"Safari\" to return URL of current tab of (first window whose id is {state.win})",
+            "expect": "matches",
+            "value": "wikipedia org wiki \\w+",
+            "primary": true
+          },
+          {
+            "name": "leftResults",
+            "kind": "osascript",
+            "script": "tell application \"Safari\" to return URL of current tab of (first window whose id is {state.win})",
+            "expect": "notContains",
+            "value": "search",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://en.wikipedia.org/w/index.php?search=Ada+Lovelace+mathematician&fulltext=1&ns0=1\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Search\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
+          "record": "win",
+          "timeoutMs": 30000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        }
+      ],
+      "tags": ["browsing"],
+      "notes": "The natural NEEDS_CLICK probe: a results list whose first link the run must find and open on its own."
+    },
+    {
+      "id": "browse-open-and-go",
+      "category": "browsing",
+      "say": "open Safari and go to example dot com",
+      "heard": "safari.*example",
+      "expect": {
+        "outcome": "run",
+        "earlyStart": true,
+        "state": [
+          {
+            "name": "urlIsExample",
+            "kind": "osascript",
+            "script": "if application \"Safari\" is running then\n  tell application \"Safari\"\n    try\n      return URL of current tab of window 1\n    on error\n      return \"\"\n    end try\n  end tell\nelse\n  return \"\"\nend if",
+            "expect": "contains",
+            "value": "example com",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "osascript",
+          "script": "if application \"Safari\" is running then\n  tell application \"Safari\" to return (count windows) as string\nelse\n  return \"0\"\nend if",
+          "record": "windowsBefore"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"Safari\" is running then\n  tell application \"Safari\"\n    repeat while (count windows) > {state.windowsBefore}\n      close window 1\n    end repeat\n  end tell\nend if"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
+        }
+      ],
+      "tags": ["fast-start", "multi-step", "browsing"],
+      "notes": "Two clauses: Safari should come forward while the sentence is still going, then the navigation follows."
+    },
+    {
+      "id": "ask-time",
+      "category": "question",
+      "say": "what time is it",
+      "heard": "time",
+      "expect": { "outcome": "answer" },
+      "tags": ["question"],
+      "notes": "An answer without a run; the reply budget is 1.5 s after the transcript."
+    },
+    {
+      "id": "ask-agenda",
+      "category": "question",
+      "say": "anything on my calendar today",
+      "heard": "calendar",
+      "expect": {
+        "outcome": "answer",
+        "alsoAccept": ["run"],
+        "runCompleted": false
+      },
+      "tags": ["question"],
+      "notes": "Answered from the agenda when present, else a look at Calendar; a reply that it lacks the calendar is WRONG_PLAN."
+    },
+    {
+      "id": "ask-screen",
+      "category": "question",
+      "say": "what is on my screen",
+      "heard": "screen",
+      "expect": {
+        "outcome": "run",
+        "noMutation": true,
+        "maxActions": 2,
+        "replyHas": "{token}"
+      },
+      "setup": [
+        {
+          "kind": "sh",
+          "script": "mkdir -p \"{benchDir}\" && printf 'The loop marker is {token}\\n' > \"{benchDir}/marker.txt\" && open -a TextEdit \"{benchDir}/marker.txt\" && sleep 1.5"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"marker.txt\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -rf \"{benchDir}\""
+        }
+      ],
+      "tags": ["question"],
+      "notes": "A look, not a change: zero mutating actions, and the reply must mention what the screen shows."
+    },
+    {
+      "id": "ask-read-first-line",
+      "category": "question",
+      "say": "read the first line of the document",
+      "heard": "first line",
+      "expect": {
+        "outcome": "run",
+        "noMutation": true,
+        "replyHas": "{token}"
+      },
+      "setup": [
+        {
+          "kind": "sh",
+          "script": "mkdir -p \"{benchDir}\" && printf 'The loop marker is {token}\\n' > \"{benchDir}/marker.txt\" && open -a TextEdit \"{benchDir}/marker.txt\" && sleep 1.5"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"marker.txt\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -rf \"{benchDir}\""
+        }
+      ],
+      "tags": ["question"],
+      "notes": "Reading back from the screen: the reply must carry the marker line."
+    },
+    {
+      "id": "ask-deictic",
+      "category": "question",
+      "say": "sure go for it",
+      "heard": "go for it",
+      "expect": { "outcome": "question" },
+      "tags": ["question", "policy"],
+      "notes": "Deictic words with nothing pending get a question, never a run and never an approval."
+    },
+    {
+      "id": "ask-fragment-open",
+      "category": "question",
+      "say": "open",
+      "heard": "^open$",
+      "expect": {
+        "outcome": "question",
+        "noEarlyStart": true,
+        "maxActions": 0
+      },
+      "tags": ["question"],
+      "notes": "A fragment: the app should ask what to open and open nothing."
+    },
+    {
+      "id": "steer-stop",
+      "category": "correction",
+      "turns": [
+        {
+          "say": "scroll slowly through the whole page",
+          "withWake": true,
+          "heard": "scroll",
+          "expect": { "outcome": "run", "runCompleted": false }
+        },
+        {
+          "say": "stop",
+          "withWake": true,
+          "after": { "event": "ActionExecuted", "plus": 500 },
+          "heard": "stop",
+          "expect": { "outcome": "stop" }
+        }
+      ],
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://en.wikipedia.org/wiki/Ada_Lovelace\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Lovelace\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
+          "record": "win",
+          "timeoutMs": 30000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        }
+      ],
+      "tags": ["correction"],
+      "notes": "Stop must cancel the run within 3 s of the wake phrase, with no action after it."
+    },
+    {
+      "id": "steer-wait-continue",
+      "category": "correction",
+      "turns": [
+        {
+          "say": "scroll slowly through the whole page",
+          "withWake": true,
+          "heard": "scroll",
+          "expect": { "outcome": "run", "runCompleted": false }
+        },
+        {
+          "say": "wait",
+          "withWake": true,
+          "after": { "event": "ActionExecuted", "plus": 500 },
+          "heard": "wait",
+          "expect": { "outcome": "pause" }
+        },
+        {
+          "say": "continue",
+          "withWake": true,
+          "after": { "event": "RunState", "status": "paused", "plus": 2000 },
+          "heard": "continue",
+          "expect": { "outcome": "resume" }
+        }
+      ],
+      "stopRunAfter": true,
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://en.wikipedia.org/wiki/Ada_Lovelace\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Lovelace\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
+          "record": "win",
+          "timeoutMs": 30000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        }
+      ],
+      "tags": ["correction"],
+      "notes": "Pause and resume in order, each within 3 s; the loop stops the run at the end since it is meant to be going."
+    },
+    {
+      "id": "steer-no-the-other-one",
+      "category": "correction",
+      "turns": [
+        {
+          "say": "switch to the Alpha document",
+          "withWake": true,
+          "heard": "alpha",
+          "expect": { "outcome": "run", "runCompleted": false }
+        },
+        {
+          "say": "no the other one",
+          "withWake": false,
+          "after": {
+            "event": "followup_open",
+            "kind": "continuation",
+            "plus": 300
+          },
+          "heard": "other one",
+          "expect": {
+            "outcome": "revise",
+            "state": [
+              {
+                "name": "betaInFront",
+                "kind": "osascript",
+                "script": "tell application \"TextEdit\" to return name of front window",
+                "expect": "contains",
+                "value": "beta",
+                "primary": true
+              }
+            ]
+          }
+        }
+      ],
+      "setup": [
+        {
+          "kind": "sh",
+          "script": "mkdir -p \"{benchDir}\" && printf 'Alpha {token}\\n' > \"{benchDir}/Alpha-{token}.txt\" && printf 'Beta {token}\\n' > \"{benchDir}/Beta-{token}.txt\" && open -a TextEdit \"{benchDir}/Alpha-{token}.txt\" && sleep 1 && open -a TextEdit \"{benchDir}/Beta-{token}.txt\" && sleep 1.5"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -rf \"{benchDir}\""
+        }
+      ],
+      "tags": ["correction", "follow-up"],
+      "notes": "Beta is in front at the start, so the first line has real work and the correction must bring Beta back."
+    },
+    {
+      "id": "steer-undo",
+      "category": "correction",
+      "turns": [
+        {
+          "say": "type extra words at the end of the document",
+          "withWake": true,
+          "heard": "extra",
+          "expect": { "outcome": "run" }
+        },
+        {
+          "say": "undo that",
+          "withWake": true,
+          "after": { "event": "RunState", "status": "completed", "plus": 1500 },
+          "heard": "undo",
+          "expect": {
+            "outcome": "run",
+            "state": [
+              {
+                "name": "restored",
+                "kind": "osascript",
+                "script": "tell application \"TextEdit\" to return text of (first document whose name is \"undo.txt\")",
+                "expect": "equals",
+                "value": "Keep this line {token}",
+                "primary": true
+              }
+            ]
+          }
+        }
+      ],
+      "setup": [
+        {
+          "kind": "sh",
+          "script": "mkdir -p \"{benchDir}\" && printf 'Keep this line {token}' > \"{benchDir}/undo.txt\" && open -a TextEdit \"{benchDir}/undo.txt\" && sleep 1.5"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"undo.txt\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -rf \"{benchDir}\""
+        }
+      ],
+      "tags": ["correction"],
+      "notes": "Undo after a completed run: the text must return to the original. A confirmation on CMD+Z is NEEDS_CLICK."
+    },
+    {
+      "id": "steer-stop-while-speaking",
+      "category": "correction",
+      "turns": [
+        {
+          "say": "what is the capital of France",
+          "withWake": true,
+          "heard": "capital.*france",
+          "expect": { "outcome": "answer" }
+        },
+        {
+          "say": "stop",
+          "withWake": true,
+          "after": { "event": "speech_started", "plus": 300 },
+          "heard": "stop",
+          "bargeIn": true,
+          "expect": { "outcome": "interrupt" }
+        }
+      ],
+      "timeoutMs": 30000,
+      "tags": ["correction", "barge-in"],
+      "notes": "Barge-in: the wake phrase over the app's own speech must stop it within 1.5 s."
+    },
+    {
+      "id": "multi-notes-shopping-list",
+      "category": "multi-step",
+      "say": "open Notes and write a shopping list with milk and eggs",
+      "heard": "notes.*milk.*eggs",
+      "expect": {
+        "outcome": "run",
+        "earlyStart": true,
+        "frontmost": "com.apple.Notes",
+        "creates": "notes",
+        "state": [
+          {
+            "name": "noteHasEggs",
+            "kind": "osascript",
+            "script": "tell application \"Notes\"\n  try\n    return plaintext of (first note whose creation date > (date \"{state.startedAt}\") and plaintext contains \"milk\")\n  on error\n    return \"\"\n  end try\nend tell",
+            "expect": "contains",
+            "value": "eggs",
+            "primary": true
+          },
+          {
+            "name": "oneNote",
+            "kind": "osascript",
+            "script": "tell application \"Notes\" to return (count (notes whose creation date > (date \"{state.startedAt}\") and plaintext contains \"milk\")) as string",
+            "expect": "equals",
+            "value": "1"
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Notes\") as string",
+          "record": "notesWasRunning"
+        },
+        {
+          "kind": "osascript",
+          "script": "return ((current date) - 1) as string",
+          "record": "startedAt"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"Notes\" to delete (every note whose creation date > (date \"{state.startedAt}\") and plaintext contains \"milk\" and plaintext contains \"eggs\")"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.notesWasRunning}\" is \"false\" and application \"Notes\" is running then tell application \"Notes\" to quit"
+        }
+      ],
+      "tags": ["multi-step"],
+      "probes": ["notes-automation"],
+      "notes": "Open, then create, then type: one new note made after the task started with both items. Skipped without Notes automation."
+    },
+    {
+      "id": "multi-textedit-shopping-list",
+      "category": "multi-step",
+      "say": "open TextEdit and write a shopping list with milk and eggs",
+      "heard": "text ?edit.*milk",
+      "expect": {
+        "outcome": "run",
+        "frontmost": "com.apple.TextEdit",
+        "state": [
+          {
+            "name": "hasMilk",
+            "kind": "osascript",
+            "script": "if application \"TextEdit\" is running then\n  tell application \"TextEdit\" to return (text of every document) as string\nelse\n  return \"\"\nend if",
+            "expect": "contains",
+            "value": "milk",
+            "primary": true
+          },
+          {
+            "name": "hasEggs",
+            "kind": "osascript",
+            "script": "if application \"TextEdit\" is running then\n  tell application \"TextEdit\" to return (text of every document) as string\nelse\n  return \"\"\nend if",
+            "expect": "contains",
+            "value": "eggs",
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then\n  tell application \"TextEdit\" to return (count documents) as string\nelse\n  return \"0\"\nend if",
+          "record": "docsBefore"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then\n  tell application \"TextEdit\"\n    set extra to (count documents) - {state.docsBefore}\n    repeat while extra > 0 and (exists (first document whose path is missing value))\n      close (first document whose path is missing value) saving no\n      set extra to extra - 1\n    end repeat\n  end tell\nend if"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit"
+        }
+      ],
+      "tags": ["multi-step"],
+      "notes": "The Notes-free twin, so the multi-step class is measurable on a Mac without Notes automation."
+    },
+    {
+      "id": "multi-calc-and-tell",
+      "category": "multi-step",
+      "say": "open Calculator and work out 12 times 34 then tell me the answer",
+      "heard": "calculator.*(12|twelve)",
+      "expect": {
+        "outcome": "run",
+        "earlyStart": true,
+        "replyHas": "408"
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Calculator\") as string",
+          "record": "calcWasRunning"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if \"{state.calcWasRunning}\" is \"false\" and application \"Calculator\" is running then tell application \"Calculator\" to quit"
+        }
+      ],
+      "tags": ["multi-step"],
+      "notes": "Open an app, drive it, read the result back: the run's message must carry 408."
+    },
+    {
+      "id": "multi-safari-then-textedit",
+      "category": "multi-step",
+      "say": "look up the population of Iceland and write the number in the document",
+      "heard": "iceland",
+      "expect": {
+        "outcome": "run",
+        "state": [
+          {
+            "name": "numberInRange",
+            "kind": "osascript",
+            "script": "tell application \"TextEdit\" to return text of (first document whose name is \"iceland.txt\")",
+            "expect": "inRange",
+            "value": [300000, 500000],
+            "primary": true
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "sh",
+          "script": "mkdir -p \"{benchDir}\" && printf 'Iceland {token}\\n' > \"{benchDir}/iceland.txt\" && open -a TextEdit \"{benchDir}/iceland.txt\" && sleep 1.5"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
+          "record": "win",
+          "timeoutMs": 15000
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"iceland.txt\") saving no"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -rf \"{benchDir}\""
+        }
+      ],
+      "tags": ["multi-step", "browsing", "dictation"],
+      "notes": "Two apps in sequence: a lookup in Safari, then a number typed into the loop's document."
+    },
+    {
+      "id": "sys-volume-down",
+      "category": "system",
+      "say": "turn the volume down a bit",
+      "heard": "volume",
+      "expect": {
+        "outcome": "run",
+        "state": [
+          {
+            "name": "volumeFell",
+            "kind": "osascript",
+            "script": "return (output volume of (get volume settings)) as string",
+            "expect": "lt",
+            "value": 50,
+            "primary": true
+          },
+          {
+            "name": "notMuted",
+            "kind": "osascript",
+            "script": "return (output muted of (get volume settings)) as string",
+            "expect": "equals",
+            "value": "false"
+          }
+        ]
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "return (output volume of (get volume settings)) as string",
+          "record": "volumeBefore"
+        },
+        {
+          "kind": "osascript",
+          "script": "return (output muted of (get volume settings)) as string",
+          "record": "muteBefore"
+        },
+        {
+          "kind": "osascript",
+          "script": "set volume output volume 50"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "set volume output volume {state.volumeBefore}"
+        },
+        {
+          "kind": "osascript",
+          "script": "set volume output muted {state.muteBefore}"
+        }
+      ],
+      "tags": ["system"],
+      "notes": "Starts at 50 and must end lower and unmuted; the loop restores its own speaking volume afterwards."
+    },
+    {
+      "id": "sys-do-not-disturb",
+      "category": "system",
+      "say": "turn on do not disturb",
+      "heard": "disturb",
+      "expect": {
+        "outcome": "run",
+        "state": [
+          {
+            "name": "focusAsserted",
+            "kind": "sh",
+            "script": "grep -o '\"storeAssertionRecords\":\\[{' ~/Library/DoNotDisturb/DB/Assertions.json",
+            "expect": "nonempty",
+            "optional": true
+          }
+        ]
+      },
+      "cleanup": [
+        {
+          "kind": "sh",
+          "script": "shortcuts run \"Butler Voice Loop: Focus Off\"",
+          "timeoutMs": 20000
+        }
+      ],
+      "tags": ["system"],
+      "probes": ["focus-shortcut"],
+      "notes": "Control Center work, where NEEDS_CLICK and WRONG_STATE show. Needs a Shortcuts shortcut to turn Focus off again; the assertion file is read only where its shape is known."
+    },
+    {
+      "id": "sys-screenshot-desktop",
+      "category": "system",
+      "say": "take a screenshot and save it to the desktop",
+      "heard": "screenshot",
+      "expect": {
+        "outcome": "run",
+        "creates": "screenshots",
+        "state": [
+          {
+            "name": "fileOnDesktop",
+            "kind": "sh",
+            "script": "find ~/Desktop -maxdepth 1 -newer \"{marker}\" \\( -name 'Screen*.png' -o -name 'Screenshot*.png' \\)",
+            "expect": "nonempty",
+            "primary": true
+          }
+        ]
+      },
+      "cleanup": [
+        {
+          "kind": "sh",
+          "script": "find ~/Desktop -maxdepth 1 -newer \"{marker}\" \\( -name 'Screen*.png' -o -name 'Screenshot*.png' \\) -delete"
+        }
+      ],
+      "tags": ["system"],
+      "notes": "A file newer than the task's marker must appear; it is deleted unopened. A confirmation on the hotkey is NEEDS_CLICK."
+    },
+    {
+      "id": "wake-restart-mid-utterance",
+      "category": "wake",
+      "say": "open Notes and, {wake}, open Calendar",
+      "heard": "calendar",
+      "expect": {
+        "outcome": "run",
+        "earlyStart": true,
+        "frontmost": "com.apple.iCal",
+        "taskWords": "calendar",
+        "taskWordsNot": "notes"
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Notes\") as string",
+          "record": "notesWasRunning"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Calendar\") as string",
+          "record": "calWasRunning"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if \"{state.calWasRunning}\" is \"false\" and application \"Calendar\" is running then tell application \"Calendar\" to quit"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.notesWasRunning}\" is \"false\" and application \"Notes\" is running then tell application \"Notes\" to quit"
+        }
+      ],
+      "tags": ["fast-start"],
+      "notes": "The wake phrase inside the utterance restarts it: the request is the second half, and Notes must not be in the task."
+    },
+    {
+      "id": "wake-name-then-pause",
+      "category": "wake",
+      "say": "[[slnc 1200]] open Notes",
+      "heard": "\\bnotes?\\b",
+      "expect": {
+        "outcome": "run",
+        "frontmost": "com.apple.Notes"
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Notes\") as string",
+          "record": "notesWasRunning"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if \"{state.notesWasRunning}\" is \"false\" and application \"Notes\" is running then tell application \"Notes\" to quit"
+        }
+      ],
+      "tags": ["fast-start"],
+      "notes": "The name, then 1.2 s of silence, then the request: the pending-wake branch of the wake gate."
+    },
+    {
+      "id": "wake-in-sentence-stays-asleep",
+      "category": "wake",
+      "say": "I told him hey butler is on the phone",
+      "withWake": false,
+      "heard": "",
+      "expect": { "outcome": "silence" },
+      "timeoutMs": 25000,
+      "unheardMs": 15000,
+      "tags": ["policy"],
+      "notes": "Negative test: the name inside a sentence about someone else must not wake the app. A wake here is WRONG_PLAN/FALSE_WAKE."
+    },
+    {
+      "id": "noisy-open-notes",
+      "category": "noisy",
+      "say": "open Notes",
+      "heard": "\\bnotes?\\b",
+      "expect": {
+        "outcome": "run",
+        "frontmost": "com.apple.Notes",
+        "maxActions": 3
+      },
+      "noise": {
+        "voice": "Alex",
+        "paragraph": "weather",
+        "leadMs": 2500,
+        "volm": 0.45
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Notes\") as string",
+          "record": "notesWasRunning"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if \"{state.notesWasRunning}\" is \"false\" and application \"Notes\" is running then tell application \"Notes\" to quit"
+        }
+      ],
+      "tags": ["noisy", "fast-start"],
+      "notes": "app-open-notes with a second voice reading in the background; unheard here is UNHEARD_NOISY."
+    },
+    {
+      "id": "noisy-ask-time",
+      "category": "noisy",
+      "say": "what time is it",
+      "heard": "time",
+      "expect": { "outcome": "answer" },
+      "noise": {
+        "voice": "Alex",
+        "paragraph": "gardening",
+        "leadMs": 2500,
+        "volm": 0.45
+      },
+      "tags": ["noisy", "question"],
+      "notes": "ask-time under background speech."
+    },
+    {
+      "id": "noisy-wake-after-breath",
+      "category": "noisy",
+      "say": "open Notes",
+      "heard": "\\bnotes?\\b",
+      "expect": {
+        "outcome": "run",
+        "frontmost": "com.apple.Notes"
+      },
+      "noise": {
+        "voice": "Alex",
+        "paragraph": "weather",
+        "leadMs": 0,
+        "volm": 0.45,
+        "gapAt": "before-prompt",
+        "second": { "paragraph": "gardening", "afterMs": 800 }
+      },
+      "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Notes\") as string",
+          "record": "notesWasRunning"
+        }
+      ],
+      "cleanup": [
+        {
+          "kind": "osascript",
+          "script": "if \"{state.notesWasRunning}\" is \"false\" and application \"Notes\" is running then tell application \"Notes\" to quit"
+        }
+      ],
+      "tags": ["noisy", "fast-start"],
+      "notes": "A paragraph is read to the end, the prompt starts at once, and a second reading begins inside it: the wake phrase after a breath inside a running hypothesis."
+    }
+  ]
+}

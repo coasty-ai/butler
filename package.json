@@ -33,6 +33,7 @@
     "bench": "node scripts/bench.mjs",
     "cycle": "node scripts/harness-cycle.mjs",
     "loop": "node scripts/harness-loop.mjs",
+    "voice:loop": "node scripts/voice-loop.mjs",
     "analyze-runs": "node scripts/analyze-runs.mjs"
   },
   "build": {
