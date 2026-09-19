@@ -2328,6 +2328,7 @@ function loop(
     observe?: (row: AttemptResult) => void;
     afterGate?: (pass: { first: boolean; sawInput: boolean }) => Promise<void>;
     remedy?: (report: GateReport) => Promise<number | undefined>;
+    escalate?: (report: GateReport) => Promise<boolean | undefined>;
   } = {},
 ) {
   let clock = 1_000_000;
@@ -2416,6 +2417,7 @@ function loop(
     ...(over.observe ? { observe: over.observe } : {}),
     ...(over.afterGate ? { afterGate: over.afterGate } : {}),
     ...(over.remedy ? { remedy: over.remedy } : {}),
+    ...(over.escalate ? { escalate: over.escalate } : {}),
   });
   return { run, lines, ran, state, clockAt: () => clock };
 }
@@ -6588,6 +6590,185 @@ describe("secure event input at the gate", () => {
     expect(gateWaitsOf(gates).byReason).toEqual({ SECURE_INPUT: 1 });
   });
 
+  it("quits the harness's own browser once per wait when its blank tabs still hold the field, reads again at once, and waits on whatever holds it after that", async () => {
+    // Cycle 20260919-1522: the reset found every tab blank already (0), and
+    // Safari kept secure event input for 50 minutes. Now the remedy answers
+    // 0, the gate reads again at once (a quit can follow), Safari still
+    // holds it, the escalation quits it, the gate reads again at once, and
+    // the field has let go: no poll slept, one quit on the line.
+    let remedies = 0;
+    let quits = 0;
+    let secure = true;
+    const cleared = loop({
+      gate: () => ({
+        secureInput: secure,
+        ...(secure ? { secureInputOwner: SAFARI } : {}),
+      }),
+      remedy: async () => {
+        remedies++;
+        return 0;
+      },
+      escalate: async (gateReport) => {
+        quits++;
+        expect(gateReport.secureInputOwner).toBe(SAFARI);
+        secure = false;
+        return true;
+      },
+    });
+    const outcome = await cleared.run;
+    expect(remedies).toBe(1);
+    expect(quits).toBe(1);
+    expect(cleared.ran).toHaveLength(4);
+    expect(cleared.ran[0].wait).toBe(0);
+    const gates = cleared.lines.filter((line) => line.kind === "gate");
+    expect(gates).toEqual([
+      {
+        kind: "gate",
+        at: expect.any(String),
+        reason: "SECURE_INPUT",
+        reasons: ["SECURE_INPUT"],
+        waitedSeconds: 0,
+        secureInputOwner: SAFARI,
+        browserReset: 0,
+        browserQuit: true,
+      },
+    ]);
+    expect(outcome.gateWaits.byReason).toEqual({ SECURE_INPUT: 1 });
+    expect(gateWaitsOf(gates).byReason).toEqual({ SECURE_INPUT: 1 });
+
+    // Tabs were reset (2), read again at once, and the browser still held
+    // the field: the same quit follows.
+    quits = 0;
+    const afterReset = loop({
+      gate: (_now, calls) =>
+        calls < 2 ? { secureInput: true, secureInputOwner: SAFARI } : {},
+      remedy: async () => 2,
+      escalate: async () => {
+        quits++;
+        return true;
+      },
+    });
+    await afterReset.run;
+    expect(quits).toBe(1);
+    expect(
+      afterReset.lines.filter((line) => line.kind === "gate")[0],
+    ).toMatchObject({ waitedSeconds: 0, browserReset: 2, browserQuit: true });
+
+    // Asked to quit and it did not go (a dialog holds it): false on the
+    // line, asked once though the gate refused four more times, and every
+    // later refusal waited a poll like any reason.
+    quits = 0;
+    const held = loop({
+      gate: (_now, calls) =>
+        calls < 5 ? { secureInput: true, secureInputOwner: SAFARI } : {},
+      remedy: async () => 0,
+      escalate: async () => {
+        quits++;
+        return false;
+      },
+    });
+    await held.run;
+    expect(quits).toBe(1);
+    expect(held.lines.filter((line) => line.kind === "gate")[0]).toEqual({
+      kind: "gate",
+      at: expect.any(String),
+      reason: "SECURE_INPUT",
+      reasons: ["SECURE_INPUT"],
+      waitedSeconds: 60,
+      secureInputOwner: SAFARI,
+      browserReset: 0,
+      browserQuit: false,
+    });
+    expect(held.ran[0].wait).toBe(60);
+
+    // The browser went, and another holder had the keyboard after it: named
+    // and waited on, no second quit this wait.
+    quits = 0;
+    const another = loop({
+      gate: (_now, calls) =>
+        calls < 2
+          ? { secureInput: true, secureInputOwner: SAFARI }
+          : calls < 3
+            ? { secureInput: true, secureInputOwner: TERMINAL }
+            : {},
+      remedy: async () => 0,
+      escalate: async () => {
+        quits++;
+        return true;
+      },
+    });
+    await another.run;
+    expect(quits).toBe(1);
+    expect(
+      another.lines.filter((line) => line.kind === "gate")[0],
+    ).toMatchObject({
+      waitedSeconds: 15,
+      secureInputOwner: SAFARI,
+      browserReset: 0,
+      browserQuit: true,
+    });
+
+    // The holder changed before the escalation (Safari, then Terminal at the
+    // confirming read): the quit is for the browser the reset ran on, and
+    // that read did not name it, so nothing is quit.
+    quits = 0;
+    const changed = loop({
+      gate: (_now, calls) =>
+        calls < 1
+          ? { secureInput: true, secureInputOwner: SAFARI }
+          : calls < 3
+            ? { secureInput: true, secureInputOwner: TERMINAL }
+            : {},
+      remedy: async () => 0,
+      escalate: async () => {
+        quits++;
+        return true;
+      },
+    });
+    await changed.run;
+    expect(quits).toBe(0);
+    const changedGate = changed.lines.filter((line) => line.kind === "gate")[0];
+    expect(changedGate).toMatchObject({
+      secureInputOwner: SAFARI,
+      browserReset: 0,
+    });
+    expect(changedGate).not.toHaveProperty("browserQuit");
+
+    // A field of the person's (the remedy answers nothing): no quit, ever,
+    // however long it is held.
+    quits = 0;
+    const theirs = loop({
+      gate: (_now, calls) =>
+        calls < 3 ? { secureInput: true, secureInputOwner: TERMINAL } : {},
+      remedy: async () => undefined,
+      escalate: async () => {
+        quits++;
+        return true;
+      },
+    });
+    await theirs.run;
+    expect(quits).toBe(0);
+    expect(
+      theirs.lines.filter((line) => line.kind === "gate")[0],
+    ).not.toHaveProperty("browserQuit");
+
+    // Without a remedy nothing has run to escalate from.
+    quits = 0;
+    const noRemedy = loop({
+      gate: (_now, calls) =>
+        calls < 2 ? { secureInput: true, secureInputOwner: SAFARI } : {},
+      escalate: async () => {
+        quits++;
+        return true;
+      },
+    });
+    await noRemedy.run;
+    expect(quits).toBe(0);
+    expect(
+      noRemedy.lines.filter((line) => line.kind === "gate")[0],
+    ).not.toHaveProperty("browserQuit");
+  });
+
   it("keeps a reset's count and code on the row, and nothing else, and sums them in the report", () => {
     expect(
       contentFree(row({ browserReset: { tabs: 2 } })).browserReset,
@@ -6608,6 +6789,21 @@ describe("secure event input at the gate", () => {
       contentFree(row({ browserReset: { tabs: -1 } })).browserReset,
     ).toBeUndefined();
     expect(contentFree(row({})).browserReset).toBeUndefined();
+    // Whether the browser was quit after the reset: true kept, anything
+    // else dropped.
+    expect(
+      contentFree(row({ browserReset: { tabs: 0, quit: true } })).browserReset,
+    ).toEqual({ tabs: 0, quit: true });
+    expect(
+      contentFree(row({ browserReset: { tabs: 1, quit: false } })).browserReset,
+    ).toEqual({ tabs: 1 });
+    expect(
+      contentFree(
+        row({
+          browserReset: { tabs: 1, quit: "yes" as unknown as boolean },
+        }),
+      ).browserReset,
+    ).toEqual({ tabs: 1 });
     const text = renderCycleReport(
       buildCycleResults({
         cycle: info(),
@@ -6621,6 +6817,21 @@ describe("secure event input at the gate", () => {
     );
     expect(text).toContain(
       "Fixture tabs pointed at about:blank after the attempts, in the browser chosen for each: 2 in 2 attempt(s); not looked at in 1 (UNREAD)",
+    );
+    expect(text).not.toContain("the browser quit after");
+    expect(
+      renderCycleReport(
+        buildCycleResults({
+          cycle: info(),
+          results: [
+            row({ browserReset: { tabs: 1 } }),
+            row({ planIndex: 1, browserReset: { tabs: 0, quit: true } }),
+          ],
+          analysis: analyze(parseDiagnostics("").lines),
+        }),
+      ),
+    ).toContain(
+      "Fixture tabs pointed at about:blank after the attempts, in the browser chosen for each: 1 in 2 attempt(s); the browser quit after 1, its blank tabs still holding secure input (docs/BENCHMARK.md, Cleanup, step 7).",
     );
     expect(
       renderCycleReport(
@@ -6645,7 +6856,7 @@ describe("secure event input at the gate", () => {
     // and only its fixture tabs; anything else is named and returns nothing.
     const remedy = cycle.slice(
       cycle.indexOf("remedy: async (report) => {"),
-      cycle.indexOf("afterGate: async (pass) => {"),
+      cycle.indexOf("escalate: async (report) => {"),
     );
     expect(remedy).toContain(
       "owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);",
@@ -6656,6 +6867,43 @@ describe("secure event input at the gate", () => {
     );
     expect(remedy).toContain("return reset?.tabs;");
     expect(remedy).toContain("gate: secure event input is on");
+    // The escalation, between the remedy and afterGate: the same rule, then
+    // the one helper, which quits through browser-reset.ts (benchOwnBrowser
+    // again, over the facts), traces BrowserQuit with the bundle id, the
+    // flag and the code and nothing else, says so on the terminal, and
+    // forgets a browser that went as running, for the chooser and for the
+    // next look at what a person opened.
+    const escalate = cycle.slice(
+      cycle.indexOf("escalate: async (report) => {"),
+      cycle.indexOf("afterGate: async (pass) => {"),
+    );
+    expect(escalate).toContain(
+      "owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);",
+    );
+    expect(escalate).toContain("if (!ours) return undefined;");
+    expect(escalate).toContain(
+      'const quit = await quitOwnBrowser(owner, "gate");',
+    );
+    expect(escalate).toContain("return quit.quit;");
+    const helper = cycle.slice(
+      cycle.indexOf("const quitOwnBrowser = async (id, where) => {"),
+      cycle.indexOf("await controller.configure("),
+    );
+    expect(helper).toContain("quit = await quitBrowser(run, id, facts);");
+    expect(helper).toMatch(
+      /diagnostics\.write\("BrowserQuit", \{\s+browser: id,\s+quit: quit\.quit,\s+\.\.\.\(quit\.code \? \{ code: quit\.code \} : \{\}\),\s+\}\);/,
+    );
+    expect(helper).toContain(
+      "secure event input is still on in ${id}, the benchmark's own browser",
+    );
+    expect(helper).toMatch(
+      /if \(quit\.quit\) \{\s+facts\.running\?\.delete\(id\);\s+runningAfterLast\?\.delete\(id\);\s+if \(facts\.windows\) delete facts\.windows\[id\];\s+\}/,
+    );
+    // One quit call in the harness, through the helper, from the gate and
+    // from the attempt callback; nothing else quits anything.
+    expect(cycle.match(/quitBrowser\(/g)).toHaveLength(1);
+    expect(cycle.match(/quitOwnBrowser\(/g)).toHaveLength(2);
+    expect(cycle).not.toMatch(/\bkillall\b|\bpkill\b/);
     // After each attempt: after the window accounting, before the row, and
     // never after real input or a stop.
     const attempt = cycle.slice(
@@ -6674,6 +6922,21 @@ describe("secure event input at the gate", () => {
     );
     expect(attempt).toContain(
       "{ ...result, ...(browserReset ? { browserReset } : {}) },",
+    );
+    // The after-attempt quit: only when the reset answered a count, only
+    // when the gate's own read (the session's pid, else the surface) still
+    // names the browser chosen for the attempt, through the same helper,
+    // and the row says so.
+    const quitAt = attempt.search(
+      /if \(browserReset && !browserReset\.code\) \{\s+const secure = await readSecureInput\(run, \(\) => controller\.surface\(\)\);\s+if \(secure\.on && secure\.owner === browser\.browser\.id\) \{/,
+    );
+    expect(quitAt).toBeGreaterThan(resetAt);
+    expect(quitAt).toBeLessThan(attempt.indexOf("return withWindowFields("));
+    expect(attempt).toMatch(
+      /const quit = await quitOwnBrowser\(\s+browser\.browser\.id,\s+`\$\{task\.id\} #\$\{entry\.attempt\}`,\s+\);\s+if \(quit\.quit\) browserReset = \{ \.\.\.browserReset, quit: true \};/,
+    );
+    expect(cycle).toMatch(
+      /const \{ quitBrowser, resetFixtureTabs \} =\s+await import\("\.\.\/src\/gym\/bench\/browser-reset\.ts"\);/,
     );
     // The origin is the fixture's, running or not (a tab an earlier cycle left).
     expect(cycle).toMatch(

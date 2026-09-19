@@ -82,6 +82,10 @@ const fields = new Set([
   "sequence",
   "taskLength",
   "appId",
+  // BrowserQuit (scripts/harness-cycle.mjs): the bundle id of the browser
+  // the benchmark quit to release secure event input, and whether it went.
+  "browser",
+  "quit",
   "cancelled",
   "timedOut",
   "reason",
@@ -411,6 +415,8 @@ const flagFields = new Set([
   "endsWithBrace",
   "quotedAtEnd",
   "repaired",
+  // BrowserQuit: whether the browser's process had gone.
+  "quit",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -534,11 +540,28 @@ const observerEvents = new Map<string, Set<string>>([
   ["ObserverAction", new Set(["kind"])],
   ["ObserverDropped", new Set(["reason", "dropped"])],
 ]);
+/**
+ * The benchmark harness quitting its own browser to release secure event
+ * input (scripts/harness-cycle.mjs, src/gym/bench/browser-reset.ts): the
+ * browser's bundle id, whether it went and a fixed code; never a title or a
+ * URL, whatever a caller passes.
+ */
+const harnessEvents = new Map<string, Set<string>>([
+  ["BrowserQuit", new Set(["browser", "quit", "code"])],
+]);
 const keyedEvents = new Map([
   ...streamEvents,
   ...moduleEvents,
   ...observerEvents,
+  ...harnessEvents,
 ]);
+/** Allow-listed keys that only ever carry a bundle id (reverse-DNS, no spaces). */
+const bundleFields = new Set(["browser"]);
+const bundleId = (value: unknown) =>
+  typeof value === "string" &&
+  /^(?=.{1,120}$)[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(value)
+    ? value
+    : undefined;
 const memoryEvents = new Set([
   "MemoryRecalled",
   "PlanStepProposed",
@@ -625,6 +648,7 @@ export class LocalDiagnostics {
     if (flagFields.has(field))
       return typeof value === "boolean" ? value : undefined;
     if (codeFields.has(field)) return code(value);
+    if (bundleFields.has(field)) return bundleId(value);
     if (typeof value === "string") {
       let text = value;
       for (const secret of this.secrets())

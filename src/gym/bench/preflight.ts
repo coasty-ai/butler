@@ -54,7 +54,7 @@ export const REMEDY: Record<RemedyCode, string> = {
   PRESENCE_UNKNOWN:
     "ps or pmset could not be read, so nothing can say whether another agent or a watched screen is here; try again.",
   SECURE_INPUT:
-    "Secure event input is on: a password field has the keyboard (the gate line names the application when it can), and every attempt would hand off at once. Click somewhere else or close that window. A sign-in fixture page left in the benchmark's own browser is not this: the gate points its fixture tabs at about:blank itself.",
+    "Secure event input is on: a password field has the keyboard (the gate line names the application when it can), and every attempt would hand off at once. Click somewhere else or close that window. A sign-in fixture page left in the benchmark's own browser is not this: the gate points its fixture tabs at about:blank itself, and quits that browser when the blank tabs still hold it.",
   MISSING_KEY:
     "Put the cell's key in .env under the name the app reads (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY or GOOGLE_API_KEY), or drop the cell from --matrix.",
   NOTHING_TO_RUN:
@@ -72,7 +72,7 @@ export const REMEDY: Record<RemedyCode, string> = {
   FIXTURE_PORT:
     "Free port 47831 on 127.0.0.1 (another fixture server or a forgotten test server holds it); the browser and research tasks need it.",
   APPS_OPEN:
-    "Save your work and quit the application named (TextEdit, Calendar, Reminders, Notes, Music, System Settings, or every browser a web task could use), or leave it open with no window; the harness never quits an application, and one an earlier attempt left open with only benchmark windows (titles carrying its token) does not count.",
+    "Save your work and quit the application named (TextEdit, Calendar, Reminders, Notes, Music, System Settings, or every browser a web task could use), or leave it open with no window; the harness never quits an application of yours (its own browser, holding secure event input with every fixture tab already blank, is the one it quits), and one an earlier attempt left open with only benchmark windows (titles carrying its token) does not count.",
   BENCH_ROOT_DIRTY:
     "An earlier cycle left benchmark items behind: run npm run cycle -- --cleanup-only, then remove by hand anything it still reports.",
 };
@@ -263,9 +263,10 @@ function runningOf(
  * the start's reading can be hours old, and the harness has launched
  * nothing yet. After a wait that saw a person, it is what was not running
  * when the last attempt ended; what an attempt opened stays open (the
- * harness never quits an application) and is the benchmark's own. Nothing
- * otherwise, and nothing from a ps that could not be read, which the gate
- * refuses to pass on by itself.
+ * harness never quits an application of the person's; its own browser,
+ * quit to release secure event input, is taken off that set at the quit)
+ * and is the benchmark's own. Nothing otherwise, and nothing from a ps that
+ * could not be read, which the gate refuses to pass on by itself.
  */
 export function openedByPerson(
   pass: { first: boolean; sawInput: boolean },
@@ -520,7 +521,7 @@ export function startSkipDetail(
     return { code: "APP_NOT_INSTALLED" };
   // Long and market tasks edit documents, calendars and settings: one
   // already open may hold the person's unsaved work, which the model could
-  // type into, and the harness never quits an application to find out. One
+  // type into, and the harness never quits an application of the person's to find out. One
   // an earlier attempt left open shows only benchmark windows, or none, and
   // runs; a browser task takes the browser that is not the person's.
   const open = appsOpen(task, facts);

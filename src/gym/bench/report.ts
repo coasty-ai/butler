@@ -117,9 +117,13 @@ export interface AttemptResult {
    * for the attempt, after it (browser-reset.ts): a sign-in page's focused
    * password field would otherwise hold secure event input for the whole
    * session and hand every later attempt off at once. `code` says why none
-   * could be looked at. Absent for an attempt without a browser.
+   * could be looked at. `quit` is set when the surface still named that
+   * browser as holding secure event input after the reset (a blank tab keeps
+   * the focused field's state until its window goes) and the harness quit
+   * it, so the next attempt never meets the gate on it. Absent for an
+   * attempt without a browser.
    */
-  browserReset?: { tabs: number; code?: string };
+  browserReset?: { tabs: number; code?: string; quit?: boolean };
   /** The task's declared [minimum, maximum] competent step count. */
   expectedSteps?: [number, number];
   /** Seconds the presence gate held this attempt back; 0 without a gate. */

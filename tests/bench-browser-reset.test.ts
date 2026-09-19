@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  QUIT_WAIT_QUARTERS,
   RESETTABLE_BROWSERS,
   fixtureOrigin,
   onFixtureOrigin,
+  parseQuitAnswer,
   parseResetAnswer,
+  quitBrowser,
+  quitBrowserScript,
   resetFixtureTabs,
   resetTabsScript,
 } from "../src/gym/bench/browser-reset";
@@ -12,6 +16,7 @@ import {
   FIXTURE_HOST,
   FIXTURE_PORT,
 } from "../src/gym/bench/graders";
+import { benchOwnBrowser } from "../src/gym/bench/preflight";
 
 const SAFARI = "com.apple.Safari";
 const CHROME = "com.google.Chrome";
@@ -155,5 +160,182 @@ describe("browser reset: the reset", () => {
     expect(parseResetAnswer("7 tabs")).toBeUndefined();
     expect(parseResetAnswer("")).toBeUndefined();
     expect(parseResetAnswer(undefined)).toBeUndefined();
+  });
+});
+
+describe("browser quit: the script", () => {
+  it("quits, and only quits: after System Events says the browser runs, with saving no, then waits for the process to go", () => {
+    for (const id of RESETTABLE_BROWSERS) {
+      const script = quitBrowserScript(id);
+      expect(script).not.toMatch(
+        /keystroke|key code|\bclick\b|do shell script|\bdelete\b|\bclose\b|\bmake\b|\bactivate\b|\blaunch\b|\bopen\b|\bsave\b|set URL/,
+      );
+      // Nothing variable reaches it: no argument, no interpolation, and the
+      // browser by bundle id from the fixed list, once, with no other
+      // application's id anywhere in it.
+      expect(script).not.toMatch(/argv|\$\{/);
+      expect(script.match(/tell application id /g)).toHaveLength(1);
+      expect(script).toContain(`tell application id "${id}"`);
+      for (const other of [
+        ...RESETTABLE_BROWSERS.filter((x) => x !== id),
+        "com.apple.finder",
+        "com.apple.Terminal",
+        "com.1password.1password",
+      ])
+        expect(script).not.toContain(`"${other}"`);
+      // A tell to a browser that is not running would launch it: System
+      // Events is asked first whether it runs.
+      const alive = `count of (every process whose bundle identifier is "${id}")`;
+      expect(script.indexOf(alive)).toBeLessThan(
+        script.indexOf(`tell application id "${id}"`),
+      );
+      expect(script).toContain('if alive is 0 then return "absent"');
+      // The one command, with saving no, and plainly should the dictionary
+      // refuse the parameter; the words "quit" in the script are that
+      // command twice and the answer once.
+      expect(script).toMatch(
+        /try\n\s+quit saving no\n\s+on error\n\s+quit\n\s+end try/,
+      );
+      expect(script.match(/\bquit\b/g)).toHaveLength(3);
+      // Then it waits for the process to go, a quarter second at a time, at
+      // most five seconds, well inside the runner's ten-second limit, and
+      // says which it saw.
+      expect(script).toContain(`repeat ${QUIT_WAIT_QUARTERS} times`);
+      expect(QUIT_WAIT_QUARTERS * 0.25).toBeLessThanOrEqual(5);
+      expect(script).toContain("delay 0.25");
+      expect(script).toContain('if alive is 0 then return "quit"');
+      expect(script.trim().endsWith('return "quitting"')).toBe(true);
+    }
+    // Browsers with no scripting dictionary for it, applications that are no
+    // browser, and anything not shaped like a listed bundle id: no script.
+    for (const bad of [
+      "org.mozilla.firefox",
+      "company.thebrowser.Browser",
+      "com.apple.finder",
+      "com.apple.Terminal",
+      "com.1password.1password",
+      'com.apple.Safari" & (do shell script "id")',
+      "",
+    ])
+      expect(() => quitBrowserScript(bad), bad).toThrow();
+  });
+});
+
+describe("browser quit: the quit", () => {
+  const fake = (answer: string | undefined) => {
+    const calls: string[][] = [];
+    const run = async (command: string, args: string[]) => {
+      calls.push([command, ...args]);
+      return answer;
+    };
+    return { calls, run };
+  };
+  const theirWindow = {
+    running: new Set([SAFARI]),
+    windows: { [SAFARI]: { windows: 2, foreign: 1 } },
+  };
+
+  it("asks the benchmark's own browser once and reads whether it went", async () => {
+    // Not running by the facts (an attempt launched it): the benchmark's.
+    const gone = fake("quit\n");
+    expect(await quitBrowser(gone.run, SAFARI, {})).toEqual({ quit: true });
+    expect(gone.calls).toEqual([
+      ["osascript", "-e", quitBrowserScript(SAFARI)],
+    ]);
+    // Running with no window of the person's: the benchmark's too.
+    const blank = fake("quit");
+    expect(
+      await quitBrowser(blank.run, CHROME, {
+        running: new Set([CHROME]),
+        windows: { [CHROME]: { windows: 1, foreign: 0 } },
+      }),
+    ).toEqual({ quit: true });
+    expect(blank.calls).toEqual([
+      ["osascript", "-e", quitBrowserScript(CHROME)],
+    ]);
+    // Asked and still there five seconds later (a dialog holds it), not
+    // running after all, or no answer: not quit, and the code says which.
+    expect(await quitBrowser(fake("quitting").run, SAFARI, {})).toEqual({
+      quit: false,
+      code: "STILL_RUNNING",
+    });
+    expect(await quitBrowser(fake("absent").run, SAFARI, {})).toEqual({
+      quit: false,
+      code: "NOT_RUNNING",
+    });
+    expect(await quitBrowser(fake(undefined).run, SAFARI, {})).toEqual({
+      quit: false,
+      code: "UNREAD",
+    });
+    expect(
+      await quitBrowser(
+        fake("execution error: Not authorized to send Apple events").run,
+        SAFARI,
+        {},
+      ),
+    ).toEqual({ quit: false, code: "UNREAD" });
+    expect(parseQuitAnswer(" quit \n")).toEqual({ quit: true });
+    expect(parseQuitAnswer("quitting")).toEqual({
+      quit: false,
+      code: "STILL_RUNNING",
+    });
+    expect(parseQuitAnswer("absent")).toEqual({
+      quit: false,
+      code: "NOT_RUNNING",
+    });
+    expect(parseQuitAnswer("quit now")).toBeUndefined();
+    expect(parseQuitAnswer("")).toBeUndefined();
+    expect(parseQuitAnswer(undefined)).toBeUndefined();
+  });
+
+  it("never quits a browser of the person's, one it cannot script, or any other application", async () => {
+    // Running with a window of the person's: theirs, and no Apple Event.
+    const theirs = fake("quit");
+    expect(await quitBrowser(theirs.run, SAFARI, theirWindow)).toEqual({
+      quit: false,
+      code: "THEIRS",
+    });
+    expect(theirs.calls).toEqual([]);
+    // Running with its windows unread (a dry run, a refused query): theirs.
+    const unread = fake("quit");
+    expect(
+      await quitBrowser(unread.run, SAFARI, { running: new Set([SAFARI]) }),
+    ).toEqual({ quit: false, code: "THEIRS" });
+    expect(unread.calls).toEqual([]);
+    // The rule is benchOwnBrowser's, the one chooseBrowser picks by and the
+    // reset navigates under: of two running browsers, the one with the
+    // person's window is refused and the one with only fixture windows is
+    // asked.
+    const facts = {
+      running: new Set([SAFARI, CHROME]),
+      windows: {
+        [SAFARI]: { windows: 1, foreign: 1 },
+        [CHROME]: { windows: 1, foreign: 0 },
+      },
+    };
+    expect(benchOwnBrowser(SAFARI, facts)).toBe(false);
+    expect(benchOwnBrowser(CHROME, facts)).toBe(true);
+    const refused = fake("quit");
+    expect((await quitBrowser(refused.run, SAFARI, facts)).code).toBe("THEIRS");
+    expect(refused.calls).toEqual([]);
+    expect(await quitBrowser(fake("quit").run, CHROME, facts)).toEqual({
+      quit: true,
+    });
+    // Not scriptable, or no browser at all: nothing runs, whatever the
+    // facts say about it.
+    for (const id of [
+      "org.mozilla.firefox",
+      "company.thebrowser.Browser",
+      "com.apple.finder",
+      "com.apple.Terminal",
+      "com.1password.1password",
+    ]) {
+      const other = fake("quit");
+      expect(await quitBrowser(other.run, id, {}), id).toEqual({
+        quit: false,
+        code: "NO_SCRIPT",
+      });
+      expect(other.calls).toEqual([]);
+    }
   });
 });

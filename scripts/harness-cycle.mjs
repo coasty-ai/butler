@@ -60,7 +60,8 @@ const { catalogueFor, categoriesFor, longHorizon, selectSuite, suiteOf } =
   await import("../src/gym/bench/suites.ts");
 const { BROWSER_APPS, FIXTURE_HOST, FIXTURE_PORT } =
   await import("../src/gym/bench/graders.ts");
-const { resetFixtureTabs } = await import("../src/gym/bench/browser-reset.ts");
+const { quitBrowser, resetFixtureTabs } =
+  await import("../src/gym/bench/browser-reset.ts");
 const {
   CYCLE_ID,
   DEFAULT_AUTONOMY,
@@ -95,6 +96,7 @@ const {
   harnessProcesses,
   preflight,
   readGate,
+  readSecureInput,
   readSystem,
   releaseDesktopLock,
 } = await import("../src/gym/bench/presence.ts");
@@ -891,7 +893,7 @@ function printGate() {
         : "") +
       `, app processes ${system.appPids.length}` +
       `, other harnesses ${system.harnessPids.length}` +
-      `, secure input ${system.secureInput.on ? `on (${system.secureInput.owner ?? "holder unknown"}${personsSecureInput(system.secureInput) ? "" : ", the benchmark's browser: the gate resets its fixture tabs"})` : "off"}` +
+      `, secure input ${system.secureInput.on ? `on (${system.secureInput.owner ?? "holder unknown"}${personsSecureInput(system.secureInput) ? "" : ", the benchmark's browser: the gate resets its fixture tabs, and quits it should they be blank already"})` : "off"}` +
       `, app log ${appLog ? (unsettled ? `${unsettled} run(s) unsettled` : "settled") : "absent"}` +
       (facts.agendaAccess && runnable().some((task) => agendaKinds(task).length)
         ? ", agenda local source checked at the start (setup)"
@@ -1382,6 +1384,42 @@ try {
   // What was open when the last attempt ended: the benchmark's own from
   // then on (an attempt leaves what it opened open).
   let runningAfterLast;
+  /**
+   * Quits the harness's own browser when its fixture tabs, blank already,
+   * still hold secure event input: a blank tab's WebContent keeps the
+   * focused field's state until its window goes (cycle 20260919-1522 waited
+   * 50 minutes on Safari that way, until the operator quit it by hand).
+   * browser-reset.ts quitBrowser applies the benchOwnBrowser rule itself
+   * over the facts, so a browser of the person's is never quit and no other
+   * application ever is. The terminal says what was quit and why, the
+   * diagnostics trace BrowserQuit with the bundle id, the flag and the code
+   * (never a title), and once the browser has gone it is forgotten as
+   * running, as at a cycle's start: chooseBrowser treats it as not running
+   * (safe), and a relaunch by a person during a wait counts as theirs
+   * (openedByPerson compares with what ran after the last attempt).
+   */
+  const quitOwnBrowser = async (id, where) => {
+    let quit;
+    try {
+      quit = await quitBrowser(run, id, facts);
+    } catch {
+      quit = { quit: false, code: "UNREAD" };
+    }
+    diagnostics.write("BrowserQuit", {
+      browser: id,
+      quit: quit.quit,
+      ...(quit.code ? { code: quit.code } : {}),
+    });
+    console.warn(
+      `${where}: secure event input is still on in ${id}, the benchmark's own browser, with its fixture tabs already blank (a blank tab keeps the field's state until its window goes): ${quit.quit ? "quit it to release the keyboard" : `asked it to quit, but it did not go (${quit.code})`}.`,
+    );
+    if (quit.quit) {
+      facts.running?.delete(id);
+      runningAfterLast?.delete(id);
+      if (facts.windows) delete facts.windows[id];
+    }
+    return quit;
+  };
   await controller.configure(cellInfo.get(cells[0].cell).settings);
   // Arm the emergency tap now, latched: from here on its idle clock counts
   // every unmarked input, so the first gate and the first attempt's
@@ -1458,6 +1496,23 @@ try {
       );
       return reset?.tabs;
     },
+    // The reset is not always enough: a blank tab keeps the focused field's
+    // state until its window goes (cycle 20260919-1522: Safari held secure
+    // input for 50 minutes with every tab on about:blank, until the operator
+    // quit it). So once per wait, when the reset has run for the harness's
+    // own browser and the next read still names that browser, the loop asks
+    // this: the browser is quit (quitOwnBrowser: the benchOwnBrowser rule
+    // again, never a browser of the person's, never another application)
+    // and the gate reads again at once. Whatever holds the keyboard after
+    // that is named and waited on as today. Never during an attempt.
+    escalate: async (report) => {
+      const owner = report.secureInputOwner;
+      const ours =
+        owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);
+      if (!ours) return undefined;
+      const quit = await quitOwnBrowser(owner, "gate");
+      return quit.quit;
+    },
     // The start read ps once, and the gate may then wait for hours while
     // the person keeps working: a document they opened meanwhile may hold
     // unsaved work a long task would type into. Read again at the first
@@ -1531,7 +1586,11 @@ try {
       // attempt, the benchmark's own by chooseBrowser's rule, has its
       // fixture-host tabs pointed at about:blank, and no other tab. Not after
       // real input or a stop: the person asked for nothing more to happen,
-      // and the gate's remedy clears it once the Mac is idle again.
+      // and the gate's remedy clears it once the Mac is idle again. When the
+      // reset leaves secure input on and the read that the gate makes
+      // (the session's pid, else the surface's frontmost application) still
+      // names this browser, it is quit here too, so the next attempt never
+      // meets the gate on it; the row says so (browserReset.quit).
       let browserReset;
       if (
         browser.browser &&
@@ -1547,6 +1606,16 @@ try {
           );
         } catch {
           browserReset = undefined;
+        }
+        if (browserReset && !browserReset.code) {
+          const secure = await readSecureInput(run, () => controller.surface());
+          if (secure.on && secure.owner === browser.browser.id) {
+            const quit = await quitOwnBrowser(
+              browser.browser.id,
+              `${task.id} #${entry.attempt}`,
+            );
+            if (quit.quit) browserReset = { ...browserReset, quit: true };
+          }
         }
       }
       return withWindowFields(

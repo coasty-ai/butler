@@ -1,4 +1,5 @@
 import { FIXTURE_HOST } from "./graders";
+import { benchOwnBrowser, type StartFacts } from "./preflight";
 import type { Run } from "./windows";
 
 /**
@@ -28,6 +29,21 @@ import type { Run } from "./windows";
  * Each reset is one Apple Event to the browser, and the first from a new
  * terminal asks for Automation consent once: run a cycle attended before the
  * first unattended night, as for TextEdit and the Finder (windows.ts).
+ *
+ * The reset is not always enough. A blank tab's WebContent keeps the focused
+ * secure field's state until its window goes: in cycle 20260919-1522 Safari
+ * held secure event input for 50 minutes with every tab already on
+ * about:blank, until the operator quit Safari by hand, which released it at
+ * once. So the harness may quit the browser too (quitBrowser below), under
+ * the same rule and a stricter guard: only a browser on the list above, and
+ * only one benchOwnBrowser says is the benchmark's own, checked here and
+ * not left to the caller, so a browser of the person's is never quit and no
+ * other application ever is. The quit is `quit saving no` (the Standard
+ * Suite every listed browser ships), sent only after System Events says the
+ * browser runs, and the script waits up to five seconds for the process to
+ * go. The gate asks it once per wait, after a reset has run and the next
+ * read still names that browser; the attempt callback asks it once after
+ * its reset when the surface still names the browser. Nothing else does.
  */
 
 const BUNDLE_ID = /^[A-Za-z0-9.-]{1,120}$/;
@@ -160,4 +176,94 @@ export async function resetFixtureTabs(
     origin,
   ]);
   return parseResetAnswer(answer) ?? { tabs: 0, code: "UNREAD" };
+}
+
+/* ------------------------------------------------------------------ quit */
+
+/** How long the quit script waits for the browser's process to go, in quarter seconds. */
+export const QUIT_WAIT_QUARTERS = 20;
+
+/**
+ * Quits the browser, and answers "quit" once its process has gone, "quitting"
+ * when it is still there after five seconds (a dialog holds it: a download
+ * in progress, a page that asks to stay), or "absent" when it was not
+ * running. System Events is asked first whether it runs, since a `tell` to
+ * an application that is not running would launch it. `quit saving no` is
+ * the Standard Suite's; a dictionary that takes the command without the
+ * parameter is asked plainly. Nothing variable reaches the script: the
+ * bundle id comes from the fixed list and is shaped like one, and the script
+ * takes no argument, so nothing is ever interpolated from a name or a title.
+ */
+export function quitBrowserScript(browserId: string): string {
+  if (!RESETTABLE_BROWSERS.includes(browserId) || !BUNDLE_ID.test(browserId))
+    throw new Error("Not a resettable browser.");
+  const alive = [
+    'tell application "System Events"',
+    `  set alive to count of (every process whose bundle identifier is "${browserId}")`,
+    "end tell",
+  ];
+  return [
+    ...alive,
+    'if alive is 0 then return "absent"',
+    `tell application id "${browserId}"`,
+    "  try",
+    "    quit saving no",
+    "  on error",
+    "    quit",
+    "  end try",
+    "end tell",
+    `repeat ${QUIT_WAIT_QUARTERS} times`,
+    ...alive.map((line) => "  " + line),
+    '  if alive is 0 then return "quit"',
+    "  delay 0.25",
+    "end repeat",
+    'return "quitting"',
+  ].join("\n");
+}
+
+/** What a quit did, for the attempt row, the gate line and the terminal; never a title. */
+export interface BrowserQuit {
+  /** The browser was asked to quit and its process had gone when the script returned. */
+  quit: boolean;
+  /**
+   * Why not: the browser scripts nothing (NO_SCRIPT, as for the reset), is
+   * the person's by benchOwnBrowser and was never asked (THEIRS), is not
+   * running (NOT_RUNNING), was asked and still ran five seconds later, a
+   * dialog holding it (STILL_RUNNING), or did not answer (UNREAD: no
+   * Automation consent from this terminal, a hung query).
+   */
+  code?: "NO_SCRIPT" | "THEIRS" | "NOT_RUNNING" | "STILL_RUNNING" | "UNREAD";
+}
+
+/** The quit script's answer; undefined for anything but its three words. */
+export function parseQuitAnswer(
+  stdout: string | undefined,
+): BrowserQuit | undefined {
+  const text = (stdout ?? "").trim();
+  if (text === "absent") return { quit: false, code: "NOT_RUNNING" };
+  if (text === "quit") return { quit: true };
+  if (text === "quitting") return { quit: false, code: "STILL_RUNNING" };
+  return undefined;
+}
+
+/**
+ * Quits one browser when a blank fixture tab still holds secure event input:
+ * only a browser the reset can script, and only one that is the benchmark's
+ * own by benchOwnBrowser over the facts given (not running at the start or
+ * since, or running with no window of the person's), the rule chooseBrowser
+ * picks by and resetFixtureTabs navigates under. A browser that rule
+ * refuses is the person's: THEIRS, and no Apple Event is sent. Never
+ * throws for what the browser does.
+ */
+export async function quitBrowser(
+  run: Run,
+  browserId: string,
+  facts: Pick<StartFacts, "running" | "windows">,
+): Promise<BrowserQuit> {
+  if (!RESETTABLE_BROWSERS.includes(browserId))
+    return { quit: false, code: "NO_SCRIPT" };
+  if (!benchOwnBrowser(browserId, facts))
+    return { quit: false, code: "THEIRS" };
+  const answer = await run("osascript", ["-e", quitBrowserScript(browserId)]);
+  return parseQuitAnswer(answer) ?? { quit: false, code: "UNREAD" };
 }

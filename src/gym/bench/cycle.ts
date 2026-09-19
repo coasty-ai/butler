@@ -462,6 +462,13 @@ export type LedgerLine =
       secureInputOwner?: string;
       /** SECURE_INPUT: fixture tabs the harness pointed at about:blank in its own browser before waiting on (the remedy). */
       browserReset?: number;
+      /**
+       * SECURE_INPUT: the next read after the reset still named that
+       * browser and the harness asked it to quit (the escalation): true when
+       * its process had gone, false when it was asked and still ran. Absent
+       * when no quit was asked.
+       */
+      browserQuit?: boolean;
     }
   | ({ kind: "attempt"; at: string } & AttemptResult)
   | { kind: "requeue"; at: string; planIndex: number; requeued: number }
@@ -659,6 +666,19 @@ export interface CycleLoopDeps {
    * the loop only carries its answer to the ledger.
    */
   remedy?: (report: GateReport) => Promise<number | undefined>;
+  /**
+   * The escalation, asked at most once per wait: after the remedy has
+   * answered for the harness's own browser (a count, 0 included) and the
+   * next read still names that same browser, the hook quits it (a blank
+   * tab keeps the focused field's state until its window goes: cycle
+   * 20260919-1522 waited 50 minutes on Safari with every tab already blank)
+   * and answers true when it has gone, false when it was asked and still
+   * runs, undefined when it would not ask (the holder is no longer the
+   * harness's to touch). True means the gate is read again at once; anything
+   * else waits like any reason, and the hook is not asked again this wait.
+   * Never asked while an attempt runs: this is the gate between them.
+   */
+  escalate?: (report: GateReport) => Promise<boolean | undefined>;
   /** Every row the loop records, for rules that learn from results (IDE_BLIND). */
   observe?: (row: AttemptResult) => void;
   /** Appends one ledger line. */
@@ -727,10 +747,12 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
     const reasons = new Set<string>();
     let last: string | undefined;
     let longNoted = false;
-    /** SECURE_INPUT: the first holder named, and what the remedy did. */
+    /** SECURE_INPUT: the first holder named, what the remedy did, and whether the escalation quit the browser. */
     let secureInputOwner: string | undefined;
     let browserReset: number | undefined;
     let remedied = false;
+    let browserQuit: boolean | undefined;
+    let escalated = false;
     const close = () => {
       const seconds = (d.now() - started) / 1000;
       if (!reasons.size) return seconds;
@@ -748,6 +770,7 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
         ...(longNoted ? { userPresentLong: true } : {}),
         ...(secureInputOwner ? { secureInputOwner } : {}),
         ...(browserReset !== undefined ? { browserReset } : {}),
+        ...(browserQuit !== undefined ? { browserQuit } : {}),
       });
       return seconds;
     };
@@ -776,13 +799,32 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
       // A password field has the keyboard with nobody at the Mac. Once per
       // wait the harness may clear the one case it made itself (a fixture
       // sign-in tab in its own browser); a tab reset is read again at once,
-      // and a field of the person's is waited on like anything else.
+      // and a field of the person's is waited on like anything else. When
+      // the remedy answered for the harness's own browser (0 tabs included:
+      // they were blank already) and the next read still names that same
+      // browser, the escalation quits it, once per wait; a quit is read
+      // again at once, and whatever holds the keyboard after that is waited
+      // on, the holder named on the line.
       if (decision.reason === "SECURE_INPUT") {
         secureInputOwner ??= report.secureInputOwner;
         if (!remedied && d.remedy) {
           remedied = true;
           browserReset = await d.remedy(report);
           if (browserReset) continue;
+          // Blank already, and a quit can follow: the confirming read now,
+          // not after a poll's sleep.
+          if (browserReset !== undefined && d.escalate) continue;
+        } else if (
+          remedied &&
+          browserReset !== undefined &&
+          !escalated &&
+          d.escalate &&
+          secureInputOwner !== undefined &&
+          report.secureInputOwner === secureInputOwner
+        ) {
+          escalated = true;
+          browserQuit = await d.escalate(report);
+          if (browserQuit) continue;
         }
       }
       // A refusal for input needs no "person seen" flag: the tap's clock

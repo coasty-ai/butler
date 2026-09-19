@@ -6,12 +6,14 @@ import type { BenchTask } from "./types";
 
 /**
  * What an attempt leaves open, and what the harness may close. An attempt
- * leaves what it opened open (the harness never quits an application), so a
- * cycle ends with TextEdit documents and Finder windows on the bench folder
- * that nothing closed; and a document the model saved somewhere else under a
- * name without the token (TextEdit's iCloud folder, "Untitled.rtf") is
- * invisible to the token sweep, stays open, and counts as the person's at the
- * next start, which skips every task listing TextEdit (APPS_OPEN).
+ * leaves what it opened open (the harness never quits an application of the
+ * person's; browser-reset.ts may quit its own browser to release secure
+ * event input), so a cycle ends with TextEdit documents and Finder windows
+ * on the bench folder that nothing closed; and a document the model saved
+ * somewhere else under a name without the token (TextEdit's iCloud folder,
+ * "Untitled.rtf") is invisible to the token sweep, stays open, and counts as
+ * the person's at the next start, which skips every task listing TextEdit
+ * (APPS_OPEN).
  *
  * Two rules, both pure over facts read through an injectable `run`:
  *

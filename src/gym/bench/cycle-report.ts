@@ -568,7 +568,8 @@ export function contentFree(row: AttemptResult): AttemptResult {
       )
     : undefined;
   const approvalCodes = row.approvalCodes && talliesOnly(row.approvalCodes);
-  // A count and, at most, a fixed code: never a URL or a title.
+  // A count, at most a fixed code, and whether the browser was quit: never
+  // a URL or a title.
   const browserReset =
     row.browserReset &&
     Number.isSafeInteger(row.browserReset.tabs) &&
@@ -577,6 +578,7 @@ export function contentFree(row: AttemptResult): AttemptResult {
       ? {
           tabs: row.browserReset.tabs,
           ...(row.browserReset.code ? { code: row.browserReset.code } : {}),
+          ...(row.browserReset.quit === true ? { quit: true } : {}),
         }
       : undefined;
   const {
@@ -1182,19 +1184,24 @@ export function renderCycleReport(cycle: CycleResults): string {
         )}. The final sweep closes a TextEdit document under ~/OpenAssistBench, or one an attempt saved, when it has no unsaved changes, and a Finder window on ~/OpenAssistBench; anything else stays open (docs/BENCHMARK.md, Cleanup).`,
     );
   // The browser's fixture tabs after each attempt: how many were pointed at
-  // about:blank, and how often the browser could not be asked (by code).
+  // about:blank, how often the browser could not be asked (by code), and
+  // how often it was quit because the blank tabs still held secure input.
   const resets = results.map((row) => row.browserReset).filter(Boolean);
   if (resets.length) {
     const tabs = resets.reduce((sum, reset) => sum + (reset?.tabs ?? 0), 0);
     const codes: Record<string, number> = {};
     for (const reset of resets)
       if (reset?.code) codes[reset.code] = (codes[reset.code] ?? 0) + 1;
+    const quits = resets.filter((reset) => reset?.quit === true).length;
     out.push(
       `\nFixture tabs pointed at about:blank after the attempts, in the browser chosen for each: ${tabs} in ${resets.length} attempt(s)` +
         (Object.keys(codes).length
           ? `; not looked at in ${Object.entries(codes)
               .map(([code, n]) => `${n} (${code})`)
               .join(", ")}`
+          : "") +
+        (quits
+          ? `; the browser quit after ${quits}, its blank tabs still holding secure input`
           : "") +
         " (docs/BENCHMARK.md, Cleanup, step 7).",
     );

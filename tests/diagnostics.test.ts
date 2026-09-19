@@ -1948,3 +1948,37 @@ describe("acting while the user speaks", () => {
       );
     }));
 });
+
+describe("the benchmark harness's browser quit", () => {
+  it("keeps BrowserQuit's bundle id, flag and code, never a title, a URL or a sentence", () =>
+    fixture((log) => {
+      log.write("BrowserQuit", {
+        browser: "com.apple.Safari",
+        quit: true,
+        code: "STILL_RUNNING",
+        // Smuggled extras: never written, whatever a caller passes.
+        title: "Sign in · benchnote1a2b",
+        url: "http://127.0.0.1:47831/login",
+        reason: "the password page was left focused",
+      });
+      // Only a bundle id, a boolean and a code pass through each field.
+      log.write("BrowserQuit", {
+        browser: "Safari, the one with the password page",
+        quit: "yes",
+        code: "it would not go",
+      });
+      log.write("BrowserQuit", { browser: "Safari", quit: false });
+      const lines = readFileSync(log.file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).data);
+      expect(lines).toEqual([
+        { browser: "com.apple.Safari", quit: true, code: "STILL_RUNNING" },
+        {},
+        { quit: false },
+      ]);
+      expect(readFileSync(log.file, "utf8")).not.toMatch(
+        /benchnote|127\.0\.0\.1|password|would not go|Safari,/,
+      );
+    }));
+});
