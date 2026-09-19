@@ -385,6 +385,36 @@ describe("fix loop: outcomes and stopping rules", () => {
     expect(report).toMatch(/Parked: P/);
     expect(report).toMatch(/merges nothing/);
     expect(report).toMatch(/weakens a safety floor is refused/);
+    // Nothing skipped: no line about it.
+    expect(report).not.toMatch(/Skipped/);
+  });
+
+  it("names what kept the skipped attempts from running, by bundle id", () => {
+    const skipped = (reason: string, openApps?: string[]) =>
+      ({
+        runStatus: "skipped",
+        reason,
+        ...(openApps ? { openApps } : {}),
+      }) as unknown as CycleResults["results"][number];
+    const night = cycle([cls()]);
+    night.results = [
+      {
+        runStatus: "completed",
+        reason: undefined,
+      } as unknown as CycleResults["results"][number],
+      skipped("APPS_OPEN", ["com.apple.TextEdit"]),
+      skipped("APPS_OPEN", ["com.apple.TextEdit"]),
+      skipped("APPS_OPEN", ["com.apple.iCal", "com.apple.TextEdit"]),
+      skipped("FIXTURE_PORT"),
+    ];
+    const report = loopReport({
+      cycle: night,
+      lanes: [],
+      state: emptyLoopState(),
+    });
+    expect(report).toContain(
+      "Skipped 4 attempt(s) that never ran: APPS_OPEN 3, FIXTURE_PORT 1. APPS_OPEN by application: com.apple.TextEdit 3, com.apple.iCal 1; quit them, or leave them with no window, before the next night.",
+    );
   });
 });
 

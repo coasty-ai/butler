@@ -19,7 +19,10 @@
 // Screenshots stay in memory, and nothing this script writes contains screen
 // text, window titles, URLs or file paths: results.json and report.md hold
 // task templates, ids, counts, durations, cost and fixed codes, and the
-// cycle's own diagnostics log is written without verbose content.
+// cycle's own diagnostics log is written without verbose content. The one
+// exception is a row's strayDocuments: the home-relative path of a document
+// an attempt itself saved outside ~/OpenAssistBench, which the harness never
+// deletes and the person needs in order to (src/gym/bench/windows.ts).
 // See docs/HARNESS_LOOP.md.
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -119,6 +122,15 @@ const {
   sweepTokens,
   tokenLedgerDir,
 } = await import("../src/gym/bench/sweep.ts");
+const {
+  attemptWindows,
+  closeBenchWindows,
+  describeWindowSweep,
+  readWindowSnapshot,
+  snapshotApps,
+  strayDocumentsLine,
+  withWindowFields,
+} = await import("../src/gym/bench/windows.ts");
 const {
   buildCycleResults,
   catalogueHash,
@@ -221,6 +233,8 @@ Cycle
   --preflight                      Check this Mac for an unattended night and exit.
   --cleanup-only                   Run no task: sweep every store for benchmark items that crashed
                                    or interrupted attempts left behind, then exit (1 if any remain).
+                                   With --i-know-this-drives-my-mac it also closes the benchmark's
+                                   own TextEdit documents and Finder windows (an Apple Event each).
   --i-know-this-drives-my-mac      Required to run. PAID and REAL.`;
 
 if (values.help) {
@@ -382,11 +396,29 @@ if (values["cleanup-only"]) {
     console.log(
       `${row.token}  ${row.leftovers.length ? row.leftovers.join(", ") : "clean"}`,
     );
-  const left = remainingLeftovers([], swept);
+  // The windows earlier cycles left: TextEdit documents under the bench
+  // folder and Finder windows on it, closed when they hold nothing (a
+  // modified document never is). Closing is an Apple Event to each
+  // application, the first of which from a terminal asks for consent, so it
+  // takes the same flag as driving the desktop does; without it nothing is
+  // asked and nothing is closed.
+  let windows;
+  if (values["i-know-this-drives-my-mac"]) {
+    windows = await closeBenchWindows({
+      home,
+      run,
+      running: runningApps(ps),
+    });
+    console.log(describeWindowSweep(windows));
+  } else
+    console.log(
+      "Windows the attempts left open were not looked at: add --i-know-this-drives-my-mac to close the benchmark's own TextEdit documents and Finder windows too (an Apple Event to each application; the first from a new terminal asks for consent once).",
+    );
+  const left = remainingLeftovers([], swept, windows);
   console.log(
     swept.length
       ? `Swept ${swept.length} token(s). ${left.length ? `Left behind: ${left.join(", ")} (docs/BENCHMARK.md, Cleanup, says what each means; remove them by hand, then sweep again).` : "Nothing left behind."}`
-      : "Nothing to sweep: no token folder under ~/OpenAssistBench and no token in the ledger.",
+      : `Nothing to sweep: no token folder under ~/OpenAssistBench and no token in the ledger.${left.length ? ` Left behind: ${left.join(", ")}.` : ""}`,
   );
   releaseDesktopLock(lockFile, process.pid);
   process.exit(left.length ? 1 : 0);
@@ -1240,6 +1272,13 @@ const deadline = Date.now() + timeBoxSeconds * 1000;
 let outcome = { results: prior, gateWaits: undefined, notRun: queue.length };
 let stoppedBecause;
 let swept = [];
+/** The window sweep's answer at the end; undefined until it ran. */
+let windowSweep;
+// TextEdit documents the attempts of this process created (windows.ts
+// attemptWindows): in memory only, for the final sweep to close the ones
+// that hold nothing. A document saved outside the bench folder is also on
+// its row (strayDocuments), which is how a resumed cycle still knows it.
+const attemptDocuments = [];
 try {
   // The fixture server runs as a child process for the cycle, on the
   // loopback address only, when a task that can run tonight reads its log.
@@ -1331,10 +1370,25 @@ try {
         }
     },
     attempt: async (entry, maxCost, gateWaitSeconds) => {
+      const task = byId.get(entry.taskId);
+      // Chosen now, from the facts so far: a browser the person opened
+      // during a wait is theirs from this attempt on.
+      const browser = browserFor(task);
+      // The windows of the task's applications (and the Finder, which the
+      // neutral start activates) before and after: what is there after and
+      // was not before is this attempt's, for the final sweep to close and
+      // the row to count. Titles stay in memory; TextEdit is asked for its
+      // documents' paths only while it runs.
+      const watched = snapshotApps(task, browser.browser?.id);
+      const before = await readWindowSnapshot(
+        run,
+        watched,
+        await readRunning(),
+      );
       const result = await runAttempt(
         deps,
         cellInfo.get(entry.cell),
-        byId.get(entry.taskId),
+        task,
         entry.attempt,
         {
           maxCost,
@@ -1342,16 +1396,19 @@ try {
           planIndex: entry.index,
           requeued: entry.requeued,
           gateWaitSeconds,
-          // Chosen now, from the facts so far: a browser the person opened
-          // during a wait is theirs from this attempt on.
-          ...browserFor(byId.get(entry.taskId)),
+          ...browser,
         },
       );
       console.log(
         `${result.cell}  ${result.taskId} #${result.attempt}  ${result.status}${result.reason ? " (" + result.reason + ")" : ""}  ${result.endingCode}  ${result.actions} actions  ${result.seconds.toFixed(1)}s  $${result.cost.toFixed(3)}`,
       );
       runningAfterLast = await readRunning();
-      return result;
+      const left = attemptWindows(
+        before,
+        await readWindowSnapshot(run, watched, runningAfterLast),
+      );
+      attemptDocuments.push(...left.documents);
+      return withWindowFields(result, left, home);
     },
     skipped: (entry, reason) => {
       const row = neverRan(
@@ -1436,6 +1493,26 @@ try {
     });
   } catch {
     swept = undefined;
+  }
+  // Then the windows, still under the lock: Finder windows on the bench
+  // folder, TextEdit documents under it or that an attempt created (this
+  // process's, and the paths every row of the ledger names, so a resumed
+  // cycle closes what its earlier nights saved), each only while unmodified.
+  // Nothing outside the bench folder is deleted; a modified document, a
+  // dialog in TextEdit or an application that did not answer is reported.
+  try {
+    const ps = await run("ps", ["-axo", "pid=,command="]);
+    windowSweep = await closeBenchWindows({
+      home,
+      run,
+      documents: attemptDocuments,
+      paths: ledgerResults(
+        parseLedger(readFileSync(ledgerFile, "utf8")),
+      ).flatMap((row) => row.strayDocuments ?? []),
+      running: runningApps(ps),
+    });
+  } catch {
+    windowSweep = undefined;
   }
   releaseDesktopLock(lockFile, process.pid);
 }
@@ -1531,15 +1608,18 @@ if (verdict)
         : ""),
   );
 // What is still on this Mac after the final sweep: what no sweep can clear
-// (a file of the person's, a refused folder) and what this one could not.
-const left = remainingLeftovers(results, swept);
+// (a file of the person's, a refused folder, a document saved outside the
+// bench folder) and what this one could not, windows included.
+const left = remainingLeftovers(results, swept, windowSweep);
 if (!swept)
   console.log(
     `\nThe final sweep failed: the token ledger (${tokenLedgerDir(home)}) or ~/OpenAssistBench could not be read, so every leftover the attempts reported stands.`,
   );
+if (windowSweep) console.log(`\n${describeWindowSweep(windowSweep)}`);
+const strays = strayDocumentsLine(results);
 if (left.length)
   console.log(
-    `\nLeftovers after the final sweep: ${left.join(", ")}. See report.md and docs/BENCHMARK.md (Cleanup); npm run cycle -- --cleanup-only sweeps again.`,
+    `\nLeftovers after the final sweep: ${left.join(", ")}. ${strays ? strays + " " : ""}See report.md and docs/BENCHMARK.md (Cleanup); npm run cycle -- --cleanup-only sweeps again.`,
   );
 if (autoShards && !stoppedBecause)
   console.log(

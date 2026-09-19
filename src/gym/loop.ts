@@ -338,6 +338,33 @@ export function loopReport(o: {
         (outcome ? ` — ${outcome.verdict}: ${outcome.reason}` : " — planned"),
     );
   }
+  // Attempts the night never ran say nothing about the model, but a lane
+  // fixing a TextEdit class from a night that skipped every TextEdit task
+  // has nothing to measure: name what kept them from running, by bundle id.
+  const results = o.cycle.results ?? [];
+  const skipped = results.filter((row) => row.runStatus === "skipped");
+  if (skipped.length) {
+    const byCode: Record<string, number> = {};
+    const byApp: Record<string, number> = {};
+    for (const row of skipped) {
+      const code = row.reason ?? "UNKNOWN";
+      byCode[code] = (byCode[code] ?? 0) + 1;
+      if (code === "APPS_OPEN")
+        for (const id of row.openApps ?? []) byApp[id] = (byApp[id] ?? 0) + 1;
+    }
+    const counts = (record: Record<string, number>) =>
+      Object.entries(record)
+        .sort((a, b) => b[1] - a[1])
+        .map(([key, n]) => `${key} ${n}`)
+        .join(", ");
+    lines.push(
+      "",
+      `Skipped ${skipped.length} attempt(s) that never ran: ${counts(byCode)}.` +
+        (Object.keys(byApp).length
+          ? ` APPS_OPEN by application: ${counts(byApp)}; quit them, or leave them with no window, before the next night.`
+          : ""),
+    );
+  }
   const parked = Object.values(o.state.classes).filter((c) => c.parked);
   if (parked.length)
     lines.push("", `Parked: ${parked.map((c) => c.code).join(", ")}.`);

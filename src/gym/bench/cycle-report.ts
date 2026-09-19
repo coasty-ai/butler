@@ -27,8 +27,11 @@ import type { BenchTask } from "./types";
 /**
  * results.json (schema 2) and report.md for one cycle. Every string in
  * either is a fixed code, an id, a bundle id, a task template or an ISO
- * timestamp; the test feeds a run whose every free-text field carries a
- * marker and asserts it never appears here.
+ * timestamp, with one exception: a row's strayDocuments, the home-relative
+ * paths of documents the attempt itself saved outside ~/OpenAssistBench,
+ * which the harness never deletes and a person needs in order to. The test
+ * feeds a run whose every free-text field carries a marker and asserts it
+ * never appears here.
  */
 
 /** Bumped when the meaning of a results.json field changes. */
@@ -488,6 +491,11 @@ export function comparable(
 const CHECK = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 /** A bundle id, the one thing an APPS_OPEN row names: no path, no title. */
 const BUNDLE_ID = /^[A-Za-z0-9.-]{1,120}$/;
+/**
+ * A path as windows.ts writes one: home-relative or absolute, one line, no
+ * control character. The only field that may carry one (strayDocuments).
+ */
+const PATH = /^(~|\/)[^ -]{0,1000}$/;
 const RUN_ID =
   /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const codeOnly = (value: string | undefined) =>
@@ -508,12 +516,23 @@ export function contentFree(row: AttemptResult): AttemptResult {
     row.runId !== undefined && RUN_ID.test(row.runId) ? row.runId : undefined;
   const leftovers = row.leftovers?.filter((code) => CODE.test(code));
   const openApps = row.openApps?.filter((id) => BUNDLE_ID.test(id));
+  const strayDocuments = row.strayDocuments?.filter((path) => PATH.test(path));
+  const leftoverWindows = row.leftoverWindows
+    ? Object.fromEntries(
+        Object.entries(row.leftoverWindows).filter(
+          ([id, n]) =>
+            BUNDLE_ID.test(id) && Number.isSafeInteger(n) && (n as number) > 0,
+        ),
+      )
+    : undefined;
   const {
     reason: _r,
     pausedAfter: _p,
     runId: _i,
     leftovers: _l,
     openApps: _a,
+    strayDocuments: _s,
+    leftoverWindows: _w,
     ...rest
   } = row;
   return {
@@ -523,6 +542,10 @@ export function contentFree(row: AttemptResult): AttemptResult {
     ...(pausedAfter ? { pausedAfter } : {}),
     ...(leftovers?.length ? { leftovers } : {}),
     ...(openApps?.length ? { openApps } : {}),
+    ...(strayDocuments?.length ? { strayDocuments } : {}),
+    ...(leftoverWindows && Object.keys(leftoverWindows).length
+      ? { leftoverWindows }
+      : {}),
     endingCode: codeOnly(row.endingCode) ?? "UNCLASSIFIED",
     checks: keysOnly(row.checks, CHECK),
     failures: keysOnly(row.failures, CODE),
@@ -965,6 +988,36 @@ export function renderCycleReport(cycle: CycleResults): string {
         .join(
           ", ",
         )}${cleanupFailed ? `${Object.keys(leftovers).length ? ", " : ""}cleanup failed ${cleanupFailed}` : ""}. Benchmark items stayed on this Mac; see docs/HARNESS_LOOP.md.`,
+    );
+  // Documents an attempt saved outside the bench folder: the token sweep
+  // cannot find them and the harness never deletes a file there, so the
+  // path is what a person needs. Already sanitised (contentFree PATH).
+  const strays = results.flatMap((row) =>
+    (row.strayDocuments ?? []).map((path) => ({ path, row })),
+  );
+  if (strays.length) {
+    out.push("");
+    out.push(
+      "Documents saved outside `~/OpenAssistBench`, which the harness never deletes (check each and delete it yourself; its window was closed by the final sweep if it had no unsaved changes):",
+    );
+    out.push("");
+    for (const { path, row } of strays)
+      out.push(`- \`${path}\` (${row.taskId} #${row.attempt}, ${row.cell})`);
+  }
+  const windowsLeft: Record<string, number> = {};
+  for (const row of results)
+    for (const [id, n] of Object.entries(row.leftoverWindows ?? {}))
+      windowsLeft[id] = (windowsLeft[id] ?? 0) + n;
+  if (Object.keys(windowsLeft).length)
+    out.push(
+      `\nWindows the attempts left open, by application: ${Object.entries(
+        windowsLeft,
+      )
+        .sort((a, b) => b[1] - a[1])
+        .map(([id, n]) => `${id} ${n}`)
+        .join(
+          ", ",
+        )}. The final sweep closes a TextEdit document under ~/OpenAssistBench, or one an attempt saved, when it has no unsaved changes, and a Finder window on ~/OpenAssistBench; anything else stays open (docs/BENCHMARK.md, Cleanup).`,
     );
   if (totals.attempts && totals.handoffs.manual / totals.attempts > 0.1)
     out.push(

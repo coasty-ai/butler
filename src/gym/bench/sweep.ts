@@ -328,15 +328,19 @@ export async function sweepTokens(input: {
 
 /**
  * What is still on this Mac after the final sweep: the codes rows reported
- * that no sweep can clear (a file of the person's, a refused folder), and
- * whatever the sweep itself still found. A row's retryable and transient
- * codes are the sweep's to answer, since its token stayed in the ledger for
- * it. `swept` undefined means the sweep itself failed: then nothing the
- * rows reported was answered, and SWEEP_FAILED says so.
+ * that no sweep can clear (a file of the person's, a refused folder, a
+ * document saved outside the bench folder), and whatever the sweep itself
+ * still found. A row's retryable and transient codes are the sweep's to
+ * answer, since its token stayed in the ledger for it. `swept` undefined
+ * means the sweep itself failed: then nothing the rows reported was
+ * answered, and SWEEP_FAILED says so. `windows` is the window sweep's own
+ * answer (windows.ts closeBenchWindows): what it could not close stands
+ * too; undefined when no window sweep ran.
  */
 export function remainingLeftovers(
   rows: Pick<AttemptResult, "leftovers">[],
   swept: SweptToken[] | undefined,
+  windows?: { leftovers: string[] },
 ): string[] {
   const codes = new Set<string>();
   for (const row of rows)
@@ -349,5 +353,6 @@ export function remainingLeftovers(
   if (!swept) codes.add("SWEEP_FAILED");
   for (const token of swept ?? [])
     for (const code of token.leftovers) codes.add(code);
+  for (const code of windows?.leftovers ?? []) codes.add(code);
   return [...codes].sort();
 }

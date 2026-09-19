@@ -3115,6 +3115,9 @@ describe("results.json and report.md", () => {
         leftovers: [`${MARK} in ~/Documents`, "LEFTOVER_FILES"],
         pausedAfter: `${MARK} paused`,
         runId: `${MARK}-run`,
+        // Not the shape windows.ts writes a path in: dropped, not published.
+        strayDocuments: [`${MARK} ~/Documents/plan.txt`, `~/${MARK}\n`],
+        leftoverWindows: { [`${MARK} window`]: 1 },
       }),
     ];
     const cycle = buildCycleResults({
@@ -3159,6 +3162,60 @@ describe("results.json and report.md", () => {
     );
     expect(md).toMatch(/SKIPPED\s+APPS_OPEN com\.apple\.Music$/m);
     expect(JSON.stringify(cycle)).not.toContain(MARK);
+  });
+
+  it("names a document an attempt saved outside the bench folder by its path, and counts the windows it left, in the report", () => {
+    const icloud =
+      "~/Library/Mobile Documents/com~apple~TextEdit/Documents/Untitled.rtf";
+    const stray = failedRow({
+      planIndex: 100,
+      taskId: "ops-kpi-snapshot-note",
+      leftovers: ["LEFTOVER_STRAY_DOCUMENT"],
+      strayDocuments: [icloud],
+      leftoverWindows: { "com.apple.TextEdit": 2, "com.apple.finder": 1 },
+    });
+    const clean = contentFree({
+      ...stray,
+      strayDocuments: [
+        icloud,
+        "/Volumes/Other/Untitled copy.rtf",
+        `Untitled 3 ${icloud}`,
+        "~/Documents/ab.txt",
+      ],
+      leftoverWindows: {
+        "com.apple.TextEdit": 2,
+        "Untitled 3 window": 1,
+        "com.apple.finder": 0,
+      },
+    });
+    expect(clean.strayDocuments).toEqual([
+      icloud,
+      "/Volumes/Other/Untitled copy.rtf",
+    ]);
+    expect(clean.leftoverWindows).toEqual({ "com.apple.TextEdit": 2 });
+    expect(contentFree(row({})).strayDocuments).toBeUndefined();
+    expect(contentFree(row({})).leftoverWindows).toBeUndefined();
+    const cycle = buildCycleResults({
+      cycle: info(),
+      results: [...results, stray],
+      analysis,
+    });
+    const md = renderCycleReport(cycle);
+    expect(md).toContain("**Leftovers:** LEFTOVER_STRAY_DOCUMENT 1.");
+    expect(md).toContain(
+      "Documents saved outside `~/OpenAssistBench`, which the harness never deletes (check each and delete it yourself;",
+    );
+    expect(md).toContain(
+      `- \`${icloud}\` (ops-kpi-snapshot-note #1, ${stray.cell})`,
+    );
+    expect(md).toContain(
+      "Windows the attempts left open, by application: com.apple.TextEdit 2, com.apple.finder 1.",
+    );
+    expect(JSON.stringify(cycle)).toContain(icloud);
+    // The summary's own line still counts the code.
+    expect(leftoversLine(aggregate([stray]))).toBe(
+      "Leftovers  LEFTOVER_STRAY_DOCUMENT 1",
+    );
   });
 
   it("hashes templates and grader source, so a grader change changes the metric", () => {
@@ -5542,7 +5599,39 @@ describe("harness-cycle.mjs with the suites", () => {
     // A sweep that threw answered nothing: not an empty answer.
     expect(sweep).toMatch(/catch \{\s+swept = undefined;\s+\}/);
     expect(sweep).toContain("onWait: spotlightWait");
-    expect(cycle).toContain("remainingLeftovers(results, swept)");
+    // Then the windows, after the token sweep and before the lock goes
+    // back: the attempts' documents, the paths every ledger row names, and
+    // TextEdit asked only while ps shows it; a throw answers nothing.
+    const windowsAt = sweep.indexOf("windowSweep = await closeBenchWindows({");
+    expect(windowsAt).toBeGreaterThan(
+      sweep.indexOf("swept = await sweepTokens("),
+    );
+    expect(sweep.slice(windowsAt)).toContain("documents: attemptDocuments,");
+    expect(sweep.slice(windowsAt)).toMatch(
+      /paths: ledgerResults\(\s+parseLedger\(readFileSync\(ledgerFile, "utf8"\)\),\s+\)\.flatMap\(\(row\) => row\.strayDocuments \?\? \[\]\)/,
+    );
+    expect(sweep.slice(windowsAt)).toContain("running: runningApps(ps),");
+    expect(sweep.slice(windowsAt)).toMatch(
+      /catch \{\s+windowSweep = undefined;\s+\}/,
+    );
+    expect(cycle).toContain("remainingLeftovers(results, swept, windowSweep)");
+    expect(cycle).toContain("const strays = strayDocumentsLine(results);");
+    // --cleanup-only closes windows only under the flag that allows acting
+    // on this desktop (an Apple Event to TextEdit and the Finder), after its
+    // own token sweep; without it nothing is asked.
+    const only = cycle.slice(
+      cycle.indexOf('if (values["cleanup-only"]) {'),
+      cycle.indexOf(
+        "/* ------------------------------------------------------------------ plan */",
+      ),
+    );
+    const flagAt = only.indexOf('if (values["i-know-this-drives-my-mac"]) {');
+    expect(flagAt).toBeGreaterThan(only.indexOf("swept = await sweepTokens({"));
+    expect(only.indexOf("await closeBenchWindows({")).toBeGreaterThan(flagAt);
+    expect(only).toContain("remainingLeftovers([], swept, windows)");
+    expect(only).toContain(
+      "were not looked at: add --i-know-this-drives-my-mac",
+    );
     // The start's ps can be hours old by the first attempt.
     const after = cycle.slice(cycle.indexOf("afterGate: async (pass) => {"));
     expect(after.indexOf("openedByPerson(")).toBeGreaterThan(0);
@@ -5555,7 +5644,8 @@ describe("harness-cycle.mjs with the suites", () => {
     // Event.
     expect(after).toContain("readWindowFacts(run, appsToWatch(tasks, opened))");
     expect(cycle).toContain('appleEvents: !values["dry-run"],');
-    expect(cycle).toContain("...browserFor(byId.get(entry.taskId)),");
+    expect(cycle).toContain("const browser = browserFor(task);");
+    expect(cycle).toContain("          ...browser,\n");
     expect(cycle).toMatch(
       /reason === "APPS_OPEN" \? skipDetail\(entry\.taskId, reason\)\.apps/,
     );
@@ -5569,9 +5659,32 @@ describe("harness-cycle.mjs with the suites", () => {
     const attempt = cycle.slice(
       cycle.indexOf("attempt: async (entry, maxCost, gateWaitSeconds)"),
     );
+    const ranAt = attempt.indexOf("await runAttempt(");
     expect(
       attempt.indexOf("runningAfterLast = await readRunning();"),
-    ).toBeGreaterThan(attempt.indexOf("await runAttempt("));
+    ).toBeGreaterThan(ranAt);
+    // Its windows are snapshotted before and after, for the Finder, the
+    // task's applications and the browser chosen for it; what appeared is
+    // kept for the final sweep and put on the row.
+    expect(attempt).toContain(
+      "const watched = snapshotApps(task, browser.browser?.id);",
+    );
+    const beforeAt = attempt.search(
+      /const before = await readWindowSnapshot\(\s+run,\s+watched,\s+await readRunning\(\),\s+\);/,
+    );
+    expect(beforeAt).toBeGreaterThan(0);
+    expect(beforeAt).toBeLessThan(ranAt);
+    const leftAt = attempt.indexOf("const left = attemptWindows(");
+    expect(leftAt).toBeGreaterThan(ranAt);
+    expect(attempt.slice(leftAt)).toContain(
+      "await readWindowSnapshot(run, watched, runningAfterLast),",
+    );
+    expect(attempt.slice(leftAt)).toContain(
+      "attemptDocuments.push(...left.documents);",
+    );
+    expect(attempt.slice(leftAt)).toContain(
+      "return withWindowFields(result, left, home);",
+    );
   });
 
   it("gives bench.mjs the cycle's task preflight and final sweep for the long suite", () => {

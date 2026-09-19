@@ -82,6 +82,19 @@ export interface AttemptResult {
   cleanupFailed?: boolean;
   /** An APPS_OPEN skip: the applications that were open, by bundle id. Never a window title. */
   openApps?: string[];
+  /**
+   * Documents the attempt saved outside ~/OpenAssistBench (TextEdit showed
+   * them open after the attempt and not before), home-relative. The one
+   * place a path is written: the harness never deletes a file outside the
+   * bench folder, so the person needs the path to check it and delete it
+   * themselves (LEFTOVER_STRAY_DOCUMENT among the leftovers).
+   */
+  strayDocuments?: string[];
+  /**
+   * Windows open after the attempt that were not before, by bundle id
+   * (windows.ts). The final sweep closes the ones that hold nothing.
+   */
+  leftoverWindows?: Record<string, number>;
   /** The task's declared [minimum, maximum] competent step count. */
   expectedSteps?: [number, number];
   /** Seconds the presence gate held this attempt back; 0 without a gate. */
