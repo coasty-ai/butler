@@ -197,7 +197,7 @@ describe("NativeController.execute for open_url", () => {
       new URL(`../${path}`, import.meta.url),
       "utf8",
     ) as string;
-  it("routes open_url to the hook before any helper request, and fails plainly without one", async () => {
+  it("routes open_url to the hook before any helper request, and to LaunchServices without one", async () => {
     const controller = source("electron/controller.ts");
     const execute = controller.slice(
       controller.indexOf("  async execute("),
@@ -215,12 +215,47 @@ describe("NativeController.execute for open_url", () => {
       controller.indexOf("  async revalidate("),
     );
     expect(openUrl).toContain("if (!this.urlRoute)");
+    expect(openUrl).toContain("return this.openUrlByLaunchServices(action);");
     expect(openUrl).not.toContain("this.request(");
     expect(openUrl).toContain("const navigated = await this.urlRoute(action);");
     expect(openUrl).toContain("return navigated ? { navigated } : {};");
-    // The hook is the only way in, and the prototype has the method.
+    // The hook is the first way in, and the prototype has the method.
     expect(typeof NativeController.prototype.openUrl).toBe("function");
     expect(controller).toContain("this.urlRoute = hooks.openUrl;");
+  });
+  it("without a hook, hands the address to LaunchServices in the browser in front, else the default browser", async () => {
+    const launches: string[][] = [];
+    const make = (appId: string) => {
+      const c = new NativeController(
+        "/nonexistent/helper",
+        () => {},
+        () => {},
+        undefined,
+        { launch: async (args) => void launches.push(args) },
+      );
+      (c as unknown as { surface: () => Promise<{ appId: string }> }).surface =
+        async () => ({ appId });
+      return c;
+    };
+    const action = {
+      type: "open_url" as const,
+      url: "https://www.youtube.com/results?search_query=x",
+      frame_id: "f",
+    };
+    expect(await make("com.apple.Safari").openUrl(action)).toEqual({
+      navigated: {
+        host: "www.youtube.com",
+        appId: "com.apple.Safari",
+        via: "open",
+      },
+    });
+    expect(await make("com.apple.finder").openUrl(action)).toEqual({
+      navigated: { host: "www.youtube.com", via: "open" },
+    });
+    expect(launches).toEqual([
+      ["-b", "com.apple.Safari", action.url],
+      [action.url],
+    ]);
   });
   it("is what main wires with the browser the early step would open", () => {
     const main = source("electron/main.ts");

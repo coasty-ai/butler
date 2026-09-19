@@ -36,7 +36,7 @@ export function isInstallerName(value: string | undefined): boolean {
     INSTALLER_PATTERN.test(value.replace(/[._-]+/g, " "))
   );
 }
-const browsers = [
+export const browsers = [
   "com.apple.Safari",
   "com.google.Chrome",
   "com.google.Chrome.canary",

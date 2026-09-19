@@ -1,6 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  execFile,
+  spawn,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import { createInterface } from "node:readline";
 import { cleanScreenContext } from "../src/core/context";
+import { browsers } from "../src/core/policy";
 import {
   HelperSlowError,
   HelperUnavailableError,
@@ -869,6 +874,8 @@ export class NativeController implements Controller {
   private urlRoute?: (
     action: Extract<Action, { type: "open_url" }>,
   ) => Promise<ExecutionResult["navigated"]>;
+  /** LaunchServices `open` with these arguments (a test passes a fake). */
+  private launch: (args: string[]) => Promise<void>;
   constructor(
     binary: string,
     emergency: () => void,
@@ -904,11 +911,21 @@ export class NativeController implements Controller {
       openUrl?: (
         action: Extract<Action, { type: "open_url" }>,
       ) => Promise<ExecutionResult["navigated"]>;
+      /** Tests: in place of LaunchServices `open`. */
+      launch?: (args: string[]) => Promise<void>;
     } = {},
   ) {
     this.timeout = hooks.timeout ?? nativeTimeout;
     this.slowLimit = hooks.slowLimit ?? nativeSlowLimit;
     this.urlRoute = hooks.openUrl;
+    this.launch =
+      hooks.launch ??
+      ((args) =>
+        new Promise<void>((resolve, reject) =>
+          execFile("open", args, { timeout: 10_000 }, (error) =>
+            error ? reject(error) : resolve(),
+          ),
+        ));
     this.helper = new HelperProcess(binary, {
       name: "Native",
       diagnostics,
@@ -1128,10 +1145,34 @@ export class NativeController implements Controller {
   async openUrl(
     action: Extract<Action, { type: "open_url" }>,
   ): Promise<ExecutionResult> {
-    if (!this.urlRoute)
-      throw new Error("No browser route is configured for web addresses.");
+    if (!this.urlRoute) return this.openUrlByLaunchServices(action);
     const navigated = await this.urlRoute(action);
     return navigated ? { navigated } : {};
+  }
+  /**
+   * No route wired (the benchmark's controller, a bare embedder): LaunchServices
+   * opens the address in the browser in front, else in the default browser. No
+   * key, no click, nothing through the helper. Before this, a model's open_url
+   * in a bench run threw and ended the run as RUN_ERROR (cycle 20260919-1351).
+   */
+  private async openUrlByLaunchServices(
+    action: Extract<Action, { type: "open_url" }>,
+  ): Promise<ExecutionResult> {
+    let appId: string | undefined;
+    try {
+      appId = (await this.surface()).appId;
+    } catch {
+      appId = undefined;
+    }
+    const bundle = appId && browsers.includes(appId) ? appId : undefined;
+    await this.launch(bundle ? ["-b", bundle, action.url] : [action.url]);
+    return {
+      navigated: {
+        host: new URL(action.url).hostname,
+        ...(bundle ? { appId: bundle } : {}),
+        via: "open",
+      },
+    };
   }
   async revalidate(action: Action, _frame: Frame): Promise<Frame> {
     const frame: Frame = await this.request("revalidate", { action });
