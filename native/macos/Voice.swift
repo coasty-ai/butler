@@ -102,21 +102,23 @@ var tapBuffers = 0, lastRms = 0.0, lastStandbyTraceAt = 0.0
 // its latest utterance begins (utteranceBoundary), and the offset the activated turn strips as
 // the room's words.
 var standbyRaw = "", standbyTextAt = 0.0, standbyChangedAt = 0.0, standbyBoundary = 0, wakeOffset = 0
-private let traceOpener = try! NSRegularExpression(pattern: #"^\s*(?:\#(wakeHeyPattern))\b"#, options: .caseInsensitive)
-/// The first three words of a hypothesis that opens like a wake attempt ("Hey …"): speech
-/// addressed to Butler, never the room's, and only as much as the wake matcher looked at.
-/// Cycle 2, 2026-09-19: "Hey Butler, type …" grew to 15 characters, was revised, and never
-/// woke; lengths alone could not say what the name became.
-func wakeHead(_ raw: String) -> String? {
-    guard traceOpener.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil else { return nil }
-    return raw.split(whereSeparator: { $0.isWhitespace }).prefix(3).joined(separator: " ")
+private let traceOpener = try! NSRegularExpression(pattern: #"^\s*(?:\#(wakeHeyPattern)\b|\#(wakeNamePattern)(?![a-z]))"#, options: .caseInsensitive)
+/// The first three words of an utterance that opens like a wake attempt ("Hey …", or the name
+/// itself, which wakes on its own): speech addressed to Butler, never the room's, and only as
+/// much as the wake matcher looked at, from the utterance boundary on. Cycle 2, 2026-09-19:
+/// "Hey Butler, type …" grew to 15 characters, was revised, and never woke; lengths alone could
+/// not say what the name became. A bare-name attempt the recognizer wrote as "Butlers" or
+/// "Batala" shows here; one written as "but a lot" is the room's words to this trace.
+func wakeHead(_ utterance: String) -> String? {
+    guard traceOpener.firstMatch(in: utterance, range: NSRange(utterance.startIndex..., in: utterance)) != nil else { return nil }
+    return utterance.split(whereSeparator: { $0.isWhitespace }).prefix(3).joined(separator: " ")
 }
 func traceStandby(_ kind: String, _ raw: String? = nil, error: String? = nil, extra: [String: Any] = [:]) {
     guard !standbyTrace.isEmpty else { return }
     var event: [String: Any] = ["event": "standby_trace", "kind": kind, "sinceStartMs": Int(((uptime() - startedAt) * 1000).rounded())]
     if let raw {
         event["textLength"] = raw.count
-        if standbyTrace == "text" { event["text"] = raw } else if let head = wakeHead(raw) { event["wakeHead"] = head }
+        if standbyTrace == "text" { event["text"] = raw } else if let head = wakeHead(standbyBoundary > 0 ? String(raw.dropFirst(standbyBoundary)) : raw) { event["wakeHead"] = head }
     }
     if let error { event["message"] = error }
     for (key, value) in extra { event[key] = value }
@@ -705,13 +707,14 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
         switch current {
         case .standby:
             let utterance = ambientUtterance(raw, now: now)
-            // Full duplex: Butler's own reply, as far as echo cancellation let it through, is never a wake.
+            // Full duplex: Butler's own reply, as far as echo cancellation let it through, is never a
+            // wake, nor a wake phrase waiting for its pause ("I'm Butler" heard back as "Butler").
             let echo = selfEcho(utterance, now: now)
             guard !echo, commandAfterWakePhrase(utterance, ended: result.isFinal) != nil else {
                 // Do not emit background speech, partials, or microphone levels.
                 traceStandby(echo ? "self_echo" : result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
                 if !trimmed(raw).isEmpty { lastTextAt = now }
-                pendingWake = !result.isFinal && wakePhraseAwaitingPause(utterance)
+                pendingWake = !echo && !result.isFinal && wakePhraseAwaitingPause(utterance)
                 if pendingWake { wakeOffset = standbyBoundary }
                 // Full duplex: "stop", "wait" or "no" said over a reply silences it at once; from standby
                 // the words route nowhere, as they never did without the wake phrase.
@@ -723,7 +726,9 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
             wakeOffset = standbyBoundary
             activateWake(context: .command, window: nil)
         case .followUp:
-            // Nearby talk swallows a wake phrase inside a window as it does in standby.
+            // Nearby talk swallows a wake phrase inside a window as it does in standby. A lone wake
+            // phrase ("Butler", then silence) is not the reply's first word: followUpOnset refuses
+            // it, and pendingWake activates it below with the window's context once the pause comes.
             let utterance = ambientUtterance(raw, now: now)
             let echo = selfEcho(utterance, now: now)
             if !echo, commandAfterWakePhrase(utterance, ended: result.isFinal) != nil {
@@ -735,7 +740,7 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
             } else {
                 traceStandby(echo ? "self_echo" : result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
                 if !trimmed(raw).isEmpty { lastTextAt = now }
-                pendingWake = !result.isFinal && wakePhraseAwaitingPause(utterance)
+                pendingWake = !echo && !result.isFinal && wakePhraseAwaitingPause(utterance)
                 if pendingWake { wakeOffset = standbyBoundary }
                 // Keep the window open with a fresh request until its deadline.
                 if result.isFinal { rotateRequest(reason: "final") }

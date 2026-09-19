@@ -158,10 +158,12 @@ function clean(text: string): string {
     .replace(/…/g, ".")
     .replace(/\s*[—–]\s*/g, ", ")
     .replace(QUOTES, "");
-  // Never the wake phrase itself. The product name ("I'm Butler") is fine:
-  // listening pauses while replies play, and the name wakes only at the start
-  // of an utterance, behind its gate. The name is never respelled for the ear
-  // here: this text also goes to iMessage and the phone, where it must read
+  // Never the wake phrase itself. The product name ("I'm Butler", "Butler
+  // opened Notes") is fine: under half duplex listening pauses while replies
+  // play, and under full duplex the helper drops its own reply heard back, the
+  // name included (isSelfEcho, TurnPolicy.swift), so the bare name at the start
+  // of a spoken sentence cannot wake it. The name is never respelled for the
+  // ear here: this text also goes to iMessage and the phone, where it must read
   // Butler.
   s = s.replace(WAKE_PHRASE_ALL, "");
   return s

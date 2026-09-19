@@ -166,8 +166,8 @@ func recognizerVocabulary(_ phrases: [String]) -> [String] {
 // vocabulary's 90 that is 92 phrases, within Apple's 100.
 func recognizerContext(ambient: Bool, vocabulary: [String]) -> [String] { ambient ? ["Hey Butler", "Butler"] + vocabulary : vocabulary }
 
-// Whether a recognizer result opens with the wake phrase: diagnostics labels, and the words the
-// self-echo filter never drops (isSelfEcho). Activation itself keeps its gate.
+// Whether a recognizer result opens with the wake phrase: diagnostics labels. Activation itself
+// keeps its gate.
 func startsWithWakePhrase(_ text: String) -> Bool { textAfter(wakePrefix, in: text) != nil }
 
 enum VoiceFinalResult: Equatable {

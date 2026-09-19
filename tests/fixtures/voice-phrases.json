@@ -172,7 +172,7 @@
     "search for cats"
   ],
   "wake": {
-    "_note": "Hey Butler, or just Butler (the owner, 2026-09-19): the spellings whisper wrote for \"Butler\" across six voices (.data/names/butler-speech.log, .data/names/asr/out-*.results.tsv for Butler), plus the gate and the everyday phrases that must never wake it. Read by tests/native/TurnPolicyTests.swift and tests/voice-turns.test.ts.",
+    "_note": "Hey Butler, or just Butler (the owner, 2026-09-19): the spellings whisper wrote for \"Butler\" across six voices (.data/names/butler-speech.log, .data/names/asr/out-*.results.tsv for Butler), plus the gate and the everyday phrases that must never wake it, and the false accepts the gate cannot refuse (falseAccepts), listed so the risk is pinned, not just described. Read by tests/native/TurnPolicyTests.swift and tests/voice-turns.test.ts.",
     "names": [
       "Butler",
       "butler",
@@ -349,6 +349,32 @@
       "my butler is late",
       "the butler did it"
     ],
+    "falseAccepts": [
+      {
+        "in": "Butler is late",
+        "out": "is late"
+      },
+      {
+        "in": "Butler, come here",
+        "out": "come here"
+      },
+      {
+        "in": "Butler did it",
+        "out": "did it"
+      },
+      {
+        "in": "Butler was here",
+        "out": "was here"
+      },
+      {
+        "in": "Butler, Pennsylvania",
+        "out": "Pennsylvania"
+      },
+      {
+        "in": "butler",
+        "out": ""
+      }
+    ],
     "restart": [
       {
         "in": "Butler open calendar and put an event",
@@ -377,6 +403,22 @@
       {
         "in": "Hey Butler, open Safari",
         "out": "open Safari"
+      },
+      {
+        "in": "Butler stop",
+        "out": "stop"
+      },
+      {
+        "in": "Butler actually cancel that",
+        "out": "actually cancel that"
+      },
+      {
+        "in": "Butler, is Slack open",
+        "out": "is Slack open"
+      },
+      {
+        "in": "Butler is off today",
+        "out": "is off today"
       }
     ],
     "neverRestart": [
@@ -422,6 +464,14 @@
       {
         "in": "A sister told me",
         "out": "A sister told me"
+      },
+      {
+        "in": "Butler, open Safari",
+        "out": "open Safari"
+      },
+      {
+        "in": "Butler settings",
+        "out": "Butler settings"
       }
     ],
     "liveWaits": [

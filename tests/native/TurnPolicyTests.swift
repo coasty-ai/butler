@@ -233,10 +233,25 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     var first = TurnTranscript()
     absorbFinalSegment(&first, text: "Butler open notes", confidence: 0.9)
     check(first.text == "Butler open notes", "the first segment is left to the wake strip that already ran")
+    // The restart gate is activation's, so the name before a control word or a question opener
+    // restarts too, and so, deliberately, does dictation that opens a segment with the name and
+    // such a word: the fixture's restart list pins the cost of one gate.
+    var control = TurnTranscript()
+    absorbFinalSegment(&control, text: "take a note", confidence: 0.9)
+    absorbFinalSegment(&control, text: "Butler stop", confidence: 0.9)
+    check(control.text == "stop", "the name before a control word in a later segment restarts the turn")
+    var dictated = TurnTranscript()
+    absorbFinalSegment(&dictated, text: "write a note", confidence: 0.9)
+    absorbFinalSegment(&dictated, text: "Butler is coming at six", confidence: 0.9)
+    check(dictated.text == "is coming at six", "dictation opening a segment with the name and a gate word restarts: the accepted cost of one gate")
 
     // Wake echo
     check(stripWakeEcho("Hey, Budger. Open notes") == "Open notes", "a misheard wake phrase from the speech test is stripped")
     check(stripWakeEcho("Hi Butler, open notes") == "open notes", "greeting variant stripped")
+    check(stripWakeEcho("Butler, open Safari") == "open Safari" && stripWakeEcho(activatedVoiceCommand("Butler, Butler, open Safari")) == "open Safari",
+          "the bare name said again is stripped like the lead form")
+    check(stripWakeEcho("Butler settings") == "Butler settings" && stripWakeEcho("but a lot, open Safari") == "but a lot, open Safari",
+          "the repeat keeps the gate, and a misheard spelling still needs its lead")
     check(stripWakeEcho("Hey sirloin steak recipe") == "Hey sirloin steak recipe", "a real word starting like the wake echo is kept")
     check(stripWakeEcho("open notes") == "open notes", "text without a wake echo is unchanged")
     check(commandAfterWakePhrase("Hey sir open Notes") == nil && commandAfterWakePhrase("Hey I say open Notes") == nil, "activation is not widened by wake echo stripping")
@@ -308,6 +323,13 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(!followUpOnset(text: "Hey", speechRun: 1.0, kind: .answer), "a lone wake lead word waits for the wake phrase")
     check(!followUpOnset(text: "Hey Butler", speechRun: 1.0, kind: .answer) && !followUpOnset(text: "Hei Esa", speechRun: 1.0, kind: .answer),
           "the wake phrase itself is not an answer")
+    // The bare name wakes, so alone it waits for its pause in every window (pendingWake then
+    // activates it with the window's context); the name before other words is judged as words.
+    check(!followUpOnset(text: "Butler", speechRun: 1.0, kind: .answer) && !followUpOnset(text: "Butler", speechRun: 1.0, kind: .approval)
+          && !followUpOnset(text: "Butler", speechRun: 1.0, kind: .continuation, window: .conversation) && !followUpOnset(text: "Buttler", speechRun: 1.0, kind: .answer),
+          "the bare name alone is not a reply in any window")
+    check(followUpOnset(text: "Butler the weather", speechRun: 1.0, kind: .answer) && !followUpOnset(text: "Butler's", speechRun: 1.0, kind: .continuation, window: .long),
+          "the name before an ordinary word, or a possessive, is judged as any words")
     check(followUpOnset(text: "his car", speechRun: 1.0, kind: .answer), "\"his\" was an echo of the old name only: it no longer waits")
     check(followUpOnset(text: "Hi there friend", speechRun: 1.0, kind: .answer), "a longer reply starting with hi still counts")
     check(!followUpOnset(text: "um", speechRun: 1.0, kind: .continuation) && !followUpOnset(text: "um", speechRun: 1.0, kind: .answer), "filler-only speech never counts")
@@ -417,7 +439,14 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(!isSelfEcho("Denver the weather", spoken: reply), "the reply's words out of order are not its echo")
     check(!isSelfEcho("Hey Butler stop", spoken: reply) && !isSelfEcho("Hey Butler", spoken: reply) && !isSelfEcho("Hey Butler open notes", spoken: reply),
           "the wake phrase said over the reply is the owner")
-    check(!isSelfEcho("Hey Butler", spoken: "Hey, I am Butler, at your service."), "the wake phrase is the owner even when the reply has its words")
+    // A reply that says the name comes back as far as the name; the bare name wakes, so that echo
+    // is dropped, and the owner's words after the name are still the owner's.
+    check(isSelfEcho("Butler is ready", spoken: "Butler is ready when you are.") && isSelfEcho("Butler", spoken: "I am Butler, at your service.")
+          && isSelfEcho("Hey Butler", spoken: "Hey, I am Butler, at your service."),
+          "the reply's own name, heard back alone or with the words after it, is its echo")
+    check(!isSelfEcho("Butler stop", spoken: "Butler is ready when you are.") && !isSelfEcho("Butler, open Notes", spoken: "Butler opened Notes.")
+          && !isSelfEcho("Butler is Slack open", spoken: "Butler is ready when you are."),
+          "the owner addressing Butler over a reply that says the name is the owner")
     for (word, sentence) in [("stop", "Stop by the store on the way home."), ("wait", "Wait a moment, the page is loading."), ("hold on", "Hold on to the draft for now."),
                              ("no", "No meetings today."), ("not now", "Not now, but at three."), ("yes", "Say yes or no."), ("no", "Say yes or no."),
                              ("continue", "Continue reading the article?"), ("okay", "Okay, sending it.")] {
@@ -568,7 +597,7 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     }
     // "fused" and "activateFused" may be empty: no spelling runs "Hey" into "Butler".
     for key in ["names", "neverActivate", "neverRestart", "liveWaits", "liveNever"] { check(!strings(key).isEmpty, "fixture wake has \(key)") }
-    for key in ["activate", "restart", "echo", "liveActivates"] { check(!pairs(key).isEmpty, "fixture wake has \(key)") }
+    for key in ["activate", "falseAccepts", "restart", "echo", "liveActivates"] { check(!pairs(key).isEmpty, "fixture wake has \(key)") }
     for name in strings("names") {
         check(commandAfterWakePhrase("Hey \(name), open Notes") == "open Notes", "every spelling of the name wakes: Hey \(name)")
         check(commandAfterWakePhrase("Hey \(name) the weather") == nil, "the gate applies to every spelling: Hey \(name) the weather")
@@ -591,6 +620,10 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     for input in strings("neverActivate") {
         check(commandAfterWakePhrase(input) == nil && commandAfterWakePhrase(input, ended: false) == nil, "fixture never wakes: \(input)")
     }
+    // The false accepts the bare name buys (docs/VOICE_PRODUCT.md): a sentence about a butler, the
+    // surname or the town at an utterance start, and the noun alone after a breath or at a rotation
+    // seam. Pinned so a change to the gate shows here, not only in a live room.
+    for (input, output) in pairs("falseAccepts") { check(commandAfterWakePhrase(input) == output, "fixture documented false accept: \(input)") }
     // A later segment that opens with the wake phrase restarts the turn on the activation test (requestSegments).
     for (input, output) in pairs("restart") { check(commandAfterWakePhrase(input) == output, "fixture restart: \(input)") }
     for input in strings("neverRestart") { check(commandAfterWakePhrase(input) == nil, "fixture never restarts: \(input)") }
@@ -604,6 +637,9 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     for input in strings("liveWaits") {
         check(commandAfterWakePhrase(input, ended: false) == nil && wakePhraseAwaitingPause(input) && commandAfterWakePhrase(input) == "",
               "a live wake phrase alone waits for a pause or the final: \(input)")
+        for kind in [FollowUpKind.answer, .approval, .continuation] {
+            check(!followUpOnset(text: input, speechRun: 1.0, kind: kind, window: .conversation), "a lone wake phrase is not a \(kind.rawValue) reply: \(input)")
+        }
     }
     for (input, output) in pairs("liveActivates") { check(commandAfterWakePhrase(input, ended: false) == output, "fixture live activation: \(input)") }
     for input in strings("liveNever") {

@@ -265,8 +265,12 @@ struct TurnTranscript: Equatable {
  name, behind the activation gate) is the user starting over (live: the request, then "Assist
  open calendar and put an event…" merged into one doubled task), so only the words after the
  last one count. A wake phrase with nothing after it yet leaves the request as it was; the
- segment that follows it starts over. The echo spellings ("Hey sir", "I say") never restart:
- they are ordinary speech, and only the first segment's echo strip may drop them.
+ segment that follows it starts over. The gate is activation's, so whatever wakes from standby
+ restarts a turn: the name before a control word, a reply word or a question opener too
+ ("Butler stop", "Butler actually cancel that", "Butler, is Slack open"), and so, the cost of
+ one gate, dictation that opens a segment with the name and such a word ("Butler is off
+ today"); the fixture's restart list pins both. The echo spellings ("Hey sir", "I say") never
+ restart: they are ordinary speech, and only the first segment's echo strip may drop them.
  */
 func requestSegments(_ transcript: TurnTranscript) -> [(text: String, confidence: Double?)] {
     let heard: [(String, Double?)] = zip(transcript.committed, transcript.confidences).map { ($0, $1) } + [(transcript.current, nil)]
@@ -371,12 +375,16 @@ func turnConfidence(_ transcript: TurnTranscript) -> Double {
 // wake phrase already activated: the name after a lead word, and the everyday words a
 // recognizer wrote for "Hey Butler" in noise ("but a lot", "but Allah", "Budger";
 // .data/names/butler-speech.log). Those are only ever stripped here, never used to wake:
-// activation itself (commandAfterWakePhrase) is not widened.
+// activation itself (commandAfterWakePhrase) is not widened. The wake phrase said again
+// ("Butler… Butler, open Safari": the usual repeat when the first was not heard) is stripped
+// behind its own gate, with or without the lead, so the bare name before an ordinary word
+// ("Butler settings") stays the command's.
 private let wakeEcho = try! NSRegularExpression(
     pattern: #"^(?:(?:hey|hay|hi|hei|his|a)[\s,]+(?:\#(wakeNamePattern)|but\s+a\s+lot|but\s+allah|budger)|\#(fusedWakePattern))(?![a-z])[\s,.:;!?—-]*"#,
     options: .caseInsensitive)
 func stripWakeEcho(_ text: String) -> String {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let repeated = commandAfterWakePhrase(trimmed) { return repeated }
     guard let match = wakeEcho.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
           let end = Range(match.range, in: trimmed)?.upperBound else { return trimmed }
     return String(trimmed[end...]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -459,14 +467,16 @@ func scrollWindowRotationDue(now: TimeInterval, rotatedAt: TimeInterval, lastSpe
 // ("and search", "actually use Safari") so side conversation does not become a command,
 // except under the conversation setting, where the user chose to have everything said in
 // the room taken as addressed to Butler. Words that may be the start of the wake phrase
-// ("Hey Butler"): a window waits for more text before treating them as the user's reply,
-// so the wake phrase can take over.
+// ("Hey Butler"), and the wake phrase alone ("Hey Butler", or the bare "Butler"): a window
+// waits for more text before treating them as the user's reply, so the wake phrase can take
+// over. A lone wake phrase then activates with the window's context once the speaker pauses
+// (pendingWake, Voice.swift), never as a reply whose first word is the name.
 let wakeLeadWords: Set<String> = ["hey", "hay", "hi", "hei"]
 
 func followUpOnset(text: String, speechRun: Double, kind: FollowUpKind, window: FollowUpWindow = .short) -> Bool {
     let words = voiceTokens(text).filter { !fillerWords.contains($0) }
     guard speechRun + timingEpsilon >= followUpOnsetSeconds, let first = words.first else { return false }
-    if wakeLeadWords.contains(first) && words.count < 3 { return false }
+    if wakePhraseAwaitingPause(text) || (wakeLeadWords.contains(first) && words.count < 3) { return false }
     switch kind {
     case .continuation: return window == .conversation || followUpStarters.contains(first) || isControlPhrase(text)
     case .answer, .approval: return true
@@ -515,13 +525,18 @@ func standbyAllowed(speaking: Bool, now: TimeInterval, echoGuardUntil: TimeInter
 // Full duplex: what echo cancellation lets through of the assistant's own reply, the recognizer
 // writes as some of the words being spoken. A hypothesis whose words all occur, in order, in the
 // sentence spoken now or within selfEchoRecentSeconds is that echo and is dropped: the reply can
-// never wake, answer or steer the assistant. Anything else is the owner: the wake phrase, a stop
-// or pause phrase and a bare reply (the assistant may say "no" or "yes" inside a sentence; the
-// owner saying it over the reply is the owner's), and the reply's words inside a longer command.
+// never wake, answer or steer the assistant. Anything else is the owner: a stop or pause phrase
+// and a bare reply (the assistant may say "no" or "yes" inside a sentence; the owner saying it
+// over the reply is the owner's), and the reply's words inside a longer command. The wake phrase
+// is the owner's by the same rule, not by exemption: a reply that never says the name cannot
+// have "Hey Butler stop" in order, and one that does ("Butler is ready", "I'm Butler") comes
+// back as far as the name, which must not wake the assistant on its own voice now that the
+// bare name wakes, while the owner's words after it ("Butler stop", "Butler, open Notes") are
+// not in the reply.
 let selfEchoRecentSeconds = 1.5
 func isSelfEcho(_ hypothesis: String, spoken: String) -> Bool {
     let heard = voiceTokens(hypothesis), said = voiceTokens(spoken)
-    guard !heard.isEmpty, !said.isEmpty, !startsWithWakePhrase(hypothesis), !isControlPhrase(hypothesis), !isReplyPhrase(hypothesis) else { return false }
+    guard !heard.isEmpty, !said.isEmpty, !isControlPhrase(hypothesis), !isReplyPhrase(hypothesis) else { return false }
     var from = said.startIndex
     for word in heard {
         guard let index = said[from...].firstIndex(of: word) else { return false }
