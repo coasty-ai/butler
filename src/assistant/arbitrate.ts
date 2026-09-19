@@ -276,25 +276,10 @@ function contentTokens(text: string): Set<string> {
       .map(stem),
   );
 }
-/**
- * Addresses, links, numbers, handles and amounts: never invented. A host is
- * any dotted name with a letters-only last label, whatever its TLD (the same
- * shape speakable.ts reads out): a false match only turns a run into an
- * offer, which is the safe direction.
- */
-const ENTITY =
-  /[\w.+-]+@[\w-]+(?:\.[\w-]+)+|https?:\/\/\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b\S*|(?<![\w@])@[a-z0-9_.]{2,}|[$€£¥]\s?\d[\d,.]*|\b\d[\d,.]*\s?(?:dollars|euros|pounds|usd|eur|gbp|bucks)\b|\b\d[\d\s().-]{6,}\d\b|\b\d{3,}\b/gi;
-export function entityTokens(text: string): string[] {
-  return [...text.matchAll(ENTITY)].map((m) => normalizeEntity(m[0]));
-}
-/** Phone numbers compare by their digits; everything else as written. */
-const normalizeEntity = (value: string) => {
-  const bare = value
-    .toLowerCase()
-    .trim()
-    .replace(/[.,;:!?)]+$/, "");
-  return /^[\d\s().+-]+$/.test(bare) ? bare.replace(/\D/g, "") : bare;
-};
+// The entity shape lives in core so the tool policy can ground arguments
+// with it too; the dialog keeps reading it from here.
+export { ENTITY, entityTokens } from "../core/entities";
+import { entityTokens } from "../core/entities";
 
 export type GroundCheck =
   | { ok: true }

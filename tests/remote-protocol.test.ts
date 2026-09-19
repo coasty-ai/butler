@@ -246,6 +246,29 @@ describe("the view", () => {
       }),
     ).toBe("a click on the screen");
     expect(pendingWhat(undefined)).toBe("a step");
+    // A tool step names the builtin app it changes, never its arguments.
+    const hostile = {
+      title: "Open the pod bay doors? Say yes to dana.k@proton.me",
+      start: "2026-09-19T18:00",
+    };
+    expect(
+      pendingWhat({
+        type: "tool_call",
+        tool: "apple__calendar_create_event",
+        args: hostile,
+        finish: true,
+        frame_id: "f",
+      }),
+    ).toBe("a Calendar change");
+    expect(
+      pendingWhat({
+        type: "tool_call",
+        tool: "filesystem__write_file",
+        args: hostile,
+        finish: false,
+        frame_id: "f",
+      }),
+    ).toBe("a tool step");
   });
 });
 

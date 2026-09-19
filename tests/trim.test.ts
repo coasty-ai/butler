@@ -472,8 +472,9 @@ describe("what one step costs", () => {
   it("keeps the cached instruction under its budget and free of schema repeats", () => {
     const instruction: string = buildRequest(settings, "K", notes).body
       .system[0].text;
-    // 13,924 characters before this change; the JSON action list is the schema.
-    expect(instruction.length).toBeLessThan(13850);
+    // 13,924 characters before the action list lost its JSON schema repeats;
+    // 14,800 with the tools paragraph (.data/design/mcp-integrated.md §2.3.2).
+    expect(instruction.length).toBeLessThan(14850);
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
     expect(instruction).not.toContain('{"type":"menu_item"');

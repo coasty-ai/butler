@@ -6,6 +6,7 @@
  */
 import type { Action } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
+import { builtinToolTitle } from "../core/tool-text";
 
 const MAX_LINE = 100;
 const MAX_LABEL = 60;
@@ -16,6 +17,23 @@ const AGENT_NAMES: Record<string, string> = {
   copilot: "Copilot",
   "cursor-agent": "Cursor",
   "windsurf-cascade": "Cascade",
+};
+
+/**
+ * What a builtin tool did, by its id: fixed words, never its arguments, so
+ * an event title or a search never rides into a progress line.
+ */
+const TOOL_STEPS: Record<string, string> = {
+  apple__calendar_list_events: "read your calendar",
+  apple__calendar_create_event: "added an event to Calendar",
+  apple__reminders_list: "read your reminders",
+  apple__reminders_create: "added a reminder",
+  apple__notes_search: "searched your notes",
+  apple__notes_create: "added a note in Notes",
+  apple__mail_unread: "read your mail",
+  apple__mail_search: "read your mail",
+  apple__mail_draft: "drafted an email in Mail",
+  "claude-code__Agent": "sent a request to Claude Code",
 };
 
 const clip = (text: string, max: number) => {
@@ -62,6 +80,10 @@ function describe(action: Action): string | undefined {
       return "dragged";
     case "scroll":
       return "scrolled";
+    case "tool_call": {
+      const app = builtinToolTitle(action.tool);
+      return TOOL_STEPS[action.tool] ?? (app ? `used ${app}` : "used a tool");
+    }
     case "wait":
     case "capture":
     case "done":

@@ -1,5 +1,6 @@
 import { redactSecrets } from "../core/sanitize";
 import { normalizeRole } from "../core/labels";
+import { builtinToolTitle } from "../core/tool-text";
 import { bound, CONTEXT_LIMITS } from "./retrieve";
 import type { PlanStep, ReplayPlan } from "../core/memory";
 import type { Skill } from "./types";
@@ -187,6 +188,14 @@ export function describeStep(step: PlanStep): string {
     case "wait":
       line = `Wait ${Number(a.milliseconds) || 0} ms`;
       break;
+    case "tool_call": {
+      // The app for a builtin tool, the tool's own name for a server's;
+      // never its arguments.
+      const id = s(a.tool);
+      const name = builtinToolTitle(id) ?? id.split("__")[1] ?? id;
+      line = `${step.tool?.tier === "read" ? "Read with" : "Use"} ${bound(name, 60)}`;
+      break;
+    }
     default: {
       const verb = s(a.type).replace(/_/g, " ") || "act";
       const target = step.target;
@@ -220,6 +229,7 @@ export function toPlan(
   const steps: PlanStep[] = skill.steps.map((step) => ({
     action: fill(step.action, slotValues) as Record<string, unknown>,
     ...(step.target ? { target: { ...step.target } } : {}),
+    ...(step.tool ? { tool: { ...step.tool } } : {}),
     // Skills learned before this rule pinned open steps to the start app.
     ...(step.expectAppId && !opensApp(step.action)
       ? { expectAppId: step.expectAppId }

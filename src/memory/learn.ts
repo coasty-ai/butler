@@ -6,6 +6,7 @@ import {
   REPLAYABLE_ROLES,
   utf16Prefix,
 } from "../core/labels";
+import { stringLeaves } from "../core/tool-text";
 import { bound, tokenize } from "./retrieve";
 import { normalizeTask, opensApp, replayable, templateOf } from "./skills";
 import {
@@ -34,7 +35,8 @@ const POINTER = new Set([
 ]);
 // Steps a skill can replay as they were recorded. Named targets belong here
 // for the same reason they exist: a menu path and a control name resolve again
-// on a screen that has moved on, where a coordinate would not.
+// on a screen that has moved on, where a coordinate would not; a tool call
+// names its tool and is looked up again in the next run's list.
 const KEPT = new Set([
   "open_app",
   "open_file",
@@ -45,7 +47,12 @@ const KEPT = new Set([
   "type_text",
   "scroll",
   "wait",
+  "tool_call",
 ]);
+/** Tool tiers a skill may replay: reads, and adds the provider can take back. */
+const REPLAYED_TIERS = new Set(["read", "additive"]);
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
 
 const hasCredential = (text: string) =>
   scanText(text).some((f) => f.action === "BLOCK_UPLOAD");
@@ -76,6 +83,38 @@ export function extractSkill(
   const slots: string[] = [];
   const skillSteps: SkillStep[] = [];
   let hintOnly = false;
+  /**
+   * A value the task named verbatim (two or more characters, on word
+   * boundaries) becomes a slot the next task fills in; anything else stays
+   * as it was.
+   */
+  const slotted = (value: string): string => {
+    const typed = value.trim();
+    const key = typed.toLowerCase();
+    if (
+      typed.length < 2 ||
+      !new RegExp(
+        `(?<![\\p{L}\\p{N}])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`,
+        "u",
+      ).test(normalized)
+    )
+      return value;
+    let n = slots.findIndex((s) => s.toLowerCase() === key);
+    if (n < 0) {
+      slots.push(typed);
+      n = slots.length - 1;
+    }
+    return value.replace(typed, `{slot${n}}`);
+  };
+  const slottedArgs = (value: unknown): unknown => {
+    if (typeof value === "string") return slotted(value);
+    if (Array.isArray(value)) return value.map(slottedArgs);
+    if (isRecord(value))
+      return Object.fromEntries(
+        Object.entries(value).map(([k, v]) => [k, slottedArgs(v)]),
+      );
+    return value;
+  };
   for (const step of steps) {
     const action = step?.action;
     if (!action || typeof action.type !== "string") continue;
@@ -83,7 +122,10 @@ export function extractSkill(
     const { frame_id: _frame, ...rest } = action;
     void _frame;
     // Every text-bearing field is checked; a credential drops the whole skill.
-    for (const value of Object.values(rest))
+    for (const value of [
+      ...Object.values(rest),
+      ...(type === "tool_call" ? stringLeaves(rest.args) : []),
+    ])
       if (typeof value === "string" && hasCredential(value)) return undefined;
     // Opening an app or file works from any frontmost app; the app that was
     // frontmost before it (often wherever the user started) is not a precondition.
@@ -119,25 +161,28 @@ export function extractSkill(
       continue;
     }
     if (!KEPT.has(type)) continue;
+    if (type === "tool_call") {
+      const tool = step.tool;
+      // A write, a destructive call or one that did not go through is no
+      // procedure to repeat, and keeping the steps around it would learn
+      // half of one: the run teaches nothing.
+      if (!tool || !REPLAYED_TIERS.has(tool.tier) || tool.code !== "ok")
+        return undefined;
+      const args = isRecord(rest.args) ? rest.args : {};
+      // A date in the arguments was right once; the step stays a hint.
+      if (Object.keys(args).some((key) => tool.dateKeys.includes(key)))
+        hintOnly = true;
+      // A tool acts on its store, not on the frontmost app.
+      skillSteps.push({
+        action: { ...rest, args: slottedArgs(args) },
+        tool: { tier: tool.tier },
+      });
+      continue;
+    }
     if (type === "type_text" && typeof rest.text === "string") {
-      const typed = rest.text.trim();
-      const key = typed.toLowerCase();
-      if (
-        typed.length >= 2 &&
-        new RegExp(
-          `(?<![\\p{L}\\p{N}])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`,
-          "u",
-        ).test(normalized)
-      ) {
-        let n = slots.findIndex((s) => s.toLowerCase() === key);
-        if (n < 0) {
-          slots.push(typed);
-          n = slots.length - 1;
-        }
-        skillSteps.push({
-          action: { ...rest, text: rest.text.replace(typed, `{slot${n}}`) },
-          ...expect,
-        });
+      const text = slotted(rest.text);
+      if (text !== rest.text) {
+        skillSteps.push({ action: { ...rest, text }, ...expect });
         continue;
       }
     }
@@ -262,6 +307,7 @@ export function learnFromRun(
       summary: bound(redactSecrets(String(input.summary ?? "")), 300),
       corrections,
       actions: steps.length,
+      ...(input.tools ? { tools: input.tools } : {}),
       cost: Number(input.usage?.cost) || 0,
       createdAt: now.toISOString(),
     });

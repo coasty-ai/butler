@@ -1,5 +1,7 @@
 import type { Action, Settings, Surface } from "./schema";
 import { scanText } from "./sanitize";
+import type { ToolClock, ToolPrepared, ToolSpec } from "./tools";
+import { toolDecision } from "./tool-policy";
 import {
   ideCommandTitleRefused,
   ideDiscardLabel,
@@ -16,6 +18,8 @@ import {
 export type Decision = {
   kind: "ALLOW" | "CONFIRM" | "DENY" | "RETRY" | "USER_TAKEOVER";
   reason: string;
+  /** A question no autonomy setting removes (the send_to question of a tool step). */
+  floor?: true;
 };
 // Installer, uninstaller and system setup/recovery tools are never launched or
 // operated by the agent. Shared by the Dock, Spotlight and open_app rules and
@@ -1120,6 +1124,14 @@ export interface PolicyContext {
    * "user_words"); unset for a rewrite, a proposal or a wake-up run.
    */
   userWords?: string;
+  /**
+   * For a tool_call: the frozen spec of the tool it names, the tool layer's
+   * validation of its arguments, and the calls this run has made. Unset
+   * when the tool is not in the run's list.
+   */
+  tool?: { spec: ToolSpec; prepared: ToolPrepared; calls: number };
+  /** The tool layer's clock, so questions and grounding read dates in the user's zone. */
+  clock?: ToolClock;
 }
 /** The decision reason that marks the one clipboard press native may send. */
 export const PASTE_ALLOWED = "Paste what the user copied, as asked.";
@@ -1151,7 +1163,8 @@ export function withoutAsking(
   if (decision.kind !== "CONFIRM") return decision;
   if (!(settings.autonomy === "all" && settings.autonomyAllAcknowledged))
     return decision;
-  if (decision.reason === PROTECTED_SITE_QUESTION) return decision;
+  if (decision.reason === PROTECTED_SITE_QUESTION || decision.floor)
+    return decision;
   const step = decision.reason.split("?")[0].trim();
   return {
     kind: "ALLOW",
@@ -1206,6 +1219,10 @@ function decideAction(
       return { kind: "ALLOW", reason: PASTE_ALLOWED };
     return { kind: "DENY", reason: CLIPBOARD_REFUSAL };
   }
+  // After the floors above: a tool call with a terminal in front is a
+  // takeover like any step, and it never touches the surface otherwise.
+  if (action.type === "tool_call")
+    return toolDecision(action, settings, synthetic, context);
   if (["capture", "done", "fail", "wait"].includes(action.type))
     return { kind: "ALLOW", reason: "" };
   // Watching reads the frontmost window and sends nothing; the protected

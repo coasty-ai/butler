@@ -1,4 +1,5 @@
 import type { RunStatus } from "../core/schema";
+import type { ToolTier } from "../core/tools";
 
 /**
  * Local, encrypted, self-improving memory. See docs/MEMORY.md for the design.
@@ -18,6 +19,8 @@ export interface Episode {
   summary: string;
   corrections: string[];
   actions: number;
+  /** Tool calls among the actions, when there were any. */
+  tools?: number;
   cost: number;
   createdAt: string;
 }
@@ -41,6 +44,8 @@ export interface SkillStep {
   target?: { role: string; label: string };
   /** Frontmost application expected before this step, when known. */
   expectAppId?: string;
+  /** For a tool_call: the tier it was learned at, for the outline's wording. */
+  tool?: { tier: ToolTier };
 }
 
 /** A procedure learned from successful runs, keyed by a task template. */

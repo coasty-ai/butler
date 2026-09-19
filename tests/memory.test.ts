@@ -1997,6 +1997,182 @@ describe("learning", () => {
     expect(intent.episodes).toHaveLength(1);
   });
 
+  it("learns a read tool step as a replayable skill, with the argument the task named as a slot", () => {
+    const toolStep = (path: string): TrajectoryStep => ({
+      action: {
+        type: "tool_call",
+        tool: "filesystem__list_directory",
+        args: { path, options: { hidden: false } },
+        finish: false,
+      },
+      appId: "com.apple.finder",
+      tool: {
+        id: "filesystem__list_directory",
+        tier: "read",
+        code: "ok",
+        dateKeys: [],
+      },
+    });
+    const data = emptyMemory();
+    const first = learnFromRun(
+      data,
+      input({
+        task: "list the files in oa-scratch",
+        steps: [toolStep("oa-scratch")],
+        tools: 1,
+      }),
+      NOW,
+    );
+    expect(first.skill).toBe("created");
+    expect(data.skills[0]).toMatchObject({
+      trigger: "list the files in {slot0}",
+      hintOnly: false,
+    });
+    // A tool acts on its store, not on the frontmost app: no precondition.
+    expect(data.skills[0].steps).toEqual([
+      {
+        action: {
+          type: "tool_call",
+          tool: "filesystem__list_directory",
+          args: { path: "{slot0}", options: { hidden: false } },
+          finish: false,
+        },
+        tool: { tier: "read" },
+      },
+    ]);
+    expect(data.episodes[0].tools).toBe(1);
+    learnFromRun(
+      data,
+      input({
+        runId: "r2",
+        task: "list the files in Downloads",
+        steps: [toolStep("Downloads")],
+        tools: 1,
+      }),
+      NOW,
+    );
+    expect(replayable(data.skills[0])).toBe(true);
+    const found = matchSkill(data.skills, "list the files in Projects");
+    const plan = toPlan(found!.skill, found!.slotValues);
+    expect(plan.mode).toBe("replay");
+    expect(plan.steps[0]).toEqual({
+      action: {
+        type: "tool_call",
+        tool: "filesystem__list_directory",
+        args: { path: "Projects", options: { hidden: false } },
+        finish: false,
+      },
+      tool: { tier: "read" },
+    });
+    expect(plan.outline).toEqual(["Read with list_directory"]);
+    expect(
+      outlineOf([
+        {
+          action: { type: "tool_call", tool: "apple__calendar_create_event" },
+          tool: { tier: "additive" },
+        },
+      ]),
+    ).toEqual(["Use Calendar"]);
+  });
+
+  it("keeps a date-bearing tool step as a hint only, and never keeps a write, a destructive call or a failed one", () => {
+    const step = (
+      tool: NonNullable<TrajectoryStep["tool"]>,
+      args: Record<string, unknown>,
+    ): TrajectoryStep => ({
+      action: { type: "tool_call", tool: tool.id, args, finish: true },
+      tool,
+    });
+    const dated = emptyMemory();
+    expect(
+      learnFromRun(
+        dated,
+        input({
+          task: "add dentist tomorrow at 6 to my calendar",
+          steps: [
+            step(
+              {
+                id: "apple__calendar_create_event",
+                tier: "additive",
+                code: "ok",
+                dateKeys: ["start", "end"],
+              },
+              { title: "Dentist", start: "2026-09-19T18:00" },
+            ),
+          ],
+        }),
+        NOW,
+      ).skill,
+    ).toBe("created");
+    expect(dated.skills[0].hintOnly).toBe(true);
+    expect(dated.skills[0].steps[0].action.args).toEqual({
+      title: "{slot0}",
+      start: "2026-09-19T18:00",
+    });
+    for (const tool of [
+      {
+        id: "scratch__notes_delete_all",
+        tier: "destructive" as const,
+        code: "ok" as const,
+        dateKeys: [],
+      },
+      {
+        id: "filesystem__write_file",
+        tier: "write" as const,
+        code: "ok" as const,
+        dateKeys: [],
+      },
+      {
+        id: "filesystem__list_directory",
+        tier: "read" as const,
+        code: "timeout" as const,
+        dateKeys: [],
+      },
+    ]) {
+      const data = emptyMemory();
+      const result = learnFromRun(
+        data,
+        input({
+          task: "tidy the scratch folder",
+          steps: [
+            { action: { type: "open_app", name: "Finder" } },
+            step(tool, { path: "/tmp" }),
+          ],
+          tools: 1,
+        }),
+        NOW,
+      );
+      // Not even the steps around it: half a procedure teaches nothing.
+      expect([tool.id, result.skill]).toEqual([tool.id, "dropped"]);
+      expect(data.skills).toEqual([]);
+    }
+    // A credential anywhere in the arguments drops the skill too.
+    const leaky = emptyMemory();
+    expect(
+      learnFromRun(
+        leaky,
+        input({
+          task: "list the files in oa-scratch",
+          steps: [
+            step(
+              {
+                id: "filesystem__list_directory",
+                tier: "read",
+                code: "ok",
+                dateKeys: [],
+              },
+              {
+                path: "oa-scratch",
+                auth: { token: "sk-abcdefghijklmnopqrstuv" },
+              },
+            ),
+          ],
+        }),
+        NOW,
+      ).skill,
+    ).toBe("dropped");
+  });
+
   it("tolerates malformed input", () => {
     const data = emptyMemory();
     expect(() =>

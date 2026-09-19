@@ -46,7 +46,25 @@ import {
   type Decision,
 } from "./policy";
 import { watchSpec, type WatchChain, type WatchSpec } from "./monitor";
-import type { ToolAccess } from "./tools";
+import {
+  TOOL_LIMITS,
+  TOOL_REFUSALS,
+  TOOL_RESULT_TEXT,
+  type ToolAccess,
+  type ToolClock,
+  type ToolList,
+  type ToolOutcome,
+  type ToolPrepared,
+  type ToolSpec,
+} from "./tools";
+import {
+  argsHash,
+  clockLine,
+  toolDoneLine,
+  toolFallbackLine,
+  toolUndoLine,
+} from "./tool-text";
+import { entityTokens } from "./entities";
 import { redactSecrets, scanText } from "./sanitize";
 import {
   HelperUnavailableError,
@@ -77,6 +95,7 @@ const actionTypes = new Set([
   "click_control",
   "wait",
   "monitor",
+  "tool_call",
   "request_user",
   "done",
   "fail",
@@ -128,6 +147,9 @@ export function echoAction(input: unknown): Record<string, unknown> {
       .map((part) => (typeof part === "string" ? bound(part, 60) : "?"));
   if (a.type === "click_control" && typeof a.label === "string")
     echo.label = bound(a.label, 120);
+  // The tool's id only: its arguments are the step's content.
+  if (a.type === "tool_call" && typeof a.tool === "string")
+    echo.tool = bound(a.tool, 170);
   return echo;
 }
 const knownType = (input: unknown) => {
@@ -190,19 +212,23 @@ function describeStep(entry: History[number]): string {
               ? ` ${a.keys.map(String).join("+")}`
               : type === "key" && typeof a.key === "string"
                 ? ` ${a.key}`
-                : "";
+                : type === "tool_call" && typeof a.tool === "string"
+                  ? ` ${bound(a.tool, 40)}`
+                  : "";
   const outcome =
     entry.type === "rejected"
       ? "rejected"
       : entry.type === "request_user"
         ? "asked the user"
-        : /^No input was/.test(entry.result)
+        : /^No (?:input was|answer from)/.test(entry.result)
           ? "no input"
           : /^Interrupted/.test(entry.result)
             ? "interrupted"
-            : entry.result.includes("no visible change")
-              ? "no visible change"
-              : "done";
+            : /^Tool \S+: error/.test(entry.result)
+              ? "error"
+              : entry.result.includes("no visible change")
+                ? "no visible change"
+                : "done";
   return `${type}${detail} (${outcome})`;
 }
 /** Explain a validateAction failure by cause without echoing model text. */
@@ -315,6 +341,10 @@ export function actionSignature(
     parts.push("text", a.text.length, a.text.slice(0, 20));
   if (typeof a.name === "string") parts.push("name", a.name);
   if (typeof a.path === "string") parts.push("path", a.path);
+  // The same tool with the same arguments is the same step, however the
+  // arguments are ordered; the hash keeps the arguments out of memory.
+  if (action.type === "tool_call")
+    parts.push("tool", action.tool, argsHash(action.args));
   return JSON.stringify(parts);
 }
 /** Returns the cycle period (1 or 2) formed by the last four signatures. */
@@ -601,6 +631,14 @@ export const TARGET_HANDOFF_MESSAGE =
 export const UNDO_MENU_PATH = ["Edit", "Undo"];
 export const UNDONE_MESSAGE = "Undone.";
 export const NOTHING_TO_UNDO_MESSAGE = "Nothing to undo.";
+/** A tool's own undo was tried first and did not go through. */
+export const TOOL_UNDO_FAILED_MESSAGE =
+  "I couldn’t take the last tool step back.";
+/**
+ * How long a long-running tool call (the coding agent) counts toward
+ * maxSeconds; the time beyond it is the tool's, excluded like held time.
+ */
+const LONG_CALL_FREE_MS = 30000;
 /** Plans never contain terminal or free-form steps; those stay model-only. */
 const unplannable = new Set([
   "done",
@@ -668,6 +706,7 @@ const pastTense: Record<string, string> = {
   scroll: "Scrolled",
   choose: "Chose",
   play: "Played",
+  use: "Used",
 };
 /** Local summary for a plan completed without a model call ("Opened Calculator."). */
 export function planSummary(plan: Pick<ReplayPlan, "outline">): string {
@@ -826,6 +865,10 @@ export class Runner {
   private watchChain?: WatchChain;
   /** The last few actions executed, for a monitor handoff. */
   private executed: Action[] = [];
+  /** The tools this run may call, listed once and frozen; unset without the tool layer. */
+  private toolList?: ToolList;
+  /** The tool whose call did not go through, named on the next screen step's status line. */
+  private toolFallback?: string;
   /**
    * The app or folder a prelude opened: a recalled plan that starts by
    * opening it continues at its next step, and with completes the run ends
@@ -1328,7 +1371,10 @@ export class Runner {
     return false;
   }
   private recordDecline(action: Action, source: ApprovalSource) {
-    this.event("UserDenied", { source });
+    this.event("UserDenied", {
+      source,
+      ...(action.type === "tool_call" ? { actionType: action.type } : {}),
+    });
     this.reject({
       type: action.type,
       action: echoAction(action),
@@ -1478,28 +1524,32 @@ export class Runner {
     this.trajectory = [];
     this.appsSeen = new Set();
     this.prelude = undefined;
+    this.toolList = undefined;
+    this.toolFallback = undefined;
   }
   /**
-   * Recall task-relevant memory once, capped at two seconds and cancelled with
-   * the run. Any failure leaves the run without memory.
+   * Awaits work for at most `ms`, cancelled with the run: a late answer, an
+   * abort or a throw all come back as undefined and the run goes on without.
    */
-  private async recall(task: string) {
-    const memory = this.memory;
-    if (!memory) return;
+  private async within<T>(
+    ms: number,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<{ value?: T; timedOut: boolean }> {
     const outer = this.abort.signal;
     const limit = new AbortController();
     const onAbort = () => limit.abort();
     outer.addEventListener("abort", onAbort, { once: true });
     if (outer.aborted) limit.abort();
-    const timer = setTimeout(() => limit.abort(), recallBudgetMs);
-    const amendments = this.amendments;
-    let recall: Recall | undefined;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      limit.abort();
+    }, ms);
+    let value: T | undefined;
     try {
-      const pending = Promise.resolve().then(() =>
-        memory.recall(task, limit.signal),
-      );
+      const pending = Promise.resolve().then(() => work(limit.signal));
       pending.catch(() => {});
-      recall = await Promise.race([
+      value = await Promise.race([
         pending,
         new Promise<undefined>((resolve) => {
           limit.signal.addEventListener("abort", () => resolve(undefined), {
@@ -1509,12 +1559,26 @@ export class Runner {
         }),
       ]);
     } catch {
-      recall = undefined;
+      value = undefined;
     } finally {
       clearTimeout(timer);
       outer.removeEventListener("abort", onAbort);
       limit.abort();
     }
+    return { value, timedOut };
+  }
+  /**
+   * Recall task-relevant memory once, capped at two seconds and cancelled with
+   * the run. Any failure leaves the run without memory.
+   */
+  private async recall(task: string) {
+    const memory = this.memory;
+    if (!memory) return;
+    const amendments = this.amendments;
+    const { value: recall } = await this.within<Recall>(
+      recallBudgetMs,
+      (signal) => memory.recall(task, signal),
+    );
     if (!this.active() || !recall || typeof recall !== "object") return;
     const context = recall.context;
     if (!context || typeof context !== "object") return;
@@ -1555,6 +1619,218 @@ export class Runner {
     // The task was amended while recall ran; its plan matched the old wording.
     if (this.amendments !== amendments) this.dropAmendedPlan();
   }
+  /**
+   * The tools this run may call, listed once before the first proposal and
+   * frozen for the run: at most a second, cancelled with the run, and any
+   * failure or a late answer leaves the run with no tools (the screen path).
+   */
+  private async listTools(tools: ToolAccess, task: string) {
+    const { value: list, timedOut } = await this.within<ToolList>(
+      TOOL_LIMITS.listBudgetMs,
+      (signal) => tools.list(task, signal),
+    );
+    if (!this.active()) return;
+    const listed = Array.isArray(list?.tools)
+      ? list.tools.slice(0, TOOL_LIMITS.list)
+      : [];
+    const unavailable = Array.isArray(list?.unavailable)
+      ? list.unavailable.slice(0, TOOL_LIMITS.unavailable)
+      : [];
+    this.toolList = { tools: listed, unavailable };
+    this.event("ToolsListed", {
+      toolCount: listed.length,
+      unavailableCount: unavailable.length,
+      ...(timedOut && !list ? { code: "timeout" } : {}),
+    });
+  }
+  /** What the model reads about the tools: one line each, and the clock they run on. */
+  private toolObservation(
+    tools: ToolAccess,
+    list: ToolList,
+  ): NonNullable<Observation["tools"]> {
+    return {
+      now: clockLine(tools.clock()),
+      list: list.tools.map(({ id, title, does, params }) => ({
+        id,
+        title,
+        does,
+        params,
+      })),
+      unavailable: list.unavailable,
+    };
+  }
+  /**
+   * What policy needs for a tool_call: the frozen spec of the tool it names,
+   * the tool layer's validation of the arguments, the calls so far and the
+   * clock. Empty when the tool is not in this run's list (policy retries).
+   */
+  private toolContext(action: Extract<Action, { type: "tool_call" }>): {
+    tool?: { spec: ToolSpec; prepared: ToolPrepared; calls: number };
+    clock?: ToolClock;
+  } {
+    const tools = this.extras.tools;
+    const spec = this.toolList?.tools.find((t) => t.id === action.tool);
+    if (!tools || !spec) return {};
+    return {
+      tool: {
+        spec,
+        prepared: tools.prepare(spec, action.args),
+        calls: this.snapshot.run!.tools?.calls ?? 0,
+      },
+      clock: tools.clock(),
+    };
+  }
+  /** The run's objective when it is the user's own words; grounding reads nothing else. */
+  private userWords(run: Run): string | undefined {
+    return run.taskSource === "user_words" && run.origin !== "watch"
+      ? run.task
+      : undefined;
+  }
+  /**
+   * A tool step, runner-side beside monitor: never sent to the controller.
+   * The tool layer runs the call against the run's abort signal and returns
+   * one bounded outcome; the run records it as an executed step, and a
+   * verified builtin write asked to finish ends the run with a line built
+   * from the store's own values. A long-running call is waited for like a
+   * watch: its time past LONG_CALL_FREE_MS is excluded from maxSeconds.
+   */
+  private async toolCall(
+    action: Extract<Action, { type: "tool_call" }>,
+    spec: ToolSpec,
+    frame: Frame,
+    decision: Decision,
+    epoch: number,
+  ): Promise<"completed" | "continue" | "stopped"> {
+    const run = this.snapshot.run!;
+    const tools = this.extras.tools!;
+    const title = bound(spec.title, 40);
+    this.event("PolicyAllowed", {
+      reason: decision.reason,
+      actionType: action.type,
+    });
+    this.status(
+      "executing",
+      spec.longRunning ? `Waiting for ${title}.` : `Using ${title}.`,
+    );
+    const { frame_id: _frameId, ...executedAction } = action;
+    const shown = { type: action.type, tool: action.tool, args: action.args };
+    // Counted before the call: an interrupted call may still have acted.
+    this.attempted++;
+    const started = Date.now();
+    // A long call holds the budget clock while it runs, as an approval does,
+    // so the runtime timer cannot end the run under it; its first
+    // LONG_CALL_FREE_MS are counted back once it returns.
+    if (spec.longRunning) this.markHeld();
+    let outcome: ToolOutcome;
+    try {
+      outcome = await tools.call(spec, action.args, this.abort.signal);
+    } catch {
+      // The tool layer promises not to throw; a broken one reads as away.
+      outcome = {
+        code: "unavailable",
+        text: TOOL_RESULT_TEXT.unavailable.replace("{title}", spec.title),
+        resultBytes: 0,
+        resultItems: 0,
+        durationMs: Date.now() - started,
+      };
+    } finally {
+      if (spec.longRunning && !this.held && this.heldSince !== undefined) {
+        this.heldMs -= Math.min(Date.now() - started, LONG_CALL_FREE_MS);
+        this.markActive();
+      }
+    }
+    if (!this.active()) return "stopped";
+    if (this.held || epoch !== this.epoch) {
+      if (this.planPending !== undefined) this.abandonPlan("interrupted");
+      this.event("ActionInterrupted", { actionType: action.type });
+      this.history.push({
+        type: action.type,
+        action: shown,
+        result: TOOL_RESULT_TEXT.interrupted,
+      });
+      return "continue";
+    }
+    const ok = outcome.code === "ok";
+    run.actions++;
+    run.tools = {
+      calls: (run.tools?.calls ?? 0) + 1,
+      writes: (run.tools?.writes ?? 0) + (ok && spec.tier !== "read" ? 1 : 0),
+    };
+    if (ok) this.resetCounters();
+    this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
+    const fromPlan =
+      this.planPending !== undefined ? this.plan?.source : undefined;
+    if (this.planPending !== undefined) {
+      this.planPending = undefined;
+      this.planIndex++;
+      if (this.planResult) this.planResult.completedSteps++;
+    }
+    if (this.memoryRun && this.trajectory.length < 200)
+      this.trajectory.push({
+        action: executedAction,
+        ...(frame.appId ? { appId: frame.appId } : {}),
+        tool: {
+          id: spec.id,
+          tier: spec.tier,
+          code: outcome.code,
+          dateKeys: spec.dateKeys,
+        },
+        ...(fromPlan ? { fromPlan } : {}),
+      });
+    // The arguments go to the encrypted journal as typed text does; the
+    // result never enters any event.
+    this.event("ActionExecuted", { action, frame_id: frame.id });
+    this.event("ToolCallFinished", {
+      tool: spec.trace.tool,
+      server: spec.trace.server,
+      outcome: outcome.code,
+      resultBytes: outcome.resultBytes,
+      resultItems: outcome.resultItems,
+      durationMs: outcome.durationMs,
+      verified: outcome.verified === true,
+      finish: action.finish,
+      longRunning: spec.longRunning,
+    });
+    const loop = this.trackLoop(action);
+    this.trackAppSwitch(action);
+    // Two tool steps change nothing on screen: the no-progress check is not
+    // armed, or it would call the next screen step a stall.
+    this.progress = undefined;
+    this.toolFallback = ok ? undefined : spec.title;
+    this.history.push({
+      type: action.type,
+      action: shown,
+      result: outcome.text + (loop === "warn" ? loopWarning : ""),
+    });
+    if (loop === "stuck") {
+      this.pause(
+        "I seem to be stuck repeating the same steps. Say continue with a hint.",
+      );
+      return "continue";
+    }
+    if (action.finish && ok && outcome.verified && outcome.facts) {
+      run.summary = redactSecrets(
+        toolDoneLine(outcome.facts, tools.clock(), this.userWords(run)),
+      );
+      this.event("RunCompleted");
+      this.status("completed", run.summary);
+      return "completed";
+    }
+    return "continue";
+  }
+  /**
+   * A tool write within its undo window is taken back through its own
+   * provider before Edit > Undo is tried; undefined when there is none.
+   */
+  private async undoTool(tools: ToolAccess): Promise<ToolOutcome | undefined> {
+    try {
+      const outcome = await tools.undoLast(this.abort.signal);
+      if (outcome) this.event("ToolUndo", { outcome: outcome.code });
+      return outcome;
+    } catch {
+      return undefined;
+    }
+  }
   /** A plan's first step opens the app or folder the prelude already opened. */
   private preludeOpens(plan: ReplayPlan): boolean {
     const opened = this.prelude;
@@ -1594,6 +1870,12 @@ export class Runner {
       return { reason: "invalid_step" };
     if (step.expectAppId && step.expectAppId !== frame.appId)
       return { reason: "app_mismatch" };
+    // A learned tool step needs its tool in this run's frozen list.
+    if (
+      type === "tool_call" &&
+      !this.toolList?.tools.some((t) => t.id === step.action.tool)
+    )
+      return { reason: "tool_missing" };
     // Learned coordinates are never replayed; pointer steps resolve by label.
     const { frame_id: _frameId, x: _x, y: _y, ...rest } = step.action;
     const action: Record<string, unknown> = { ...rest };
@@ -1695,6 +1977,7 @@ export class Runner {
         corrections: (run.corrections ?? []).map((c) => c.text),
         steps: this.trajectory,
         appsSeen: [...this.appsSeen],
+        tools: run.tools?.calls ?? 0,
         handsOn: this.handsOn,
         ...(this.planResult ? { plan: { ...this.planResult } } : {}),
         usage: { ...run.usage },
@@ -2126,12 +2409,23 @@ export class Runner {
     let routed: string[] | undefined;
     // Dictated text, typed on the first frame or left to the model for good.
     let dictation = options.dictation;
+    // A tool step decided before the run, proposed on the first frame or
+    // left to the model for good.
+    let toolStep = options.toolStep;
+    // The tool layer: a dictation types, an undo takes back and a practice
+    // run drives a simulated screen, so none of them lists tools.
+    const tools =
+      run.synthetic || dictation !== undefined || options.undo
+        ? undefined
+        : this.extras.tools;
     try {
       if (options.prelude && !run.synthetic) this.applyPrelude(options.prelude);
-      // Recall overlaps the first capture (the helper answers the index off its
-      // queue); it is awaited before anything decides on the frame, so a
-      // recalled plan and memory are in place exactly as if it had come first.
+      // Recall and the tool list overlap the first capture (the helper
+      // answers the index off its queue); both are awaited before anything
+      // decides on the frame, so a recalled plan, memory and the frozen tool
+      // list are in place exactly as if they had come first.
       let recalled = this.memoryRun ? this.recall(task) : undefined;
+      let listed = tools ? this.listTools(tools, task) : undefined;
       if (!this.active()) return;
       await this.controller.resume();
       while (this.active()) {
@@ -2155,9 +2449,11 @@ export class Runner {
           throw error;
         }
         if (!frame || epoch !== this.epoch) continue;
-        if (recalled) {
+        if (recalled || listed) {
           await recalled;
+          await listed;
           recalled = undefined;
+          listed = undefined;
           if (!this.active() || epoch !== this.epoch) continue;
         }
         // Advice only, before the model sees this step's history. A re-aim is
@@ -2222,10 +2518,35 @@ export class Runner {
               source: this.plan.source,
               index: this.planIndex,
             });
+            if (proposal.action.type === "tool_call")
+              this.event("ToolStepProposed", { source: "plan" });
             this.status("thinking", "Following a known step.");
             this.check();
             result = {
               action: proposal.action,
+              usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+            };
+          }
+        }
+        // The words were one tool step (src/assistant/tool-answers.ts). With
+        // its tool in this run's frozen list the step is proposed on this
+        // frame with no model call, and policy, approval and the finish rule
+        // apply as to any step; a tool that is not listed leaves the words to
+        // the model as they were said.
+        if (!result && toolStep) {
+          const step = toolStep;
+          toolStep = undefined;
+          if (this.toolList?.tools.some((t) => t.id === step.tool)) {
+            this.event("ToolStepProposed", { source: "fast_path" });
+            this.status("thinking", "Using a tool for this.");
+            result = {
+              action: {
+                type: "tool_call",
+                tool: step.tool,
+                args: step.args,
+                finish: true,
+                frame_id: frame.id,
+              },
               usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
             };
           }
@@ -2249,7 +2570,25 @@ export class Runner {
         }
         // The one step a spoken undo takes, proposed like a plan step: no
         // model call, while policy and the approval "ask" wants still apply.
+        // A tool write inside its undo window is taken back through its own
+        // provider first (the bridge deletes what it created); Edit > Undo
+        // is for everything else.
         const undo = result ? undefined : this.undoRequest;
+        if (undo && this.extras.tools) {
+          this.status("thinking", "Taking the last step back.");
+          const taken = await this.undoTool(this.extras.tools);
+          if (!this.active()) break;
+          if (this.held || epoch !== this.epoch) continue;
+          if (taken) {
+            this.endUndo(
+              undo,
+              taken.code === "ok"
+                ? `Undone: ${toolUndoLine(taken.facts)}`
+                : TOOL_UNDO_FAILED_MESSAGE,
+            );
+            continue;
+          }
+        }
         if (undo) {
           this.status("thinking", "Taking the last step back.");
           result = {
@@ -2295,6 +2634,13 @@ export class Runner {
                     : frame,
                 history: modelHistory(history),
                 ...(this.memoryContext ? { memory: this.memoryContext } : {}),
+                // The frozen tool list and the clock it runs on, on the
+                // model's copy only, like context.watch above.
+                ...(tools &&
+                this.toolList &&
+                (this.toolList.tools.length || this.toolList.unavailable.length)
+                  ? { tools: this.toolObservation(tools, this.toolList) }
+                  : {}),
               },
               this.abort.signal,
             );
@@ -2371,10 +2717,27 @@ export class Runner {
           this.countInvalid();
           continue;
         }
+        // Without the tool layer a tool step has nowhere to go; the model
+        // hears it and drives the screen (the monitor precedent).
+        if (action.type === "tool_call" && !this.extras.tools) {
+          planFail("tool_missing");
+          this.event("ActionFailed", { code: "TOOL_UNAVAILABLE" });
+          history.push({
+            type: action.type,
+            action: echoAction(action),
+            result: TOOL_REFUSALS.no_hook,
+          });
+          continue;
+        }
         // Never journal sensitive model-proposed text before the policy boundary.
+        // A tool call has no screen target: the surface is fetched with no
+        // action, so the protected-surface floors still run and its
+        // arguments never reach the helper.
         let actionSurface: Surface;
         try {
-          actionSurface = await this.controller.surface(action);
+          actionSurface = await this.controller.surface(
+            action.type === "tool_call" ? undefined : action,
+          );
         } catch (error) {
           if (this.held || epoch !== this.epoch) {
             planFail("interrupted");
@@ -2384,6 +2747,9 @@ export class Runner {
           if (await this.recoverNative(error, epoch, action)) continue;
           throw error;
         }
+        const userWords = this.userWords(run);
+        const toolContext =
+          action.type === "tool_call" ? this.toolContext(action) : {};
         const evaluated = evaluate(
           action,
           actionSurface,
@@ -2397,9 +2763,8 @@ export class Runner {
               run.corrections,
               run.taskSource,
             ),
-            ...(run.taskSource === "user_words" && run.origin !== "watch"
-              ? { userWords: run.task }
-              : {}),
+            ...(userWords ? { userWords } : {}),
+            ...toolContext,
           },
         );
         // Only an ALLOW is replaced: every refusal keeps its own reason.
@@ -2433,6 +2798,18 @@ export class Runner {
         }
         if (decision.kind !== "ALLOW" && decision.kind !== "CONFIRM")
           planFail(decision.kind.toLowerCase());
+        // A refused tool call has no target to hand over: it counts as an
+        // invalid step, and four in a row pause the run as they do today.
+        if (decision.kind === "RETRY" && action.type === "tool_call") {
+          this.event("ActionRetargetRequested", { actionType: action.type });
+          history.push({
+            type: action.type,
+            action: echoAction(action),
+            result: noInput(decision.reason),
+          });
+          this.countInvalid();
+          continue;
+        }
         if (decision.kind === "RETRY") {
           this.event("ActionRetargetRequested", {
             actionType: action.type,
@@ -2476,15 +2853,18 @@ export class Runner {
           continue;
         }
         if (decision.kind === "DENY") {
-          this.event("UserDenied", { reason: decision.reason });
+          this.event("UserDenied", {
+            reason: decision.reason,
+            ...(action.type === "tool_call" ? { actionType: action.type } : {}),
+          });
           history.push({
             type: action.type,
             action: echoAction(action),
             result: noInput(decision.reason),
           });
-          // Repeated attempts to type detected secrets stay fatal.
+          // Repeated attempts to type or send detected secrets stay fatal.
           if (
-            action.type === "type_text" &&
+            (action.type === "type_text" || action.type === "tool_call") &&
             /credential/i.test(decision.reason)
           ) {
             if (++this.credentialDenials >= 3)
@@ -2517,6 +2897,28 @@ export class Runner {
         if (action.type === "fail")
           action = { ...action, reason: redactSecrets(action.reason) };
         this.event("ActionProposed", { action });
+        // The question's kind is the only content-free trace of a tool
+        // question; its text stays in the encrypted journal.
+        const tool = toolContext.tool;
+        const questionKind =
+          tool?.prepared.ok && decision.kind === "CONFIRM"
+            ? decision.floor
+              ? "send_to"
+              : tool.prepared.question.kind
+            : undefined;
+        if (action.type === "tool_call" && tool)
+          this.event("ToolCallProposed", {
+            tool: tool.spec.trace.tool,
+            server: tool.spec.trace.server,
+            toolTier: tool.spec.tier,
+            argsBytes: tool.prepared.ok
+              ? tool.prepared.argsBytes
+              : JSON.stringify(action.args).length,
+            entityCount: tool.prepared.ok
+              ? new Set(tool.prepared.groundText.flatMap(entityTokens)).size
+              : 0,
+            ...(questionKind ? { questionKind } : {}),
+          });
         let executionFrame = frame;
         if (decision.kind === "CONFIRM") {
           this.snapshot.pending = { action, reason: decision.reason };
@@ -2528,6 +2930,7 @@ export class Runner {
             appId: actionSurface.appId,
             targetRole: actionSurface.targetRole,
             focusedRole: actionSurface.focusedRole,
+            ...(questionKind ? { questionKind } : {}),
           });
           const allowed = await new Promise<boolean>(
             (resolve) => (this.approval = resolve),
@@ -2559,49 +2962,65 @@ export class Runner {
             continue;
           }
           this.event("UserConfirmed", { source: answered });
-          // Replace the approval card before the slower restore/revalidate.
-          this.status("capturing", "Checking the screen before acting.");
-          let fresh: Frame | null;
-          try {
-            if (relatch) await this.controller.resume();
-            await this.controller.restore?.(frame);
-            await this.ready();
-            fresh = this.controller.revalidate
-              ? this.recordFrame(
-                  await this.controller.revalidate(action, frame),
-                )
-              : await this.capture();
-          } catch (error) {
-            if (this.held || epoch !== this.epoch) {
+          if (action.type === "tool_call") {
+            // No screen target: nothing to restore or revalidate, and the
+            // approval binds to the exact arguments the question rendered.
+            // Native input is re-enabled for the screen steps that follow.
+            try {
+              if (relatch) await this.controller.resume();
+            } catch (error) {
+              if (this.held || epoch !== this.epoch) {
+                planFail("interrupted");
+                continue;
+              }
+              if (await this.recoverNative(error, epoch, action)) continue;
+              throw error;
+            }
+          } else {
+            // Replace the approval card before the slower restore/revalidate.
+            this.status("capturing", "Checking the screen before acting.");
+            let fresh: Frame | null;
+            try {
+              if (relatch) await this.controller.resume();
+              await this.controller.restore?.(frame);
+              await this.ready();
+              fresh = this.controller.revalidate
+                ? this.recordFrame(
+                    await this.controller.revalidate(action, frame),
+                  )
+                : await this.capture();
+            } catch (error) {
+              if (this.held || epoch !== this.epoch) {
+                planFail("interrupted");
+                continue;
+              }
+              planFail(nativeReason(error));
+              if (await this.recoverNative(error, epoch, action)) continue;
+              throw error;
+            }
+            if (!fresh) {
               planFail("interrupted");
               continue;
             }
-            planFail(nativeReason(error));
-            if (await this.recoverNative(error, epoch, action)) continue;
-            throw error;
+            const change: ScreenChange | undefined =
+              fresh.appId !== frame.appId
+                ? "APP_CHANGED"
+                : !sameGeometry(fresh.geometry, frame.geometry)
+                  ? "DISPLAY_CHANGED"
+                  : !this.controller.revalidate && fresh.sha256 !== frame.sha256
+                    ? "PIXELS_CHANGED"
+                    : undefined;
+            if (change) {
+              planFail("state_changed");
+              this.recoverStateChange(
+                new ScreenChangedError(undefined, change),
+                action,
+              );
+              continue;
+            }
+            executionFrame = fresh;
+            action = { ...action, frame_id: fresh.id };
           }
-          if (!fresh) {
-            planFail("interrupted");
-            continue;
-          }
-          const change: ScreenChange | undefined =
-            fresh.appId !== frame.appId
-              ? "APP_CHANGED"
-              : !sameGeometry(fresh.geometry, frame.geometry)
-                ? "DISPLAY_CHANGED"
-                : !this.controller.revalidate && fresh.sha256 !== frame.sha256
-                  ? "PIXELS_CHANGED"
-                  : undefined;
-          if (change) {
-            planFail("state_changed");
-            this.recoverStateChange(
-              new ScreenChangedError(undefined, change),
-              action,
-            );
-            continue;
-          }
-          executionFrame = fresh;
-          action = { ...action, frame_id: fresh.id };
         }
         this.check();
         if (this.held || epoch !== this.epoch) {
@@ -2621,18 +3040,37 @@ export class Runner {
           if ((await this.monitor(action, frame, epoch)) === "completed") break;
           continue;
         }
+        if (action.type === "tool_call") {
+          // Runner-side too: the tool layer runs it, never the controller.
+          // Policy retried any tool missing from the list, so its spec is here.
+          const state = await this.toolCall(
+            action,
+            tool!.spec,
+            frame,
+            decision,
+            epoch,
+          );
+          if (state === "continue") continue;
+          break;
+        }
         this.event("PolicyAllowed", { reason: decision.reason });
+        // The first screen step after a tool that could not do it says so:
+        // the words are spoken through the run's status like every step's.
+        const fallback = this.toolFallback;
+        this.toolFallback = undefined;
         this.status(
           "executing",
-          action.type === "open_app"
-            ? `Opening ${bound(action.name, 100)}.`
-            : action.type === "open_file"
-              ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}${action.app ? ` in ${bound(action.app, 60)}` : ""}.`
-              : action.type === "menu_item"
-                ? `Choosing ${bound(action.path.join(" › "), 100)}.`
-                : action.type === "click_control"
-                  ? `Clicking ${bound(action.label, 100)}.`
-                  : `Executing ${action.type.replaceAll("_", " ")}.`,
+          fallback
+            ? toolFallbackLine(fallback)
+            : action.type === "open_app"
+              ? `Opening ${bound(action.name, 100)}.`
+              : action.type === "open_file"
+                ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}${action.app ? ` in ${bound(action.app, 60)}` : ""}.`
+                : action.type === "menu_item"
+                  ? `Choosing ${bound(action.path.join(" › "), 100)}.`
+                  : action.type === "click_control"
+                    ? `Clicking ${bound(action.label, 100)}.`
+                    : `Executing ${action.type.replaceAll("_", " ")}.`,
         );
         const { frame_id: _frameId, ...executedAction } = action;
         const interrupted = () => {

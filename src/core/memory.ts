@@ -1,4 +1,5 @@
 import type { MemoryContext, RunStatus, Usage } from "./schema";
+import type { ToolCode, ToolTier } from "./tools";
 
 /**
  * The memory contract the run loop is written against. Implementations live in
@@ -30,6 +31,8 @@ export interface PlanStep {
   action: Record<string, unknown>;
   target?: { role: string; label: string };
   expectAppId?: string;
+  /** For a tool_call: the tier it was learned at, for the outline's wording. */
+  tool?: { tier: ToolTier };
 }
 
 export interface ReplayPlan {
@@ -65,6 +68,12 @@ export interface TrajectoryStep {
   openedPath?: string;
   /** Set when a replay plan proposed this step (not the model). */
   fromPlan?: "skill" | "intent";
+  /**
+   * For a tool_call: the tool's id and tier, how the call ended, and the
+   * argument keys that carry dates (a step with one is a hint, never
+   * replayed: the date would be stale).
+   */
+  tool?: { id: string; tier: ToolTier; code: ToolCode; dateKeys: string[] };
 }
 
 export interface LearnInput {
@@ -77,6 +86,8 @@ export interface LearnInput {
   corrections: string[];
   steps: TrajectoryStep[];
   appsSeen: string[];
+  /** Tool calls the run made; an episode records the count. */
+  tools?: number;
   /**
    * True when the user acted during the run: a manual or policy takeover,
    * a request_user hand-off, or a correction. The trajectory then misses the

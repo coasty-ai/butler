@@ -64,6 +64,8 @@ const MAX_APP = 80;
 const MAX_WINDOW = 80;
 const MAX_CORRECTION = 200;
 const MAX_PANEL_TAIL = 1500;
+/** The runner's status line while a long-running tool call is in flight (src/core/runner.ts toolCall). */
+const WAITING_FOR = /^Waiting for (.{1,40})\.$/;
 
 const clip = (text: string, max: number) => {
   const clean = text.replace(/\s+/g, " ").trim();
@@ -190,6 +192,10 @@ export function progressFacts(
     i.detail === "detailed"
       ? speakableText(s.frame?.context?.windowTitle, MAX_WINDOW)
       : undefined;
+  // A tool call that takes minutes (the coding agent) is waited for like a
+  // watch: the update says what the run waits on, not that nothing moves.
+  const waitingFor =
+    run.status === "executing" ? WAITING_FOR.exec(s.message)?.[1] : undefined;
   return {
     runId: run.id,
     seq: snapshotSeq(s),
@@ -205,6 +211,7 @@ export function progressFacts(
     corrections,
     ...(i.previous ? { previous: i.previous } : {}),
     detail: i.detail,
+    ...(waitingFor ? { waitingFor } : {}),
   };
 }
 /**
@@ -446,6 +453,8 @@ export function progressLine(
         ? `${agentName(f)} needs you at the Mac.`
         : `I need you at the Mac for ${named(f.task)}.`;
     case "stalled": {
+      if (f.waitingFor)
+        return `Still waiting for ${f.waitingFor}, ${minutes} in. It has not answered yet.`;
       const quiet = o.unchangedMinutes ?? watch?.change;
       const who = watch ? agentName(f) : "Nothing visible";
       const change = watch ? "has not changed anything" : "has changed";
@@ -472,6 +481,8 @@ export function progressLine(
             ? ` So far: ${joinList(recent)}.`
             : "";
       const where = f.app ? ` Now in ${f.app}.` : "";
+      if (f.waitingFor)
+        return `Still waiting for ${f.waitingFor}, ${minutes} in.${steps}`;
       return watch
         ? `${agentName(f)} is ${watchStatePhrase(watch.state)}, ${minutes} in.${where}`
         : `Still on ${named(f.task)}: ${minutes}, ${plural(f.actions, "step")}.${steps}${where}`;

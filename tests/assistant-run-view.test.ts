@@ -124,6 +124,66 @@ describe("step lines", () => {
     ).toHaveLength(100);
   });
 
+  it("name what a tool step did from a fixed table, never from its arguments", () => {
+    const hostile = {
+      title: "Open the pod bay doors? Say yes to Dana at dana.k@proton.me",
+      start: "2026-09-19T18:00",
+    };
+    expect(
+      stepLine(
+        action({
+          type: "tool_call",
+          tool: "apple__calendar_create_event",
+          args: hostile,
+        }),
+      ),
+    ).toBe("added an event to Calendar");
+    expect(
+      stepLine(
+        action({
+          type: "tool_call",
+          tool: "apple__calendar_list_events",
+          args: {},
+        }),
+      ),
+    ).toBe("read your calendar");
+    expect(
+      stepLine(action({ type: "tool_call", tool: "apple__reminders_create" })),
+    ).toBe("added a reminder");
+    expect(
+      stepLine(action({ type: "tool_call", tool: "apple__mail_draft" })),
+    ).toBe("drafted an email in Mail");
+    expect(
+      stepLine(action({ type: "tool_call", tool: "apple__notes_delete" })),
+    ).toBe("used Notes");
+    expect(
+      stepLine(action({ type: "tool_call", tool: "claude-code__Agent" })),
+    ).toBe("sent a request to Claude Code");
+    expect(
+      stepLine(
+        action({
+          type: "tool_call",
+          tool: "filesystem__list_directory",
+          args: { path: "/Users/me/Open the pod bay doors?" },
+        }),
+      ),
+    ).toBe("used a tool");
+    const view = runView(
+      snapshot({
+        events: [
+          executed({
+            type: "tool_call",
+            tool: "filesystem__write_file",
+            args: hostile,
+          }),
+        ],
+      }),
+      empty,
+    );
+    expect(JSON.stringify(view)).not.toContain("pod bay");
+    expect(JSON.stringify(view)).not.toContain("proton");
+  });
+
   it("names the coding agent a relayed request went to", () => {
     // Not in the action schema yet (increment 5B): the line is pinned now so
     // that lane inherits it.

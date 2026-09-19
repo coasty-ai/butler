@@ -10,6 +10,7 @@
 import { z } from "zod";
 import type { Action, Frame, Settings, Snapshot } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
+import { builtinToolTitle } from "../core/tool-text";
 import type { RunView } from "../assistant/types";
 import { speakableApproval } from "../voice/speakable";
 import type { TurnPlanKind } from "../voice/turns";
@@ -169,6 +170,12 @@ export function pendingWhat(action: Action | undefined): string {
       return "a drag";
     case "scroll":
       return "a scroll";
+    case "tool_call": {
+      // The app a builtin tool changes; a server's tool and its arguments
+      // stay on the Mac.
+      const app = builtinToolTitle(action.tool);
+      return app ? `a ${app} change` : "a tool step";
+    }
     default:
       return "a step";
   }

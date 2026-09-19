@@ -97,6 +97,8 @@ export interface ProgressFacts {
   corrections: string[];
   previous?: string;
   detail: "brief" | "detailed";
+  /** The tool a long-running call is waiting on (the coding agent), from the run's status line. */
+  waitingFor?: string;
   watch?: {
     agent?: string;
     state: string;

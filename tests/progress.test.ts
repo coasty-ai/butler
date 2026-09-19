@@ -271,6 +271,35 @@ describe("progress facts", () => {
     expect(progressFacts({ ...snapshot(), run: null }, input)).toBeUndefined();
   });
 
+  it("carry the tool a long-running call waits on, from the run's own status line", () => {
+    const waiting = progressFacts(
+      snapshot({ events, message: "Waiting for Claude Code." }),
+      input,
+    )!;
+    expect(waiting.waitingFor).toBe("Claude Code");
+    // Only while executing, and only that fixed shape.
+    expect(
+      progressFacts(
+        snapshot({
+          events,
+          message: "Waiting for Claude Code.",
+          run: { status: "paused" },
+        }),
+        input,
+      )!.waitingFor,
+    ).toBeUndefined();
+    expect(
+      progressFacts(snapshot({ events, message: "Using Calendar." }), input)!
+        .waitingFor,
+    ).toBeUndefined();
+    expect(
+      progressFacts(
+        snapshot({ events, message: `Waiting for ${"x".repeat(60)}.` }),
+        input,
+      )!.waitingFor,
+    ).toBeUndefined();
+  });
+
   it("are tagged with the last action or correction, never a bookkeeping event", () => {
     // The runner journals frames, model calls and the reporter's own usage
     // (Runner.addUsage → UsageAdded); none of them is news.
@@ -505,6 +534,19 @@ describe("fixed lines", () => {
     );
     expect(progressLine(watch("window_gone"), "needs_you")).toContain(
       "can’t see Claude Code’s window",
+    );
+    // A long-running tool call is waited for like a watch.
+    expect(progressLine(facts({ waitingFor: "Claude Code" }), "checkin")).toBe(
+      "Still waiting for Claude Code, 12 minutes in. So far: opened Mail, clicked Reply and typed 40 characters.",
+    );
+    expect(
+      progressLine(
+        facts({ waitingFor: "Claude Code", sinceLast: [] }),
+        "summary",
+      ),
+    ).toBe("Still waiting for Claude Code, 12 minutes in.");
+    expect(progressLine(facts({ waitingFor: "Claude Code" }), "stalled")).toBe(
+      "Still waiting for Claude Code, 12 minutes in. It has not answered yet.",
     );
     expect(progressLine(watch("working"), "stalled")).toBe(
       "Still on “Email Dana the Q3 deck”, 12 minutes in. Claude Code has not changed anything for 9 minutes.",
