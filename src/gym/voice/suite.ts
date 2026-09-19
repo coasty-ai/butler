@@ -64,7 +64,27 @@ export interface Script {
   timeoutMs?: number;
   /** Store the step's stdout under `state.<name>` for later steps and checks. */
   record?: string;
+  /**
+   * Re-run the script every `intervalMs` until its stdout is exactly `true`,
+   * bounded by `timeoutMs`: how a setup waits for a window honestly instead
+   * of sleeping a guessed second. A failed try is "not yet", never an error.
+   */
+  poll?: boolean;
+  intervalMs?: number;
 }
+
+/** A setup, cleanup or check step's wall time: the default and the bounds. */
+export const STEP = {
+  defaultTimeoutMs: 10_000,
+  minTimeoutMs: 1000,
+  maxTimeoutMs: 60_000,
+} as const;
+/** How a poll step retries: the pause between tries and the longest one try may hang. */
+export const POLL = {
+  intervalMs: 250,
+  minIntervalMs: 100,
+  attemptMs: 5000,
+} as const;
 
 export interface StateCheck {
   /** The check's key in results: a code, never a value. */
@@ -161,7 +181,25 @@ export interface Noise {
   second?: { paragraph: string; afterMs: number };
 }
 
-export type Probe = "notes-automation" | "focus-shortcut";
+export type Probe =
+  | "notes-automation"
+  | "textedit-automation"
+  | "safari-automation"
+  | "focus-shortcut";
+
+/**
+ * Apps whose Apple Events need the terminal's Automation consent, and the
+ * preflight probe that asks for it once, while the owner is still at the
+ * keyboard. Cycle 1 (2026-09-19 00:55) hung four setups for their 10-15 s
+ * on the consent prompt for TextEdit and Safari; tccd wrote the consent
+ * only at 00:59:15, when the owner came back and clicked (the TAKEOVER
+ * that ended the cycle).
+ */
+export const AUTOMATION_PROBES: Readonly<Record<string, Probe>> = {
+  Notes: "notes-automation",
+  TextEdit: "textedit-automation",
+  Safari: "safari-automation",
+};
 
 export interface VoiceTask {
   id: string;
@@ -276,6 +314,89 @@ const SCOPED = [
   /-newer "?\{marker\}"?/,
   /\{state\.startedAt\}.*plaintext contains/,
 ];
+/**
+ * Apps a setup may script only once System Events has seen a window of
+ * theirs: an Apple Event to an app still launching, behind a consent
+ * prompt or a panel, waits for it and ran out the step's timeout (cycle 1,
+ * 2026-09-19: exit 124 on `count windows` after `open -a TextEdit` and on
+ * Safari's `make new document` at cold launch). The window is watched
+ * through System Events, the document opened through LaunchServices.
+ */
+const WINDOW_FIRST_APPS = ["TextEdit", "Safari"];
+/**
+ * Apps that take no Apple Events at all: Calculator has no scripting
+ * terminology and a probe hung more than 12 s. Launched with `open`, seen
+ * through System Events, ended with `pkill -x Calculator`.
+ */
+const UNSCRIPTABLE_APPS = ["Calculator"];
+/** The one kill a script may carry: Calculator by exact name, only when the loop launched it. */
+const KILLS = /\b(p?kill(all)?)\b/;
+const ALLOWED_KILL = /pkill -x Calculator\b/;
+const tellsApp = (script: string, app: string): boolean =>
+  script.includes(`tell application "${app}"`);
+const guardedByRunning = (script: string, app: string): boolean =>
+  script.includes(`application "${app}" is running`);
+
+/** Every script a task runs: setup, cleanup and the state checks, in that order. */
+function scriptsOf(task: VoiceTask): Script[] {
+  return [
+    ...(task.setup ?? []),
+    ...(task.cleanup ?? []),
+    ...turnsOf(task).flatMap((turn) => turn.expect.state ?? []),
+  ];
+}
+
+/** The rules a task's steps must satisfy so that no setup can hang or kill outside its scope. */
+function stepProblems(task: VoiceTask): string[] {
+  const problems: string[] = [];
+  for (const step of scriptsOf(task)) {
+    if (step.timeoutMs !== undefined) {
+      if (
+        step.timeoutMs < STEP.minTimeoutMs ||
+        step.timeoutMs > STEP.maxTimeoutMs
+      )
+        problems.push(`step timeoutMs ${step.timeoutMs} out of bounds`);
+    }
+    if (
+      step.intervalMs !== undefined &&
+      (!step.poll || step.intervalMs < POLL.minIntervalMs)
+    )
+      problems.push(`step intervalMs ${step.intervalMs} needs a poll step`);
+    for (const app of UNSCRIPTABLE_APPS)
+      if (tellsApp(step.script, app))
+        problems.push(`sends Apple Events to ${app}, which takes none`);
+    for (const line of step.script.split("\n"))
+      if (
+        KILLS.test(line) &&
+        !(ALLOWED_KILL.test(line) && /\{state\.[a-zA-Z0-9]+\}/.test(line))
+      )
+        problems.push(
+          "kills outside pkill -x Calculator guarded by a recorded was-running value",
+        );
+  }
+  // Setup talks to an app only after a window of its exists: a poll step on
+  // its System Events process must come first, unless the script itself is
+  // guarded by `application "X" is running` (an app already up is up).
+  const seen = new Set<string>();
+  for (const [index, step] of (task.setup ?? []).entries()) {
+    if (step.poll) {
+      for (const app of [...WINDOW_FIRST_APPS, ...UNSCRIPTABLE_APPS])
+        if (step.script.includes(`process "${app}"`)) seen.add(app);
+      continue;
+    }
+    if (step.kind !== "osascript") continue;
+    for (const app of WINDOW_FIRST_APPS)
+      if (
+        tellsApp(step.script, app) &&
+        !seen.has(app) &&
+        !guardedByRunning(step.script, app)
+      )
+        problems.push(
+          `setup step ${index} scripts ${app} before a window of its exists (poll System Events first)`,
+        );
+  }
+  return problems;
+}
 
 /** Everything a task can say or run, lowercased, for the word rules. */
 function taskText(task: VoiceTask): string {
@@ -384,6 +505,7 @@ export function validateSuite(suite: VoiceSuite): string[] {
     for (const check of turns.flatMap((turn) => turn.expect.state ?? []))
       if (!/^[a-zA-Z][a-zA-Z0-9]{1,40}$/.test(check.name))
         problems.push(`${at}: check name ${check.name} is not a code`);
+    problems.push(...stepProblems(task).map((p) => `${at}: ${p}`));
     problems.push(...placeholderProblems(task).map((p) => `${at}: ${p}`));
   }
   for (const [key, text] of Object.entries(suite.paragraphs ?? {}))
@@ -475,6 +597,14 @@ export function taskSkips(
       failed: "NOTES_AUTOMATION",
       unknown: "NOTES_AUTOMATION_UNKNOWN",
     },
+    "textedit-automation": {
+      failed: "TEXTEDIT_AUTOMATION",
+      unknown: "TEXTEDIT_AUTOMATION_UNKNOWN",
+    },
+    "safari-automation": {
+      failed: "SAFARI_AUTOMATION",
+      unknown: "SAFARI_AUTOMATION_UNKNOWN",
+    },
     "focus-shortcut": {
       failed: "SHORTCUT_MISSING",
       unknown: "SHORTCUT_UNKNOWN",
@@ -482,13 +612,30 @@ export function taskSkips(
   };
   const skips: Record<string, string> = {};
   for (const task of tasks)
-    for (const probe of task.probes ?? []) {
+    for (const probe of taskProbes(task)) {
       const result = probes[probe];
       if (result === true || result === undefined || skips[task.id]) continue;
       skips[task.id] =
         result === null ? subcode[probe].unknown : subcode[probe].failed;
     }
   return skips;
+}
+
+/**
+ * The probes a task needs: those it lists, plus the Automation consent for
+ * every app its setup or its state checks send Apple Events to. A cleanup
+ * that scripts an app is not counted: a quit it cannot send is logged,
+ * never a reason to skip the task.
+ */
+export function taskProbes(task: VoiceTask): Probe[] {
+  const probes = new Set<Probe>(task.probes ?? []);
+  const scripts = [
+    ...(task.setup ?? []),
+    ...turnsOf(task).flatMap((turn) => turn.expect.state ?? []),
+  ];
+  for (const [app, probe] of Object.entries(AUTOMATION_PROBES))
+    if (scripts.some((step) => tellsApp(step.script, app))) probes.add(probe);
+  return [...probes];
 }
 
 /** Wall time for a selection: every timeout plus the gate around each task. */
@@ -557,4 +704,82 @@ export function suiteHash(json: string, graderSources: string[]): string {
   hash.update(json);
   for (const source of graderSources) hash.update(source);
   return hash.digest("hex");
+}
+
+/* ------------------------------------------------------------------ poll */
+
+/** What one run of a step came back with. */
+export interface StepResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+  ms: number;
+}
+
+export interface PollOutcome {
+  ok: boolean;
+  attempts: number;
+  ms: number;
+  /** The last try, for the detail when the poll gave up. */
+  last: StepResult | null;
+}
+
+/**
+ * Runs `attempt` until it exits 0 with stdout `true`, every `intervalMs`,
+ * for at most `timeoutMs` in all; one try may hang at most `attemptMs`
+ * (or what is left), so a stuck osascript is killed and tried again, and
+ * the poll as a whole ends when it said it would. The clock and the sleep
+ * are injected so the rule is tested without waiting.
+ */
+export async function pollUntilTrue(
+  attempt: (timeoutMs: number) => Promise<StepResult>,
+  options: {
+    timeoutMs: number;
+    intervalMs?: number;
+    attemptMs?: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<PollOutcome> {
+  const now = options.now ?? Date.now;
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const intervalMs = options.intervalMs ?? POLL.intervalMs;
+  const attemptMs = options.attemptMs ?? POLL.attemptMs;
+  const started = now();
+  let attempts = 0;
+  let last: StepResult | null = null;
+  for (;;) {
+    const remaining = options.timeoutMs - (now() - started);
+    if (remaining <= 0) break;
+    last = await attempt(Math.min(attemptMs, remaining));
+    attempts++;
+    if (last.code === 0 && last.stdout.trim() === "true")
+      return { ok: true, attempts, ms: now() - started, last };
+    const left = options.timeoutMs - (now() - started);
+    if (left <= 0) break;
+    await sleep(Math.min(intervalMs, left));
+  }
+  return { ok: false, attempts, ms: now() - started, last };
+}
+
+/**
+ * A poll as one step result: exit 0 and `true` when it was satisfied, else
+ * exit 124 with a stderr that says how many tries in how long and what the
+ * last try said, so the ledger's detail names the reason.
+ */
+export function pollStepResult(outcome: PollOutcome): StepResult {
+  if (outcome.ok)
+    return { code: 0, stdout: "true", stderr: "", ms: outcome.ms };
+  const last = outcome.last;
+  const said = last
+    ? last.stderr.trim() || last.stdout.trim() || `exit ${last.code}`
+    : "never tried";
+  return {
+    code: 124,
+    stdout: last?.stdout ?? "",
+    stderr: `poll ${outcome.attempts}x/${outcome.ms} ms: ${said}`,
+    ms: outcome.ms,
+  };
 }

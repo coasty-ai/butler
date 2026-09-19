@@ -53,14 +53,19 @@ const root = resolve(here, "..");
 const { register } = await import("tsx/esm/api");
 register();
 const {
+  AUTOMATION_PROBES,
   benchDirFor,
   defaultTimeoutMs,
   DEFAULT_UNHEARD_MS,
   estimateSeconds,
   fillPlaceholders,
   loadSuite,
+  pollStepResult,
+  pollUntilTrue,
   selectTasks,
+  STEP,
   suiteHash,
+  taskProbes,
   taskSkips,
   turnsOf,
   validateSuite,
@@ -82,7 +87,7 @@ const {
 const { AppWatch, linesSince } = await import("../src/gym/voice/watch.ts");
 const { ENVIRONMENT_CODES, classify } =
   await import("../src/gym/voice/classify.ts");
-const { buildResults, fixBrief, renderReport } =
+const { buildResults, fixBrief, renderReport, setupFailureDetail } =
   await import("../src/gym/voice/report.ts");
 const {
   acquireDesktopLock,
@@ -111,6 +116,7 @@ const { values } = parseArgs({
     "out-dir": { type: "string" },
     "time-box": { type: "string", default: "2h" },
     "require-quiet": { type: "boolean", default: false },
+    rehearse: { type: "boolean", default: false },
     "i-know-this-speaks-to-my-mac": { type: "boolean", default: false },
     help: { type: "boolean", default: false },
   },
@@ -123,6 +129,8 @@ if (values.help) {
   Speaks the voice suite to the running Butler.app and grades what it did.
 
   --dry-run             Validate the suite, print the preflight facts and the plan. Speaks nothing, writes nothing.
+  --rehearse            Run each selected task's setup and cleanup once and print every step's exit code; speaks nothing
+                        and needs no Butler.app, but opens and closes windows on this Mac, so the consent flag is required.
   --only <list>         Task ids, tags or categories, comma-separated.
   --noisy               Include the noisy-tagged tasks (a second voice reads in the background).
   --repeat N            Attempts per task (3 is the recommended real cycle).
@@ -264,13 +272,30 @@ const osascript = (script, timeoutMs = 10_000) =>
 const sh = (script, timeoutMs = 10_000) =>
   run("sh", ["-c", script], { timeoutMs });
 
-/** One setup, cleanup or check step with its placeholders filled. */
+/**
+ * One setup, cleanup or check step with its placeholders filled. A step's
+ * timeout is its own (STEP.defaultTimeoutMs when it names none): the child
+ * is killed at it and the step comes back 124, so no step can hold the
+ * loop past what the suite said. A `poll` step is re-run until it says
+ * `true`, bounded by that same timeout, with every try bounded too.
+ */
 async function runStep(step, fill) {
   const script = fillPlaceholders(step.script, fill);
-  return step.kind === "osascript"
-    ? osascript(script, step.timeoutMs ?? 10_000)
-    : sh(script, step.timeoutMs ?? 10_000);
+  const timeoutMs = step.timeoutMs ?? STEP.defaultTimeoutMs;
+  const exec = (ms) =>
+    step.kind === "osascript" ? osascript(script, ms) : sh(script, ms);
+  if (!step.poll) return exec(timeoutMs);
+  return pollStepResult(
+    await pollUntilTrue(exec, {
+      timeoutMs,
+      intervalMs: step.intervalMs,
+      sleep,
+    }),
+  );
 }
+/** `step N (kind[ poll])`, for the console. */
+const stepName = (index, step) =>
+  `step ${index} (${step.kind}${step.poll ? " poll" : ""})`;
 
 /**
  * Speaks through the speakers; resolves when `say` has finished. Never
@@ -494,7 +519,19 @@ async function readFacts() {
   const volume = await readVolume();
   const levels = watch.recentLevels(60_000);
   const shortcuts = await readOut("shortcuts", ["list"], 15_000);
+  // Setup waits for app windows through System Events, which needs the
+  // terminal's own Accessibility grant; Finder always has a process to ask.
+  const ax = await osascript(
+    'tell application "System Events" to tell process "Finder" to return (count windows) as string',
+  );
+  const terminalAccessibility =
+    ax.code === 0
+      ? true
+      : /assistive access|-25211|-1719/i.test(ax.stderr)
+        ? false
+        : null;
   return {
+    terminalAccessibility,
     ps: ps !== undefined,
     apps,
     app,
@@ -533,12 +570,21 @@ const REMEDY = {
     "No standby trace to judge the room by (BUTLER_TRACE_STANDBY=1 in the app's environment), and --require-quiet was given.",
   PRESENCE_UNKNOWN:
     "ps could not be read, so nothing says whether another agent is here. Try again.",
+  TERMINAL_ACCESSIBILITY:
+    "Grant this terminal Accessibility (System Settings > Privacy & Security > Accessibility): setup waits for app windows through System Events and cannot see them without it.",
 };
+/** The refusals that matter with no app to speak to: a rehearsal only opens and closes windows. */
+const REHEARSAL_CODES = [
+  "PRESENCE_UNKNOWN",
+  "HARNESS_RUNNING",
+  "TERMINAL_ACCESSIBILITY",
+];
 
 /** Refusals of the whole cycle, from the facts. */
 function preflightCodes(f) {
   const codes = [];
   if (!f.ps) codes.push("PRESENCE_UNKNOWN");
+  if (f.terminalAccessibility === false) codes.push("TERMINAL_ACCESSIBILITY");
   if (!f.app || f.apps.length !== 1 || f.bundleId !== BUNDLE_ID)
     codes.push("NOT_PACKAGED_APP");
   if (f.harnessPids.length) codes.push("HARNESS_RUNNING");
@@ -639,7 +685,7 @@ function printFacts() {
       facts.volume
         ? `${facts.volume.level}${facts.volume.muted ? " muted" : ""}`
         : "unknown"
-    } · quiet ${facts.levels.length >= 3 ? `trace, floor ${facts.quietFloor}` : "no trace (QUIET_UNKNOWN)"} · open runs ${facts.unsettled}`,
+    } · quiet ${facts.levels.length >= 3 ? `trace, floor ${facts.quietFloor}` : "no trace (QUIET_UNKNOWN)"} · open runs ${facts.unsettled} · terminal accessibility ${facts.terminalAccessibility ?? "unknown"}`,
   );
   console.log(`preflight: ${codes.length ? codes.join(", ") : "ready"}`);
   for (const code of codes) console.log(`  ${code}: ${REMEDY[code]}`);
@@ -664,7 +710,7 @@ if (values["dry-run"]) {
         .join(", ")}`,
     );
   console.log(
-    "probes that may launch an app (Notes automation) run only for a real cycle.\n",
+    `automation consent probes (${Object.keys(AUTOMATION_PROBES).join(", ")}; they may launch the app) run only for a real cycle or --rehearse.\n`,
   );
   console.log("plan:");
   for (const t of selection.tasks) {
@@ -782,18 +828,27 @@ function gateWaits(rows) {
 
 if (!values["i-know-this-speaks-to-my-mac"]) {
   console.error(
-    `This speaks ${selection.tasks.length * repeat} prompt(s) to the running Butler.app, which will act on this Mac,\n` +
-      `after it has been left alone for ${idleSeconds} s. Re-run with --i-know-this-speaks-to-my-mac,\n` +
-      "or use --dry-run first.\n",
+    values.rehearse
+      ? `A rehearsal runs ${selection.tasks.length} task setup(s) and cleanup(s) on this Mac: it opens and closes windows and speaks nothing.\n` +
+          "Re-run with --i-know-this-speaks-to-my-mac.\n"
+      : `This speaks ${selection.tasks.length * repeat} prompt(s) to the running Butler.app, which will act on this Mac,\n` +
+          `after it has been left alone for ${idleSeconds} s. Re-run with --i-know-this-speaks-to-my-mac,\n` +
+          "or use --dry-run first.\n",
   );
   printFacts();
   process.exit(2);
 }
 
 console.log(
-  `Voice cycle ${cycleId} at ${gitRev}${dirty ? " (dirty)" : ""}: ${selection.tasks.length} task(s) x ${repeat}.`,
+  values.rehearse
+    ? `Rehearsal at ${gitRev}${dirty ? " (dirty)" : ""}: setup and cleanup of ${selection.tasks.length} task(s), nothing spoken.`
+    : `Voice cycle ${cycleId} at ${gitRev}${dirty ? " (dirty)" : ""}: ${selection.tasks.length} task(s) x ${repeat}.`,
 );
-const refusals = printFacts();
+// A rehearsal needs no app to speak to: only another agent on the desktop
+// or a terminal that cannot see windows refuses it.
+const refusals = printFacts().filter(
+  (code) => !values.rehearse || REHEARSAL_CODES.includes(code),
+);
 if (refusals.length) process.exit(2);
 
 // One agent on the desktop: the same lock the cycle and the bench take.
@@ -812,33 +867,80 @@ if (!lock.ok) {
 }
 const releaseLock = () => releaseDesktopLock(lockFile, process.pid);
 
-// Notes automation, probed now: the probe may launch Notes, so it is quit
-// again only if it was not running.
-{
+// Automation consent, probed now for every app the runnable tasks' setups or
+// checks send Apple Events to (Notes, TextEdit, Safari). The first event to
+// an app raises macOS's consent prompt for this terminal, and cycle 1
+// (2026-09-19 00:55) hung four setups on it with nobody at the Mac; asked
+// here, while the owner is still at the keyboard, a denial or an unanswered
+// prompt skips those tasks with a subcode instead. The probe obeys the
+// suite's own rule: an app that is not running is launched through
+// LaunchServices (TextEdit with a probe document, so no open panel), its
+// window awaited through System Events, and only then sent the event. It is
+// quit again only if it was not running: through Apple Events when the
+// consent came, TextEdit (holding only the probe document) with pkill when
+// it did not; Notes and Safari are then left as the prompt left them.
+const PROBE_FILE = "/tmp/butler-voice-loop-probe.txt";
+const PROBE = {
+  Notes: {
+    launch: "open -a Notes",
+    event: 'tell application "Notes" to count notes',
+  },
+  TextEdit: {
+    launch: `printf 'Butler voice loop probe\\n' > "${PROBE_FILE}" && open -a TextEdit "${PROBE_FILE}"`,
+    event: 'tell application "TextEdit" to count documents',
+  },
+  Safari: {
+    launch: "open -a Safari",
+    event: 'tell application "Safari" to count windows',
+  },
+};
+async function probeAutomation(app) {
   const wasRunning =
     (
       await osascript(
-        'tell application "System Events" to return (exists process "Notes") as string',
+        `tell application "System Events" to return (exists process "${app}") as string`,
       )
     ).stdout.trim() === "true";
-  const probe = await osascript(
-    'tell application "Notes" to count notes',
-    20_000,
-  );
+  let windowSeen = true;
+  if (!wasRunning) {
+    await sh(PROBE[app].launch);
+    windowSeen = (
+      await pollUntilTrue(
+        (ms) =>
+          osascript(
+            `tell application "System Events" to return (exists (window 1 of process "${app}")) as string`,
+            ms,
+          ),
+        { timeoutMs: 20_000, sleep },
+      )
+    ).ok;
+  }
+  const probe = windowSeen
+    ? await osascript(PROBE[app].event, 20_000)
+    : { code: 124, ms: 20_000, stderr: "no window after launch" };
   const denied =
     probe.code !== 0 && /-1743|not allowed|Not authorized/i.test(probe.stderr);
-  if (probe.code !== 0 && !denied)
+  const consent = probe.code === 0 ? true : denied ? false : null;
+  if (consent !== true)
     console.log(
-      "Notes probe failed for another reason; Notes tasks are skipped tonight.",
+      `${app} automation ${consent === false ? "denied" : `unknown (the probe exited ${probe.code} after ${probe.ms} ms; a consent prompt may be waiting on screen)`}; its tasks are skipped.`,
     );
-  Object.assign(
-    skips,
-    taskSkips(selection.tasks, { "notes-automation": probe.code === 0 }),
-  );
-  if (!wasRunning)
-    await osascript(
-      'if application "Notes" is running then tell application "Notes" to quit',
-    );
+  if (!wasRunning) {
+    if (consent === true)
+      await osascript(
+        `if application "${app}" is running then tell application "${app}" to quit${app === "TextEdit" ? " saving no" : ""}`,
+      );
+    else if (app === "TextEdit") await sh("pkill -x TextEdit; true");
+  }
+  if (app === "TextEdit") await sh(`rm -f "${PROBE_FILE}"`);
+  return consent;
+}
+{
+  const needed = new Set(runnable().flatMap(taskProbes));
+  const consents = {};
+  for (const [app, probe] of Object.entries(AUTOMATION_PROBES))
+    if (needed.has(probe)) consents[probe] = await probeAutomation(app);
+  Object.assign(skips, taskSkips(selection.tasks, consents));
 }
 for (const [id, code] of Object.entries(skips))
   console.log(`skip ${id}: ${code}`);
@@ -846,6 +948,71 @@ if (!runnable().length) {
   console.error("NOTHING_TO_RUN: every selected task is skipped.");
   releaseLock();
   process.exit(2);
+}
+
+/* ------------------------------------------------------------ rehearsal */
+
+/**
+ * Runs every selected task's setup, then its cleanup, once, and prints each
+ * step's exit code and time: the way to prove a setup cannot hang before a
+ * cycle spends an evening on it. Nothing is spoken and no cycle folder is
+ * written; the markers go under /tmp like a cycle's.
+ */
+async function rehearse() {
+  const rehearsalDir = join("/tmp", "voice-loop", "rehearsal");
+  mkdirSync(rehearsalDir, { recursive: true });
+  let failed = 0;
+  for (const task of runnable()) {
+    const token = voiceToken();
+    const fill = {
+      token,
+      benchDir: benchDirFor(homedir(), token),
+      wake: WAKE,
+      marker: join(rehearsalDir, `${task.id}.marker`),
+      state: {},
+    };
+    writeFileSync(fill.marker, "");
+    const started = Date.now();
+    let failure = null;
+    try {
+      for (const [index, step] of (task.setup ?? []).entries()) {
+        const result = await runStep(step, fill);
+        console.log(
+          `  ${task.id} setup ${stepName(index, step)}: exit ${result.code} in ${result.ms} ms`,
+        );
+        if (result.code !== 0) {
+          failure = setupFailureDetail(index, step, result, homedir());
+          break;
+        }
+        if (step.record) fill.state[step.record] = result.stdout.trim();
+      }
+    } finally {
+      await cleanup(task, fill);
+    }
+    if (failure) {
+      failed++;
+      console.log(`  ${task.id}: SETUP_FAILED ${JSON.stringify(failure)}`);
+    } else
+      console.log(
+        `  ${task.id}: setup and cleanup ok in ${Date.now() - started} ms`,
+      );
+  }
+  console.log(
+    failed
+      ? `${failed} setup(s) failed; every cleanup ran.`
+      : "Every setup ran and was cleaned up.",
+  );
+  return failed ? 1 : 0;
+}
+
+if (values.rehearse) {
+  let code = 1;
+  try {
+    code = await rehearse();
+  } finally {
+    releaseLock();
+  }
+  process.exit(code);
 }
 
 /* --------------------------------------------------------------- output */
@@ -1136,6 +1303,8 @@ async function runTask(task, attempt) {
   let aborted = null;
   let sayFailed = false;
   let noise;
+  let setupFailure = null;
+  let setupStderr = null;
 
   const gate = await waitGate(task);
   if (gate.stop) return { stop: gate.stop };
@@ -1151,11 +1320,17 @@ async function runTask(task, attempt) {
   // crash included, its window is closed and the speakers are put back.
   try {
     // Setup, then the gate once more (setup takes seconds and the owner may be back).
-    for (const step of task.setup ?? []) {
+    // A failed step is recorded with its index, exit code, time and what it
+    // said, content-free, so the report names the reason and not just the code.
+    for (const [index, step] of (task.setup ?? []).entries()) {
       const result = await runStep(step, fill);
       if (result.code !== 0) {
         context.envSubcode = "SETUP_FAILED";
-        console.log(`  ${turnId}: setup step exited ${result.code}`);
+        setupFailure = setupFailureDetail(index, step, result, homedir());
+        setupStderr = result.stderr;
+        console.log(
+          `  ${turnId}: setup ${stepName(index, step)} exited ${result.code} after ${result.ms} ms${setupFailure.said ? `: ${setupFailure.said}` : ""}`,
+        );
         break;
       }
       if (step.record) fill.state[step.record] = result.stdout.trim();
@@ -1411,14 +1586,17 @@ async function runTask(task, attempt) {
       idleSeen: gate.idleSeen,
       quietRms: gate.quietRms,
     },
+    setup: setupFailure,
   };
   records.push(record);
   ledger({ kind: "turn", record });
-  // Transcripts, task text and messages: local only, for the engineer's eyes.
+  // Transcripts, task text, messages and a failed setup's whole stderr:
+  // local only, for the engineer's eyes.
   appendFileSync(
     turnsPath,
     `${JSON.stringify({
       turnId,
+      setupStderr,
       utterances: summaries.map((s) => ({
         transcript: s.transcript,
         task: s.task,
@@ -1451,13 +1629,22 @@ async function runTask(task, attempt) {
 }
 
 async function cleanup(task, fill) {
-  for (const step of task.cleanup ?? []) {
+  for (const [index, step] of (task.cleanup ?? []).entries()) {
     try {
       const result = await runStep(step, fill);
       if (result.code !== 0)
-        console.log(`  cleanup step exited ${result.code}`);
+        console.log(
+          `  ${task.id} cleanup ${stepName(index, step)} exited ${result.code} after ${result.ms} ms${
+            result.stderr.trim()
+              ? `: ${setupFailureDetail(index, step, result, homedir()).said}`
+              : ""
+          }`,
+        );
     } catch (error) {
-      console.log(`  cleanup step skipped: ${error.message}`);
+      // A value a failed setup never recorded: the step had nothing to undo.
+      console.log(
+        `  ${task.id} cleanup ${stepName(index, step)} skipped: ${error.message}`,
+      );
     }
   }
 }

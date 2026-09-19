@@ -15,7 +15,7 @@ import {
   type FailureCode,
 } from "./classify";
 import { LATENCY, type TurnGrade, type TurnSummary } from "./grade";
-import type { Outcome } from "./suite";
+import type { Outcome, Script } from "./suite";
 
 /**
  * results.json and report.md for one voice cycle, and the fix briefs. The
@@ -95,6 +95,43 @@ export interface TurnGateFacts {
   quietRms: number | null;
 }
 
+/**
+ * Why a setup step failed, content-free: which step and of what kind, the
+ * exit code, the time it took, and the first characters of what it said
+ * (the home folder shortened to `~`). Cycle 1 recorded only SETUP_FAILED
+ * and the report could not say why; this is the detail the next one reads.
+ */
+export interface SetupFailure {
+  step: number;
+  kind: string;
+  poll: boolean;
+  exitCode: number;
+  ms: number;
+  said: string;
+}
+export const SETUP_SAID_CHARS = 80;
+
+export function setupFailureDetail(
+  index: number,
+  step: Script,
+  result: { code: number; stdout: string; stderr: string; ms: number },
+  home?: string,
+): SetupFailure {
+  let said = (result.stderr.trim() || result.stdout.trim()).replace(
+    /\s+/g,
+    " ",
+  );
+  if (home) said = said.replaceAll(home, "~");
+  return {
+    step: index,
+    kind: step.kind,
+    poll: !!step.poll,
+    exitCode: result.code,
+    ms: result.ms,
+    said: said.slice(0, SETUP_SAID_CHARS),
+  };
+}
+
 /** What the script records per turn; the row builder copies only codes and numbers. */
 export interface TurnRecord {
   turnId: string;
@@ -106,6 +143,8 @@ export interface TurnRecord {
   classification: Classification;
   summaries: TurnSummary[];
   gate: TurnGateFacts;
+  /** The setup step that failed, when SETUP_FAILED. */
+  setup?: SetupFailure | null;
 }
 
 export interface TurnRow {
@@ -166,6 +205,7 @@ export interface TurnRow {
   };
   state: Record<string, boolean | null>;
   gate: TurnGateFacts;
+  setup: SetupFailure | null;
   at: string;
   wallMs: number;
 }
@@ -304,6 +344,7 @@ export function turnRow(record: TurnRecord): TurnRow {
     },
     state: g.checks,
     gate: record.gate,
+    setup: record.setup ?? null,
     at: record.at,
     wallMs: record.wallMs,
   };
@@ -673,7 +714,11 @@ export function renderReport(r: VoiceResults): string {
       .map(([name]) => name);
     lines.push(
       `${c.rank}. **${c.code}**${isSoft(c.code) ? " *(soft)*" : ""} — ${OWNER[code]}; ${c.attempts} ${
-        isSoft(c.code) ? "passed turn(s) over budget" : "turn(s)"
+        isSoft(c.code)
+          ? c.code === "MISHEARD_DONE"
+            ? "passed turn(s) heard as other words"
+            : "passed turn(s) over budget"
+          : "turn(s)"
       }, ${pct(
         c.attemptRate,
       )} ${interval(c.wilson95)}, weight ${COST_WEIGHT[code]}, ${secondsLost} s lost; categories ${
@@ -692,6 +737,19 @@ export function renderReport(r: VoiceResults): string {
   for (const c of env)
     lines.push(
       `- ${c.code}: ${c.attempts} turn(s) (${c.contributors.filter((x) => x.startsWith("subcode:")).join(", ") || "-"}).`,
+    );
+  // Every not-ready turn by name, and for a failed setup the step that
+  // failed, its exit code, its time and what it said, so the next cycle's
+  // fix starts from the reason and not from the code alone.
+  for (const row of r.results.filter(isEnvironment))
+    lines.push(
+      `- ${row.turnId}: ${row.code}${row.subcode ? `/${row.subcode}` : ""}${
+        row.setup
+          ? `; setup step ${row.setup.step} (${row.setup.kind}${row.setup.poll ? " poll" : ""}) exited ${row.setup.exitCode} after ${row.setup.ms} ms${
+              row.setup.said ? `: ${row.setup.said}` : ""
+            }`
+          : ""
+      }`,
     );
   if (r.environment.aborted)
     lines.push(
@@ -774,6 +832,14 @@ export const SKIP_REMEDY: Record<string, string> = {
     "allow the terminal to control Notes when macOS asks, or run the loop from a terminal that already may",
   NOTES_AUTOMATION_UNKNOWN:
     "the Notes probe could not be read at all (osascript failed or timed out); try again",
+  TEXTEDIT_AUTOMATION:
+    "allow the terminal to control TextEdit when macOS asks (System Settings > Privacy & Security > Automation), or run the loop from a terminal that already may",
+  TEXTEDIT_AUTOMATION_UNKNOWN:
+    "the TextEdit probe timed out or failed: a consent prompt may be waiting on screen; answer it and try again",
+  SAFARI_AUTOMATION:
+    "allow the terminal to control Safari when macOS asks (System Settings > Privacy & Security > Automation), or run the loop from a terminal that already may",
+  SAFARI_AUTOMATION_UNKNOWN:
+    "the Safari probe timed out or failed: a consent prompt may be waiting on screen; answer it and try again",
   SHORTCUT_MISSING:
     'create a Shortcuts shortcut named "Butler Voice Loop: Focus Off" that turns Focus off',
   SHORTCUT_UNKNOWN:

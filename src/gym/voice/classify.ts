@@ -23,11 +23,13 @@ export const FAILURE_CODES = [
   "WRONG_STATE",
   "SLOW_FIRST_ACTION",
   "SLOW_REPLY",
+  "MISHEARD_DONE",
 ] as const;
 export type FailureCode = (typeof FAILURE_CODES)[number];
 export const SOFT_CODES: readonly FailureCode[] = [
   "SLOW_FIRST_ACTION",
   "SLOW_REPLY",
+  "MISHEARD_DONE",
 ];
 /** Reported apart: the room's and the harness's, not the app's. */
 export const ENVIRONMENT_CODES: readonly FailureCode[] = [
@@ -58,6 +60,7 @@ export const OWNER: Record<FailureCode, FineOwner> = {
   WRONG_STATE: "runner/policy",
   SLOW_FIRST_ACTION: "runner/policy",
   SLOW_REPLY: "dialog core",
+  MISHEARD_DONE: "recognizer/gate",
 };
 
 /** The owner selectLanes reads: every app class is the agent's; TAKEOVER is nobody's lane. */
@@ -77,6 +80,7 @@ export const LOOP_OWNER: Record<
   WRONG_STATE: "agent",
   SLOW_FIRST_ACTION: "agent",
   SLOW_REPLY: "agent",
+  MISHEARD_DONE: "agent",
 };
 
 /** ENV_NOT_READY subcodes the grader, not the harness, owes a fix for. */
@@ -102,6 +106,7 @@ export const COST_WEIGHT: Record<FailureCode, number> = {
   UNHEARD_NOISY: 2,
   SLOW_FIRST_ACTION: 2,
   SLOW_REPLY: 1,
+  MISHEARD_DONE: 1,
   TAKEOVER: 0,
   ENV_NOT_READY: 0,
 };
@@ -207,6 +212,14 @@ export const EVIDENCE: Record<FailureCode, string[]> = {
     "KokoroVoice warm state",
     "endpointMs",
   ],
+  MISHEARD_DONE: [
+    "confidence",
+    "segments",
+    "recovered",
+    "transcriptLength vs say length",
+    "heard regex",
+    "turns.jsonl line (local)",
+  ],
 };
 
 /** One line per class: the mechanism, prefixed with the fine owner and its files. */
@@ -235,6 +248,8 @@ export const NOTE: Record<FailureCode, string> = {
     "Heard and done, but the first action came more than the budget after the transcript; capture timings attached.",
   SLOW_REPLY:
     "Heard and done, but the spoken reply came more than the budget after the transcript; speech engine latency attached.",
+  MISHEARD_DONE:
+    "Heard as other words, yet done: the transcript lacks the prompt's key words but the outcome and every check passed, so the owner felt nothing; the recognizer still missed, or the task's heard regex is stricter than the words that were enough.",
 };
 
 /** `[owner: files] note`, the line laneBrief prints. */
@@ -274,7 +289,20 @@ function hardClass(
       : { code: "WRONG_PLAN", subcode: "FALSE_WAKE" };
   if (g.heard === "unheard")
     return { code: g.noisy ? "UNHEARD_NOISY" : "UNHEARD" };
-  if (g.heard === "misheard") return { code: "MISHEARD" };
+  // Heard as other words, yet done: cycle 2 (2026-09-19 01:11) transcribed
+  // "open a new text window" and "quick calculator", and each run completed
+  // in one action with every check true. The recognizer's miss cost the
+  // owner nothing, so the turn passes with the soft MISHEARD_DONE; MISHEARD
+  // is the failure only when the outcome failed as well.
+  if (g.heard === "misheard")
+    return outcomeClass(g) ? { code: "MISHEARD" } : undefined;
+  return outcomeClass(g);
+}
+
+/** The classes of what the app did with the words, heard or not. */
+function outcomeClass(
+  g: TurnGrade,
+): { code: FailureCode; subcode?: string } | undefined {
   if (!g.planMatched) return { code: "WRONG_PLAN", subcode: g.planReasons[0] };
   if (g.taskWordsOk === false)
     return { code: "WRONG_PLAN", subcode: "TASK_WORDS" };
@@ -316,6 +344,7 @@ function hardClass(
 function softClass(
   g: TurnGrade,
 ): { code: FailureCode; subcode?: string } | undefined {
+  if (g.heard === "misheard") return { code: "MISHEARD_DONE" };
   if (
     g.runStarted &&
     g.firstActionAfterTranscriptMs !== null &&

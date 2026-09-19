@@ -8,6 +8,7 @@ import {
   FAILURE_CODES,
   LOOP_OWNER,
   OWNER,
+  SOFT_CODES,
   classify,
   loopOwnerOf,
   noteFor,
@@ -36,11 +37,13 @@ import {
   type VoiceGateFacts,
 } from "../src/gym/voice/grade";
 import {
+  SETUP_SAID_CHARS,
   SKIP_REMEDY,
   buildResults,
   compareCycles,
   fixBrief,
   renderReport,
+  setupFailureDetail,
   toCycleResults,
   type PreflightFacts,
   type TurnRecord,
@@ -49,17 +52,25 @@ import {
 } from "../src/gym/voice/report";
 import { AppWatch, linesSince } from "../src/gym/voice/watch";
 import {
+  AUTOMATION_PROBES,
+  POLL,
+  STEP,
   TOKEN_RE,
   defaultTimeoutMs,
   estimateSeconds,
   fillPlaceholders,
   loadSuite,
+  pollStepResult,
+  pollUntilTrue,
   selectTasks,
   suiteHash,
+  taskProbes,
   taskSkips,
   turnsOf,
   validateSuite,
   voiceToken,
+  type Script,
+  type StepResult,
   type VoiceSuite,
   type VoiceTask,
 } from "../src/gym/voice/suite";
@@ -466,6 +477,254 @@ describe("voice suite: the fixture", () => {
     expect(validateSuite(dup).join()).toMatch(/duplicate id/);
   });
 
+  it("opens its own documents through LaunchServices and scripts an app only once System Events saw a window of its", () => {
+    // Cycle 1 (2026-09-19 00:55): four setups exited 124 on the first Apple
+    // Event to a TextEdit or Safari that was launching, or behind the
+    // terminal's consent prompt. No setup step guesses with a sleep any more,
+    // an `open -a TextEdit <file>` is always followed by a poll on the window,
+    // and Calculator is never sent an Apple Event.
+    const scripts = (t: VoiceTask): Script[] => [
+      ...(t.setup ?? []),
+      ...(t.cleanup ?? []),
+      ...turnsOf(t).flatMap((turn) => turn.expect.state ?? []),
+    ];
+    for (const t of suite.tasks) {
+      for (const step of t.setup ?? [])
+        expect(step.script, `${t.id} sleeps`).not.toMatch(/\bsleep\b/);
+      for (const [index, step] of (t.setup ?? []).entries())
+        if (/open -a TextEdit "/.test(step.script))
+          expect(
+            (t.setup ?? [])
+              .slice(index + 1)
+              .some((s) => s.poll && s.script.includes('process "TextEdit"')),
+            `${t.id} step ${index} opens a document and never waits for its window`,
+          ).toBe(true);
+      for (const step of scripts(t))
+        expect(step.script, t.id).not.toMatch(/tell application "Calculator"/);
+    }
+    const newWindow = task("app-new-window-textedit").setup ?? [];
+    expect(newWindow[1].script).toMatch(
+      /open -a TextEdit "\/tmp\/butler-voice-loop-\{token\}\.txt"/,
+    );
+    expect(newWindow[2]).toMatchObject({ kind: "osascript", poll: true });
+    expect(newWindow[2].script).toMatch(
+      /System Events.*process "TextEdit" whose name contains "\{token\}"/,
+    );
+    expect(newWindow[2].timeoutMs).toBeLessThanOrEqual(STEP.maxTimeoutMs);
+    const safari = task("browse-goto-example").setup ?? [];
+    expect(safari.map((s) => s.kind)).toEqual([
+      "osascript",
+      "sh",
+      "osascript",
+      "osascript",
+    ]);
+    expect(safari[1].script).toBe("pgrep -xq Safari || open -a Safari");
+    expect(safari[2]).toMatchObject({ poll: true });
+    expect(safari[3].script).toMatch(/make new document/);
+    const calc = task("app-quit-calculator");
+    expect(calc.setup?.[1].script).toBe("open -a Calculator");
+    expect(calc.setup?.[2]).toMatchObject({ poll: true });
+    expect(calc.cleanup?.[0].script).toMatch(
+      /"\{state\.calcWasRunning\}" = "false".*pkill -x Calculator/,
+    );
+    // The rich-text file for the bold follow-up is written with %s, so printf
+    // never reads its \r and \f as control characters.
+    expect(task("dictate-follow-up-bold").setup?.[1].script).toMatch(
+      /printf '%s' '\{\\rtf1/,
+    );
+    // The invariants behind those facts.
+    const bad = (over: Partial<VoiceTask>): string[] => {
+      const copy: VoiceSuite = {
+        ...suite,
+        tasks: [
+          ...suite.tasks,
+          { ...task("ask-time"), id: "bad-task", ...over },
+        ],
+      };
+      return validateSuite(copy).filter((p) => p.includes("bad-task"));
+    };
+    const cleanup = [{ kind: "sh", script: "true" } as Script];
+    const tellTextEdit: Script = {
+      kind: "osascript",
+      script: 'tell application "TextEdit" to return (count windows) as string',
+    };
+    const pollTextEdit: Script = {
+      kind: "osascript",
+      poll: true,
+      timeoutMs: 20_000,
+      script:
+        'tell application "System Events" to return (exists (window 1 of process "TextEdit")) as string',
+    };
+    expect(bad({ setup: [tellTextEdit], cleanup }).join()).toMatch(
+      /step 0 scripts TextEdit before a window of its exists/,
+    );
+    expect(bad({ setup: [pollTextEdit, tellTextEdit], cleanup })).toEqual([]);
+    expect(
+      bad({
+        setup: [
+          {
+            kind: "osascript",
+            script:
+              'if application "TextEdit" is running then tell application "TextEdit" to return (count windows) as string',
+          },
+        ],
+        cleanup,
+      }),
+    ).toEqual([]);
+    expect(
+      bad({
+        cleanup: [
+          {
+            kind: "osascript",
+            script: 'tell application "Calculator" to quit',
+          },
+        ],
+      }).join(),
+    ).toMatch(/Apple Events to Calculator, which takes none/);
+    expect(
+      bad({ cleanup: [{ kind: "sh", script: "pkill -x Safari" }] }).join(),
+    ).toMatch(/kills outside/);
+    expect(
+      bad({ cleanup: [{ kind: "sh", script: "pkill -x Calculator" }] }).join(),
+    ).toMatch(/kills outside/);
+    expect(
+      bad({
+        setup: [
+          {
+            kind: "osascript",
+            script:
+              'tell application "System Events" to return (exists process "Calculator") as string',
+            record: "calcWasRunning",
+          },
+        ],
+        cleanup: [
+          {
+            kind: "sh",
+            script:
+              'if [ "{state.calcWasRunning}" = "false" ]; then pkill -x Calculator; fi; true',
+          },
+        ],
+      }),
+    ).toEqual([]);
+    expect(
+      bad({
+        cleanup: [{ kind: "sh", script: "true", timeoutMs: 90_000 }],
+      }).join(),
+    ).toMatch(/timeoutMs 90000 out of bounds/);
+    expect(
+      bad({
+        cleanup: [{ kind: "sh", script: "true", intervalMs: 250 }],
+      }).join(),
+    ).toMatch(/needs a poll step/);
+  });
+
+  it("polls until a step says true, bounded in all and per try, and reports a failed poll as exit 124 with what the last try said", async () => {
+    let clock = 0;
+    const now = () => clock;
+    const slept: number[] = [];
+    const sleep = async (ms: number) => {
+      slept.push(ms);
+      clock += ms;
+    };
+    const answers = ["false", "", "true"];
+    const tries: number[] = [];
+    const attempt = async (timeoutMs: number): Promise<StepResult> => {
+      tries.push(timeoutMs);
+      clock += 40;
+      const stdout = answers.shift() ?? "true";
+      return {
+        code: stdout ? 0 : 1,
+        stdout,
+        stderr: stdout ? "" : "Can't get process",
+        ms: 40,
+      };
+    };
+    const ok = await pollUntilTrue(attempt, { timeoutMs: 20_000, now, sleep });
+    expect(ok).toMatchObject({ ok: true, attempts: 3 });
+    // A failed try is "not yet": the poll waits the interval and asks again.
+    expect(slept).toEqual([POLL.intervalMs, POLL.intervalMs]);
+    expect(tries).toEqual([POLL.attemptMs, POLL.attemptMs, POLL.attemptMs]);
+    expect(pollStepResult(ok)).toEqual({
+      code: 0,
+      stdout: "true",
+      stderr: "",
+      ms: ok.ms,
+    });
+    // Never true: the poll ends when it said it would, and no try may
+    // outlive it (a hung osascript is killed and asked again).
+    clock = 0;
+    slept.length = 0;
+    tries.length = 0;
+    const never = await pollUntilTrue(
+      async (timeoutMs) => {
+        tries.push(timeoutMs);
+        clock += 100;
+        return {
+          code: 1,
+          stdout: "",
+          stderr:
+            'execution error: System Events got an error: Can’t get process "TextEdit". (-1728)',
+          ms: 100,
+        };
+      },
+      { timeoutMs: 1000, intervalMs: 300, now, sleep },
+    );
+    expect(never.ok).toBe(false);
+    expect(never.attempts).toBe(3);
+    expect(never.ms).toBe(1000);
+    expect(tries).toEqual([1000, 600, 200]);
+    const failed = pollStepResult(never);
+    expect(failed.code).toBe(124);
+    expect(failed.stderr).toMatch(
+      /^poll 3x\/1000 ms: execution error: System Events got an error/,
+    );
+    expect(
+      pollStepResult({ ok: false, attempts: 0, ms: 0, last: null }).stderr,
+    ).toMatch(/never tried/);
+  });
+
+  it("derives the automation consent probe from the apps a setup or check scripts, and skips their tasks when it is denied or unknown", () => {
+    expect(Object.keys(AUTOMATION_PROBES)).toEqual([
+      "Notes",
+      "TextEdit",
+      "Safari",
+    ]);
+    expect(taskProbes(task("dictate-textedit-sentence"))).toEqual([
+      "textedit-automation",
+    ]);
+    expect(taskProbes(task("browse-goto-example"))).toEqual([
+      "safari-automation",
+    ]);
+    expect(taskProbes(task("multi-safari-then-textedit")).sort()).toEqual([
+      "safari-automation",
+      "textedit-automation",
+    ]);
+    expect(taskProbes(task("dictate-notes-line"))).toEqual([
+      "notes-automation",
+    ]);
+    // A cleanup that quits an app is not a need: the quit is logged, never a skip.
+    expect(taskProbes(task("app-open-notes"))).toEqual([]);
+    // Calculator is never scripted, so its tasks need no consent at all.
+    expect(taskProbes(task("app-quit-calculator"))).toEqual([]);
+    expect(taskProbes(task("ask-time"))).toEqual([]);
+    const denied = taskSkips(suite.tasks, {
+      "textedit-automation": false,
+      "safari-automation": null,
+    });
+    expect(denied["dictate-textedit-sentence"]).toBe("TEXTEDIT_AUTOMATION");
+    expect(denied["app-new-window-textedit"]).toBe("TEXTEDIT_AUTOMATION");
+    expect(denied["browse-goto-example"]).toBe("SAFARI_AUTOMATION_UNKNOWN");
+    expect(denied["app-quit-calculator"]).toBeUndefined();
+    expect(denied["ask-time"]).toBeUndefined();
+    for (const code of [
+      "TEXTEDIT_AUTOMATION",
+      "TEXTEDIT_AUTOMATION_UNKNOWN",
+      "SAFARI_AUTOMATION",
+      "SAFARI_AUTOMATION_UNKNOWN",
+    ])
+      expect(SKIP_REMEDY[code], code).toMatch(/consent|allow the terminal/);
+  });
+
   it("hashes the fixture with the grader sources, so a grader change is a new metric", () => {
     const a = suiteHash(fixtureJson, ["grade v1"]);
     expect(a).toMatch(/^[0-9a-f]{64}$/);
@@ -535,11 +794,23 @@ describe("voice grade: summaries and hearing", () => {
       heard: "called",
     };
     expect(heardVerdict(turnsOf(t)[0], misheard)).toBe("misheard");
+    // The run still opened Notes: heard as other words, yet done, so the
+    // turn passes with the soft tag; the same words with a failed outcome
+    // (an answer where a run was expected) are MISHEARD.
     expect(
       classify(
-        grade(t, [fastStart({ transcript: "create a note call voice trial" })]),
+        grade(
+          t,
+          [fastStart({ transcript: "create a note call voice trial" })],
+          { frontmost: evidence("com.apple.Notes") },
+        ),
       ),
-    ).toMatchObject({ code: "MISHEARD" });
+    ).toMatchObject({ softCode: "MISHEARD_DONE", pass: true });
+    expect(
+      classify(
+        grade(t, [answer({ transcript: "create a note call voice trial" })]),
+      ),
+    ).toMatchObject({ code: "MISHEARD", pass: false });
     // A wake after 15 s belongs to something else.
     const late = summarizeTurn(
       sorted([
@@ -566,9 +837,11 @@ describe("voice grade: summaries and hearing", () => {
     expect(classify(grade(agenda, [answer({ transcript: asked })])).pass).toBe(
       true,
     );
-    // The same answer to the wrong words is misheard, not accepted.
+    // The same answer to the wrong words: heard as other words, yet the
+    // right kind of thing was done, so it passes with the soft tag.
     expect(classify(grade(agenda, [answer()]))).toMatchObject({
-      code: "MISHEARD",
+      softCode: "MISHEARD_DONE",
+      pass: true,
     });
     expect(
       classify(
@@ -1689,6 +1962,60 @@ describe("voice classify: precedence, owners and ranking", () => {
     ).toBeUndefined();
   });
 
+  it("passes a turn heard as other words when the outcome and checks passed, with the soft MISHEARD_DONE, and keeps MISHEARD when the outcome failed", () => {
+    // Cycle 2 (2026-09-19 01:11): "open a new text window" and "quick
+    // calculator" were transcribed, each run completed in one action and
+    // every check was true, yet both turns were graded MISHEARD.
+    const newWindow = task("app-new-window-textedit");
+    const said = "open a new text window";
+    const ok = {
+      frontmost: evidence("com.apple.TextEdit"),
+      windowGrew: evidence("true"),
+    };
+    const done = grade(newWindow, [fastStart({ transcript: said })], ok);
+    expect(done.heard).toBe("misheard");
+    expect(done.checksFailed).toEqual([]);
+    expect(classify(done)).toMatchObject({
+      softCode: "MISHEARD_DONE",
+      pass: true,
+    });
+    expect(
+      classify(
+        grade(
+          task("app-quit-calculator"),
+          [fastStart({ transcript: "quick calculator" })],
+          { calculatorGone: evidence("true") },
+        ),
+      ),
+    ).toMatchObject({ softCode: "MISHEARD_DONE", pass: true });
+    // The same words with the primary check false, or with no run at all:
+    // the outcome failed, so MISHEARD stays the class and the turn fails.
+    expect(
+      classify(
+        grade(newWindow, [fastStart({ transcript: said })], {
+          ...ok,
+          windowGrew: evidence("false"),
+        }),
+      ),
+    ).toMatchObject({ code: "MISHEARD", pass: false });
+    expect(
+      classify(grade(newWindow, [answer({ transcript: said })])),
+    ).toMatchObject({ code: "MISHEARD", pass: false });
+    // A heard turn with the same outcome carries no tag at all.
+    expect(
+      classify(
+        grade(
+          newWindow,
+          [fastStart({ transcript: "open a new textedit window" })],
+          ok,
+        ),
+      ),
+    ).toEqual({ pass: true });
+    expect(SOFT_CODES).toContain("MISHEARD_DONE");
+    expect(OWNER.MISHEARD_DONE).toBe("recognizer/gate");
+    expect(COST_WEIGHT.MISHEARD_DONE).toBeLessThan(COST_WEIGHT.MISHEARD);
+  });
+
   it("maps fine owners to loop owners and writes the note laneBrief prints", () => {
     for (const code of FAILURE_CODES) {
       expect(OWNER[code]).toBeTruthy();
@@ -1963,6 +2290,119 @@ describe("voice report: results, lanes and the brief", () => {
     expect(json).toContain('"say":"open Notes"');
   });
 
+  it("counts a turn heard as other words yet done as passed and hands-free, and lists MISHEARD_DONE as a soft class", () => {
+    const results = cycleOf([
+      record(
+        task("app-new-window-textedit"),
+        [fastStart({ transcript: "open a new text window" })],
+        {
+          frontmost: evidence("com.apple.TextEdit"),
+          windowGrew: evidence("true"),
+        },
+      ),
+    ]);
+    expect(results.aggregate).toMatchObject({ ran: 1, passed: 1 });
+    expect(results.aggregate.handsFree.rate).toBe(1);
+    const cls = results.failureClasses.find((c) => c.code === "MISHEARD_DONE");
+    expect(cls?.attempts).toBe(1);
+    expect(cls?.contributors).toContain("soft");
+    expect(renderReport(results)).toMatch(
+      /\*\*MISHEARD_DONE\*\* \*\(soft\)\* — recognizer\/gate; 1 passed turn\(s\) heard as other words/,
+    );
+    expect(renderReport(results)).toMatch(
+      /\| app-new-window-textedit#1 \| misheard \|.*\| pass \+MISHEARD_DONE \|/,
+    );
+  });
+
+  it("records why a setup failed, content-free, and the report says it under Environment", () => {
+    const step: Script = {
+      kind: "osascript",
+      poll: true,
+      timeoutMs: 20_000,
+      script:
+        'tell application "System Events" to return (exists (window 1 of process "Safari")) as string',
+    };
+    const home = "/Users/owner";
+    const detail = setupFailureDetail(
+      2,
+      step,
+      {
+        code: 124,
+        stdout: "",
+        stderr: `poll 78x/20004 ms: ${home}/OpenAssistBench/voice-voiceloopab12 not open:\n   System Events got an error: Can’t get process "Safari" ${"x".repeat(100)}`,
+        ms: 20_004,
+      },
+      home,
+    );
+    expect(detail).toMatchObject({
+      step: 2,
+      kind: "osascript",
+      poll: true,
+      exitCode: 124,
+      ms: 20_004,
+    });
+    expect(detail.said.length).toBe(SETUP_SAID_CHARS);
+    expect(detail.said).not.toContain("\n");
+    expect(detail.said).toContain("~/OpenAssistBench");
+    expect(detail.said).not.toContain(home);
+    // stdout stands in when stderr is empty; a silent kill says nothing.
+    expect(
+      setupFailureDetail(
+        0,
+        { kind: "sh", script: "true" },
+        {
+          code: 1,
+          stdout: "false",
+          stderr: "",
+          ms: 12,
+        },
+      ).said,
+    ).toBe("false");
+    expect(
+      setupFailureDetail(
+        0,
+        { kind: "sh", script: "true" },
+        {
+          code: 124,
+          stdout: "",
+          stderr: "",
+          ms: 10_001,
+        },
+      ).said,
+    ).toBe("");
+    const failed: TurnRecord = {
+      ...record(
+        task("browse-goto-example"),
+        [],
+        {},
+        {
+          envSubcode: "SETUP_FAILED",
+        },
+      ),
+      setup: detail,
+    };
+    const ready = record(task("ask-time"), [answer()]);
+    const results = cycleOf([failed, ready]);
+    expect(results.results[0].setup).toEqual(detail);
+    expect(results.results[1].setup).toBeNull();
+    expect(results.aggregate.ran).toBe(1);
+    const report = renderReport(results);
+    expect(report).toContain(
+      "- browse-goto-example#1: ENV_NOT_READY/SETUP_FAILED; setup step 2 (osascript poll) exited 124 after 20004 ms: poll 78x/20004 ms: ~/OpenAssistBench",
+    );
+    expect(report).not.toContain(home);
+    // A ledger from before the detail (cycle 1) still renders.
+    const legacy = record(
+      task("ask-time"),
+      [],
+      {},
+      { envSubcode: "SETUP_FAILED" },
+    );
+    expect(renderReport(cycleOf([legacy]))).toContain(
+      "- ask-time#1: ENV_NOT_READY/SETUP_FAILED\n",
+    );
+  });
+
   it("renders every section of the report and prints the fine owner and evidence", () => {
     const report = renderReport(results);
     for (const heading of [
@@ -2144,6 +2584,37 @@ describe("voice loop: the script", () => {
     expect(source).not.toMatch(/focusShortcut === null \? true/);
   });
 
+  it("waits for windows with the poll rule, records why a setup failed, probes consent for every scripted app, and rehearses setups without speaking", () => {
+    // A poll step is the pure driver, bounded by the step's own timeout; a
+    // step with no timeout gets the suite's default, never a literal.
+    expect(source).toMatch(/pollStepResult\(\s*await pollUntilTrue\(exec, \{/);
+    expect(source).toMatch(/step\.timeoutMs \?\? STEP\.defaultTimeoutMs/);
+    expect(source).not.toMatch(/step\.timeoutMs \?\? 10_000/);
+    // The failed step's detail goes into the turn record (the ledger), the
+    // whole stderr only into the local turns.jsonl.
+    expect(source).toMatch(
+      /setupFailure = setupFailureDetail\(index, step, result, homedir\(\)\)/,
+    );
+    expect(source).toMatch(/setup: setupFailure,/);
+    expect(source).toMatch(/setupStderr,/);
+    // Consent is probed for every app the runnable tasks script, not Notes alone.
+    expect(source).toMatch(/runnable\(\)\.flatMap\(taskProbes\)/);
+    expect(source).toMatch(/Object\.entries\(AUTOMATION_PROBES\)/);
+    expect(source).not.toMatch(/"notes-automation": probe\.code === 0/);
+    // The terminal's own Accessibility is a preflight fact and a refusal.
+    expect(source).toMatch(/TERMINAL_ACCESSIBILITY/);
+    expect(source).toMatch(/assistive access/);
+    // A rehearsal needs the consent flag, takes the lock, and speaks nothing.
+    expect(source).toMatch(/rehearse: \{ type: "boolean"/);
+    expect(source).toMatch(/REHEARSAL_CODES\.includes\(code\)/);
+    const rehearsal = source.slice(
+      source.indexOf("async function rehearse()"),
+      source.indexOf("if (values.rehearse)"),
+    );
+    expect(rehearsal).not.toMatch(/speak\(|say/);
+    expect(rehearsal).toMatch(/await cleanup\(task, fill\)/);
+  });
+
   it("never launches, quits or speaks to the app on its own, and needs the consent flag to run", () => {
     expect(source).toMatch(/--i-know-this-speaks-to-my-mac/);
     expect(source).not.toMatch(/open -a Butler|open", \["-a", "Butler/);
@@ -2181,6 +2652,12 @@ describe("voice loop: the script", () => {
       "followupReady",
       "summarizeUtterances",
       "lastTurnDone",
+      "TERMINAL_ACCESSIBILITY",
+      "TEXTEDIT_AUTOMATION",
+      "SAFARI_AUTOMATION",
+      "--rehearse",
+      "setup talks to apps only after a window exists",
+      "pkill -x Calculator",
     ])
       expect(docs, code).toContain(code);
   });

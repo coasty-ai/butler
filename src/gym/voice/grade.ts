@@ -920,10 +920,11 @@ export function gradeTurn(
     (turn) =>
       turn.expect.noConfirmation ?? turn.expect.outcome !== "confirmation",
   );
-  // State is judged only for a heard prompt whose plan was right: a check
-  // that cannot be read must not mask an unheard or misrouted turn.
+  // State is judged for a heard or misheard prompt whose plan was right: a
+  // check that cannot be read must not mask an unheard or misrouted turn,
+  // and a misheard turn passes (soft MISHEARD_DONE) only when its checks do.
   const state =
-    heard === "heard" && planMatched
+    heard !== "unheard" && planMatched
       ? applyStateChecks(
           // Checks may sit on any utterance; the last one's frontmost/reply rules apply.
           {

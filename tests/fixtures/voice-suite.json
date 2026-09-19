@@ -77,27 +77,60 @@
         },
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\"\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
           "record": "win",
           "timeoutMs": 15000
         },
         {
           "kind": "sh",
-          "script": "open -a TextEdit && sleep 1"
+          "script": "printf 'Voice loop {token}\\n' > \"/tmp/butler-voice-loop-{token}.txt\" && open -a TextEdit \"/tmp/butler-voice-loop-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         }
       ],
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
         },
         {
           "kind": "osascript",
-          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit"
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
+        },
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -f \"/tmp/butler-voice-loop-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         }
       ],
       "tags": ["fast-start"],
-      "notes": "A switch, not a launch: Safari is behind TextEdit at the start. No typing or clicking should be needed."
+      "notes": "A switch, not a launch: Safari is behind the loop's own TextEdit document at the start. Safari is scripted only once System Events sees a window of its, and TextEdit is opened through LaunchServices; both are quit only if the loop launched them. No typing or clicking should be needed."
     },
     {
       "id": "app-new-window-textedit",
@@ -120,8 +153,19 @@
       },
       "setup": [
         {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
           "kind": "sh",
-          "script": "open -a TextEdit && sleep 1"
+          "script": "printf 'Voice loop {token}\\n' > \"/tmp/butler-voice-loop-{token}.txt\" && open -a TextEdit \"/tmp/butler-voice-loop-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         },
         {
           "kind": "osascript",
@@ -137,11 +181,23 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"TextEdit\"\n  set extra to (count documents) - {state.docsBefore}\n  repeat while extra > 0 and (exists (first document whose path is missing value))\n    close (first document whose path is missing value) saving no\n    set extra to extra - 1\n  end repeat\nend tell"
+          "script": "if application \"TextEdit\" is running then\n  tell application \"TextEdit\"\n    set extra to (count documents) - {state.docsBefore}\n    repeat while extra > 0 and (exists (first document whose path is missing value))\n      close (first document whose path is missing value) saving no\n      set extra to extra - 1\n    end repeat\n  end tell\nend if"
+        },
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -f \"/tmp/butler-voice-loop-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         }
       ],
       "tags": ["fast-start"],
-      "notes": "A new untitled window in an app already open. Closes only untitled documents beyond the count seen before."
+      "notes": "A new untitled window in an app already open: the loop's own document is opened through LaunchServices and TextEdit is counted only once its window exists. Closes only untitled documents beyond the count seen before, then its own."
     },
     {
       "id": "app-close-window",
@@ -164,23 +220,50 @@
       "setup": [
         {
           "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "printf 'Voice loop {token}\\n' > \"/tmp/butler-voice-loop-{token}.txt\" && open -a TextEdit \"/tmp/butler-voice-loop-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
           "script": "tell application \"TextEdit\" to return (count documents) as string",
           "record": "docsBefore"
         },
         {
           "kind": "osascript",
-          "script": "tell application \"TextEdit\"\n  activate\n  make new document\n  delay 0.5\n  return (count windows) as string\nend tell",
+          "script": "tell application \"TextEdit\" to return (count windows) as string",
           "record": "windowsBefore"
         }
       ],
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"TextEdit\"\n  set extra to (count documents) - {state.docsBefore}\n  repeat while extra > 0 and (exists (first document whose path is missing value))\n    close (first document whose path is missing value) saving no\n    set extra to extra - 1\n  end repeat\nend tell"
+          "script": "if application \"TextEdit\" is running then\n  tell application \"TextEdit\"\n    set extra to (count documents) - {state.docsBefore}\n    repeat while extra > 0 and (exists (first document whose path is missing value))\n      close (first document whose path is missing value) saving no\n      set extra to extra - 1\n    end repeat\n  end tell\nend if"
+        },
+        {
+          "kind": "osascript",
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -f \"/tmp/butler-voice-loop-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         }
       ],
       "tags": ["policy"],
-      "notes": "An empty untitled document has no save sheet, so closing it needs no confirmation; one here is NEEDS_CLICK."
+      "notes": "The loop's own saved document is in front, so closing it needs no confirmation and shows no save sheet; one here is NEEDS_CLICK. TextEdit is counted only once System Events sees the window."
     },
     {
       "id": "app-quit-calculator",
@@ -212,17 +295,23 @@
         },
         {
           "kind": "sh",
-          "script": "open -a Calculator && sleep 1"
+          "script": "open -a Calculator"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Calculator\")) as string",
+          "poll": true,
+          "timeoutMs": 15000
         }
       ],
       "cleanup": [
         {
-          "kind": "osascript",
-          "script": "if \"{state.calcWasRunning}\" is \"false\" and application \"Calculator\" is running then tell application \"Calculator\" to quit"
+          "kind": "sh",
+          "script": "if [ \"{state.calcWasRunning}\" = \"false\" ]; then pkill -x Calculator; fi; true"
         }
       ],
       "tags": ["policy"],
-      "notes": "CMD+Q always asks (policy.ts). Either the policy asks and the loop declines with stop, or the run quits it outright. Never approved."
+      "notes": "CMD+Q always asks (policy.ts). Either the policy asks and the loop declines with stop, or the run quits it outright. Never approved. Calculator takes no Apple Events (no scripting terminology; a probe hung more than 12 s), so it is launched with open, seen through System Events and ended with pkill, only when the loop launched it."
     },
     {
       "id": "dictate-textedit-sentence",
@@ -236,7 +325,7 @@
           {
             "name": "hasPhrase",
             "kind": "osascript",
-            "script": "tell application \"TextEdit\" to return text of (first document whose name is \"dictation.txt\")",
+            "script": "tell application \"TextEdit\" to return text of (first document whose name contains \"dictation-{token}\")",
             "expect": "contains",
             "value": "quick brown fox",
             "primary": true
@@ -244,7 +333,7 @@
           {
             "name": "keptHeading",
             "kind": "osascript",
-            "script": "tell application \"TextEdit\" to return text of (first document whose name is \"dictation.txt\")",
+            "script": "tell application \"TextEdit\" to return text of (first document whose name contains \"dictation-{token}\")",
             "expect": "contains",
             "value": "{token}"
           }
@@ -252,14 +341,29 @@
       },
       "setup": [
         {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
           "kind": "sh",
-          "script": "mkdir -p \"{benchDir}\" && printf 'Voice loop {token}\\n' > \"{benchDir}/dictation.txt\" && open -a TextEdit \"{benchDir}/dictation.txt\" && sleep 1.5"
+          "script": "mkdir -p \"{benchDir}\" && printf 'Voice loop {token}\\n' > \"{benchDir}/dictation-{token}.txt\" && open -a TextEdit \"{benchDir}/dictation-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"dictation-{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         }
       ],
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"dictation.txt\") saving no"
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         },
         {
           "kind": "sh",
@@ -267,7 +371,7 @@
         }
       ],
       "tags": ["dictation"],
-      "notes": "Dictation into a plain text document the loop made; the heading with the token must survive."
+      "notes": "Dictation into a plain text document the loop made and opened through LaunchServices, named with the token; the heading with the token must survive."
     },
     {
       "id": "dictate-textedit-append-line",
@@ -280,7 +384,7 @@
           {
             "name": "appended",
             "kind": "osascript",
-            "script": "tell application \"TextEdit\" to return text of (first document whose name is \"list.txt\")",
+            "script": "tell application \"TextEdit\" to return text of (first document whose name contains \"list-{token}\")",
             "expect": "matches",
             "value": "shopping .*milk.*eggs",
             "primary": true
@@ -289,14 +393,29 @@
       },
       "setup": [
         {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
           "kind": "sh",
-          "script": "mkdir -p \"{benchDir}\" && printf 'Shopping {token}\\n' > \"{benchDir}/list.txt\" && open -a TextEdit \"{benchDir}/list.txt\" && sleep 1.5"
+          "script": "mkdir -p \"{benchDir}\" && printf 'Shopping {token}\\n' > \"{benchDir}/list-{token}.txt\" && open -a TextEdit \"{benchDir}/list-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"list-{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         }
       ],
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"list.txt\") saving no"
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         },
         {
           "kind": "sh",
@@ -367,7 +486,10 @@
           "say": "write hello there in the document",
           "withWake": true,
           "heard": "hello there",
-          "expect": { "outcome": "run", "runCompleted": false }
+          "expect": {
+            "outcome": "run",
+            "runCompleted": false
+          }
         },
         {
           "say": "and make it bold",
@@ -384,14 +506,14 @@
               {
                 "name": "hasPhrase",
                 "kind": "osascript",
-                "script": "tell application \"TextEdit\" to return text of document 1",
+                "script": "tell application \"TextEdit\" to return text of (first document whose name contains \"{token}\")",
                 "expect": "contains",
                 "value": "hello there"
               },
               {
                 "name": "isBold",
                 "kind": "osascript",
-                "script": "tell application \"TextEdit\"\n  try\n    return font of attribute run 1 of text of document 1\n  on error\n    return \"\"\n  end try\nend tell",
+                "script": "tell application \"TextEdit\"\n  try\n    return font of attribute run 1 of text of (first document whose name contains \"{token}\")\n  on error\n    return \"\"\n  end try\nend tell",
                 "expect": "matches",
                 "value": "bold",
                 "primary": true
@@ -403,22 +525,36 @@
       "setup": [
         {
           "kind": "osascript",
-          "script": "tell application \"TextEdit\" to return (count documents) as string",
-          "record": "docsBefore"
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "printf '%s' '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Helvetica;}}\\f0\\fs24 }' > \"/tmp/butler-voice-loop-{token}.rtf\" && open -a TextEdit \"/tmp/butler-voice-loop-{token}.rtf\""
         },
         {
           "kind": "osascript",
-          "script": "tell application \"TextEdit\"\n  activate\n  make new document\nend tell"
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         }
       ],
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"TextEdit\"\n  set extra to (count documents) - {state.docsBefore}\n  repeat while extra > 0 and (exists (first document whose path is missing value))\n    close (first document whose path is missing value) saving no\n    set extra to extra - 1\n  end repeat\nend tell"
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "sh",
+          "script": "rm -f \"/tmp/butler-voice-loop-{token}.rtf\""
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         }
       ],
       "tags": ["dictation", "follow-up"],
-      "notes": "A continuation inside the 3 s window with no wake phrase: the second line must amend the first run, not start a new one."
+      "notes": "A continuation inside the 3 s window with no wake phrase: the second line must amend the first run, not start a new one. The document is the loop's own empty rich-text file, opened through LaunchServices so a fresh TextEdit is never scripted before its window exists."
     },
     {
       "id": "browse-goto-example",
@@ -442,6 +578,21 @@
       "setup": [
         {
           "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
           "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
           "record": "win",
           "timeoutMs": 15000
@@ -450,7 +601,11 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
         }
       ],
       "tags": ["browsing"],
@@ -486,6 +641,21 @@
       "setup": [
         {
           "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
           "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
           "record": "win",
           "timeoutMs": 15000
@@ -494,7 +664,11 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
         }
       ],
       "tags": ["browsing"],
@@ -523,6 +697,21 @@
       "setup": [
         {
           "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
           "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://en.wikipedia.org/wiki/Ada_Lovelace\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Lovelace\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
           "record": "win",
           "timeoutMs": 30000
@@ -531,7 +720,11 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
         }
       ],
       "tags": ["browsing"],
@@ -559,6 +752,21 @@
       "setup": [
         {
           "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
           "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://example.com/\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Example\" then exit repeat\n    delay 0.5\n  end repeat\n  set URL of current tab of window 1 to \"https://en.wikipedia.org/wiki/Ada_Lovelace\"\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Lovelace\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
           "record": "win",
           "timeoutMs": 45000
@@ -567,7 +775,11 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
         }
       ],
       "tags": ["browsing"],
@@ -602,6 +814,21 @@
       "setup": [
         {
           "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
           "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://en.wikipedia.org/w/index.php?search=Ada+Lovelace+mathematician&fulltext=1&ns0=1\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Search\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
           "record": "win",
           "timeoutMs": 30000
@@ -610,7 +837,11 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
         }
       ],
       "tags": ["browsing"],
@@ -665,7 +896,9 @@
       "category": "question",
       "say": "what time is it",
       "heard": "time",
-      "expect": { "outcome": "answer" },
+      "expect": {
+        "outcome": "answer"
+      },
       "tags": ["question"],
       "notes": "An answer without a run; the reply budget is 1.5 s after the transcript."
     },
@@ -695,14 +928,29 @@
       },
       "setup": [
         {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
           "kind": "sh",
-          "script": "mkdir -p \"{benchDir}\" && printf 'The loop marker is {token}\\n' > \"{benchDir}/marker.txt\" && open -a TextEdit \"{benchDir}/marker.txt\" && sleep 1.5"
+          "script": "mkdir -p \"{benchDir}\" && printf 'The loop marker is {token}\\n' > \"{benchDir}/marker-{token}.txt\" && open -a TextEdit \"{benchDir}/marker-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"marker-{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         }
       ],
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"marker.txt\") saving no"
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         },
         {
           "kind": "sh",
@@ -724,14 +972,29 @@
       },
       "setup": [
         {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
           "kind": "sh",
-          "script": "mkdir -p \"{benchDir}\" && printf 'The loop marker is {token}\\n' > \"{benchDir}/marker.txt\" && open -a TextEdit \"{benchDir}/marker.txt\" && sleep 1.5"
+          "script": "mkdir -p \"{benchDir}\" && printf 'The loop marker is {token}\\n' > \"{benchDir}/marker-{token}.txt\" && open -a TextEdit \"{benchDir}/marker-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"marker-{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         }
       ],
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"marker.txt\") saving no"
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         },
         {
           "kind": "sh",
@@ -746,7 +1009,9 @@
       "category": "question",
       "say": "sure go for it",
       "heard": "go for it",
-      "expect": { "outcome": "question" },
+      "expect": {
+        "outcome": "question"
+      },
       "tags": ["question", "policy"],
       "notes": "Deictic words with nothing pending get a question, never a run and never an approval."
     },
@@ -771,17 +1036,40 @@
           "say": "scroll slowly through the whole page",
           "withWake": true,
           "heard": "scroll",
-          "expect": { "outcome": "run", "runCompleted": false }
+          "expect": {
+            "outcome": "run",
+            "runCompleted": false
+          }
         },
         {
           "say": "stop",
           "withWake": true,
-          "after": { "event": "ActionExecuted", "plus": 500 },
+          "after": {
+            "event": "ActionExecuted",
+            "plus": 500
+          },
           "heard": "stop",
-          "expect": { "outcome": "stop" }
+          "expect": {
+            "outcome": "stop"
+          }
         }
       ],
       "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
         {
           "kind": "osascript",
           "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://en.wikipedia.org/wiki/Ada_Lovelace\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Lovelace\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
@@ -792,7 +1080,11 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
         }
       ],
       "tags": ["correction"],
@@ -806,25 +1098,54 @@
           "say": "scroll slowly through the whole page",
           "withWake": true,
           "heard": "scroll",
-          "expect": { "outcome": "run", "runCompleted": false }
+          "expect": {
+            "outcome": "run",
+            "runCompleted": false
+          }
         },
         {
           "say": "wait",
           "withWake": true,
-          "after": { "event": "ActionExecuted", "plus": 500 },
+          "after": {
+            "event": "ActionExecuted",
+            "plus": 500
+          },
           "heard": "wait",
-          "expect": { "outcome": "pause" }
+          "expect": {
+            "outcome": "pause"
+          }
         },
         {
           "say": "continue",
           "withWake": true,
-          "after": { "event": "RunState", "status": "paused", "plus": 2000 },
+          "after": {
+            "event": "RunState",
+            "status": "paused",
+            "plus": 2000
+          },
           "heard": "continue",
-          "expect": { "outcome": "resume" }
+          "expect": {
+            "outcome": "resume"
+          }
         }
       ],
       "stopRunAfter": true,
       "setup": [
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
         {
           "kind": "osascript",
           "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"https://en.wikipedia.org/wiki/Ada_Lovelace\"}\n  set w to id of window 1\n  repeat 40 times\n    if (name of current tab of window 1) contains \"Lovelace\" then exit repeat\n    delay 0.5\n  end repeat\n  return w\nend tell",
@@ -835,7 +1156,11 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
         }
       ],
       "tags": ["correction"],
@@ -849,7 +1174,10 @@
           "say": "switch to the Alpha document",
           "withWake": true,
           "heard": "alpha",
-          "expect": { "outcome": "run", "runCompleted": false }
+          "expect": {
+            "outcome": "run",
+            "runCompleted": false
+          }
         },
         {
           "say": "no the other one",
@@ -877,8 +1205,29 @@
       ],
       "setup": [
         {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
           "kind": "sh",
-          "script": "mkdir -p \"{benchDir}\" && printf 'Alpha {token}\\n' > \"{benchDir}/Alpha-{token}.txt\" && printf 'Beta {token}\\n' > \"{benchDir}/Beta-{token}.txt\" && open -a TextEdit \"{benchDir}/Alpha-{token}.txt\" && sleep 1 && open -a TextEdit \"{benchDir}/Beta-{token}.txt\" && sleep 1.5"
+          "script": "mkdir -p \"{benchDir}\" && printf 'Alpha {token}\\n' > \"{benchDir}/Alpha-{token}.txt\" && open -a TextEdit \"{benchDir}/Alpha-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"Alpha-{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "sh",
+          "script": "printf 'Beta {token}\\n' > \"{benchDir}/Beta-{token}.txt\" && open -a TextEdit \"{benchDir}/Beta-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"Beta-{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         }
       ],
       "cleanup": [
@@ -887,12 +1236,16 @@
           "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
         },
         {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
+        },
+        {
           "kind": "sh",
           "script": "rm -rf \"{benchDir}\""
         }
       ],
       "tags": ["correction", "follow-up"],
-      "notes": "Beta is in front at the start, so the first line has real work and the correction must bring Beta back."
+      "notes": "Beta is in front at the start (opened second, each through LaunchServices and each awaited by its window), so the first line has real work and the correction must bring Beta back."
     },
     {
       "id": "steer-undo",
@@ -902,12 +1255,18 @@
           "say": "type extra words at the end of the document",
           "withWake": true,
           "heard": "extra",
-          "expect": { "outcome": "run" }
+          "expect": {
+            "outcome": "run"
+          }
         },
         {
           "say": "undo that",
           "withWake": true,
-          "after": { "event": "RunState", "status": "completed", "plus": 1500 },
+          "after": {
+            "event": "RunState",
+            "status": "completed",
+            "plus": 1500
+          },
           "heard": "undo",
           "expect": {
             "outcome": "run",
@@ -915,7 +1274,7 @@
               {
                 "name": "restored",
                 "kind": "osascript",
-                "script": "tell application \"TextEdit\" to return text of (first document whose name is \"undo.txt\")",
+                "script": "tell application \"TextEdit\" to return text of (first document whose name contains \"undo-{token}\")",
                 "expect": "equals",
                 "value": "Keep this line {token}",
                 "primary": true
@@ -926,14 +1285,29 @@
       ],
       "setup": [
         {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
           "kind": "sh",
-          "script": "mkdir -p \"{benchDir}\" && printf 'Keep this line {token}' > \"{benchDir}/undo.txt\" && open -a TextEdit \"{benchDir}/undo.txt\" && sleep 1.5"
+          "script": "mkdir -p \"{benchDir}\" && printf 'Keep this line {token}' > \"{benchDir}/undo-{token}.txt\" && open -a TextEdit \"{benchDir}/undo-{token}.txt\""
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"undo-{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
         }
       ],
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"undo.txt\") saving no"
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         },
         {
           "kind": "sh",
@@ -951,15 +1325,22 @@
           "say": "what are the planets in order from the sun",
           "withWake": true,
           "heard": "planets",
-          "expect": { "outcome": "answer" }
+          "expect": {
+            "outcome": "answer"
+          }
         },
         {
           "say": "stop",
           "withWake": true,
-          "after": { "event": "SpeechOut", "plus": 0 },
+          "after": {
+            "event": "SpeechOut",
+            "plus": 0
+          },
           "heard": "stop",
           "bargeIn": true,
-          "expect": { "outcome": "interrupt" }
+          "expect": {
+            "outcome": "interrupt"
+          }
         }
       ],
       "timeoutMs": 30000,
@@ -1066,7 +1447,7 @@
         },
         {
           "kind": "osascript",
-          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit"
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         }
       ],
       "tags": ["multi-step"],
@@ -1091,8 +1472,8 @@
       ],
       "cleanup": [
         {
-          "kind": "osascript",
-          "script": "if \"{state.calcWasRunning}\" is \"false\" and application \"Calculator\" is running then tell application \"Calculator\" to quit"
+          "kind": "sh",
+          "script": "if [ \"{state.calcWasRunning}\" = \"false\" ]; then pkill -x Calculator; fi; true"
         }
       ],
       "tags": ["multi-step"],
@@ -1109,7 +1490,7 @@
           {
             "name": "numberInRange",
             "kind": "osascript",
-            "script": "tell application \"TextEdit\" to return text of (first document whose name is \"iceland.txt\")",
+            "script": "tell application \"TextEdit\" to return text of (first document whose name contains \"iceland-{token}\")",
             "expect": "inRange",
             "value": [300000, 500000],
             "primary": true
@@ -1118,12 +1499,38 @@
       },
       "setup": [
         {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"TextEdit\") as string",
+          "record": "textEditWasRunning"
+        },
+        {
           "kind": "sh",
-          "script": "mkdir -p \"{benchDir}\" && printf 'Iceland {token}\\n' > \"{benchDir}/iceland.txt\" && open -a TextEdit \"{benchDir}/iceland.txt\" && sleep 1.5"
+          "script": "mkdir -p \"{benchDir}\" && printf 'Iceland {token}\\n' > \"{benchDir}/iceland-{token}.txt\" && open -a TextEdit \"{benchDir}/iceland-{token}.txt\""
         },
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\"\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
+          "script": "tell application \"System Events\" to return (exists (first window of process \"TextEdit\" whose name contains \"iceland-{token}\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists process \"Safari\") as string",
+          "record": "safariWasRunning"
+        },
+        {
+          "kind": "sh",
+          "script": "pgrep -xq Safari || open -a Safari"
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"System Events\" to return (exists (window 1 of process \"Safari\")) as string",
+          "poll": true,
+          "timeoutMs": 20000
+        },
+        {
+          "kind": "osascript",
+          "script": "tell application \"Safari\"\n  activate\n  make new document with properties {URL:\"about:blank\"}\n  return id of window 1\nend tell",
           "record": "win",
           "timeoutMs": 15000
         }
@@ -1131,11 +1538,19 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name is \"iceland.txt\") saving no"
+          "script": "if application \"TextEdit\" is running then tell application \"TextEdit\" to close (every document whose name contains \"{token}\") saving no"
         },
         {
           "kind": "osascript",
-          "script": "tell application \"Safari\" to close (every window whose id is {state.win})"
+          "script": "if application \"Safari\" is running then tell application \"Safari\" to close (every window whose id is {state.win})"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.safariWasRunning}\" is \"false\" and application \"Safari\" is running then tell application \"Safari\" to quit"
+        },
+        {
+          "kind": "osascript",
+          "script": "if \"{state.textEditWasRunning}\" is \"false\" and application \"TextEdit\" is running then tell application \"TextEdit\" to quit saving no"
         },
         {
           "kind": "sh",
@@ -1322,7 +1737,9 @@
       "say": "I told him hey butler is on the phone",
       "withWake": false,
       "heard": "",
-      "expect": { "outcome": "silence" },
+      "expect": {
+        "outcome": "silence"
+      },
       "timeoutMs": 25000,
       "unheardMs": 15000,
       "tags": ["policy"],
@@ -1365,7 +1782,9 @@
       "category": "noisy",
       "say": "what time is it",
       "heard": "time",
-      "expect": { "outcome": "answer" },
+      "expect": {
+        "outcome": "answer"
+      },
       "noise": {
         "voice": "Alex",
         "paragraph": "gardening",
@@ -1390,7 +1809,10 @@
         "leadMs": 0,
         "volm": 0.45,
         "gapAt": "before-prompt",
-        "second": { "paragraph": "gardening", "afterMs": 800 }
+        "second": {
+          "paragraph": "gardening",
+          "afterMs": 800
+        }
       },
       "setup": [
         {
