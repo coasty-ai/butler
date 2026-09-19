@@ -39,6 +39,9 @@ const tally = (values) => {
 };
 try {
   await controller.configure(structuredClone(defaultSettings));
+  // The helper starts stopped; the read-only capture needs it resumed, and it
+  // is stopped again below before the process is closed.
+  await controller.resume();
   const surface = await controller.surface();
   console.log(
     JSON.stringify({
@@ -95,5 +98,10 @@ try {
     }),
   );
 } finally {
+  try {
+    await controller.stop("probe done");
+  } catch {
+    // Already stopped or gone: nothing to give back.
+  }
   controller.close();
 }
