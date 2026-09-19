@@ -160,6 +160,11 @@ const benignControlLabels = new Set([
   "help",
   "info",
   "details",
+  // A review step looks before anything commits (a booking form's Review, a
+  // checkout's Review page); the step that commits carries its own word
+  // (Confirm, Submit, Order), and the consequential check runs before this
+  // list, so a label joining the two still asks (cycle 20260919-0739-d495598).
+  "review",
   "general",
   "play",
   "pause",

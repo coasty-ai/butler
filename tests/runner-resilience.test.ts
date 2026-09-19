@@ -1730,6 +1730,83 @@ describe("declined approvals", () => {
 });
 
 /**
+ * NOT_REVIEWED (cycle 20260919-0739-d495598, three of three attempts): the
+ * booking form's submit button is labelled Review and leads to a page that
+ * books nothing; the real policy asked "Click “Review”?" for it, the
+ * unattended harness declined, and the review was never posted. The event
+ * sequence is the run's own: a named click on the resolved button in Safari
+ * on the fixture host, through the real policy (no policy mock here).
+ */
+describe("a web form's review step (cycle 20260919-0739-d495598)", () => {
+  const safari: Surface = {
+    ...surface,
+    appId: "com.apple.Safari",
+    domain: "127.0.0.1",
+    targetWebHost: "127.0.0.1",
+  };
+  const button = (label: string): Surface => ({
+    ...safari,
+    controlStatus: "resolved",
+    controlLabel: label,
+    targetRole: "AXButton",
+    targetLabel: label,
+  });
+  // The surface the helper reports for a named click resolves the button;
+  // every other look at the screen sees the page.
+  const site = (label: string) =>
+    controller({
+      surface: async (action?: Action) =>
+        action?.type === "click_control" ? button(label) : safari,
+    });
+  it("posts the review without a question", async () => {
+    const m = memory();
+    const c = site("Review");
+    const p = scripted([
+      act({ type: "click_control", label: "Review", x: 0.658, y: 0.58 }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() =>
+      ["confirming", "completed"].includes(runner.snapshot.run?.status ?? ""),
+    );
+    const asked = m.of("PolicyConfirmationRequested");
+    // Lets the run finish either way, so the assertions below are what fail.
+    if (asked.length) runner.confirm(false);
+    await running;
+    expect(asked).toHaveLength(0);
+    expect(m.of("UserDenied")).toHaveLength(0);
+    expect(c.execute).toHaveBeenCalledTimes(1);
+    expect(runner.snapshot.run?.status).toBe("completed");
+  });
+  it("still asks before the confirm step, and a decline never executes it", async () => {
+    const m = memory();
+    const c = site("Confirm reservation");
+    const p = scripted([
+      act({
+        type: "click_control",
+        label: "Confirm reservation",
+        x: 0.5,
+        y: 0.4,
+      }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => m.of("PolicyConfirmationRequested").length === 1);
+    expect(runner.snapshot.run?.status).toBe("confirming");
+    const question = runner.snapshot.message ?? "";
+    expect(question).not.toBe("Click “Confirm reservation”?");
+    runner.confirm(false);
+    await running;
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(m.of("UserDenied")).toHaveLength(1);
+    expect(p.observations[1].history.at(-1)).toMatchObject({
+      type: "click_control",
+      result: declinedResult(question),
+    });
+  });
+});
+
+/**
  * STOPPED_WHILE_PAUSED, the loops half (six of the seven loop pauses in cycle
  * 20260919-0226): one open_app a step between the reading and the writing
  * application, because nothing carried the value the model had just read.

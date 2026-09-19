@@ -377,6 +377,106 @@ describe("System Settings pane rows (cycle 20260919-0226-17c6e7f)", () => {
   });
 });
 
+/**
+ * NOT_REVIEWED (cycle 20260919-0739-d495598, three of three attempts): the
+ * booking form's own submit button is labelled Review, and a review is what
+ * the button opens: the page it leads to says nothing is booked until the
+ * user confirms. The label carries no consequential word, so it reached the
+ * benign-label gate, which did not know it and asked "Click “Review”?". The
+ * unattended harness declines every question a task does not approve, the
+ * model re-filled the form and asked the same question again, and the grader
+ * saw no review posted and a run that ended after a decline. The decisions
+ * below are the run's own sequence (focus a field, type, four times; the
+ * review step; the confirm step) with content-free labels.
+ */
+describe("a web form's review step (cycle 20260919-0739-d495598)", () => {
+  const safari = {
+    appId: "com.apple.Safari",
+    domain: "127.0.0.1",
+    targetWebHost: "127.0.0.1",
+  };
+  const field = {
+    ...safari,
+    controlStatus: "resolved" as const,
+    controlLabel: "Field",
+    targetRole: "AXTextField",
+    focusedRole: "AXTextField",
+  };
+  const button = (label: string) => ({
+    ...safari,
+    controlStatus: "resolved" as const,
+    controlLabel: label,
+    targetRole: "AXButton",
+    targetLabel: label,
+  });
+  it("fills the form and opens the review without asking", () => {
+    for (let i = 0; i < 4; i++) {
+      expect(
+        decide(named("Field", { x: 0.456, y: 0.3 + i / 10 }), field),
+      ).toEqual({
+        kind: "ALLOW",
+        reason: "Focus a known input control.",
+      });
+      expect(decide(type("value"), field).kind).toBe("ALLOW");
+    }
+    expect(
+      decide(named("Review", { x: 0.658, y: 0.58 }), button("Review")),
+    ).toEqual({
+      kind: "ALLOW",
+      reason: "Activate an identified, non-consequential control.",
+    });
+    // A pointer click on the same button, and the label as sites style it.
+    expect(decide(click(), button("Review")).kind).toBe("ALLOW");
+    for (const label of ["Review…", "Review:", "Review (R)", "REVIEW"])
+      expect(decide(click(), button(label)).kind, label).toBe("ALLOW");
+  });
+  it("still stops in front of the confirm step, whatever the setting or the words", () => {
+    const confirm = named("Confirm reservation", { x: 0.5, y: 0.4 });
+    const decision = decide(confirm, button("Confirm reservation"));
+    expect(decision.kind).toBe("CONFIRM");
+    expect(decision.reason).not.toBe("Click “Confirm reservation”?");
+    // The user's own words mention confirming: an irreversible label is
+    // never unlocked by them.
+    for (const autonomy of ["ask", "task", "flow"] as const)
+      expect(
+        evaluate(
+          confirm,
+          { ...base, ...button("Confirm reservation") },
+          { ...settings, autonomy },
+          false,
+          { userWords: "book it and check with me before you confirm" },
+        ).kind,
+        autonomy,
+      ).toBe("CONFIRM");
+  });
+  it("keeps asking when review is only part of the label or the hit text says more", () => {
+    // Labels that review and commit in one step carry the committing word.
+    for (const label of [
+      "Review order",
+      "Review & confirm",
+      "Review and submit",
+      "Review and pay",
+      "Submit review",
+      "Post review",
+      "Publish review",
+    ])
+      expect(decide(click(), button(label)).kind, label).toBe("CONFIRM");
+    // A "Review" whose text under the pointer says the button confirms.
+    expect(
+      decide(click(), {
+        ...button("Review"),
+        targetText: "Review · Confirm reservation",
+      }).kind,
+    ).toBe("CONFIRM");
+    // Other labels a booking site might use stay unknown and ask.
+    for (const label of ["Reserve", "Book table", "Continue"])
+      expect(decide(click(), button(label))).toMatchObject({
+        kind: "CONFIRM",
+        reason: `Click “${label}”?`,
+      });
+  });
+});
+
 describe("consequential and unverifiable input stays gated", () => {
   it.each<Row>([
     [

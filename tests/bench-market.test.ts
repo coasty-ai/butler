@@ -100,6 +100,12 @@ import {
   selectSuite,
   suiteOf,
 } from "../src/gym/bench/suites";
+import { evaluate } from "../src/core/policy";
+import {
+  actionSchema,
+  defaultSettings,
+  type Surface,
+} from "../src/core/schema";
 import type {
   AgendaEvidence,
   AgendaItem,
@@ -1811,6 +1817,60 @@ describe("market suite names against the policy", () => {
     for (const labels of Object.values(DELIBERATE_LABELS))
       for (const label of labels)
         expect(pattern.test(label.toLowerCase())).toBe(true);
+  });
+
+  /**
+   * The word check above cannot see the policy's other gate: an identified
+   * button whose label carries no consequential word still asks unless the
+   * label is on the benign list. NOT_REVIEWED (cycle 20260919-0739-d495598,
+   * three of three attempts): Review, the booking form's own submit, asked
+   * "Click “Review”?" and the unattended harness declined it every time, so
+   * the review was never posted. The buttons here are the fixture's own,
+   * pressed as the helper would report them: resolved, in Safari, on the
+   * fixture host.
+   */
+  it("lets the booking's Review run and stops before Confirm reservation, as the policy decides", async () => {
+    const task = byId("booking-table-pause-before-confirm");
+    const a = await prepare(task);
+    const buttons = (key: string) =>
+      [
+        ...get(a, key).body.matchAll(
+          /<button type="submit">([^<]*)<\/button>/g,
+        ),
+      ].map((match) => match[1]);
+    expect(buttons("tables")).toEqual(["Review"]);
+    expect(buttons("tables/confirm")).toEqual(["Confirm reservation"]);
+    const press = (label: string) => {
+      const web: Surface = {
+        appId: SAFARI,
+        pid: 7,
+        secureInput: false,
+        unknown: false,
+        domain: "127.0.0.1",
+        targetWebHost: "127.0.0.1",
+        controlStatus: "resolved",
+        controlLabel: label,
+        targetRole: "AXButton",
+        targetLabel: label,
+      };
+      return evaluate(
+        actionSchema.parse({ type: "click_control", label, frame_id: "f" }),
+        web,
+        defaultSettings,
+        false,
+      );
+    };
+    expect(press(buttons("tables")[0])).toEqual({
+      kind: "ALLOW",
+      reason: "Activate an identified, non-consequential control.",
+    });
+    const confirm = press(buttons("tables/confirm")[0]);
+    expect(confirm.kind).toBe("CONFIRM");
+    expect(confirm.reason).not.toBe("Click “Confirm reservation”?");
+    // The task approves nothing, so that question is declined whatever it
+    // says, and a declined run is NOT_HANDED_BACK: the floor stays.
+    expect(task.approve).toEqual([]);
+    expect(approvesPrompt(task, confirm.reason, true)).toBe(false);
   });
 
   it("names nothing the model clicks in the Finder with a consequential word", async () => {
