@@ -23,10 +23,14 @@ import {
  * endpoint), and the store answers every post with a redirect to the token's
  * `thanks` page, so a flow registers its next step under that key: the hotel
  * results after a search, the review page after a booking form. Labels are
- * chosen against the policy's consequential pattern: a button reads as
- * consequential only where the task is about stopping in front of it
+ * chosen against the policy's own click decision in the default "task"
+ * mode with the task's instruction as the user's words (tests/bench-market
+ * .test.ts runs every button through it): an ordinary button runs unasked,
+ * and a button asks only where the task is about stopping in front of it
  * (Checkout, Confirm reservation, Sign in) or the task approves it (the
- * CRM's Submit).
+ * CRM's Submit). The consequential pattern alone was the wrong gate: the
+ * policy asks `Click “…”?` for any label its allow-list does not know, and
+ * in cycle 20260919-0739 that stopped every form at its own button.
  */
 
 /* ------------------------------------------------------------- helpers */
@@ -1396,6 +1400,12 @@ export const marketPages = {
         "checkin",
         field("reference", "Booking reference") +
           field("lastname", "Last name"),
+        // Continue, as real check-in pages say it. The policy keeps "Continue"
+        // asking (a consent screen's button) and the task's words name neither
+        // it nor "Complete check-in", so the task lists both questions as the
+        // ones it accepts (catalogue-market.ts approve): a --approve-routine
+        // cycle answers them, and a strict cycle records them as declined
+        // CLICK_CONTROL rather than hiding them behind a friendlier label.
         "Continue",
       ),
     ),
@@ -1429,6 +1439,9 @@ export const marketPages = {
     page(
       "Finish",
       token,
+      // "Complete check-in", as real pages say it: a commit verb the policy's
+      // patterns do not know, so it asks `Click “Complete check-in”?`; the
+      // task accepts that question (catalogue-market.ts approve).
       `<p>Everything is in place.</p>` +
         form(token, "checkin/done", "", "Complete check-in"),
     ),

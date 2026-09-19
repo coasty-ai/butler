@@ -704,10 +704,25 @@ export const SUBMIT_REASON = "Submit or authorize this change?";
  * not have a browser's Save approved, and a reason with no entry here is
  * never approved.
  */
+/**
+ * The two questions the policy asks on a real check-in page, as the fixture
+ * writes its buttons: "Continue" (a consent screen's button elsewhere, so it
+ * is never routine) and "Complete check-in" (a commit verb the patterns do
+ * not know). checkin-flight-seat lists them; a --approve-routine cycle
+ * answers them in a browser on the fixture host, a strict cycle declines
+ * them and records CLICK_CONTROL. The labels are not renamed to allow-listed
+ * ones, so the bench keeps measuring what a real check-in costs.
+ */
+export const CHECKIN_APPROVALS = [
+  "Click “Continue”?",
+  "Click “Complete check-in”?",
+];
 export const APPROVAL_APPS: Readonly<Record<string, readonly string[]>> = {
   "Save these changes?": [TEXTEDIT],
   [REPLACE_REASON]: [TEXTEDIT],
   [SUBMIT_REASON]: BROWSER_APPS,
+  [CHECKIN_APPROVALS[0]]: BROWSER_APPS,
+  [CHECKIN_APPROVALS[1]]: BROWSER_APPS,
 };
 
 /**

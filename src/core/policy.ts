@@ -200,8 +200,28 @@ const benignControlLabels = new Set([
   "bold",
   "italic",
   "underline",
+  // A review or preview only shows what was entered; Apply commits the
+  // values already on screen, which setting them back and applying again
+  // undoes; a draft kept is a draft; a basket is emptied as easily as it is
+  // filled (cycle 20260919-0739: the market pages' forms, every one of which
+  // asked and was declined in the default mode).
+  "review",
+  "preview",
+  "apply",
+  "keep draft",
+  "add to basket",
+  "add to cart",
+  "add to bag",
 ]);
 const benignControlPrefix = /^(?:new|show|hide|view|sort by|go to|open)\b/;
+/**
+ * A button on a web page whose whole name is a short code: a seat (12A), a
+ * day or year in a date picker (17, 2026), a page number. Pressing one picks
+ * or navigates; what commits the pick is a button with a name of its own.
+ * Only inside a page: a native digit key may be a keypad (Calculator has its
+ * own rule; a dial pad asks as before).
+ */
+const webCodeLabel = /^\d{1,4}[a-z]?$/;
 /** Lowercase, trim, and drop trailing ellipses, colons and keyboard hints. */
 const calculatorKey =
   /^(?:[0-9]|[+\-−×÷*/=.,%]|\+\/[-−]|all clear|clear|ac|c|add|subtract|multiply|divide|equals|percent|negate|decimal(?: point)?|point|change sign|sin|cos|tan|sinh|cosh|tanh|log|ln|x²|x³|√|π|e|rad|deg|mc|m\+|m-|mr|\(|\))$/;
@@ -411,6 +431,69 @@ export function askedForLabel(
   const said = userWords.toLowerCase();
   const matches = label.toLowerCase().match(new RegExp(reversible, "g")) ?? [];
   return matches.some((word) => said.includes(word));
+}
+/**
+ * Words any label shares with any request; on their own they name nothing.
+ * "on" is here as the preposition it nearly always is ("on the home panel"),
+ * so an On toggle is never named by it; "off" stays, since nobody says it
+ * but to mean the state.
+ */
+const controlStopWords = new Set(
+  "a an the to of for and or in on at by with from as is it its this that these those my me your you i we our be do".split(
+    " ",
+  ),
+);
+/**
+ * Toggles that grant access: the words the user said do not make them
+ * routine, because what they let in is not undone by pressing again. The
+ * consequential pattern gates Accept, Agree, Authorize and Security before
+ * this; these are the rest, and they keep their question as before.
+ */
+const grantsAccess =
+  /\b(?:allow|grant|permit|trust|log ?in|login|log ?on|logon|continue|verify|enable)\b/;
+/** The words of a label or a request, with "wi-fi" also as "wifi" and "wi", "fi". */
+function controlWords(text: string): Set<string> {
+  const found = new Set<string>();
+  for (const [word] of text
+    .toLowerCase()
+    .matchAll(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu)) {
+    if (controlStopWords.has(word)) continue;
+    found.add(word);
+    if (/['’-]/.test(word)) {
+      found.add(word.replace(/['’-]/g, ""));
+      for (const part of word.split(/['’-]/))
+        if (!controlStopWords.has(part)) found.add(part);
+    }
+  }
+  return found;
+}
+/**
+ * Whether the user's own words name the state an identified toggle (a
+ * checkbox or radio) sets, when its label carries no consequential word:
+ * "turn the hallway light off" names the Off radio, "turn off wi-fi" the
+ * Wi-Fi checkbox. A toggle is what role alone makes undoable (press it again),
+ * the way the reversible pattern makes Save undoable for askedForLabel, so
+ * the same "task" promise applies: the state the words asked for is set and
+ * reported instead of asked. It is never applied to a button: a button's
+ * label may be a commit verb the pattern does not know ("Book now", "Check
+ * out", "Senden"), and a word the request shares with it ("find me a book")
+ * proves nothing; for those the anchored allow-list and its `Click “…”?`
+ * question stand. Only the user's own words count, never a rewrite, a
+ * proposal or a wake-up run; a word both share that names nothing ("to",
+ * "on") is not a match; and a toggle that grants access keeps asking.
+ * Cycle 20260919-0739: the panel's Off radios asked "Change this setting?"
+ * in the default mode, and the run that was declined there handed off.
+ */
+export function askedForControl(
+  label: string,
+  userWords: string | undefined,
+): boolean {
+  if (!userWords) return false;
+  const normalized = normalizeControlLabel(label);
+  if (grantsAccess.test(normalized)) return false;
+  const said = controlWords(userWords);
+  const named = controlWords(normalized);
+  return named.size > 0 && [...named].some((word) => said.has(word));
 }
 function consequentialReason(text: string): string {
   const has = (pattern: RegExp) => pattern.test(text);
@@ -1838,10 +1921,28 @@ function decideAction(
           reason:
             "Open System Settings’ About pane: it only shows information.",
         };
-      if (benignControl(role, shown))
+      if (
+        benignControl(role, shown) ||
+        (role === "AXButton" &&
+          !!surface.targetWebHost &&
+          webCodeLabel.test(normalizeControlLabel(shown)))
+      )
         return {
           kind: "ALLOW",
           reason: "Activate an identified, non-consequential control.",
+        };
+      // A toggle set to the state the user's own words asked for: undone by
+      // pressing it again, so it runs and is reported except in "ask"
+      // (askedForControl). A button never runs on the words alone, and a
+      // toggle they did not name asks as before.
+      if (
+        ["AXCheckBox", "AXRadioButton"].includes(role) &&
+        settings.autonomy !== "ask" &&
+        askedForControl(shown, context.userWords)
+      )
+        return {
+          kind: "ALLOW",
+          reason: `${quote(shown)} is the state you asked for, and pressing it again puts it back: reported, not asked.`,
         };
       return {
         kind: "CONFIRM",

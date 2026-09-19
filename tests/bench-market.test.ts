@@ -78,10 +78,12 @@ import {
 } from "../src/gym/bench/readers";
 import {
   APPROVAL_APPS,
+  CHECKIN_APPROVALS,
   BROWSER_APPS,
   BROWSER_PARAM,
   CALENDAR,
   FINDER,
+  FIXTURE_HOST,
   FIXTURE_PORT,
   REMINDERS,
   TEXTEDIT,
@@ -811,7 +813,7 @@ const SCENARIOS: Record<string, Scenario> = {
       });
       post(a, "checkin/seats", { seat: freeWindow(a) });
       post(a, "checkin/done", {});
-      // The received page still offers Complete check-in: pressing it again is the same check-in.
+      // The received page still offers the finish: posting Done again is the same check-in.
       post(a, "checkin/done", {});
       return evidenceOf(a, { fixture: a.store.read(a.token) });
     },
@@ -1162,7 +1164,9 @@ describe("market suite catalogue", () => {
           ? SAVE_APPROVALS
           : task.id === "ops-crm-data-entry"
             ? SUBMIT_APPROVALS
-            : [];
+            : task.id === "checkin-flight-seat"
+              ? CHECKIN_APPROVALS
+              : [];
       expect(task.approve, task.id).toEqual(expected);
       for (const reason of task.approve ?? []) {
         expect(approvesPrompt(task, reason, true), reason).toBe(true);
@@ -1871,6 +1875,135 @@ describe("market suite names against the policy", () => {
     // says, and a declined run is NOT_HANDED_BACK: the floor stays.
     expect(task.approve).toEqual([]);
     expect(approvesPrompt(task, confirm.reason, true)).toBe(false);
+  });
+
+  // Cycle 20260919-0739-d495598: every ordinary button on these pages asked
+  // `Click “…”?` (the panel's radios "Change this setting?") in the default
+  // "task" mode, the bench declined every one, and 7 of 11 attempts ended in
+  // a hand-off. The consequential pattern was the wrong gate: what decides is
+  // the policy's own click decision, on the fixture host in Safari, with the
+  // task's instruction as the user's words, which is how the harness now
+  // starts a run (taskSource "user_words", as a typed or spoken command).
+  // The buttons a task's route presses must run; the ones it never needs on
+  // a shared page (a triage run's Keep draft) may ask, and the deliberate
+  // ones must.
+  const ROUTE_BUTTONS: Record<string, (string | RegExp)[]> = {
+    "home-dashboard-lights": ["Apply"],
+    "checkin-flight-seat": [/^\d+[A-F]$/],
+    "booking-table-pause-before-confirm": ["Review"],
+    "shop-cart-within-budget": ["Add to basket"],
+    "mail-draft-reply": ["Keep draft"],
+    "mail-triage-backlog": ["Apply"],
+    "ops-support-ticket-draft": ["Keep draft"],
+    "travel-hotel-shortlist": ["Search"],
+  };
+  it("runs every button on a task's route unasked in the default mode with the task's own words", async () => {
+    const safari = "com.apple.Safari";
+    const decideClick = (role: string, label: string, userWords?: string) =>
+      evaluate(
+        actionSchema.parse({ type: "click", frame_id: "f", x: 0.5, y: 0.5 }),
+        {
+          appId: safari,
+          pid: 1,
+          secureInput: false,
+          unknown: false,
+          targetAppId: safari,
+          domain: FIXTURE_HOST,
+          targetWebHost: FIXTURE_HOST,
+          targetRole: role,
+          targetLabel: label,
+        },
+        structuredClone(defaultSettings),
+        false,
+        userWords === undefined ? {} : { userWords },
+      );
+    // The one deliberate label the task's own words authorise: "submit it".
+    const authorised: Record<string, string[]> = {
+      "ops-crm-data-entry": ["Submit"],
+    };
+    const onRoute = (id: string, label: string) =>
+      (ROUTE_BUTTONS[id] ?? []).some((m) =>
+        typeof m === "string" ? m === label : m.test(label),
+      );
+    let routeButtons = 0;
+    const routesSeen = new Set<string>();
+    for (const task of MARKET_CATALOGUE.filter((task) =>
+      task.evidence?.includes("fixture"),
+    )) {
+      const a = await prepare(task);
+      const words = fillInstruction(task.instruction, a.parameters);
+      const deliberate = new Set(DELIBERATE_LABELS[task.id] ?? []);
+      const byWords = new Set(authorised[task.id] ?? []);
+      // The questions a task lists as accepted (checkin-flight-seat's real
+      // "Continue" and "Complete check-in"): the policy must ask exactly that
+      // question, a --approve-routine cycle answers it, and a strict cycle
+      // records the decline as CLICK_CONTROL instead of a renamed button.
+      const accepted = new Set(
+        (Array.isArray(task.approve) ? task.approve : [])
+          .map((q) => /^Click “(.+)”\?$/.exec(q)?.[1])
+          .filter((label): label is string => !!label),
+      );
+      const queue = [...ENTRY_POINTS];
+      const seen = new Set<string>();
+      while (queue.length) {
+        const key = queue.shift()!;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const reply = get(a, key);
+        if (reply.status !== 200 || isPdf(reply.body)) continue;
+        for (const [, next] of reply.body.matchAll(
+          new RegExp(`href="/${a.token}/?([^"]*)"`, "g"),
+        ))
+          queue.push(next);
+        for (const [, label] of reply.body.matchAll(
+          /<button type="submit">([^<]*)<\/button>/g,
+        )) {
+          const decision = decideClick("AXButton", label, words);
+          const where = `${task.id}: ${key} → ${label}`;
+          if (byWords.has(label)) {
+            expect(decision.kind, where).toBe("ALLOW");
+            expect(decideClick("AXButton", label).kind, where).toBe("CONFIRM");
+          } else if (accepted.has(label)) {
+            expect(decision, where).toEqual({
+              kind: "CONFIRM",
+              reason: `Click “${label}”?`,
+            });
+            expect(approvesPrompt(task, decision.reason, true), where).toBe(
+              true,
+            );
+            expect(approvesPrompt(task, decision.reason, false), where).toBe(
+              false,
+            );
+          } else if (deliberate.has(label)) {
+            expect(decision.kind, where).toBe("CONFIRM");
+            expect(decision.reason, where).not.toMatch(/^Click “/);
+          } else if (onRoute(task.id, label)) {
+            routeButtons++;
+            routesSeen.add(task.id);
+            expect(decision, where).toMatchObject({ kind: "ALLOW" });
+          }
+        }
+      }
+    }
+    // Every route in the map was crawled (a renamed button would drop out).
+    expect([...routesSeen].sort()).toEqual(Object.keys(ROUTE_BUTTONS).sort());
+    expect(routeButtons).toBeGreaterThanOrEqual(30);
+    // The panel's radios: the Off the words ask for runs, the On they do not
+    // still asks, so a run that reaches for the wrong state stops there.
+    const home = MARKET_CATALOGUE.find(
+      (t) => t.id === "home-dashboard-lights",
+    )!;
+    const panel = await prepare(home);
+    const asked = fillInstruction(home.instruction, panel.parameters);
+    expect(decideClick("AXRadioButton", "Off", asked).kind).toBe("ALLOW");
+    expect(decideClick("AXRadioButton", "On", asked)).toEqual({
+      kind: "CONFIRM",
+      reason: "Change this setting?",
+    });
+    // The harness starts the run with the instruction as the user's words.
+    expect(
+      readFileSync(join(root, "src/gym/bench/attempt.ts"), "utf8"),
+    ).toMatch(/origin: "bench",\s*taskSource: "user_words",/);
   });
 
   it("names nothing the model clicks in the Finder with a consequential word", async () => {

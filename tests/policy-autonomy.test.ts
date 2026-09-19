@@ -7,6 +7,7 @@ import {
   type Surface,
 } from "../src/core/schema";
 import {
+  askedForControl,
   askedForLabel,
   evaluate,
   reversibleLabel,
@@ -371,5 +372,201 @@ describe("how often it asks: the words", () => {
     // that cannot be undone.
     expect(askedForLabel("Send", "send the draft")).toBe(false);
     expect(askedForLabel("Delete", "delete the draft")).toBe(false);
+  });
+});
+
+/**
+ * Cycle 20260919-0739-d495598, STOPPED_AFTER_HANDOFF in 7 of 11 market
+ * attempts: every ordinary form button on the fixture pages (Apply, Review,
+ * Add to basket, Keep draft, a seat's code) and the panel's Off radio reached
+ * the anchored allow-list's fallback, `Click “…”?` or "Change this setting?",
+ * in the default "task" mode; the bench declined, and the declined control
+ * was the only route, so the model asked the user. The ordinary buttons join
+ * the allow-list; a toggle runs when the user's own words name its state; a
+ * button never runs on the words alone.
+ */
+describe("how often it asks: controls with no consequential word (cycle 20260919-0739)", () => {
+  const web = {
+    appId: "com.apple.Safari",
+    targetAppId: "com.apple.Safari",
+    domain: "127.0.0.1",
+    targetWebHost: "127.0.0.1",
+  };
+  const click = act({ type: "click", x: 0.5, y: 0.5, button: "left" });
+  const button = (label: string): Partial<Surface> => ({
+    ...web,
+    targetRole: "AXButton",
+    targetLabel: label,
+  });
+  const radio = (label: string): Partial<Surface> => ({
+    ...web,
+    targetRole: "AXRadioButton",
+    targetLabel: label,
+  });
+  const checkbox = (label: string): Partial<Surface> => ({
+    appId: "com.apple.systempreferences",
+    targetRole: "AXCheckBox",
+    targetLabel: label,
+  });
+
+  it("in 'task' and 'flow', sets a toggle to the state the user's own words name", () => {
+    const cases: [Partial<Surface>, string][] = [
+      [radio("Off"), "turn the hallway light off"],
+      [radio("Weekly"), "make the digest weekly"],
+      // A native checkbox too: the words are the authorisation, not the page.
+      [checkbox("Wi-Fi"), "turn off wi-fi"],
+      [checkbox("Wi-Fi"), "turn off wifi"],
+    ];
+    for (const [surface, userWords] of cases)
+      for (const autonomy of ["task", "flow"] as const) {
+        const decision = decide(click, surface, autonomy, { userWords });
+        expect(decision.kind, `${surface.targetLabel} in ${autonomy}`).toBe(
+          "ALLOW",
+        );
+        expect(decision.reason).toMatch(/the state you asked for/);
+      }
+  });
+
+  it("runs the ordinary form buttons from the allow-list, and a seat's or a day's code on a page", () => {
+    for (const label of [
+      "Review",
+      "Preview",
+      "Apply",
+      "Keep draft",
+      "Add to basket",
+      "Add to cart",
+      "12A",
+      "31",
+      "2026",
+    ])
+      expect(decide(click, button(label), "task").kind, label).toBe("ALLOW");
+    // The allow-list is the allow-list in every mode, as Next and Search were.
+    expect(decide(click, button("Apply"), "ask").kind).toBe("ALLOW");
+    // The code rule is a web page button's: a radio called "1" is still a
+    // setting, and a native digit key may be a keypad (the pinned "digit
+    // button outside Calculator" keeps asking).
+    expect(decide(click, radio("1"), "task").kind).toBe("CONFIRM");
+    expect(
+      decide(click, { targetRole: "AXButton", targetLabel: "7" }, "task").kind,
+    ).toBe("CONFIRM");
+    // A code with more letters, or a word after it, is not one.
+    for (const label of ["12AB", "3 items", "12345"])
+      expect(decide(click, button(label), "task").kind, label).toBe("CONFIRM");
+  });
+
+  it("never runs a button on the strength of the words alone", () => {
+    // Adversarial: a button's label may be a commit verb the pattern does
+    // not know, and a word the request shares with it proves nothing. The
+    // fallback question is the backstop and stays, in "task" and "flow".
+    const cases: [string, string][] = [
+      ["Complete check-in", "finish the check-in for my flight"],
+      ["Book now", "find me a book about sailing"],
+      ["Check out", "check the price of the lamp"],
+      ["Senden", "reply to Dana and send it"],
+      ["Return", "return to the inbox"],
+    ];
+    for (const [label, userWords] of cases)
+      for (const autonomy of ["task", "flow"] as const)
+        expect(
+          decide(click, button(label), autonomy, { userWords }),
+          `${label} in ${autonomy}`,
+        ).toEqual({ kind: "CONFIRM", reason: `Click “${label}”?` });
+    expect(
+      decide(
+        click,
+        {
+          appId: "com.apple.systempreferences",
+          targetRole: "AXButton",
+          targetLabel: "Software Update",
+        },
+        "task",
+        { userWords: "open the software update pane" },
+      ).kind,
+    ).toBe("CONFIRM");
+  });
+
+  it("still asks for a toggle the words do not name, or that grants access", () => {
+    for (const autonomy of ["task", "flow"] as const) {
+      expect(
+        decide(click, radio("On"), autonomy, {
+          userWords: "turn the hallway light off",
+        }),
+      ).toEqual({ kind: "CONFIRM", reason: "Change this setting?" });
+      // "on" is the preposition it nearly always is: it names no On.
+      expect(
+        decide(click, radio("On"), autonomy, {
+          userWords: "on the home panel switch the hallway light off",
+        }).kind,
+      ).toBe("CONFIRM");
+      expect(
+        decide(click, checkbox("Firewall"), autonomy, {
+          userWords: "open the network pane",
+        }).kind,
+      ).toBe("CONFIRM");
+      // Adversarial: a toggle that lets something in keeps its question,
+      // named or not.
+      for (const [label, userWords] of [
+        ["Allow notifications", "allow notifications for this site"],
+        ["Enable sync", "enable sync"],
+        ["Trust this device", "trust this device"],
+      ])
+        expect(
+          decide(click, checkbox(label), autonomy, { userWords }).kind,
+          `${label} in ${autonomy}`,
+        ).toBe("CONFIRM");
+    }
+    // Nothing without the user's own words: a rewrite or a proposal asks.
+    expect(decide(click, radio("Off"), "task").kind).toBe("CONFIRM");
+    // "Ask" asks as it always did.
+    expect(
+      decide(click, radio("Off"), "ask", { userWords: "turn it off" }).kind,
+    ).toBe("CONFIRM");
+    // The function itself.
+    expect(askedForControl("Off", "turn it off")).toBe(true);
+    expect(askedForControl("On", "on the panel")).toBe(false);
+    expect(askedForControl("Wi-Fi", "turn off wifi")).toBe(true);
+    expect(askedForControl("Off", undefined)).toBe(false);
+    expect(askedForControl("Allow", "allow it")).toBe(false);
+  });
+
+  it("changes nothing the consequential floor decides, however the words name it", () => {
+    // Adversarial neighbour: the steps the market tasks are about stopping
+    // in front of must still stop, with the words naming them.
+    const floors: [string, string][] = [
+      ["Confirm reservation", "reserve a table for four and confirm it"],
+      ["Sign in", "sign in to the portal and get my statement"],
+      ["Checkout", "add bread to the basket and go to checkout"],
+      ["Delete draft", "delete the draft"],
+    ];
+    for (const [label, userWords] of floors)
+      for (const autonomy of ["task", "flow"] as const) {
+        const decision = decide(click, button(label), autonomy, { userWords });
+        expect(decision.kind, `${label} in ${autonomy}`).toBe("CONFIRM");
+        expect(decision.reason).not.toMatch(/^Click “/);
+      }
+    expect(
+      decide(click, button("Checkout"), "task", { userWords: "go to checkout" })
+        .reason,
+    ).toBe("Place this order?");
+    // A toggle whose label carries a consequential word is the pattern's,
+    // not the toggle rule's.
+    expect(
+      decide(click, checkbox("Delete after 30 days"), "task", {
+        userWords: "delete after 30 days",
+      }).kind,
+    ).toBe("CONFIRM");
+    // Protected surfaces are refused before any of this.
+    expect(
+      decide(
+        click,
+        {
+          ...radio("Off"),
+          appId: "com.1password.1password",
+          targetAppId: "com.1password.1password",
+        },
+        "task",
+        { userWords: "turn it off" },
+      ).kind,
+    ).not.toBe("ALLOW");
   });
 });

@@ -775,8 +775,13 @@ export async function runAttempt(
     state.runner = runner;
     const started = now().getTime();
     try {
+      // The instruction stands for what the user typed or said, so the
+      // policy's "task" setting reads it as their words (a typed command
+      // starts the same way in electron/main.ts); without it every undoable
+      // step the words asked for asked anyway (cycle 20260919-0739).
       await runner.start(fillInstruction(task.instruction, parameters), {
         origin: "bench",
+        taskSource: "user_words",
       });
     } catch {
       // A thrown start is already recorded in the run status; keep going.
