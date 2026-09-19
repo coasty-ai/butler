@@ -147,6 +147,20 @@ export const RECIPES: readonly SiteRecipe[] = [
     app: "App Store",
   },
 ];
+/**
+ * The table in force: the built-ins, or the user's recipes file merged over
+ * them (src/voice/recipes-file.ts, installed by electron/recipes.ts at start
+ * and on change). Every lookup below reads it, so decideFast sees the merged
+ * table without a table threaded through FastContext.
+ */
+let table: readonly SiteRecipe[] = RECIPES;
+export function activeRecipes(): readonly SiteRecipe[] {
+  return table;
+}
+/** Installs the table the lookups read; installRecipes(RECIPES) restores the built-ins. */
+export function installRecipes(list: readonly SiteRecipe[]): void {
+  table = list;
+}
 /** Names too short to mean the site anywhere but after "on"/"in"/"at"/"to" ("on x"). */
 const AFTER_PREPOSITION_ONLY = new Set(["x"]);
 
@@ -274,18 +288,18 @@ const normalize = (text: string): string[] =>
     .filter((w) => w && !FILLERS.has(w));
 
 export function siteByKey(key: string): SiteRecipe | undefined {
-  return RECIPES.find((r) => r.key === key);
+  return table.find((r) => r.key === key);
 }
 /** The recipe a spoken name selects ("youtube", "google maps"). */
 export function siteByName(name: string): SiteRecipe | undefined {
   const key = normalize(name).join(" ");
-  return RECIPES.find((r) => r.names.includes(key));
+  return table.find((r) => r.names.includes(key));
 }
 /** The recipe a host belongs to ("m.youtube.com" → YouTube), the most specific domain first. */
 export function siteByHost(host: string | undefined): SiteRecipe | undefined {
   if (!host) return undefined;
   const h = host.toLowerCase();
-  return [...RECIPES]
+  return [...table]
     .sort((a, b) => b.domain.length - a.domain.length)
     .find((r) => h === r.domain || h.endsWith("." + r.domain));
 }
@@ -294,7 +308,7 @@ export function siteAtStart(
   words: readonly string[],
 ): { site: SiteRecipe; len: number } | undefined {
   let best: { site: SiteRecipe; len: number } | undefined;
-  for (const site of RECIPES)
+  for (const site of table)
     for (const name of site.names) {
       const parts = name.split(" ");
       if (AFTER_PREPOSITION_ONLY.has(name)) continue;
@@ -374,7 +388,7 @@ function takeSite(
     const from = rest[i] === "the" && i + 1 < rest.length ? i + 1 : i;
     // The longest name that stands here: "google maps" over "google".
     let found: { site: SiteRecipe; len: number } | undefined;
-    for (const site of RECIPES)
+    for (const site of table)
       for (const name of site.names) {
         const parts = name.split(" ");
         if (!parts.every((p, k) => rest[from + k] === p)) continue;

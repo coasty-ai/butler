@@ -25,6 +25,8 @@ import type {
   TurnDecision,
 } from "../src/assistant/types";
 import { defaultSettings, type Settings } from "../src/core/schema";
+import type { ModuleRegistry, PortAdapter } from "../src/modules/registry";
+import type { PortInput, PortName, PortOutput } from "../src/modules/contracts";
 import { askWhatToDo, planVoiceTurn, type TurnPlan } from "../src/voice/turns";
 
 /** An OpenAI Responses stream carrying `text` in the given deltas. */
@@ -181,6 +183,8 @@ function setup(
     jev?: JevReply;
     /** A function stands in for the vault read, so a test can make it fail. */
     jevKey?: string | (() => string);
+    /** A module registry: the act question goes through its choiceModel port. */
+    modules?: Pick<ModuleRegistry, "port">;
   } = {},
 ) {
   const settings: Settings = {
@@ -232,6 +236,7 @@ function setup(
     providerKey: () => "SECRET-KEY",
     jevKey: () =>
       typeof o.jevKey === "function" ? o.jevKey() : (o.jevKey ?? ""),
+    ...(o.modules ? { modules: () => o.modules } : {}),
     fetch: fetch as unknown as typeof globalThis.fetch,
     view: () => o.view ?? idle,
     context: () => o.context ?? {},
@@ -1867,5 +1872,113 @@ describe("assistant session: deciding early with Jev (opt-in)", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(await pending).toMatchObject({ code: "interrupted", acting: false });
     expect(decidedTraces(t)[0].data.code).toBe("interrupted");
+  });
+});
+
+describe("assistant session: the act question through the choice model port", () => {
+  const text = "print the boarding pass for the denver flight";
+  /** A registry whose choiceModel port answers as scripted, after `delayMs` on the fake clock. */
+  function registry(reply: () => PortOutput<"choiceModel">, delayMs = 50) {
+    const asked: PortInput<"choiceModel">[] = [];
+    const modules: Pick<ModuleRegistry, "port"> = {
+      port: (<P extends PortName>(name: P): PortAdapter<P> => ({
+        call: async (input: PortInput<P>, signal?: AbortSignal) => {
+          if (name !== "choiceModel") throw new Error("not the choice model");
+          asked.push(input as PortInput<"choiceModel">);
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, delayMs);
+            signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              reject(new Error("aborted"));
+            });
+          });
+          return reply() as PortOutput<P>;
+        },
+      })) as ModuleRegistry["port"],
+    };
+    return { modules, asked };
+  }
+  const portSetup = (
+    r: ReturnType<typeof registry>,
+    o: Parameters<typeof setup>[0] = {},
+  ) =>
+    setup({
+      ...o,
+      settings: { decisions: "jev", ...o.settings },
+      jevKey: JEV_KEY,
+      modules: r.modules,
+    });
+
+  it("starts the user's own words on a confident start from the port and never touches OpenRouter itself", async () => {
+    const r = registry(() => ({ choice: "start", p: 0.95 }));
+    const t = portSetup(r, { bodies: [[never]] });
+    const pending = t.decide(text, start(text));
+    let settled: TurnDecision | undefined;
+    void pending.then((d) => (settled = d));
+    await vi.advanceTimersByTimeAsync(40);
+    expect(settled).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(settled).toEqual({
+      plan: start(text),
+      taskSource: "user_words",
+      acting: true,
+      code: "jev_start",
+    });
+    // The wire was never used: the port was, with the act question and the
+    // dialog state the text model was sent.
+    expect(t.jevRequests).toHaveLength(0);
+    expect(r.asked).toHaveLength(1);
+    expect(r.asked[0].question.id).toBe("act");
+    expect([...r.asked[0].question.choices].sort()).toEqual(
+      [...DIALOG_ACTS].sort(),
+    );
+    const prompt = JSON.parse(r.asked[0].question.prompt);
+    expect(Object.keys(prompt.criteria).sort()).toEqual(
+      [...DIALOG_ACTS].sort(),
+    );
+    expect(r.asked[0].state).toEqual(t.stateOf(0));
+    expect(t.requests[0].signal.aborted).toBe(true);
+    const decided = t.traces.filter(
+      (x) => x.event === "DialogTurn" && x.data.phase === "decided",
+    );
+    expect(decided[0].data).toMatchObject({
+      code: "jev_start",
+      jevUsed: true,
+      jevAct: "start",
+      jevP: 0.95,
+      jevMs: expect.any(Number),
+    });
+  });
+  it("changes nothing on an act outside the question, a probability out of range, a low one or a failing port", async () => {
+    const replies: (() => PortOutput<"choiceModel">)[] = [
+      () => ({ choice: "buy_now", p: 0.99 }),
+      () => ({ choice: "start", p: 0.5 }),
+      () => ({ choice: "answer", p: 0.99 }),
+      () => {
+        throw new Error("down");
+      },
+    ];
+    for (const reply of replies) {
+      const r = registry(reply, 20);
+      const t = portSetup(r, {
+        bodies: [[after(200, answer("Sure, the calendar is empty.").join(""))]],
+      });
+      const decision = await t.decided(text, start(text), {}, 250);
+      expect(decision).toMatchObject({
+        plan: { kind: "reply", act: "answer" },
+        acting: false,
+        code: "model",
+      });
+      expect(r.asked).toHaveLength(1);
+      expect(t.jevRequests).toHaveLength(0);
+    }
+    // A probability above one is clamped, and a clamped 1 is still one choice.
+    const r = registry(() => ({ choice: "start", p: 7 }));
+    const t = portSetup(r, { bodies: [[never]] });
+    const pending = t.decide(text, start(text));
+    await vi.advanceTimersByTimeAsync(60);
+    expect((await pending).code).toBe("jev_start");
+    const verdict = t.traces.find((x) => x.data.phase === "jev");
+    expect(verdict?.data.jevP).toBe(1);
   });
 });

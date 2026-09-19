@@ -54,6 +54,8 @@ const LIVENESS_UNANSWERED = "The liveness probe went unanswered.";
 interface HelperOptions {
   /** Diagnostic event prefix: <name>Unavailable, <name>Closed, <name>Restarted. */
   name: string;
+  /** Arguments the helper is spawned with (a replacement recognizer command); none for the app's own helpers. */
+  args?: string[];
   diagnostics?: DiagnosticSink;
   hooks: HelperHooks;
   /** Handles unsolicited event lines. Returns true when the line was an event. */
@@ -140,7 +142,9 @@ export class HelperProcess {
     return !this.down && !this.closing;
   }
   private spawn() {
-    const child = spawn(this.binary, [], { stdio: "pipe" });
+    const child = spawn(this.binary, this.options.args ?? [], {
+      stdio: "pipe",
+    });
     this.child = child;
     this.down = false;
     this.exhausted = false;

@@ -18,6 +18,9 @@ import { Runner, terminal } from "../core/runner";
 import { TutorialController, TutorialProvider } from "../core/tutorial";
 import { prepareBundle } from "../contribution/bundle";
 import { idlePill, voiceIntent, type PillState } from "../voice/router";
+import { PORTS } from "../modules/contracts";
+import type { ModulesStatus } from "../modules/registry";
+import { RECIPES } from "../voice/recipes";
 /** The browser preview never downloads models or plays audio. */
 const kokoroUnsupported: KokoroUiStatus = {
   supported: false,
@@ -442,6 +445,26 @@ export function previewBridge(): Bridge {
     forgetToolServer: async () => {
       throw new Error(toolsMessage);
     },
+    // The preview has no registry and no data folder: every port built-in, no file.
+    modulesStatus: async () =>
+      Object.fromEntries(
+        PORTS.map((port) => [
+          port,
+          {
+            kind: port === "choiceModel" ? "jev" : "builtin",
+            fallback: true,
+            calls: 0,
+          },
+        ]),
+      ) as ModulesStatus,
+    recipesStatus: async () => ({
+      path: "~/Library/Application Support/coarena-open-assist/recipes.json",
+      exists: false,
+      loaded: 0,
+      builtin: RECIPES.length,
+      total: RECIPES.length,
+      rejected: [],
+    }),
     agendaStatus: async () => ({ calendar: "unknown", reminders: "unknown" }),
     requestAgendaAccess: async () => ({
       calendar: "unknown",

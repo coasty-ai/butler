@@ -64,6 +64,30 @@ export interface VoiceEvent {
   /** vocabulary: how many phrases the recognizer is now biased toward (never the words). */
   count?: number;
 }
+/**
+ * The recognizer port (.data/design/modules.md §2, §3): the voice helper is
+ * a protocol, not a tool, and settings.modules.recognizer of kind "command"
+ * spawns that command with its args in place of native/bin/coarena-voice
+ * (electron/main.ts getVoice). The protocol, in one paragraph (lane MOD3's
+ * docs/RECOGNIZER_PROTOCOL.md has the full account from Voice.swift): JSON
+ * lines both ways over stdio. A request is one line `{"id", "method",
+ * ...params}` and is answered by one line `{"id", "result"}` or `{"id",
+ * "error"}`; the methods main asks are status, configure (the settings the
+ * helper needs: hands-free, the wake phrase, patience, sounds, voice),
+ * enable, requestPermissions (the command owns its own microphone and speech
+ * grants and may take up to 120 s here), cancel, speak, playPcmStart /
+ * playPcmChunk / playPcmEnd / playPcmAbort (a 16-bit PCM utterance in
+ * base64 chunks), stopSpeaking, listen, endFollowUp, voices and vocabulary.
+ * Events are unsolicited lines `{"event", ...}`: shortcut_down / shortcut_up /
+ * shortcut_tap, wake_detected, listening_ready, transcript_partial {text},
+ * transcript_final {text, confidence, segments}, transcript_unconfirmed,
+ * transcript_recovered, turn_endpoint {endReason}, endpoint_near
+ * {remainingMs}, voice_cancelled, voice_error {message, code}, wake_status
+ * {enabled, listening}, audio_level {level}, speech_started /
+ * speech_finished / speech_error {utteranceId}, followup_open /
+ * followup_detected / followup_closed {kind}, and vocabulary {count}. Every
+ * field VoiceEvent lists is one main reads; text is never traced.
+ */
 export class NativeVoice {
   private helper: HelperProcess;
   constructor(
@@ -71,9 +95,12 @@ export class NativeVoice {
     receive: (event: VoiceEvent) => void,
     private diagnostics?: DiagnosticSink,
     hooks: HelperHooks = {},
+    /** The replacement command's arguments; the app's own helper takes none. */
+    args: string[] = [],
   ) {
     this.helper = new HelperProcess(binary, {
       name: "Voice",
+      args,
       diagnostics,
       hooks,
       restarting: "Voice helper restarted. Try again.",

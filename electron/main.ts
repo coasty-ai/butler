@@ -72,6 +72,8 @@ import {
 } from "../src/core/diagnostics";
 import {
   localToolSettings,
+  modulesWithoutServer,
+  validateModuleSettings,
   validateProviderEndpoint,
   validateToolSettings,
 } from "../src/core/privacy";
@@ -119,6 +121,13 @@ import {
 import { EarlyStart, type EarlyClaim } from "./early-start";
 import { StreamingTurn, jevClientFor, type StreamClaim } from "./streaming";
 import { UrlOpener } from "./open-url";
+import {
+  createModuleRegistry,
+  type ModuleRegistry,
+} from "../src/modules/registry";
+import { moduleBuiltins } from "./modules";
+import { createRecipesFile, type RecipesFile } from "./recipes";
+import { RECIPES_FILE_NAME } from "../src/voice/recipes-file";
 import { streamedStepSchema } from "../src/core/streamed";
 import { JEV_TIMEOUT_MS } from "../src/providers/jev";
 import { preferredBrowser } from "../src/memory/intents";
@@ -435,6 +444,9 @@ const streaming = new StreamingTurn({
       jevKey(credentials),
       JEV_TIMEOUT_MS,
     ),
+  // The clause stream, the fast decider and the URL opener as ports
+  // (.data/design/modules.md §6); their built-ins are today's code.
+  modules: () => getModules(),
   onAction: (label) => {
     // The pill says what is loading while the user still speaks; nothing is
     // spoken. A prepared first step saw a screen that is no longer there.
@@ -935,6 +947,8 @@ const speech = createSpeechOutput({
   voiceCall,
   fetch: desktopTransport(debug),
   trace: debug,
+  // A tts adapter in place of the engines when settings.modules.tts says so.
+  modules: () => getModules(),
   kokoro: {
     status: () => getKokoro().status(),
     synthesize: (text, signal, o) => kokoroClient().synthesize(text, signal, o),
@@ -978,6 +992,51 @@ function getTools() {
     },
   });
   return toolLayer;
+}
+/**
+ * The module registry (src/modules, .data/design/modules.md): every stage
+ * of the voice pipeline behind a port, the built-ins (electron/modules.ts)
+ * today's code, an adapter a tool on a connected server or an https
+ * endpoint the user chose in Settings › Modules. Created beside the tool
+ * layer, since an mcp adapter calls through it; traces to diagnostics.
+ */
+let moduleRegistry: ModuleRegistry | undefined;
+function getModules() {
+  moduleRegistry ??= createModuleRegistry({
+    settings: () => settings,
+    tools: getTools(),
+    credentials: () => credentials,
+    trace: debug,
+    builtin: moduleBuiltins({
+      controller: () => {
+        try {
+          return process.platform === "darwin" ? getNative() : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+      jev: () => ({
+        key: jevKey(credentials),
+        enabled: jevEnabled(settings, jevKey(credentials)),
+      }),
+      fetch: desktopTransport(debug),
+      registry: () => moduleRegistry,
+      timeoutMs: JEV_TIMEOUT_MS,
+    }),
+  });
+  return moduleRegistry;
+}
+/**
+ * The user's site recipes file (electron/recipes.ts): read at start, on
+ * change and when Settings opens, merged over the built-in table.
+ */
+let recipesFile: RecipesFile | undefined;
+function getRecipes() {
+  recipesFile ??= createRecipesFile({
+    path: join(app.getPath("userData"), RECIPES_FILE_NAME),
+    trace: debug,
+  });
+  return recipesFile;
 }
 /** Settings with one server row replaced. */
 function withToolServer(
@@ -1131,6 +1190,8 @@ const assistant = new AssistantSession({
   providerKey: () => providerKey(credentials, textSettings(settings)),
   // The opt-in Jev decider's own key; the setting alone never turns it on.
   jevKey: () => jevKey(credentials),
+  // The act question through the choice model port (Jev by default).
+  modules: () => getModules(),
   fetch: desktopTransport(debug),
   view: currentRunView,
   context: dialogContext,
@@ -2436,15 +2497,31 @@ function showSettings(section = "settings") {
   window.show();
   window.focus();
   debug("SettingsOpened", { source: section });
+  // The recipes file may have been edited: the pane shows what is loaded now.
+  try {
+    getRecipes().load();
+  } catch (error) {
+    debug("RecipesFileFailed", errorDetails(error));
+  }
 }
 function getVoice() {
   if (process.platform !== "darwin") throw new Error("Voice requires macOS.");
   if (!voice) {
-    const binary = app.isPackaged
-      ? join(process.resourcesPath, "coarena-voice")
-      : join(app.getAppPath(), "native/bin/coarena-voice");
-    if (!existsSync(binary))
+    // The recognizer port (settings.modules.recognizer): a command speaking
+    // the voice helper's JSON-lines protocol runs in place of coarena-voice
+    // and owns its own microphone permission (electron/voice.ts).
+    const recognizer = settings.modules.recognizer;
+    const command = recognizer?.kind === "command" ? recognizer : undefined;
+    const binary = command
+      ? command.command
+      : app.isPackaged
+        ? join(process.resourcesPath, "coarena-voice")
+        : join(app.getAppPath(), "native/bin/coarena-voice");
+    if (!command && !existsSync(binary))
       throw new Error("Build the native voice helper first.");
+    if (command && command.command.includes("/") && !existsSync(binary))
+      throw new Error("The recognizer command was not found.");
+    debug("RecognizerStarted", { kind: command ? "command" : "builtin" });
     voice = new NativeVoice(
       binary,
       (event) => void receiveVoice(event),
@@ -2469,6 +2546,7 @@ function getVoice() {
           void configureVoice();
         },
       },
+      command?.args ?? [],
     );
   }
   return voice;
@@ -4195,6 +4273,9 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       const localTools = localToolSettings(next);
       next.tools = localTools.settings.tools;
       validateToolSettings(next);
+      // Modules follow the task model's privacy rule and may name only a
+      // connected server (src/core/privacy.ts).
+      validateModuleSettings(next);
       validateProviderEndpoint(next);
       // The dialog model shares the endpoint, so the same privacy gate holds.
       if (next.dialogModel) validateProviderEndpoint(textSettings(next));
@@ -4495,6 +4576,12 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     // these is on the overlay allow-list.
     case "toolsStatus":
       return getTools().status();
+    // Modules (src/modules, electron/modules.ts) and the recipes file
+    // (electron/recipes.ts). Settings window only.
+    case "modulesStatus":
+      return getModules().status();
+    case "recipesStatus":
+      return getRecipes().load();
     case "setAppleTool": {
       const consent = z
         .enum(["calendar", "reminders", "notes", "mail"])
@@ -4645,6 +4732,8 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
           ...settings.tools,
           servers: settings.tools.servers.filter((r) => r.id !== id),
         },
+        // A module that named this server is built-in again.
+        modules: modulesWithoutServer(settings.modules, id),
       };
       credentials = forgetToolSecrets(credentials, id);
       saveConfig();
@@ -5394,6 +5483,12 @@ app
     // Connected tool servers come up once the app is idle, so the list a run
     // freezes at its start already has them.
     getTools().startSoon();
+    // The user's site recipes, merged over the built-ins before the first turn.
+    try {
+      getRecipes().load();
+    } catch (error) {
+      debug("RecipesFileFailed", errorDetails(error));
+    }
   })
   .catch(() => {
     dialog.showErrorBox(
@@ -5415,6 +5510,7 @@ app.on("before-quit", () => {
   shuttingDown = true;
   messages.close();
   void toolLayer?.closeAll();
+  recipesFile?.close();
   remote.close();
   debug("AppStopping");
   clearInterval(diagnosticHeartbeat);

@@ -272,9 +272,19 @@ const fields = new Set([
   "decideMs",
   "issueMs",
   "streamedSteps",
+  // Modules (src/modules, electron/modules.ts): which port an adapter stood
+  // behind and how it fared (ModuleFallback, ModuleSlow, RecognizerStarted),
+  // and the user's recipes file as counts and codes (RecipesFileLoaded,
+  // RecipesFileRejected: the entry's index and why). Never an entry's words.
+  "port",
+  "ms",
+  "loaded",
+  "rejected",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
+  "loaded",
+  "rejected",
   "preferences",
   "episodes",
   "apps",
@@ -321,6 +331,7 @@ const countFields = new Set([
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
+  "ms",
   "sampleRate",
   "ms",
   "micLevel",
@@ -387,6 +398,7 @@ const flagFields = new Set([
  * is dropped here: HTTP and exit statuses belong in httpStatus and exitCode.
  */
 const codeFields = new Set([
+  "port",
   "plan",
   "port",
   "mode",

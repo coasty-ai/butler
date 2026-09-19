@@ -1,5 +1,11 @@
 import { z } from "zod";
-import type { Settings } from "./schema";
+import type {
+  ChoiceModelChoice,
+  ModuleChoice,
+  ModulesSettings,
+  Settings,
+  ToolServer,
+} from "./schema";
 import { RESERVED_PROVIDERS, TOOL_LIMITS } from "./tools";
 /**
  * The rows a Private local switch has to turn off: servers that reach the
@@ -78,6 +84,85 @@ export function validateToolSettings(
         `${row.name} names a variable both plainly and as a secret.`,
       );
   }
+}
+// Modules (.data/design/modules.md §10) ---------------------------------------
+
+const LOOPBACK = new Set(["127.0.0.1", "[::1]", "localhost"]);
+/**
+ * Whether one module choice sends anything off this Mac: an http endpoint
+ * that is not loopback, a tool on a server reached over http or declared
+ * internet, or an OpenRouter model. Jev is gated by its own consent and
+ * privacy rule (electron/jev.ts jevEnabled) and is not counted here; the
+ * built-in and a command are local by construction.
+ */
+export function moduleReachesInternet(
+  choice: ModuleChoice | ChoiceModelChoice | undefined,
+  servers: readonly ToolServer[],
+): boolean {
+  if (!choice) return false;
+  switch (choice.kind) {
+    case "http": {
+      try {
+        return !LOOPBACK.has(new URL(choice.url).hostname);
+      } catch {
+        return true;
+      }
+    }
+    case "mcp": {
+      const row = servers.find((r) => r.id === choice.server);
+      return !row || row.transport === "http" || row.network !== "none";
+    }
+    case "openrouter":
+      return true;
+    default:
+      return false;
+  }
+}
+/**
+ * The modules gate at save time (electron/main.ts saveSettings): the same
+ * rule the task model has, so in Private local no port's adapter may reach
+ * the internet; a tool choice must name a connected server. Throws with the
+ * one fixed line the settings window shows.
+ */
+export function validateModuleSettings(
+  s: Pick<Settings, "privacy" | "modules" | "tools">,
+): void {
+  const ports = [
+    "clauseSegmenter",
+    "fastDecider",
+    "choiceModel",
+    "urlOpener",
+    "tts",
+  ] as const;
+  for (const port of ports) {
+    const choice = s.modules[port];
+    if (!choice) continue;
+    if (
+      choice.kind === "mcp" &&
+      !s.tools.servers.some((row) => row.id === choice.server)
+    )
+      throw new Error("A module names a tool server that is not connected.");
+    if (
+      s.privacy === "PRIVATE_LOCAL" &&
+      moduleReachesInternet(choice, s.tools.servers)
+    )
+      throw new Error(
+        "In Private local, modules stay on this Mac: choose Built-in, a local tool server or a loopback endpoint.",
+      );
+  }
+}
+/** The module choices with every reference to one tool server reset to the built-in (forget). */
+export function modulesWithoutServer(
+  modules: ModulesSettings,
+  serverId: string,
+): ModulesSettings {
+  const out: ModulesSettings = { ...modules };
+  for (const key of Object.keys(out) as (keyof ModulesSettings)[]) {
+    const choice = out[key];
+    if (choice && choice.kind === "mcp" && choice.server === serverId)
+      delete out[key];
+  }
+  return out;
 }
 export function validateProviderEndpoint(s: Settings): URL {
   const u = new URL(s.endpoint);

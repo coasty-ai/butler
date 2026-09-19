@@ -59,6 +59,8 @@ const bridge: Bridge = {
   setToolTicked: (...a) => invoke("setToolTicked", ...a),
   setToolSecret: (...a) => invoke("setToolSecret", ...a),
   forgetToolServer: (...a) => invoke("forgetToolServer", ...a),
+  modulesStatus: () => invoke("modulesStatus"),
+  recipesStatus: () => invoke("recipesStatus"),
   subscribePill: (fn) => {
     const handler = (_e: unknown, s: any) => fn(s);
     ipcRenderer.on("pill", handler);

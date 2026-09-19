@@ -28,6 +28,20 @@
  * and the run is told it was done by mistake. A final the router does not
  * start (a question, a fragment) leaves what was opened as it is, and the
  * pill says so. Diagnostics carry codes and numbers, never a word or a URL.
+ *
+ * Modules (.data/design/modules.md §6): with a registry in the deps, the
+ * clause stream, the fast decider and the URL opener are ports. The decider
+ * and the opener always go through modules.port("fastDecider" | "urlOpener"),
+ * whose built-in adapters are today's code (electron/modules.ts). The stream
+ * port is stateless (the caller keeps the clauses), so the exact built-in
+ * stream, whose stability rule needs the timing of every partial, is used
+ * directly while settings.modules.clauseSegmenter is builtin, and the port
+ * is asked once per partial otherwise, with the clauses it answered last;
+ * the final's segmentation and its dropped clauses are always the core's
+ * (clausesOf), never an adapter's. Whatever an adapter answers is judged as
+ * the built-in's answer would be: the action schema, the policy while
+ * speaking, the protected-host floor; without a registry (tests) the
+ * deciders and the controller's route are called directly.
  */
 import type {
   Action,
@@ -49,10 +63,12 @@ import {
 import { EARLY_LIMITS } from "../src/voice/early";
 import {
   STREAM_LIMITS,
+  clausesOf,
   createClauseStream,
   type Clause,
   type ClauseEvent,
   type ClauseStream,
+  type PartialSample,
 } from "../src/voice/stream";
 import { createJevClauseClient } from "../src/providers/jev-clause";
 import {
@@ -62,6 +78,8 @@ import {
   type FastContext,
   type JevClient,
 } from "../src/voice/fast";
+import type { ModuleRegistry, PortAdapter } from "../src/modules/registry";
+import { fastActionOf } from "./modules";
 import {
   verifyOpening,
   type EarlyCode,
@@ -92,8 +110,10 @@ export interface StreamingDeps {
   early: Pick<EarlyStart, "section" | "engaged">;
   /** main's continuous scroll: the helper paces it until the user says stop. */
   scroll(direction: "down" | "up"): Promise<void>;
-  /** The Jev client while the decider is on (--decide-with-jev or the setting). */
+  /** The Jev client while the decider is on (--decide-with-jev or the setting); unused with a registry. */
   jev?(): JevClient | undefined;
+  /** The module registry (electron/main.ts getModules): the ports above. */
+  modules?(): Pick<ModuleRegistry, "port"> | undefined;
   /** A fast action was issued; main shows the line on the listening pill. Nothing speaks it. */
   onAction(label: string): void;
   /** The final started no run: the pill says what was opened. */
@@ -201,7 +221,7 @@ export class StreamingTurn {
     const previous = this.turn;
     if (previous && !previous.ended) this.end(previous, "reactivated");
     ready.catch(() => {});
-    this.turn = {
+    const turn: StreamTurn = {
       invocation,
       ready,
       stream: this.stream(),
@@ -212,6 +232,19 @@ export class StreamingTurn {
       committed: [],
       superseded: new Set(),
     };
+    // A segmenter adapter: the port is asked per partial and its events
+    // arrive later, in order; the built-in stream answers at the push.
+    const modules = this.deps.modules?.();
+    const choice = this.deps.settings().modules?.clauseSegmenter?.kind;
+    if (modules && choice && choice !== "builtin")
+      turn.stream = new PortClauseStream(
+        modules.port("clauseSegmenter"),
+        (events) => {
+          if (this.turn === turn && !turn.ended) this.handle(turn, events);
+        },
+        turn.abort.signal,
+      );
+    this.turn = turn;
   }
   /** A partial transcript of the current activation. */
   partial(invocation: number, text: string, atMs = this.now()) {
@@ -427,13 +460,26 @@ export class StreamingTurn {
     if (skip() || this.gate(turn)) return;
     const decideStart = this.now();
     const ctx = this.context(turn, settings);
-    let action = this.decide.fast(clause, ctx);
-    if (action.kind === "none" && action.reason === "unsure") {
-      const jev = this.deps.jev?.();
-      if (jev)
-        action = await this.decide
-          .withJev(clause, ctx, jev, turn.abort.signal)
-          .catch(() => none("unsure"));
+    const modules = this.deps.modules?.();
+    let action: FastAction;
+    if (modules) {
+      // The port (its built-in is decideFast, then Jev over the choice
+      // model); a failed call decides nothing.
+      action = fastActionOf(
+        await modules
+          .port("fastDecider")
+          .call({ clause, context: ctx }, turn.abort.signal)
+          .catch(() => undefined),
+      );
+    } else {
+      action = this.decide.fast(clause, ctx);
+      if (action.kind === "none" && action.reason === "unsure") {
+        const jev = this.deps.jev?.();
+        if (jev)
+          action = await this.decide
+            .withJev(clause, ctx, jev, turn.abort.signal)
+            .catch(() => none("unsure"));
+      }
     }
     const decideMs = this.now() - decideStart;
     if (turn.ended || this.turn !== turn) return;
@@ -483,27 +529,44 @@ export class StreamingTurn {
     };
     const speaking = { speaking: true } as const;
     if (action.kind === "open_url") {
-      const built = actionSchema.parse({
+      // The core's own check of any open_url, an adapter's included: a full
+      // http(s) address without credentials (the schema), then the policy
+      // while speaking, which refuses a protected host outright.
+      const parsed = actionSchema.safeParse({
         type: "open_url",
         url: action.url,
         siteKey: action.siteKey,
         frame_id: STREAM_FRAME,
       });
-      if (built.type !== "open_url") return;
+      if (!parsed.success || parsed.data.type !== "open_url") return;
+      const built = parsed.data;
       const decision = evaluate(built, turn.front!, settings, false, speaking);
       if (decision.kind !== "ALLOW") return;
       const step = issue(action);
       try {
-        const result = await c.openUrl(built);
-        const host =
-          result?.navigated?.host ?? webAddress(action.url)?.hostname ?? "";
-        if (host)
-          turn.sent = {
-            host,
-            ...(result?.navigated?.appId
-              ? { appId: result.navigated.appId }
-              : {}),
-          };
+        if (modules) {
+          const out = await modules.port("urlOpener").call(
+            {
+              url: built.url,
+              ...(ctx.browser ? { browser: ctx.browser } : {}),
+            },
+            turn.abort.signal,
+          );
+          if (!out.navigated) step.outcome = "failed";
+          const host = webAddress(action.url)?.hostname ?? "";
+          if (host && out.navigated) turn.sent = { host };
+        } else {
+          const result = await c.openUrl(built);
+          const host =
+            result?.navigated?.host ?? webAddress(action.url)?.hostname ?? "";
+          if (host)
+            turn.sent = {
+              host,
+              ...(result?.navigated?.appId
+                ? { appId: result.navigated.appId }
+                : {}),
+            };
+        }
       } catch {
         step.outcome = "failed";
       }
@@ -594,6 +657,68 @@ export class StreamingTurn {
     }
     turn.primed = { frame, at: this.now() };
     return turn.primed;
+  }
+}
+/**
+ * A ClauseStream over the clauseSegmenter port (design §3: stateless, the
+ * caller keeps the clauses). Each push asks the adapter with the clauses it
+ * answered last and hands its events on when they arrive, one call at a
+ * time and in order, so a slow adapter never reorders commits; push itself
+ * answers nothing. The final is the core's: clausesOf cuts the final text,
+ * and a committed clause whose words no longer stand in order inside one of
+ * its clauses is dropped, exactly as the built-in stream decides it.
+ */
+export class PortClauseStream implements ClauseStream {
+  private kept: Clause[] = [];
+  private chain: Promise<void> = Promise.resolve();
+  private ended = false;
+  constructor(
+    private readonly port: PortAdapter<"clauseSegmenter">,
+    private readonly onEvents: (events: ClauseEvent[]) => void,
+    private readonly signal?: AbortSignal,
+  ) {}
+  push(sample: PartialSample): ClauseEvent[] {
+    if (this.ended) return [];
+    this.chain = this.chain.then(async () => {
+      if (this.ended) return;
+      try {
+        const out = await this.port.call(
+          { text: sample.text, atMs: sample.atMs, previous: this.kept },
+          this.signal,
+        );
+        if (this.ended) return;
+        this.kept = out.clauses;
+        if (out.events.length) this.onEvents(out.events);
+      } catch {
+        // The registry already fell back or answered none; nothing commits.
+      }
+    });
+    return [];
+  }
+  final(text: string, atMs: number): ClauseEvent[] {
+    this.ended = true;
+    const clauses = clausesOf(text, atMs);
+    const words = (t: string) =>
+      t
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .filter(Boolean);
+    const inside = (needle: string[], hay: string[]) => {
+      if (!needle.length) return false;
+      for (let i = 0; i + needle.length <= hay.length; i++)
+        if (needle.every((w, k) => hay[i + k] === w)) return true;
+      return false;
+    };
+    const dropped = this.kept.filter(
+      (c) =>
+        c.state === "committed" &&
+        !clauses.some((f) => inside(words(c.text), words(f.text))),
+    );
+    return [{ kind: "final", clauses, dropped }];
+  }
+  clauses(): Clause[] {
+    return this.kept;
   }
 }
 /** The Jev client for the fast decider, on the wire, when the decider is on (src/providers/jev-clause.ts). */

@@ -1,4 +1,6 @@
 import type { Settings } from "../src/core/schema";
+import { moduleReachesInternet } from "../src/core/privacy";
+import type { ModuleRegistry, PortAdapter } from "../src/modules/registry";
 import {
   KokoroError,
   kokoroSupported,
@@ -23,7 +25,8 @@ import {
 
 export type SpeakPriority = "ack" | "result" | "urgent";
 export type FollowUpKind = "answer" | "approval" | "continuation" | "scroll";
-export type SpeechEngine = "system" | "kokoro" | "openai";
+/** "module": a tts adapter behind modules.port("tts") spoke, or returned the audio played. */
+export type SpeechEngine = "system" | "kokoro" | "openai" | "module";
 /**
  * How the cloud voice is asked to read a line: the persona for replies and
  * results, or plainly for approvals, questions and failures.
@@ -83,6 +86,10 @@ export type SpeechSettings = Pick<Settings, "privacy"> & {
   /** Also the Kokoro speed, clamped to what the model renders well. */
   voiceRate?: number;
   persona?: Persona;
+  /** settings.modules.tts: an adapter in place of the engines above (design modules.md §6). */
+  modules?: Pick<Settings["modules"], "tts">;
+  /** The tool servers, for the privacy rule on an mcp adapter. */
+  tools?: Pick<Settings["tools"], "servers">;
 };
 /** Passed through to Kokoro: an older client simply ignores them. */
 export interface KokoroSpeakOptions {
@@ -109,6 +116,16 @@ export interface SpeechOutputDeps {
   kokoroSupported?: () => boolean;
   now?: () => number;
   trace?: (event: string, data: Record<string, unknown>) => void;
+  /**
+   * The module registry (electron/main.ts getModules). With one, and a tts
+   * choice that is not builtin, the sentence goes to modules.port("tts"):
+   * the adapter either plays it (`played`) or returns wav audio, which is
+   * played through the helper as the natural voice's PCM is; anything else
+   * (an error, no audio, mp3, `played: false`) falls back to the engines
+   * above. In Private local an adapter that reaches the internet is refused
+   * before it is asked, the rule the task model has.
+   */
+  modules?: () => Pick<ModuleRegistry, "port"> | undefined;
 }
 
 /**
@@ -172,6 +189,12 @@ export const kokoroSpeech = {
    */
   firstAudioMs: 5000,
   deadlineMs: 15000,
+} as const;
+/** A tts adapter's bounds: how long it may take, and the sample rates a wav may carry. */
+export const moduleSpeech = {
+  deadlineMs: 8000,
+  minSampleRate: 8000,
+  maxSampleRate: 48000,
 } as const;
 export const maxSpeechChars = 300;
 // 300 characters can never legitimately produce a minute of audio.
@@ -283,6 +306,97 @@ function join(a: Uint8Array, b: Uint8Array): Uint8Array {
   out.set(a);
   out.set(b, a.byteLength);
   return out;
+}
+
+/** What an adapter's audio is, by its first bytes. */
+export function audioFormat(bytes: Uint8Array): "wav" | "mp3" | "unknown" {
+  const ascii = (at: number, n: number) =>
+    String.fromCharCode(...bytes.subarray(at, at + n));
+  if (
+    bytes.byteLength >= 12 &&
+    ascii(0, 4) === "RIFF" &&
+    ascii(8, 4) === "WAVE"
+  )
+    return "wav";
+  if (
+    bytes.byteLength >= 3 &&
+    (ascii(0, 3) === "ID3" || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0))
+  )
+    return "mp3";
+  return "unknown";
+}
+/**
+ * A wav file's samples as mono 16-bit little-endian PCM at its own sample
+ * rate, the helper's format: 8, 16, 24 and 32-bit integer and 32-bit float
+ * PCM, channels averaged. Undefined for anything else (a compressed wav,
+ * a missing chunk, an odd rate).
+ */
+export function wavToPcm(
+  bytes: Uint8Array,
+): { sampleRate: number; pcm: Uint8Array } | undefined {
+  if (audioFormat(bytes) !== "wav") return undefined;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let format = 0;
+  let channels = 0;
+  let sampleRate = 0;
+  let bits = 0;
+  let data: Uint8Array | undefined;
+  for (let at = 12; at + 8 <= bytes.byteLength;) {
+    const id = String.fromCharCode(...bytes.subarray(at, at + 4));
+    const size = view.getUint32(at + 4, true);
+    const body = at + 8;
+    if (id === "fmt " && size >= 16 && body + 16 <= bytes.byteLength) {
+      format = view.getUint16(body, true);
+      channels = view.getUint16(body + 2, true);
+      sampleRate = view.getUint32(body + 4, true);
+      bits = view.getUint16(body + 14, true);
+      // WAVE_FORMAT_EXTENSIBLE names the real format in its sub-format GUID.
+      if (format === 0xfffe && size >= 40 && body + 26 <= bytes.byteLength)
+        format = view.getUint16(body + 24, true);
+    } else if (id === "data") {
+      data = bytes.subarray(body, Math.min(bytes.byteLength, body + size));
+    }
+    at = body + size + (size % 2);
+  }
+  if (
+    !data ||
+    !channels ||
+    channels > 8 ||
+    sampleRate < moduleSpeech.minSampleRate ||
+    sampleRate > moduleSpeech.maxSampleRate
+  )
+    return undefined;
+  const integer = format === 1 && [8, 16, 24, 32].includes(bits);
+  const float = format === 3 && bits === 32;
+  if (!integer && !float) return undefined;
+  const bytesPerSample = bits / 8;
+  const frame = bytesPerSample * channels;
+  const frames = Math.floor(data.byteLength / frame);
+  const out = new Uint8Array(frames * 2);
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const ov = new DataView(out.buffer);
+  for (let i = 0; i < frames; i++) {
+    let sum = 0;
+    for (let c = 0; c < channels; c++) {
+      const at = i * frame + c * bytesPerSample;
+      let v: number;
+      if (float) v = dv.getFloat32(at, true);
+      else if (bits === 8) v = (dv.getUint8(at) - 128) / 128;
+      else if (bits === 16) v = dv.getInt16(at, true) / 32768;
+      else if (bits === 24)
+        v =
+          ((dv.getUint8(at) |
+            (dv.getUint8(at + 1) << 8) |
+            (dv.getInt8(at + 2) << 16)) <<
+            8) /
+          2147483648;
+      else v = dv.getInt32(at, true) / 2147483648;
+      sum += v;
+    }
+    const mono = Math.max(-1, Math.min(1, sum / channels));
+    ov.setInt16(i * 2, Math.min(32767, Math.round(mono * 32768)), true);
+  }
+  return { sampleRate, pcm: out };
 }
 
 export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
@@ -470,6 +584,119 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
         };
       },
     };
+  }
+
+  /** The tts adapter in force, or undefined while the choice is builtin or there is no registry. */
+  function ttsAdapter(settings: SpeechSettings):
+    | {
+        port: PortAdapter<"tts">;
+        choice: NonNullable<Settings["modules"]["tts"]>;
+      }
+    | undefined {
+    const choice = settings.modules?.tts;
+    if (!choice || choice.kind === "builtin") return undefined;
+    const modules = deps.modules?.();
+    if (!modules) return undefined;
+    return { port: modules.port("tts"), choice };
+  }
+  /**
+   * One sentence through the tts adapter. Returns the result when the
+   * adapter spoke, played the audio it returned, or the utterance was
+   * cancelled; undefined when the engines should speak instead (refused in
+   * Private local, failed, no audio, mp3, `played: false`), the reason
+   * logged as a fallback.
+   */
+  async function viaAdapter(
+    request: SpeakRequest,
+    adapter: NonNullable<ReturnType<typeof ttsAdapter>>,
+    mine: Flight,
+    log: Log,
+  ): Promise<SpeakResult | undefined> {
+    const engine = "module" as const;
+    const settings = deps.settings();
+    const fall = (status: string) => {
+      log("fallback", { engine, fallback: true, status });
+      return undefined;
+    };
+    if (
+      settings.privacy === "PRIVATE_LOCAL" &&
+      moduleReachesInternet(adapter.choice, settings.tools?.servers ?? [])
+    )
+      return fall("private_local");
+    const signal = mine.controller.signal;
+    const deadline = setTimeout(
+      () => mine.controller.abort(new SpeechStop("timeout")),
+      moduleSpeech.deadlineMs,
+    );
+    let out: Awaited<ReturnType<PortAdapter<"tts">["call"]>>;
+    try {
+      out = await until(
+        adapter.port.call({ text: request.text }, signal),
+        signal,
+      );
+    } catch {
+      if (mine.cancelled) {
+        log("finished", { engine, status: mine.cancelled });
+        return { accepted: false, reason: "cancelled", engine };
+      }
+      return fall(
+        signal.aborted && signal.reason instanceof SpeechStop
+          ? signal.reason.status
+          : "adapter_failed",
+      );
+    } finally {
+      clearTimeout(deadline);
+    }
+    if (mine.cancelled) {
+      log("finished", { engine, status: mine.cancelled });
+      return { accepted: false, reason: "cancelled", engine };
+    }
+    if (out.played) {
+      log("finished", { engine, status: "played" });
+      return { accepted: true, engine };
+    }
+    if (!out.audio) return fall("not_played");
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(Buffer.from(out.audio, "base64"));
+    } catch {
+      return fall("audio_invalid");
+    }
+    const format = audioFormat(bytes);
+    if (format !== "wav")
+      return fall(format === "mp3" ? "mp3_unsupported" : "audio_unknown");
+    const wav = wavToPcm(bytes);
+    if (!wav || !wav.pcm.byteLength) return fall("wav_invalid");
+    if (wav.pcm.byteLength > maxPcmBytes) return fall("too_long");
+    const pcm = pcmPlayback(request, engine, mine, log);
+    let start: any;
+    try {
+      start = await pcm.start(wav.sampleRate);
+    } catch {
+      return mine.cancelled ? pcm.cancelled() : pcm.fallback("helper");
+    }
+    if (start?.accepted !== true) {
+      log("finished", { engine, status: token(start?.reason, "rejected") });
+      return { accepted: false, ...reasonOf(start?.reason), engine };
+    }
+    if (mine.cancelled) return pcm.cancelled();
+    try {
+      for (let at = 0; at < wav.pcm.byteLength; at += kokoroSpeech.chunkBytes)
+        if (
+          !(await pcm.send(wav.pcm.subarray(at, at + kokoroSpeech.chunkBytes)))
+        )
+          return pcm.dropped();
+      return await pcm.end();
+    } catch (error) {
+      const status =
+        signal.aborted && signal.reason instanceof SpeechStop
+          ? signal.reason.status
+          : error instanceof SpeechStop
+            ? error.status
+            : "helper";
+      mine.controller.abort(new SpeechStop("failed"));
+      return pcm.failed(status);
+    }
   }
 
   async function local(
@@ -752,6 +979,18 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
     if (!request.text) {
       log("finished", { engine, status: "empty" });
       return { accepted: false, reason: "empty", engine };
+    }
+    const adapter = ttsAdapter(settings);
+    if (adapter) {
+      const theirs: Flight = { controller: new AbortController() };
+      flight = theirs;
+      try {
+        const result = await viaAdapter(request, adapter, theirs, log);
+        if (result) return result;
+      } finally {
+        if (flight === theirs) flight = undefined;
+      }
+      // Nothing was played: the engines below speak the sentence.
     }
     if (engine === "system") return system(request, false, log);
     const mine: Flight = { controller: new AbortController() };
@@ -1121,6 +1360,40 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
       style: request.style,
     });
     try {
+      const adapter = ttsAdapter(settings);
+      if (adapter) {
+        // An adapter takes whole text, as the Mac voice does: the reply is
+        // gathered, then spoken once; if the adapter plays nothing the
+        // engine that would have spoken takes the gathered text.
+        const texts = await collectSentences(counted, mine.controller.signal);
+        const text = speechText(texts.join(" "));
+        if (!text) {
+          log("finished", { engine, status: "empty" });
+          return { accepted: false, reason: "empty", engine, spoken: "" };
+        }
+        const r = await viaAdapter(asSpeak(text), adapter, mine, log);
+        if (r) return { ...r, spoken: r.accepted ? text : "" };
+        const spoken =
+          engine === "kokoro" && deps.kokoro
+            ? await local(
+                asSpeak(text),
+                deps.kokoro,
+                kokoroOptions(settings),
+                mine,
+                log,
+              )
+            : engine === "openai"
+              ? await cloud(
+                  asSpeak(text),
+                  key,
+                  cloudVoice(settings.cloudVoice),
+                  instructionFor(request.style ?? "persona", persona(settings)),
+                  mine,
+                  log,
+                )
+              : await system(asSpeak(text), true, log);
+        return { ...spoken, spoken: spoken.accepted ? text : "" };
+      }
       if (engine === "system") {
         // The Mac voice takes whole text: gather what arrives within the
         // collection window after the first sentence, then say it once.

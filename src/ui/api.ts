@@ -8,6 +8,8 @@ import type {
 } from "../core/schema";
 import type { AppleConsent, ToolsStatus } from "../core/tools";
 import type { ToolServerTest } from "../tools/registry";
+import type { ModulesStatus } from "../modules/registry";
+import type { RecipeRejection, RecipesFileError } from "../voice/recipes-file";
 import type { Bundle, Review } from "../contribution/bundle";
 import type { PillState } from "../voice/router";
 import type { MemoryData } from "../memory/types";
@@ -174,6 +176,17 @@ export interface AppInfo {
   messages: MessagesInfo;
   /** The Apple bridge and the user's MCP servers, as the Tools pane shows them. */
   tools: ToolsStatus;
+}
+/** The user's site recipes file as the Modules pane shows it (electron/recipes.ts). */
+export interface RecipesStatus {
+  path: string;
+  exists: boolean;
+  loaded: number;
+  builtin: number;
+  total: number;
+  rejected: { index: number; code: RecipeRejection }[];
+  error?: RecipesFileError | "unreadable";
+  readAt?: number;
 }
 /**
  * First run (docs/MODULARITY.md §6). Everything below is the setup view's
@@ -549,6 +562,10 @@ export interface Bridge {
   ): Promise<void>;
   /** Settings window only. Removes the row, its vault scopes and its process. */
   forgetToolServer(id: string): Promise<ToolsStatus>;
+  /** Settings window only. Each module port's adapter in force, last code and latency (src/modules). */
+  modulesStatus(): Promise<ModulesStatus>;
+  /** Settings window only. Re-reads the user's recipes file and reports what loaded; never its words. */
+  recipesStatus(): Promise<RecipesStatus>;
   subscribePill(fn: (state: PillState) => void): () => void;
   subscribeView(fn: (view: string) => void): () => void;
   /** Download progress and install changes for the natural voice. */

@@ -36,8 +36,11 @@ import {
 } from "../src/assistant/protocol";
 import {
   APP_DIALOG_VARIANT,
+  JEV_ACT_QUESTION_ID,
   JEV_START_MIN_P,
+  decisionsRequest,
   dialogActQuestion,
+  estimateCost,
   jevState,
   type JevChoiceQuestion,
 } from "../src/providers/jev";
@@ -48,6 +51,8 @@ import {
   type JevFailure,
   type JevVerdict,
 } from "./jev";
+import type { ModuleRegistry } from "../src/modules/registry";
+import { choiceQuestionOf } from "./modules";
 import {
   buildDialogState,
   dialogStateJson,
@@ -105,6 +110,13 @@ export interface AssistantOptions {
    * absent keeps it off whatever the setting says.
    */
   jevKey?: () => string;
+  /**
+   * The module registry (electron/main.ts getModules): with one, the act
+   * question goes through modules.port("choiceModel"), whose built-in is
+   * Jev over OpenRouter and whose adapter may be any choice model the user
+   * picked (.data/design/modules.md §6). Without one, Jev is asked directly.
+   */
+  modules?: () => Pick<ModuleRegistry, "port"> | undefined;
   fetch: typeof fetch;
   view: () => RunView;
   /** Optional context, already gated by settings; never a helper call. */
@@ -823,21 +835,27 @@ export class AssistantSession implements AssistantSessionApi {
         cost: 0,
       }),
     };
-    ask.verdict = askJevAct({
-      fetch: this.options.fetch,
-      key,
-      state: jevState(
-        dialogStateJson(
-          state,
-          s.provider === "ollama"
-            ? DIALOG_LIMITS.localStateChars
-            : DIALOG_LIMITS.stateChars,
-        ),
+    const jevInput = jevState(
+      dialogStateJson(
+        state,
+        s.provider === "ollama"
+          ? DIALOG_LIMITS.localStateChars
+          : DIALOG_LIMITS.stateChars,
       ),
-      question,
-      signal: controller.signal,
-      now: this.now,
-    })
+    );
+    const modules = this.options.modules?.();
+    ask.verdict = (
+      modules
+        ? this.askChoicePort(modules, question, jevInput, controller.signal)
+        : askJevAct({
+            fetch: this.options.fetch,
+            key,
+            state: jevInput,
+            question,
+            signal: controller.signal,
+            now: this.now,
+          })
+    )
       .catch((): JevVerdict => ({ ok: false, code: "network", ms: 0, cost: 0 }))
       .then((verdict) => {
         ask.settled = verdict;
@@ -848,6 +866,49 @@ export class AssistantSession implements AssistantSessionApi {
       });
     this.jevLive.add(ask);
     return ask;
+  }
+
+  /**
+   * The act question through the choice model port. The answer must name
+   * one of the acts asked, its probability is clamped, and nothing else of
+   * it is read: a choice model never produces text that runs. The budget is
+   * charged the request's own estimate, since an adapter reports no price.
+   */
+  private async askChoicePort(
+    modules: Pick<ModuleRegistry, "port">,
+    question: JevChoiceQuestion,
+    state: unknown,
+    signal: AbortSignal,
+  ): Promise<JevVerdict> {
+    const started = this.now();
+    const acts = Object.keys(question.criteria);
+    const cost = estimateCost(
+      decisionsRequest(state, { [JEV_ACT_QUESTION_ID]: question }),
+    );
+    const ms = () => this.now() - started;
+    try {
+      const out = await modules.port("choiceModel").call(
+        {
+          question: choiceQuestionOf(question, JEV_ACT_QUESTION_ID),
+          state:
+            state && typeof state === "object" && !Array.isArray(state)
+              ? (state as Record<string, unknown>)
+              : { state },
+        },
+        signal,
+      );
+      if (!acts.includes(out.choice))
+        return { ok: false, code: "bad_choice", ms: ms(), cost };
+      const p = Math.min(1, Math.max(0, Number(out.p) || 0));
+      return { ok: true, act: out.choice, p, confidence: p, ms: ms(), cost };
+    } catch {
+      return {
+        ok: false,
+        code: signal.aborted ? "cancelled" : "network",
+        ms: ms(),
+        cost,
+      };
+    }
   }
 
   /**
