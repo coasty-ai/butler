@@ -350,7 +350,15 @@ export type KokoroVoiceId = (typeof kokoroVoices)[number];
  * arrives through the app's IPC, which accepts only the interactive origins.
  */
 export type RunOrigin =
-  "voice" | "typed" | "message" | "queue" | "watch" | "remote" | "bench";
+  | "voice"
+  | "typed"
+  | "message"
+  | "queue"
+  | "watch"
+  | "remote"
+  | "bench"
+  /** An approved routine's scheduled or triggered replay (electron/routines.ts). */
+  | "routine";
 /**
  * Whose words the task text is. Only "user_words" counts as the user's own
  * request for provenance checks: typed, texted, or speech heard with at least
@@ -543,6 +551,33 @@ export const modulesSettingsSchema = z
   .strict()
   .prefault({});
 export type ModulesSettings = z.infer<typeof modulesSettingsSchema>;
+/**
+ * Watching how the owner works (.data/design/observer.md §3–§6): off by
+ * default; the tier says what a frame carries (structure: apps, titles,
+ * hosts, field labels and action kinds; text: the screen's words too;
+ * pixels: a small picture too, kept 24 h and never sent); raw frames are
+ * kept retentionDays; consolidation spends at most dailyTokenBudget input
+ * tokens a day on the task model and runs after consolidateWhenIdleMin
+ * minutes of idle time.
+ */
+export const observerTierSchema = z.enum(["structure", "text", "pixels"]);
+export type ObserverTier = z.infer<typeof observerTierSchema>;
+export const observerSettingsSchema = z
+  .object({
+    on: z.boolean().default(false),
+    tier: observerTierSchema.default("structure"),
+    retentionDays: z.number().int().min(1).max(90).default(14),
+    dailyTokenBudget: z
+      .number()
+      .int()
+      .min(1000)
+      .max(5_000_000)
+      .default(200_000),
+    consolidateWhenIdleMin: z.number().int().min(1).max(240).default(10),
+  })
+  .strict()
+  .prefault({});
+export type ObserverSettings = z.infer<typeof observerSettingsSchema>;
 export const settingsSchema = z
   .object({
     privacy: privacySchema,
@@ -779,6 +814,8 @@ export const settingsSchema = z
     tools: toolsSettingsSchema,
     /** Which adapter serves each port of the pipeline; {} is every built-in. */
     modules: modulesSettingsSchema,
+    /** Watching how the owner works; off until the owner turns it on. */
+    observer: observerSettingsSchema,
     /**
      * Work in the window a task names (or the one the user was in) without
      * taking the screen while the user is at the Mac: the run binds that
@@ -868,6 +905,13 @@ export const defaultSettings: Settings = {
     servers: [],
   },
   modules: {},
+  observer: {
+    on: false,
+    tier: "structure",
+    retentionDays: 14,
+    dailyTokenBudget: 200_000,
+    consolidateWhenIdleMin: 10,
+  },
   workInBackground: true,
 };
 /** One phone the remote knows about (settings.remoteDevices). */

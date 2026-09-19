@@ -9,6 +9,12 @@ import type {
 import type { AppleConsent, ToolsStatus } from "../core/tools";
 import type { ToolServerTest } from "../tools/registry";
 import type { ModulesStatus } from "../modules/registry";
+import type { WatchingStatus } from "../observer/types";
+import type {
+  LearnedProposals,
+  ProposalDecision,
+  ProposalKind,
+} from "../observer/proposals";
 import type { RecipeRejection, RecipesFileError } from "../voice/recipes-file";
 import type { Bundle, Review } from "../contribution/bundle";
 import type { PillState } from "../voice/router";
@@ -177,6 +183,14 @@ export interface AppInfo {
   /** The Apple bridge and the user's MCP servers, as the Tools pane shows them. */
   tools: ToolsStatus;
 }
+/**
+ * Watching how the owner works, as the Watching pane shows it
+ * (electron/observer.ts): the switch and tier in force, counts from the
+ * work log and the consolidator, never a title, a host or a word.
+ */
+export type { WatchingStatus };
+/** Proposals awaiting a decision and what was approved (src/observer/proposals.ts). */
+export type { LearnedProposals, ProposalDecision, ProposalKind };
 /** The user's site recipes file as the Modules pane shows it (electron/recipes.ts). */
 export interface RecipesStatus {
   path: string;
@@ -566,6 +580,20 @@ export interface Bridge {
   modulesStatus(): Promise<ModulesStatus>;
   /** Settings window only. Re-reads the user's recipes file and reports what loaded; never its words. */
   recipesStatus(): Promise<RecipesStatus>;
+  /** Settings window only. Watching's switch, tier, pause state and the work log's counts. */
+  watchingStatus(): Promise<WatchingStatus>;
+  /** Settings window only. Pauses or resumes the observe stream now; the setting stays. */
+  setWatchingPaused(paused: boolean): Promise<WatchingStatus>;
+  /** Settings window only. Deletes today's work log, or every day's. */
+  forgetWatching(scope: "today" | "all"): Promise<WatchingStatus>;
+  /** Settings window only. What watching proposed and what the owner approved. */
+  learnedProposals(): Promise<LearnedProposals>;
+  /** Settings window only. Approve, dismiss ("Not this") or refuse for good ("Never"). */
+  decideProposal(
+    kind: ProposalKind,
+    id: string,
+    decision: ProposalDecision,
+  ): Promise<LearnedProposals>;
   subscribePill(fn: (state: PillState) => void): () => void;
   subscribeView(fn: (view: string) => void): () => void;
   /** Download progress and install changes for the natural voice. */

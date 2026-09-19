@@ -30,6 +30,7 @@ import {
   transcriptRequest,
   utteranceCompleteness,
   voiceIntent,
+  watchingRequest,
   type VoiceTurnInput,
   type VoiceTurnRun,
 } from "../src/voice/turns";
@@ -2457,5 +2458,96 @@ describe("words that point elsewhere", () => {
       "search for after hours instead",
     ])
       expect([text, dropsCurrentTask(text, stuck)]).toEqual([text, false]);
+  });
+});
+
+/**
+ * "Stop watching" and "start watching" (.data/design/observer.md §6) are
+ * about the observe stream, never the run: whole-utterance like stop, read
+ * before the control words so the "stop" in them stops no task, landing as
+ * fast as a control, and a task that merely mentions watching stays a task.
+ */
+describe("watching phrases", () => {
+  const base: VoiceTurnInput = {
+    text: "",
+    confidence: 0.9,
+    source: "wake",
+    gateMatches: false,
+    now: 0,
+  };
+  it.each([
+    ["stop watching", "stop"],
+    ["Stop watching.", "stop"],
+    ["um, stop watching please", "stop"],
+    ["pause watching", "stop"],
+    ["stop watching me", "stop"],
+    ["stop watching my screen for now", "stop"],
+    ["quit watching how I work", "stop"],
+    ["start watching", "start"],
+    ["start watching again", "start"],
+    ["resume watching", "start"],
+    ["keep watching", "start"],
+    ["watch me again", "start"],
+    ["start watching my screen please", "start"],
+  ])("watchingRequest(%j) = %s", (text, kind) => {
+    expect(watchingRequest(text)).toBe(kind);
+    expect(planVoiceTurn({ ...base, text })).toEqual({
+      kind: "watching",
+      on: kind === "start",
+    });
+    expect(utteranceCompleteness(text)).toBe("control");
+  });
+
+  it("is never read into a task that mentions watching, and never stops a run", () => {
+    for (const text of [
+      "stop watching the clock and open Mail",
+      "start watching the game on YouTube",
+      "watch the news",
+      "stop",
+      "stop listening",
+      "keep watching for the email",
+    ])
+      expect(watchingRequest(text), text).toBeUndefined();
+    const run: VoiceTurnRun = {
+      id: "r",
+      status: "executing",
+      actions: 2,
+      held: false,
+      task: "email the report",
+    };
+    // With a run going, the stream pauses and the run is untouched.
+    expect(planVoiceTurn({ ...base, text: "stop watching", run })).toEqual({
+      kind: "watching",
+      on: false,
+    });
+    // A pending approval is neither answered nor declined by it.
+    expect(
+      planVoiceTurn({
+        ...base,
+        text: "stop watching",
+        run: { ...run, status: "confirming", pendingReason: "Send this?" },
+      }),
+    ).toEqual({ kind: "watching", on: false });
+    // Typed, it works the same; heard faintly, still (ending a watch is always safe).
+    expect(
+      planVoiceTurn({ ...base, text: "stop watching", source: "text" }),
+    ).toEqual({ kind: "watching", on: false });
+    expect(
+      planVoiceTurn({ ...base, text: "stop watching", confidence: 0.2 }),
+    ).toEqual({ kind: "watching", on: false });
+    // "Stop" alone is still a stop, and "stop listening" still closes the conversation.
+    expect(planVoiceTurn({ ...base, text: "stop", run })).toEqual({
+      kind: "stop",
+    });
+    expect(
+      planVoiceTurn({
+        ...base,
+        text: "stop listening",
+        followUpWindow: "conversation",
+      }),
+    ).toEqual({
+      kind: "endConversation",
+    });
+    expect(isControlPhrase("stop watching")).toBe(false);
   });
 });

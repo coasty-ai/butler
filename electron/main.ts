@@ -98,6 +98,14 @@ import {
 } from "../src/contribution/client";
 import { workflowCandidate } from "../src/gym/workflow";
 import { MemoryStore, forgetRunIn } from "../src/memory/store";
+import { createWorkLog, OBSERVER_DIR } from "../src/observer/log";
+import {
+  createConsolidator,
+  createTokenBudget,
+} from "../src/observer/consolidate";
+import { decideProposalIn, learnedProposals } from "../src/observer/proposals";
+import { createObserver, type Observer } from "./observer";
+import { createRoutineScheduler, type RoutineScheduler } from "./routines";
 import { createMemoryAccess } from "../src/memory/access";
 import { createAgenda, withAgenda } from "./agenda";
 import type { MemoryAccess, SystemIndex } from "../src/core/memory";
@@ -286,6 +294,10 @@ let runner: Runner | undefined;
 let native: NativeController | undefined;
 let vault: Vault;
 let memory: MemoryStore | undefined;
+/** Watching how the owner works (electron/observer.ts) and the routines it proposed (electron/routines.ts). */
+let observer: Observer | undefined;
+let routines: RoutineScheduler | undefined;
+let routineClock: ReturnType<typeof setInterval> | undefined;
 let root: string;
 let master: Buffer;
 let settings: Settings = defaultSettings;
@@ -1042,6 +1054,72 @@ function getRecipes() {
     trace: debug,
   });
   return recipesFile;
+}
+/**
+ * Watching how the owner works (.data/design/observer.md; docs/OBSERVER.md):
+ * the work log under userData/observer sealed with the vault key (AAD
+ * "observer"), the consolidator on the task model, and the observer that
+ * pushes the setting to the native stream and receives its events.
+ */
+function getObserver() {
+  observer ??= (() => {
+    const directory = join(root, OBSERVER_DIR);
+    const log = createWorkLog({
+      directory,
+      key: master,
+      tier: () => settings.observer.tier,
+      retentionDays: () => settings.observer.retentionDays,
+      onError: (error) => debug("ObserverLogFailed", errorDetails(error)),
+      onDayEnd: (day) => void consolidator.dayEnd(day),
+      // The report's counts of proposals and replays, from memory.
+      memory: () => memory?.data(),
+    });
+    const consolidator = createConsolidator({
+      settings: () => settings,
+      key: () => providerKey(credentials, settings) ?? "",
+      fetch: desktopTransport(debug),
+      log,
+      memory: () => memory,
+      budget: createTokenBudget(directory),
+      idleMs: () => presence.idleMs(),
+      runActive,
+      trace: debug,
+    });
+    return createObserver({
+      settings: () => settings,
+      controller: () =>
+        process.platform === "darwin" ? getNative() : undefined,
+      helperRunning: () => !!native,
+      log,
+      consolidator,
+      memory: () => memory,
+      runActive,
+      presence: () => presence.current(),
+      // One offer aloud, through the conversation like any reply.
+      say: (text) =>
+        void conversation.say(
+          { text },
+          { priority: "result", voiceTurn: true, kind: "reply" },
+        ),
+      onChange: () => updateTray(),
+      trace: debug,
+    });
+  })();
+  return observer;
+}
+/** Approved routines replay at their window as runs with origin "routine". */
+function getRoutines() {
+  routines ??= createRoutineScheduler({
+    settings: () => settings,
+    memory: () => memory,
+    runActive,
+    listening: () => listening,
+    presence,
+    typingIn: () => getObserver().typingIn(),
+    start: (task, source) => startRun(task, false, source),
+    trace: debug,
+  });
+  return routines;
 }
 /** Settings with one server row replaced. */
 function withToolServer(
@@ -2053,6 +2131,9 @@ function getNative() {
       {
         inputIdle: (report) => void resumeAfterManualInput(report),
         scrollEnded,
+        // The observe stream's frames and actions (design §2) go to the
+        // work log; the helper excluded what must never be written.
+        observed: (event) => observer?.observed(event),
         // open_url: the browser the early step would bring forward is told
         // the address (electron/open-url.ts); the helper is never asked.
         openUrl: (action) =>
@@ -2445,6 +2526,9 @@ function trayTooltip() {
 function updateTray() {
   if (!tray) return;
   tray.setToolTip(trayTooltip());
+  // The eye in the menu bar while watching is on and not paused (design §6).
+  tray.setTitle(observer?.state() === "on" ? "Butler 👁" : "Butler");
+  const watchingLabel = observer?.menuLabel();
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
@@ -2458,6 +2542,17 @@ function updateTray() {
             setPill({ phase: "error", label: e.message }),
           ),
       },
+      ...(watchingLabel
+        ? [
+            {
+              label: watchingLabel,
+              click: () =>
+                void getObserver()
+                  .setPaused(!getObserver().paused)
+                  .catch((e) => setPill({ phase: "error", label: e.message })),
+            },
+          ]
+        : []),
       { type: "separator" },
       {
         label: "Type a command",
@@ -3391,6 +3486,23 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       idleCard(interrupted ? "Interrupted the coding agent." : "Stopped.");
       return;
     }
+    case "watching": {
+      // "Stop watching" pauses the observe stream at once; "start watching"
+      // resumes it only when the setting is on (consent lives in Settings).
+      const obs = getObserver();
+      if (!plan.on) {
+        await obs.setPaused(true);
+        idleCard("Stopped watching.");
+        return;
+      }
+      if (obs.state() === "off") {
+        idleCard("Turn on “Watch how I work” in Settings first.");
+        return;
+      }
+      await obs.setPaused(false);
+      idleCard("Watching again.");
+      return;
+    }
     case "pause":
       voiceHeld = false;
       runner?.pause();
@@ -3875,6 +3987,8 @@ function emit(s: Snapshot) {
   power.onSnapshot(s);
   remote.onSnapshot(s);
   trackRun(s);
+  routines?.onSnapshot(s);
+  observer?.onSnapshot(s);
   if (window && !window.isDestroyed()) window.webContents.send("snapshot", s);
   // Decides what to say about this moment; it never speaks while listening.
   conversation.onSnapshot(s, { listening, handsFree: settings.handsFree });
@@ -4011,7 +4125,15 @@ async function review(
 const startFromSchema = z
   .object({
     origin: z
-      .enum(["voice", "typed", "message", "queue", "watch", "remote"])
+      .enum([
+        "voice",
+        "typed",
+        "message",
+        "queue",
+        "watch",
+        "remote",
+        "routine",
+      ])
       .optional(),
     taskSource: z
       .enum(["user_words", "user_words_unsure", "model_rewrite", "proposal"])
@@ -4140,6 +4262,8 @@ async function startRun(
     await endScroll();
     task = z.string().trim().min(1).max(8000).parse(task);
     const from = startFromSchema.parse(source);
+    // An undo right after a routine's replay counts against the routine.
+    if (from?.undo) routines?.noteUndo();
     const origin: RunOrigin = from?.origin ?? "typed";
     const taskSource =
       from?.taskSource ?? (origin === "typed" ? "user_words" : undefined);
@@ -4347,6 +4471,10 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       credentials = nextCredentials;
       settings = next;
       saveConfig();
+      // The observe stream follows the switch and the tier at once.
+      void getObserver()
+        .apply()
+        .catch((error) => debug("ObserverApplyFailed", errorDetails(error)));
       updateTray();
       power.apply();
       if (voiceEngineChanged) {
@@ -4982,6 +5110,28 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         "x-apple.systempreferences:com.apple.Accessibility-Settings.extension",
       );
       return;
+    // Watching (electron/observer.ts, src/observer). Settings window only.
+    case "watchingStatus":
+      return getObserver().status();
+    case "setWatchingPaused":
+      await getObserver().setPaused(z.boolean().parse(args[0]));
+      return getObserver().status();
+    case "forgetWatching":
+      return getObserver().forget(z.enum(["today", "all"]).parse(args[0]));
+    case "learnedProposals":
+      return learnedProposals(memory!.data());
+    case "decideProposal": {
+      const kind = z
+        .enum(["routine", "procedure", "preference"])
+        .parse(args[0]);
+      const id = z.string().min(1).max(80).parse(args[1]);
+      const decision = z.enum(["approve", "dismiss", "never"]).parse(args[2]);
+      memory!.update((data) =>
+        decideProposalIn(data, kind, id, decision, new Date()),
+      );
+      debug("ProposalDecided", { kind, code: decision });
+      return learnedProposals(memory!.data());
+    }
     case "memorySummary":
       return summarizeMemory(memory!.data());
     case "forgetMemory":
@@ -5288,6 +5438,17 @@ app
     memory = new MemoryStore(join(root, "memory"), master, undefined, {
       onError: (error) => debug("MemoryStoreFailed", errorDetails(error)),
     });
+    // Watching: retention at start, the midnight pass, the setting pushed
+    // to the helper once one runs; approved routines checked every minute.
+    getObserver().start();
+    routineClock = setInterval(
+      () =>
+        void getRoutines()
+          .tick()
+          .catch((error) => debug("RoutineTickFailed", errorDetails(error))),
+      60_000,
+    );
+    routineClock.unref?.();
     if (process.env.COARENA_DIAGNOSTICS === "1") {
       diagnostics = new LocalDiagnostics(
         process.env.COARENA_DIAGNOSTICS_DIR ?? join(root, "diagnostics"),
@@ -5528,6 +5689,8 @@ app.on("before-quit", () => {
   stopWatches();
   coding.closeAll();
   runner?.stop();
+  clearInterval(routineClock);
+  observer?.close();
   flushMemory();
   native?.close();
   voice?.close();

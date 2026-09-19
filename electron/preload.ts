@@ -61,6 +61,11 @@ const bridge: Bridge = {
   forgetToolServer: (...a) => invoke("forgetToolServer", ...a),
   modulesStatus: () => invoke("modulesStatus"),
   recipesStatus: () => invoke("recipesStatus"),
+  watchingStatus: () => invoke("watchingStatus"),
+  setWatchingPaused: (...a) => invoke("setWatchingPaused", ...a),
+  forgetWatching: (...a) => invoke("forgetWatching", ...a),
+  learnedProposals: () => invoke("learnedProposals"),
+  decideProposal: (...a) => invoke("decideProposal", ...a),
   subscribePill: (fn) => {
     const handler = (_e: unknown, s: any) => fn(s);
     ipcRenderer.on("pill", handler);

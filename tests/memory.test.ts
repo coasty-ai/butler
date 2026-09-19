@@ -167,6 +167,8 @@ describe("MemoryStore", () => {
       preferences: 0,
       skills: 0,
       apps: 0,
+      routines: 0,
+      procedures: 0,
     });
     store.addEpisode(episode({ id: "a", task: "email the quarterly budget" }));
     store.upsertPreference("Use Google Chrome for browsing");
@@ -188,6 +190,8 @@ describe("MemoryStore", () => {
       preferences: 1,
       skills: 1,
       apps: 1,
+      routines: 0,
+      procedures: 0,
     });
     expect(again.data().episodes[0].task).toBe("email the quarterly budget");
     expect(again.data().apps["com.google.Chrome"].name).toBe("Google Chrome");
@@ -220,6 +224,95 @@ describe("MemoryStore", () => {
     garbage.recordAppUse("com.apple.Notes", "Notes");
     garbage.flush();
     expect(new MemoryStore(dir, randomBytes(32)).summary().apps).toBe(0);
+  });
+
+  it("reads a version 1 file, keeps every record and writes version 2 (docs/MEMORY.md)", async () => {
+    const dir = tempDir();
+    const key = randomBytes(32);
+    const { seal } = await import("../src/storage/vault");
+    const v1 = {
+      version: 1,
+      episodes: [episode({ id: "e1", task: "open calculator" })],
+      preferences: [
+        {
+          id: "p1",
+          kind: "preference",
+          text: "Use Chrome",
+          tokens: ["chrome"],
+          weight: 2,
+          source: "correction",
+          createdAt: NOW.toISOString(),
+          updatedAt: NOW.toISOString(),
+        },
+      ],
+      skills: [skill()],
+      apps: {
+        "com.apple.Notes": {
+          bundleId: "com.apple.Notes",
+          name: "Notes",
+          count: 3,
+          lastUsed: NOW.toISOString(),
+        },
+      },
+    };
+    writeFileSync(
+      join(dir, MEMORY_FILE),
+      seal(key, Buffer.from(JSON.stringify(v1)), "memory"),
+    );
+    const store = new MemoryStore(dir, key, () => NOW);
+    const data = store.data();
+    expect(data.version).toBe(2);
+    expect(data.episodes).toEqual(v1.episodes);
+    expect(data.preferences).toEqual(v1.preferences);
+    expect(data.skills).toEqual(v1.skills);
+    expect(data.apps).toEqual(v1.apps);
+    expect(data.routines).toEqual([]);
+    expect(data.procedures).toEqual([]);
+    // A version 2 file round-trips its routines and procedures, and drops a
+    // malformed entry rather than the file.
+    store.update((d) => {
+      d.routines.push({
+        id: "routine-1",
+        kind: "routine",
+        name: "Morning",
+        tokens: ["morning"],
+        when: { weekdays: [1], hourRange: [9, 10] },
+        steps: [{ appId: "com.apple.mail" }],
+        seen: 2,
+        firstSeen: NOW.toISOString(),
+        lastSeen: NOW.toISOString(),
+        confidence: 0.6,
+        status: "proposed",
+        runs: { completed: 0, corrected: 0, undone: 0, declined: 0, failed: 0 },
+        correctionStreak: 0,
+      });
+      d.procedures.push({
+        id: "proc-1",
+        kind: "procedure",
+        trigger: "file the receipt from {slot0}",
+        tokens: ["file", "receipt"],
+        slots: ["slot0"],
+        steps: [{ action: { type: "open_app", name: "Finder" } }],
+        observedRuns: 3,
+        lastSeen: NOW.toISOString(),
+        confidence: 0.5,
+        status: "proposed",
+      });
+      d.procedures.push({ kind: "procedure", trigger: 5 } as never);
+    });
+    store.flush();
+    const again = new MemoryStore(dir, key, () => NOW).data();
+    expect(again.version).toBe(2);
+    expect(again.routines).toHaveLength(1);
+    expect(again.routines[0].name).toBe("Morning");
+    expect(again.procedures).toHaveLength(1);
+    expect(again.episodes).toHaveLength(1);
+    // A version 2 file without its lists is not a memory file.
+    writeFileSync(
+      join(dir, MEMORY_FILE),
+      seal(key, Buffer.from(JSON.stringify({ ...v1, version: 2 })), "memory"),
+    );
+    expect(new MemoryStore(dir, key).data()).toEqual(emptyMemory());
   });
 
   it("rejects decrypted data with the wrong shape", async () => {

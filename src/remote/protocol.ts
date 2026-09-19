@@ -258,6 +258,8 @@ export function remoteReply(
       return "Stopped.";
     case "pause":
       return "Paused.";
+    case "watching":
+      return "Watching is changed on the Mac.";
     case "resume":
       return "Continuing.";
     case "undo":

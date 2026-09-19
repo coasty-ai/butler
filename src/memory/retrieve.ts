@@ -1,7 +1,7 @@
 import type { MemoryContext } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
 import type { SystemIndex } from "../core/memory";
-import type { AppUsage, Episode, MemoryData } from "./types";
+import type { AppUsage, Episode, MemoryData, Preference } from "./types";
 
 /** Context bounds from docs/MEMORY.md. */
 export const CONTEXT_LIMITS = {
@@ -170,9 +170,13 @@ export function recallContext(
   // task stays local), most relevant first, then the usage-derived app choices,
   // which always keep their room.
   const usage = usagePreferences(data.apps).filter(Boolean);
+  // An observed preference the owner has not approved (or refused) is a
+  // proposal in Settings, not advice for the model.
+  const inForce = (p: Preference) =>
+    p.status === undefined || p.status === "approved";
   const preferences = data.preferences
     .map((p, i) => ({ p, score: preferenceScores[i] ?? 0 }))
-    .filter(({ score }) => score > 0)
+    .filter(({ p, score }) => score > 0 && inForce(p))
     .sort(
       (a, b) =>
         b.score - a.score ||

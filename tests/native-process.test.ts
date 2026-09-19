@@ -731,7 +731,9 @@ describe("learning summary for the settings window", () => {
   const at = (day: number) => new Date(Date.UTC(2026, 0, day)).toISOString();
   it("counts everything and lists only the 10 newest preferences and skill triggers", () => {
     const data: MemoryData = {
-      version: 1,
+      version: 2,
+      routines: [],
+      procedures: [],
       episodes: Array.from({ length: 3 }, (_, i) => ({
         id: `e${i}`,
         kind: "episode" as const,

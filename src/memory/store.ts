@@ -16,6 +16,8 @@ import type {
   Episode,
   MemoryData,
   Preference,
+  Procedure,
+  Routine,
   Skill,
 } from "./types";
 import type {
@@ -36,6 +38,8 @@ export const MEMORY_LIMITS = {
   preferences: 200,
   skills: 150,
   apps: 300,
+  routines: 100,
+  procedures: 100,
 } as const;
 /** Episodes and skills unused for this long are pruned first at the cap. */
 export const DECAY_DAYS = 90;
@@ -44,11 +48,13 @@ export const MEMORY_FILE = "memory.enc";
 const AAD = "memory";
 
 export const emptyMemory = (): MemoryData => ({
-  version: 1,
+  version: 2,
   episodes: [],
   preferences: [],
   skills: [],
   apps: {},
+  routines: [],
+  procedures: [],
 });
 
 export const stableId = (prefix: string, value: string) =>
@@ -308,25 +314,56 @@ export function prune(data: MemoryData, now: Date) {
       .slice(0, MEMORY_LIMITS.apps);
     data.apps = Object.fromEntries(kept.map((a) => [a.bundleId, a]));
   }
+  // What watching proposed: approved entries are kept ahead of proposed
+  // ones, then the most recently seen; retired and refused go first.
+  const rank = (status: string) =>
+    status === "approved" ? 2 : status === "proposed" ? 1 : 0;
+  if (data.routines.length > MEMORY_LIMITS.routines)
+    data.routines = [...data.routines]
+      .sort(
+        (a, b) =>
+          rank(b.status) - rank(a.status) ||
+          time(b.lastSeen) - time(a.lastSeen),
+      )
+      .slice(0, MEMORY_LIMITS.routines);
+  if (data.procedures.length > MEMORY_LIMITS.procedures)
+    data.procedures = [...data.procedures]
+      .sort(
+        (a, b) =>
+          rank(b.status) - rank(a.status) ||
+          time(b.lastSeen) - time(a.lastSeen),
+      )
+      .slice(0, MEMORY_LIMITS.procedures);
 }
 
+/**
+ * Reads a version 1 or 2 file. A version 1 file (before watching existed)
+ * has no routines or procedures and gets empty lists; every record it holds
+ * is kept. Anything else is invalid.
+ */
 function coerce(value: unknown): MemoryData {
   if (!value || typeof value !== "object") throw new Error("Invalid memory");
-  const v = value as Partial<MemoryData>;
+  const v = value as Partial<Omit<MemoryData, "version">> & {
+    version?: unknown;
+  };
   if (
-    v.version !== 1 ||
+    (v.version !== 1 && v.version !== 2) ||
     !Array.isArray(v.episodes) ||
     !Array.isArray(v.preferences) ||
     !Array.isArray(v.skills) ||
     !v.apps ||
     typeof v.apps !== "object" ||
-    Array.isArray(v.apps)
+    Array.isArray(v.apps) ||
+    (v.version === 2 &&
+      (!Array.isArray(v.routines) || !Array.isArray(v.procedures)))
   )
     throw new Error("Invalid memory");
   const object = (x: unknown): x is Record<string, unknown> =>
     !!x && typeof x === "object";
+  const status = (x: unknown) =>
+    x === "proposed" || x === "approved" || x === "retired" || x === "never";
   return {
-    version: 1,
+    version: 2,
     episodes: v.episodes.filter(
       (e): e is Episode =>
         object(e) && e.kind === "episode" && typeof e.task === "string",
@@ -350,6 +387,23 @@ function coerce(value: unknown): MemoryData {
           typeof a.count === "number",
       ),
     ) as Record<string, AppUsage>,
+    routines: (v.version === 2 ? v.routines! : []).filter(
+      (r): r is Routine =>
+        object(r) &&
+        r.kind === "routine" &&
+        typeof r.name === "string" &&
+        Array.isArray(r.steps) &&
+        object(r.when) &&
+        status(r.status),
+    ),
+    procedures: (v.version === 2 ? v.procedures! : []).filter(
+      (p): p is Procedure =>
+        object(p) &&
+        p.kind === "procedure" &&
+        typeof p.trigger === "string" &&
+        Array.isArray(p.steps) &&
+        status(p.status),
+    ),
   };
 }
 
@@ -465,6 +519,8 @@ export class MemoryStore {
       preferences: data.preferences.length,
       skills: data.skills.length,
       apps: Object.keys(data.apps).length,
+      routines: data.routines.length,
+      procedures: data.procedures.length,
     };
   }
 

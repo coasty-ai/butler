@@ -661,6 +661,18 @@ export interface ObserveDropped {
   dropped: number;
 }
 export type ObservedEvent = ObserveFrame | ObserveAction | ObserveDropped;
+/** The three event names the stream carries. */
+export const OBSERVE_EVENTS: ReadonlySet<string> = new Set([
+  "observe_frame",
+  "observe_action",
+  "observe_dropped",
+]);
+/** What `observe` answers: whether the stream is on, and at which tier and cadence. */
+export interface ObserveState {
+  observing: boolean;
+  tier?: ObserveTier;
+  everyMs?: number;
+}
 /** The helper's bounds, applied again here so a helper bug cannot widen them. */
 export const OBSERVE_TITLE_MAX = 120;
 export const OBSERVE_LABEL_MAX = 120;
@@ -1606,7 +1618,7 @@ export class NativeController implements Controller {
    * and nothing of the stream follows the acknowledgement. The events reach
    * the app through hooks.observed.
    */
-  async observe(options: ObserveOptions): Promise<{ observing: boolean }> {
+  async observe(options: ObserveOptions): Promise<ObserveState> {
     const tier = options.tier ?? "structure";
     if (!observeTiers.includes(tier)) throw new Error("Unknown observe tier.");
     const requested = options.everyMs ?? OBSERVE_EVERY_MS_DEFAULT;

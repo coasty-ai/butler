@@ -324,6 +324,26 @@ export function voiceIntent(text: string): VoiceIntent {
   return result("command");
 }
 
+// Watching how the owner works (.data/design/observer.md §6): "stop
+// watching" pauses the observe stream at once and "start watching" resumes
+// it. Whole-utterance, like stop: "stop watching the clock and open Mail" is
+// a task. Neither touches a run, a scroll or an approval.
+const watchingObject = "(?: (?:me|my screen|the screen|how i work|what i do))?";
+const watchingTail = "(?: (?:please|now|for now|again|for me))*";
+const STOP_WATCHING = new RegExp(
+  `^(?:please )?(?:stop|pause|quit) watching${watchingObject}${watchingTail}$`,
+);
+const START_WATCHING = new RegExp(
+  `^(?:please )?(?:start|resume|begin|keep) watching${watchingObject}${watchingTail}$|^(?:please )?(?:watch|keep watching) (?:me|my screen|how i work)(?: again)?${watchingTail}$`,
+);
+/** "stop": pause watching at once; "start": resume it; undefined otherwise. */
+export function watchingRequest(text: string): "stop" | "start" | undefined {
+  const k = intentKey(text);
+  if (STOP_WATCHING.test(k)) return "stop";
+  if (START_WATCHING.test(k)) return "start";
+  return undefined;
+}
+
 /** True exactly for spoken stop and pause utterances (native parity). */
 export function isControlPhrase(text: string): boolean {
   const kind = voiceIntent(text).kind;
@@ -391,6 +411,8 @@ export function utteranceCompleteness(
 ): Completeness {
   const intent = voiceIntent(text);
   if (intent.kind === "stop" || intent.kind === "pause") return "control";
+  // "Stop watching" lands as fast as stop does: nothing follows it.
+  if (watchingRequest(text)) return "control";
   // While a page scrolls, "scroll up" and "faster" must land as quickly as
   // "stop" does; said anywhere else, "scroll down" may go on ("…to the
   // comments") and keeps a command's timing.
@@ -766,6 +788,9 @@ export type TurnPlan =
   | { kind: "stop" }
   | { kind: "pause" }
   | { kind: "resume" }
+  // "Stop watching" / "start watching": the observe stream pauses at once or
+  // resumes (.data/design/observer.md §6). Nothing about a run changes.
+  | { kind: "watching"; on: boolean }
   // "Undo that": Edit > Undo in the frontmost application, as the next step
   // of the run under way (which pauses, undoes, reports and waits) or of a
   // short run of its own right after one ended. `words` are the user's own,
@@ -1216,6 +1241,10 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
     return pending && isThanks(text)
       ? { kind: "confirmAgain" }
       : { kind: "endConversation" };
+  // "Stop watching" is about the observer, never the run: it is read before
+  // the control words so "stop" in it cannot stop a task.
+  const watching = watchingRequest(text);
+  if (watching) return { kind: "watching", on: watching === "start" };
   const intent = voiceIntent(text);
   // 1. Control intents are never merged; stop and pause always win.
   if (intent.kind === "stop") return { kind: "stop" };

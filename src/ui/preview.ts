@@ -5,6 +5,7 @@ import type {
   RemoteStatus,
   SetupStatus,
   ToolsStatus,
+  WatchingStatus,
 } from "./api";
 import {
   defaultSettings,
@@ -12,6 +13,7 @@ import {
   type JournalEvent,
   type Recorder,
   type Run,
+  type Settings,
   type Snapshot,
 } from "../core/schema";
 import { Runner, terminal } from "../core/runner";
@@ -96,6 +98,36 @@ const setupUnavailable: SetupStatus = {
 };
 const setupMessage =
   "First-run setup happens in the macOS app. This preview grants no permissions and contacts no provider.";
+/** Watching as the browser preview reports it: the saved switch, nothing on disk. */
+const watchingUnavailable = (settings: Settings): WatchingStatus => ({
+  on: settings.observer.on,
+  tier: settings.observer.tier,
+  paused: false,
+  state: settings.observer.on ? "on" : "off",
+  retentionDays: settings.observer.retentionDays,
+  path: "~/Library/Application Support/coarena-open-assist/observer",
+  today: {
+    day: "",
+    frames: 0,
+    actions: 0,
+    bytesWritten: 0,
+    bytesDropped: 0,
+    framesDropped: 0,
+    excluded: {},
+    apps: {},
+    actionKinds: {},
+    dropped: { size: 0, credential: 0, invalid: 0, paused: 0, helper: 0 },
+    images: 0,
+  },
+  days: [],
+  bytes: 0,
+  consolidation: {
+    tokensToday: 0,
+    budget: settings.observer.dailyTokenBudget,
+    idleMinutes: settings.observer.consolidateWhenIdleMin,
+  },
+});
+
 export function previewBridge(): Bridge {
   let settings = structuredClone(defaultSettings),
     pill = { ...idlePill },
@@ -464,6 +496,20 @@ export function previewBridge(): Bridge {
       builtin: RECIPES.length,
       total: RECIPES.length,
       rejected: [],
+    }),
+    // The preview watches nothing and proposes nothing: no stream, no log.
+    watchingStatus: async () => watchingUnavailable(settings),
+    setWatchingPaused: async () => watchingUnavailable(settings),
+    forgetWatching: async () => watchingUnavailable(settings),
+    learnedProposals: async () => ({
+      routines: [],
+      procedures: [],
+      preferences: [],
+    }),
+    decideProposal: async () => ({
+      routines: [],
+      procedures: [],
+      preferences: [],
     }),
     agendaStatus: async () => ({ calendar: "unknown", reminders: "unknown" }),
     requestAgendaAccess: async () => ({

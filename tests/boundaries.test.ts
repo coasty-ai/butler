@@ -68,6 +68,7 @@ const voiceFiles = srcFiles.filter((f) => f.startsWith("src/voice/"));
 const assistantFiles = srcFiles.filter((f) => f.startsWith("src/assistant/"));
 const toolFiles = srcFiles.filter((f) => f.startsWith("src/tools/"));
 const moduleFiles = srcFiles.filter((f) => f.startsWith("src/modules/"));
+const observerFiles = srcFiles.filter((f) => f.startsWith("src/observer/"));
 
 /** Collect every violation so one run names them all. */
 function offenders(
@@ -92,6 +93,7 @@ describe("module boundaries", () => {
     expect(assistantFiles.length).toBeGreaterThan(2);
     expect(toolFiles.length).toBeGreaterThan(3);
     expect(moduleFiles.length).toBeGreaterThan(1);
+    expect(observerFiles.length).toBeGreaterThan(3);
     expect(srcFiles.length).toBeGreaterThan(20);
     expect(electronFiles.length).toBeGreaterThan(5);
   });
@@ -225,6 +227,47 @@ describe("module boundaries", () => {
         (specifier, resolved) =>
           specifier.startsWith(".") && resolved.startsWith("src/modules/")
             ? "only electron/ and src/ui consume src/modules; nothing below it imports it"
+            : undefined,
+      ),
+    ).toEqual([]);
+  });
+
+  /**
+   * src/observer is the watching layer (.data/design/observer.md): the work
+   * log, consolidation, routine rules and proposals. It stores through
+   * src/storage's seal, reads the memory shapes and mutators, calls the
+   * task model through src/providers' text path and the settings from
+   * src/core; Node builtins are allowed (the log is files). It knows nothing
+   * of the UI or Electron, and only the app layer consumes it: electron/
+   * wires the observer and scheduler, src/ui the Watching pane, and
+   * src/memory reads nothing back from it (the storage shapes live in
+   * src/memory/types.ts so the arrow points one way).
+   */
+  it("keeps src/observer on src/core, src/memory, src/providers and src/storage", () => {
+    expect(
+      offenders(observerFiles, (specifier, resolved) => {
+        if (specifier === "electron" || specifier.startsWith("electron/"))
+          return "src/observer must not depend on Electron";
+        if (specifier.startsWith("node:")) return undefined;
+        if (!specifier.startsWith("."))
+          return specifier === "zod"
+            ? undefined
+            : `src/observer may import only zod, not ${specifier}`;
+        if (
+          !/^src\/(?:observer|core|memory|providers|storage)\//.test(resolved)
+        )
+          return `src/observer may import only src/core, src/memory, src/providers and src/storage, not ${resolved}`;
+        return undefined;
+      }),
+    ).toEqual([]);
+    expect(
+      offenders(
+        srcFiles.filter(
+          (f) => !f.startsWith("src/observer/") && !f.startsWith("src/ui/"),
+        ),
+        (specifier, resolved) =>
+          specifier.startsWith(".") && resolved.startsWith("src/observer/")
+            ? "only electron/ and src/ui consume src/observer; nothing below it imports it"
             : undefined,
       ),
     ).toEqual([]);

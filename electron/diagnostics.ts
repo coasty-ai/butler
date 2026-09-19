@@ -280,15 +280,29 @@ const fields = new Set([
   "ms",
   "loaded",
   "rejected",
-  // The observe stream (ObserverFrame, ObserverAction, ObserverDropped):
-  // the application's id and the exclusion code, the action's kind, the
-  // drop's reason and count. Never a title, a label, a digest or a picture.
+  // Watching how the owner works (electron/observer.ts, src/observer): a
+  // frame's exclusion code, consolidation's counts and its hashed routine
+  // ids (stableId, never a name), a replay's outcome. Never a title, a
+  // host, a label or a word of the timeline.
   "excluded",
+  "tokens",
+  "routines",
+  "procedures",
+  "routineId",
+  "removed",
+  "imagesExpired",
+  "on",
+  "scope",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
   "loaded",
   "rejected",
+  "tokens",
+  "routines",
+  "procedures",
+  "removed",
+  "imagesExpired",
   "preferences",
   "episodes",
   "apps",
@@ -373,6 +387,7 @@ const numberFields = new Set([
 const flagFields = new Set([
   "interrupted",
   "ok",
+  "on",
   "merged",
   "speaking",
   "voiceProcessing",
@@ -446,8 +461,10 @@ const codeFields = new Set([
   // A clause's commit ("boundary" or "stable") and a fast action's site code.
   "by",
   "siteKey",
-  // An observe frame's exclusion.
+  // The observer: an exclusion code and a forget scope. A routine's id
+  // ("routine-<hash>") is not a code by shape and is scrubbed as a string.
   "excluded",
+  "scope",
 ]);
 /**
  * The early step's own events keep only these keys, whatever else a caller
