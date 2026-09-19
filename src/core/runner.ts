@@ -1952,7 +1952,10 @@ export class Runner {
     let routed: string[] | undefined;
     try {
       if (options.prelude && !run.synthetic) this.applyPrelude(options.prelude);
-      if (this.memoryRun) await this.recall(task);
+      // Recall overlaps the first capture (the helper answers the index off its
+      // queue); it is awaited before anything decides on the frame, so a
+      // recalled plan and memory are in place exactly as if it had come first.
+      let recalled = this.memoryRun ? this.recall(task) : undefined;
       if (!this.active()) return;
       await this.controller.resume();
       while (this.active()) {
@@ -1976,6 +1979,11 @@ export class Runner {
           throw error;
         }
         if (!frame || epoch !== this.epoch) continue;
+        if (recalled) {
+          await recalled;
+          recalled = undefined;
+          if (!this.active() || epoch !== this.epoch) continue;
+        }
         // Advice only, before the model sees this step's history. A re-aim is
         // the same step: it neither ends nor starts a no-progress streak.
         if (!reaim) this.trackProgress(frame);

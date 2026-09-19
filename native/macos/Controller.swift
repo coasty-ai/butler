@@ -2293,6 +2293,14 @@ DispatchQueue.global().async {
         // ahead of the queue: a capture or paced typing in flight would
         // otherwise hold it past that deadline and leave main a stale report.
         if command["method"] as? String == "presence" {emit(["id":command["id"] ?? "","result":presence()]);continue}
+        // The system index is read-only (Spotlight metadata, application names,
+        // standard folders; caches under withState) and sends no input, so it is
+        // answered off the queue too: memory recall at run start then overlaps the
+        // first capture instead of holding it for up to a second.
+        if command["method"] as? String == "index" {
+            Task { do {let result = try await handle(command);emit(["id":command["id"] ?? "","result":result])}catch {emit(["id":command["id"] ?? "","error":(error as? ControlError)?.message ?? "Native controller failed."])} }
+            continue
+        }
         commands.async {
             let semaphore = DispatchSemaphore(value:0)
             Task { do {let result = try await handle(command);emit(["id":command["id"] ?? "","result":result])}catch {var result:[String:Any] = ["id":command["id"] ?? "","error":(error as? ControlError)?.message ?? "Native controller failed."];if let code = (error as? ControlError)?.code {result["code"] = code};if let change = (error as? ControlError)?.change {result["change"] = change};emit(result)};semaphore.signal() };semaphore.wait()

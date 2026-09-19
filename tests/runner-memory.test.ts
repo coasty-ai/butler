@@ -409,7 +409,7 @@ describe("runner memory recall", () => {
     expect(m.of("MemoryRecalled")).toHaveLength(0);
     expect(learned).toHaveLength(1);
   });
-  it("stopping during recall ends the run without enabling input", async () => {
+  it("stopping during recall ends the run with input stopped and no model call", async () => {
     const m = journal();
     const { controller } = desktop();
     const access: MemoryAccess = {
@@ -426,10 +426,44 @@ describe("runner memory recall", () => {
     runner.stop();
     await running;
     expect(runner.snapshot.run?.status).toBe("cancelled");
-    expect(controller.resume).not.toHaveBeenCalled();
+    // Recall overlaps the first capture, so input was enabled for it; the
+    // stop disables it again, and the model was never asked.
+    expect(controller.resume).toHaveBeenCalledTimes(1);
+    expect(controller.stop).toHaveBeenCalled();
     expect(p.next).not.toHaveBeenCalled();
     expect(access.learn).toHaveBeenCalledTimes(1);
     expect(runner.settled).toBe(true);
+  });
+  it("captures while recall is pending and honours the recall before deciding", async () => {
+    const m = journal();
+    const { controller } = desktop();
+    let capturedDuringRecall = false;
+    let release: ((r: Recall) => void) | undefined;
+    const access: MemoryAccess = {
+      recall: () =>
+        new Promise<Recall>((resolve) => {
+          release = resolve;
+        }),
+      learn: vi.fn(),
+    };
+    const p = scripted();
+    const runner = runnerWith(controller, p, m, access);
+    const capture = vi.mocked(controller.capture).getMockImplementation()!;
+    vi.mocked(controller.capture).mockImplementationOnce(async () => {
+      capturedDuringRecall = release !== undefined;
+      const frame = await capture();
+      // Recall answers only after the capture: the run must still wait for it.
+      release?.({
+        context: { preferences: ["Answer in one line."], episodes: [] },
+      });
+      return frame;
+    });
+    await runner.start("test");
+    expect(capturedDuringRecall).toBe(true);
+    expect(controller.resume).toHaveBeenCalledTimes(1);
+    expect(p.next).toHaveBeenCalled();
+    const first = vi.mocked(p.next).mock.calls[0];
+    expect(JSON.stringify(first)).toContain("Answer in one line.");
   });
   it("ignores a recall that throws", async () => {
     const m = journal();

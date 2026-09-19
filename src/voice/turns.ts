@@ -1606,7 +1606,9 @@ const LETS_GO = new RegExp(
     "(?:scrap|drop|ditch|abandon|skip) (?:it|that|this)",
     "(?:stop|cancel|end) (?:it|that|this|the task)",
     "something else|(?:a )?change of plans?|start over",
-  ].join("|")})(?=\\s*$|\\s*[,;:.!?—-]|\\s+(?:and|instead|actually|just|now|lets|let)\\b)`,
+  ].join(
+    "|",
+  )})(?=\\s*$|\\s*[,;:.!?—-]|\\s+(?:and|instead|actually|just|now|lets|let)\\b)`,
 );
 const INSTEAD = /\b(?:instead|rather)\b/;
 /**
