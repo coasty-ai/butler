@@ -3,23 +3,30 @@
 // the coarena-launch shim, the vault empty. Prints codes, counts and tool
 // names only — never a description, a file name or a result's text.
 //
-//   node --import tsx scripts/mcp-check.mjs [--folder <dir>] [--keep-home]
+//   node --import tsx scripts/mcp-check.mjs [--folder <dir>] [--install-root <dir>] [--keep-home]
+//   npm run tools:check
 //
 // What it does, in order:
 //   1. Apple bridge: `coarena-apple status` through registry.appleAccess()
 //      (never prompts), then the builtin provider's state after configure().
-//   2. A user row from the Filesystem recipe (npx server-filesystem over stdio,
-//      network "none", through the shim): registry.test() = connect once,
-//      list, disconnect — the consent sheet's preview.
+//   2. A user row from the Filesystem recipe (serverFromRecipe: node on the
+//      bin the app installs, network "none", through the shim with
+//      --no-network): registry.test() = install the pinned package with npm
+//      when it is not yet under the install root (network allowed for that
+//      step alone), then connect once, list, disconnect — the consent sheet's
+//      preview. A second test() shows the install skipped.
 //   3. configure() with that row enabled and consented, the first ticks saved
 //      as the pane saves them, then access().list/prepare/call of the read
 //      tool list_directory on the folder, and the outcome code.
+// The install root is a scratch folder with a space in its path (as the real
+// one, ~/Library/Application Support/coarena-open-assist/mcp, has) unless
+// --install-root names one; --keep-home keeps the scratch folder.
 // Exit 0 when every step answered; 1 when a step failed (its code printed).
 import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createToolRegistry } from "../src/tools/registry.ts";
-import { RECIPES, FOLDER } from "../src/tools/providers/recipes.ts";
+import { RECIPES, serverFromRecipe } from "../src/tools/providers/recipes.ts";
 import { defaultSettings, settingsSchema } from "../src/core/schema.ts";
 
 const args = process.argv.slice(2);
@@ -34,6 +41,12 @@ const keepHome = args.includes("--keep-home");
 // commands are resolved under it (~/.nvm, ~/.volta, ~/.local/bin).
 const home = homedir();
 const scratch = mkdtempSync(join(tmpdir(), "mcp-check-"));
+const installRoot = resolve(
+  flag(
+    "install-root",
+    join(scratch, "Application Support", "coarena-open-assist", "mcp"),
+  ),
+);
 const root = resolve(new URL("..", import.meta.url).pathname);
 const helper = (name) => join(root, "native/bin", name);
 const shim = helper("coarena-launch");
@@ -41,24 +54,8 @@ const shim = helper("coarena-launch");
 const recipe = RECIPES.find((r) => r.id === "filesystem");
 if (!recipe) throw new Error("no filesystem recipe");
 let row = {
-  id: "filesystem",
-  name: "Filesystem",
-  transport: "stdio",
-  command: recipe.command,
-  args: recipe.args.map((a) => (a === FOLDER ? folder : a)),
-  env: {},
-  secretEnv: [],
-  cwd: "",
-  url: "",
-  secretHeaders: [],
+  ...serverFromRecipe(recipe, { folder, addedAt: Date.now() }),
   enabled: true,
-  consented: false,
-  trust: "ask",
-  network: recipe.network,
-  approvedCommand: "",
-  recipe: recipe.id,
-  tools: {},
-  addedAt: Date.now(),
 };
 let settings = settingsSchema.parse({
   ...defaultSettings,
@@ -71,6 +68,7 @@ const registry = createToolRegistry({
   helper,
   launch: () => (existsSync(shim) ? shim : undefined),
   home,
+  installRoot,
   version: "mcp-check",
   trace: (event, data) => events.push({ event, ...pick(data) }),
   onTicks: (id, tools) => {
@@ -96,6 +94,9 @@ function pick(data) {
       out[k] = v;
   return out;
 }
+/** An argv for printing: each path its last component. */
+const short = (argv) =>
+  argv.map((a) => (a.startsWith("/") ? a.split("/").pop() : a)).join(" ");
 let failed = false;
 const step = (name, ok, detail = "") => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`);
@@ -104,6 +105,9 @@ const step = (name, ok, detail = "") => {
 try {
   console.log(
     `helpers: ${["coarena-apple", "coarena-launch"].map((n) => `${n}=${existsSync(helper(n)) ? "present" : "MISSING"}`).join(", ")}`,
+  );
+  console.log(
+    `recipe: install ${recipe.install.package}@${recipe.install.version} bin ${recipe.install.bin}, network ${recipe.network}`,
   );
   // 1. Apple bridge status (never prompts).
   const access = await registry.appleAccess();
@@ -114,21 +118,52 @@ try {
     JSON.stringify(access),
   );
 
-  // 2. Consent preview: connect once, list, disconnect (through the shim and npx).
+  // 2. Consent preview: install if needed, connect once, list, disconnect.
   row = { ...row, consented: true, approvedCommand: registry.approval(row) };
   settings = { ...settings, tools: { ...settings.tools, servers: [row] } };
-  console.log(
-    `argv: ${registry
-      .argv(row)
-      .map((a) => (a.startsWith("/") ? a.split("/").pop() : a))
-      .join(" ")}`,
+  const argv = registry.argv(row);
+  console.log(`argv: ${short(argv)}`);
+  step(
+    "argv is node on the installed bin through the shim without network",
+    argv.some((a) => a.endsWith("/coarena-launch")) &&
+      argv.includes("--no-network") &&
+      argv.some((a) => /\/node$/.test(a)) &&
+      argv.some((a) =>
+        a.endsWith(`/node_modules/.bin/${recipe.install.bin}`),
+      ) &&
+      !argv.some((a) => /(?:^|\/)npx$/.test(a)),
+  );
+  // Approved but not yet installed under this root: the runtime state a
+  // fresh Mac or a deleted folder gives, and configure() would fetch nothing.
+  const before = registry.status().servers[0];
+  step(
+    "before the preview: resolved, approved, not installed",
+    before.resolved &&
+      before.state === "needs_install" &&
+      before.code === "NOT_INSTALLED",
+    `state ${before.state}${before.code ? ` (${before.code})` : ""}`,
   );
   const t0 = performance.now();
   const preview = await registry.test("filesystem");
+  const install = preview.install;
+  step(
+    "install step (npm into the install root)",
+    !!install && install.ran && install.ok,
+    install
+      ? `ran ${install.ran}, ok ${install.ok}, ${Math.round(install.durationMs)} ms${install.exitCode !== undefined ? `, exit ${install.exitCode}` : ""}${install.timedOut ? ", timed out" : ""}`
+      : "did not run (already installed under this root?)",
+  );
   step(
     "filesystem test (connect, list, disconnect)",
     preview.ok,
-    `${preview.toolCount} tools in ${Math.round(performance.now() - t0)} ms${preview.code ? `, code ${preview.code}` : ""}: ${preview.tools.map((t) => `${t.name}[${t.tier}${t.denied ? ",denied" : ""}]`).join(" ")}`,
+    `state ${preview.state}, ${preview.toolCount} tools in ${Math.round(performance.now() - t0)} ms${preview.code ? `, code ${preview.code}` : ""}: ${preview.tools.map((t) => `${t.name}[${t.tier}${t.denied ? ",denied" : ""}]`).join(" ")}`,
+  );
+  const t1 = performance.now();
+  const again = await registry.test("filesystem");
+  step(
+    "second test skips the install",
+    again.ok && again.install === undefined,
+    `state ${again.state}, ${again.toolCount} tools in ${Math.round(performance.now() - t1)} ms`,
   );
 
   // 3. The live path: configure, list for a request, prepare, call.
@@ -137,7 +172,7 @@ try {
   const status = registry.status();
   for (const s of status.servers)
     console.log(
-      `server ${s.id}: state ${s.state}${s.code ? ` (${s.code})` : ""}, ${s.tools.length} tools listed`,
+      `server ${s.id}: state ${s.state}${s.code ? ` (${s.code})` : ""}, sandboxed ${s.sandboxed}, ${s.tools.length} tools listed`,
     );
   const door = registry.access({ synthetic: false });
   step("access door open", !!door);
@@ -151,23 +186,26 @@ try {
     step(
       "list_directory offered",
       !!spec,
-      `${listed.tools.length} tools offered${spec ? `; tier ${spec.tier}, trusted ${spec.trusted}` : ""}`,
+      `${listed.tools.length} tools offered${spec ? `; tier ${spec.tier}, trusted ${spec.trusted}, local ${spec.local}` : ""}`,
     );
     if (spec) {
       const prepared = door.prepare(spec, { path: folder });
       step(
         "prepare list_directory",
         prepared.ok,
-        prepared.ok ? "" : `code ${prepared.code}`,
+        prepared.ok ? "" : `problem ${prepared.problem}`,
       );
       if (prepared.ok) {
-        const t1 = performance.now();
+        const t2 = performance.now();
         const outcome = await door.call(spec, { path: folder }, ac.signal);
-        const text = outcome.text ?? outcome.result?.text ?? "";
         step(
           "call list_directory",
           outcome.code === "ok",
-          `code ${outcome.code}, ${Math.round(performance.now() - t1)} ms, ${String(text).split("\n").filter(Boolean).length} lines returned`,
+          `code ${outcome.code}, ${Math.round(performance.now() - t2)} ms, ${
+            String(outcome.text ?? "")
+              .split("\n")
+              .filter(Boolean).length
+          } lines returned`,
         );
       }
     }

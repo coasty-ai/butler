@@ -210,12 +210,40 @@ export interface BuiltinTool {
   lines?(structured: unknown): string[] | undefined;
 }
 /** A connection recipe for a community server or the coding agent (src/tools/providers/recipes.ts). */
+/**
+ * A Node package the app installs for a recipe (src/tools/install.ts), at the
+ * consent preview or the approval, with network, into its own folder under the
+ * app's data directory; the server then runs as `node <that folder>/node_modules/
+ * .bin/<bin> <args>`, and npx is never on its runtime path (an npx inside the
+ * network sandbox asks the registry for the latest tag and hangs, measured).
+ */
+export interface NodeInstall {
+  package: string; // "@modelcontextprotocol/server-filesystem"
+  version: string; // pinned, never a tag: "2026.8.31"
+  bin: string; // the package's own bin name: "mcp-server-filesystem"
+}
+/** The pane's remedy for a recipe whose package is not installed or failed to install. */
+export const TOOL_INSTALL_REMEDY =
+  "Approve the server again to install it; needs Node 22 and network for that step.";
+/** A command that is npx, bare or absolute. */
+export const NPX_COMMAND = /(?:^|\/)npx$/;
+/**
+ * Whether an argv runs npx offline: the registry adds `--offline` after npx
+ * for a pasted row that may not reach the network (src/tools/install.ts
+ * liveArgs), and the pane says so. Pure, so the renderer can ask.
+ */
+export function runsNpxOffline(argv: readonly string[]): boolean {
+  const at = argv.findIndex((arg) => NPX_COMMAND.test(arg));
+  return at >= 0 && argv.slice(at + 1).includes("--offline");
+}
 export interface ServerRecipe {
   id: string; // "filesystem" | "github" | "slack" | "playwright" | "claude-code"
   name: string;
   transport: "stdio" | "http";
-  command?: string; // bare name resolved against the fixed PATH ("npx", "claude") or absolute
-  args?: string[]; // "{folder}" = the folder the user picks
+  command?: string; // bare name resolved against the fixed PATH ("claude"), or "node" for a recipe with install
+  args?: string[]; // "{folder}" = the folder the user picks; after the installed bin when install is set
+  /** The package the app installs and runs with node; the row's command is then "node". */
+  install?: NodeInstall;
   url?: string;
   network: "none" | "internet";
   needsFolder?: boolean;
@@ -230,7 +258,7 @@ export interface ServerRecipe {
   longRunning?: string[];
   privateLocal: boolean; // may run in PRIVATE_LOCAL (stdio, network "none", sandboxed)
   consent: string; // the sheet: what it reaches, what leaves the Mac, that it runs as you
-  install: string; // "Needs Node 22+ (npx fetches …)", "Needs the Claude Code CLI", "Needs a GitHub token"
+  installNote: string; // "Needs Node 22+; Butler installs …", "Needs the Claude Code CLI", "Needs a GitHub token"
 }
 export interface ToolsStatus {
   apple: {

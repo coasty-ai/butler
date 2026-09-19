@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   defaultSettings,
@@ -20,6 +21,8 @@ import type {
   McpProviderOptions,
   ProviderSource,
 } from "../src/tools/mcp";
+import type { InstallRequest } from "../src/tools/install";
+import { commandHash } from "../src/tools/pins";
 import { createToolRegistry, parseAppleAccess } from "../src/tools/registry";
 import {
   resultLines,
@@ -82,19 +85,32 @@ const APPLE: BuiltinServer = {
     },
   },
 };
+const PACKAGE = "@modelcontextprotocol/server-filesystem";
 const FILESYSTEM: ServerRecipe = {
   id: "filesystem",
   name: "Filesystem",
   transport: "stdio",
-  command: "npx",
-  args: ["-y", "@modelcontextprotocol/server-filesystem", "{folder}"],
+  command: "node",
+  args: ["{folder}"],
+  install: {
+    package: PACKAGE,
+    version: "2026.8.31",
+    bin: "mcp-server-filesystem",
+  },
   network: "none",
   needsFolder: true,
   defaultTools: ["list_directory", "read_text_file"],
   privateLocal: true,
   consent: "Reads files in the folder. Runs as you.",
-  install: "Needs Node 22+.",
+  installNote: "Needs Node 22+.",
 };
+/** Where the registry under test installs: <root>/<rowId>/node_modules/.bin/<bin>. */
+const INSTALL_ROOT = "/fake/mcp";
+/** node and npm on the fixed search path (src/tools/resolve.ts), as bare names resolve. */
+const NODE = "/usr/local/bin/node";
+const NPM = "/usr/local/bin/npm";
+const BIN = (id: string) =>
+  `${INSTALL_ROOT}/${id}/node_modules/.bin/mcp-server-filesystem`;
 
 const spec = (
   provider: string,
@@ -220,10 +236,18 @@ function registry(o: {
     env: Record<string, string>;
     headers: Record<string, string>;
   };
+  /** Rows whose recipe package is already installed under INSTALL_ROOT. */
+  installed?: string[];
+  /** What a fake npm does: exit 0 and install (the default), or fail as told. */
+  npm?: { exitCode: number | null; timedOut?: boolean };
+  /** Bare names on the fake PATH besides node and npm. */
+  missing?: string[];
 }) {
   const fake = fakeProviders(o.tables);
   const traced: { event: string; data: Record<string, unknown> }[] = [];
   const state = { settings: o.settings };
+  const installed = new Set((o.installed ?? []).map(BIN));
+  const installs: InstallRequest[] = [];
   const reg = createToolRegistry({
     settings: () => state.settings,
     credentials: o.credentials ?? (() => ({ env: {}, headers: {} })),
@@ -244,8 +268,21 @@ function registry(o: {
         },
       }),
     fs: {
-      isExecutable: (path) => path.startsWith("/fake/bin/"),
+      isExecutable: (path) =>
+        ((path.startsWith("/fake/bin/") || path === NODE || path === NPM) &&
+          !(o.missing ?? []).includes(basename(path))) ||
+        installed.has(path),
       list: () => [],
+    },
+    installRoot: INSTALL_ROOT,
+    installer: async (request) => {
+      installs.push(request);
+      const npm = o.npm ?? { exitCode: 0 };
+      if (npm.exitCode === 0)
+        installed.add(
+          `${request.prefix}/node_modules/.bin/mcp-server-filesystem`,
+        );
+      return { exitCode: npm.exitCode, timedOut: npm.timedOut ?? false };
     },
     createProvider: fake.create,
     builtin: [APPLE],
@@ -263,7 +300,7 @@ function registry(o: {
       ),
     },
   };
-  return { reg, fake, traced, state };
+  return { reg, fake, traced, state, installs, installed };
 }
 const byom = (over: Partial<Settings["tools"]> = {}): Settings => ({
   ...defaultSettings,
@@ -810,11 +847,13 @@ describe("tool registry: lifecycle and status", () => {
             id: "fs",
             name: "Files",
             recipe: "filesystem",
-            command: "/fake/bin/npx",
+            command: "node",
+            args: ["/Users/u/scratch"],
           }),
         ],
       }),
       launch: LAUNCH,
+      installed: ["fs"],
       tables: {
         apple: { specs: [] },
         fs: {
@@ -882,7 +921,7 @@ describe("tool registry: lifecycle and status", () => {
       id: "fs",
       name: "Files",
       recipe: "filesystem",
-      argv: [LAUNCH, "--no-network", "--", "/fake/bin/npx"],
+      argv: [LAUNCH, "--no-network", "--", NODE, BIN("fs"), "/Users/u/scratch"],
       resolved: true,
       state: "on",
       trust: "ask",
@@ -1038,15 +1077,20 @@ describe("tool registry: lifecycle and status", () => {
     for (const id of ["net", "web"]) {
       expect(await local.reg.test(id)).toMatchObject({
         ok: false,
+        state: "blocked_local",
         toolCount: 0,
         tools: [],
         code: "blocked_local",
       });
     }
-    expect(await local.reg.test("local")).toMatchObject({
+    const localPreview = await local.reg.test("local");
+    expect(localPreview).toMatchObject({
       ok: true,
+      state: "on",
       code: undefined,
     });
+    // No recipe package: no install step in the result.
+    expect(localPreview.install).toBeUndefined();
     expect(local.fake.log).toEqual(["start local", "close local"]);
     // Without the launcher nothing is sandboxed, so Private local probes
     // nothing; in BYOM the same rows are previewed.
@@ -1063,5 +1107,437 @@ describe("tool registry: lifecycle and status", () => {
     });
     expect((await open.reg.test("net")).ok).toBe(true);
     expect((await open.reg.test("web")).ok).toBe(true);
+  });
+});
+
+describe("tool registry: the install step", () => {
+  const files = (over: Partial<ToolServer> = {}) =>
+    row({
+      id: "fs",
+      name: "Files",
+      recipe: "filesystem",
+      command: "node",
+      args: ["/Users/u/scratch"],
+      consented: false,
+      enabled: false,
+      ...over,
+    });
+  const LIVE = (launch = true) => [
+    ...(launch ? [LAUNCH, "--no-network", "--"] : []),
+    NODE,
+    BIN("fs"),
+    "/Users/u/scratch",
+  ];
+
+  it("installs the recipe's pinned package at the preview, under the row's own prefix with npm and network, then connects; the next preview skips it", async () => {
+    const fixture = registry({
+      settings: byom({ servers: [files()] }),
+      launch: LAUNCH,
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+    });
+    // Before the preview the row needs approval, as every fresh row does;
+    // configure() fetches nothing.
+    await fixture.reg.configure();
+    expect(fixture.installs).toEqual([]);
+    expect(fixture.reg.status().servers[0]).toMatchObject({
+      state: "needs_approval",
+      resolved: true,
+      argv: LIVE(),
+    });
+    const preview = await fixture.reg.test("fs");
+    expect(preview).toMatchObject({
+      ok: true,
+      state: "on",
+      argv: LIVE(),
+      install: { ran: true, ok: true, durationMs: expect.any(Number) },
+    });
+    expect(fixture.installs).toHaveLength(1);
+    const [request] = fixture.installs;
+    expect(request).toEqual({
+      npm: NPM,
+      prefix: `${INSTALL_ROOT}/fs`,
+      args: [
+        "install",
+        "--prefix",
+        `${INSTALL_ROOT}/fs`,
+        "--no-audit",
+        "--no-fund",
+        "--ignore-scripts",
+        "--loglevel=error",
+        `${PACKAGE}@2026.8.31`,
+      ],
+      env: expect.objectContaining({
+        HOME: "/fake/home",
+        PATH: expect.stringMatching(/^\/usr\/local\/bin:/),
+      }),
+      timeoutMs: 180_000,
+    });
+    // npm is never wrapped in the sandbox: it needs the registry.
+    expect(request.args).not.toContain("--no-network");
+    expect(Object.keys(request.env).sort()).toEqual(
+      ["HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"].filter(
+        (name) => name === "HOME" || name === "PATH" || process.env[name],
+      ),
+    );
+    expect(fixture.fake.log).toEqual(["start apple", "start fs", "close fs"]);
+    const events = fixture.traced.filter((t) =>
+      t.event.startsWith("ToolInstall"),
+    );
+    expect(events.map((t) => t.event)).toEqual([
+      "ToolInstallStarted",
+      "ToolInstallFinished",
+    ]);
+    expect(events[1].data).toEqual({
+      server: expect.stringMatching(/^s[0-9a-f]{12}$/),
+      durationMs: expect.any(Number),
+    });
+    // Nothing about the package, the prefix or npm is traced.
+    const traced = JSON.stringify(fixture.traced);
+    expect(traced).not.toContain("server-filesystem");
+    expect(traced).not.toContain(INSTALL_ROOT);
+    expect(traced).not.toContain("npm");
+    // Installed: the second preview connects without npm.
+    const again = await fixture.reg.test("fs");
+    expect(again.ok).toBe(true);
+    expect(again.install).toBeUndefined();
+    expect(fixture.installs).toHaveLength(1);
+    expect(await fixture.reg.install("fs")).toEqual({
+      ran: false,
+      ok: true,
+      durationMs: 0,
+    });
+    // A row without a package has nothing to install.
+    const plain = registry({
+      settings: byom({ servers: [row({ id: "memo" })] }),
+      tables: { apple: { specs: [] }, memo: { specs: [] } },
+    });
+    expect(await plain.reg.install("memo")).toEqual({
+      ran: false,
+      ok: true,
+      durationMs: 0,
+    });
+    expect(plain.installs).toEqual([]);
+  });
+
+  it("reads a failed install as needs_install with INSTALL_FAILED and npm's exit status, never its text, and a missing install at runtime as NOT_INSTALLED", async () => {
+    const failing = registry({
+      settings: byom({ servers: [files()] }),
+      launch: LAUNCH,
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+      npm: { exitCode: 1 },
+    });
+    const preview = await failing.reg.test("fs");
+    expect(preview).toMatchObject({
+      ok: false,
+      state: "needs_install",
+      code: "INSTALL_FAILED",
+      toolCount: 0,
+      tools: [],
+      argv: LIVE(),
+      install: { ran: true, ok: false, exitCode: 1, timedOut: false },
+    });
+    // Nothing was connected to.
+    expect(failing.fake.log).toEqual([]);
+    const failed = failing.traced.find((t) => t.event === "ToolInstallFailed");
+    expect(failed?.data).toEqual({
+      server: expect.stringMatching(/^s[0-9a-f]{12}$/),
+      code: "INSTALL_FAILED",
+      exitCode: 1,
+      timedOut: false,
+      durationMs: expect.any(Number),
+    });
+    // Approved anyway (the pane pins the argv the user read): the row is
+    // named as needing install for that reason, and never started.
+    failing.state.settings = {
+      ...failing.state.settings,
+      tools: {
+        ...failing.state.settings.tools,
+        servers: failing.state.settings.tools.servers.map((r) => ({
+          ...r,
+          enabled: true,
+          consented: true,
+          approvedCommand: failing.reg.approval(r),
+        })),
+      },
+    };
+    await failing.reg.configure();
+    expect(failing.reg.status().servers[0]).toMatchObject({
+      state: "needs_install",
+      code: "INSTALL_FAILED",
+      resolved: true,
+    });
+    expect(failing.fake.log).toEqual(["start apple"]);
+    const list = await failing.reg
+      .access({ synthetic: false })!
+      .list("files", signal);
+    expect(list.unavailable).toEqual([
+      { title: "Files", state: "needs_install" },
+    ]);
+    // A timeout is a failure without an exit status.
+    const slow = registry({
+      settings: byom({ servers: [files()] }),
+      launch: LAUNCH,
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+      npm: { exitCode: null, timedOut: true },
+    });
+    expect((await slow.reg.test("fs")).install).toEqual({
+      ran: true,
+      ok: false,
+      durationMs: expect.any(Number),
+      timedOut: true,
+    });
+    expect(
+      slow.traced.find((t) => t.event === "ToolInstallFailed")?.data,
+    ).toMatchObject({ code: "TIMED_OUT", timedOut: true });
+    expect(
+      slow.traced.find((t) => t.event === "ToolInstallFailed")?.data,
+    ).not.toHaveProperty("exitCode");
+    // No npm on this Mac: failed before anything ran.
+    const bare = registry({
+      settings: byom({ servers: [files()] }),
+      launch: LAUNCH,
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+      missing: ["npm"],
+    });
+    expect(await bare.reg.test("fs")).toMatchObject({
+      ok: false,
+      state: "needs_install",
+      code: "INSTALL_FAILED",
+      install: { ran: true, ok: false, durationMs: 0 },
+    });
+    expect(bare.installs).toEqual([]);
+    expect(
+      bare.traced.find((t) => t.event === "ToolInstallFailed")?.data,
+    ).toMatchObject({ code: "NPM_NOT_FOUND" });
+    // Approved and enabled, the package gone (a fresh Mac, a deleted folder):
+    // not installed, never fetched, never spawned, so nothing can hang.
+    const gone = registry({
+      settings: byom({
+        servers: [files({ enabled: true, consented: true })],
+      }),
+      launch: LAUNCH,
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+    });
+    await gone.reg.configure();
+    expect(gone.reg.status().servers[0]).toMatchObject({
+      state: "needs_install",
+      code: "NOT_INSTALLED",
+      resolved: true,
+      argv: LIVE(),
+    });
+    expect(gone.fake.log).toEqual(["start apple"]);
+    expect(gone.installs).toEqual([]);
+    // Without node the command itself is not found, as before.
+    const noNode = registry({
+      settings: byom({
+        servers: [files({ enabled: true, consented: true })],
+      }),
+      launch: LAUNCH,
+      installed: ["fs"],
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+      missing: ["node"],
+    });
+    await noNode.reg.configure();
+    expect(noNode.reg.status().servers[0]).toMatchObject({
+      state: "needs_install",
+      code: "NOT_FOUND",
+      resolved: false,
+    });
+    expect((await noNode.reg.test("fs")).code).toBe("NOT_FOUND");
+    expect(noNode.installs).toEqual([]);
+  });
+
+  it("runs an installed recipe as node on its bin, sandboxed, with the approval pinning that argv, and hands the provider the same arguments", async () => {
+    const fixture = registry({
+      settings: byom({
+        servers: [files({ enabled: true, consented: true })],
+      }),
+      launch: LAUNCH,
+      installed: ["fs"],
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+    });
+    const current = fixture.state.settings.tools.servers[0];
+    expect(fixture.reg.argv(current)).toEqual(LIVE());
+    expect(fixture.reg.argv(current)).not.toContain("npx");
+    expect(fixture.reg.approval(current)).toBe(
+      commandHash({
+        argv: LIVE(),
+        cwd: "",
+        envNames: [],
+        url: "",
+      }),
+    );
+    expect(current.approvedCommand).toBe(fixture.reg.approval(current));
+    await fixture.reg.configure();
+    expect(fixture.reg.status().servers[0]).toMatchObject({
+      state: "on",
+      sandboxed: true,
+      argv: LIVE(),
+    });
+    // Without the launcher the same node and bin run directly.
+    const direct = registry({
+      settings: byom({
+        servers: [files({ enabled: true, consented: true })],
+      }),
+      installed: ["fs"],
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+    });
+    expect(direct.reg.argv(direct.state.settings.tools.servers[0])).toEqual(
+      LIVE(false),
+    );
+  });
+
+  it("treats a row from before the install step, in the npx form, as unapproved, and runs it as node on the bin once approved again", async () => {
+    const old = files({
+      command: "/fake/bin/npx",
+      args: ["-y", PACKAGE, "/Users/u/scratch"],
+      enabled: true,
+      consented: true,
+    });
+    const fixture = registry({
+      settings: byom({ servers: [old] }),
+      launch: LAUNCH,
+      installed: ["fs"],
+      tables: { apple: { specs: [] }, fs: { specs: [] } },
+    });
+    // The fixture's helper pinned the new argv; the stored pin was the old
+    // argv's, so put that back.
+    const oldPin = commandHash({
+      argv: [LAUNCH, "--no-network", "--", old.command, ...old.args],
+      cwd: "",
+      envNames: [],
+      url: "",
+    });
+    fixture.state.settings = {
+      ...fixture.state.settings,
+      tools: {
+        ...fixture.state.settings.tools,
+        servers: [{ ...old, approvedCommand: oldPin }],
+      },
+    };
+    await fixture.reg.configure();
+    const status = fixture.reg.status().servers[0];
+    expect(status.state).toBe("needs_approval");
+    // The argv the pane asks about is the new one: node, the bin, the folder
+    // the user picked; npx and its own arguments are gone.
+    expect(status.argv).toEqual(LIVE());
+    expect(fixture.fake.log).toEqual(["start apple"]);
+    fixture.state.settings = {
+      ...fixture.state.settings,
+      tools: {
+        ...fixture.state.settings.tools,
+        servers: [
+          {
+            ...old,
+            approvedCommand: fixture.reg.approval(old),
+          },
+        ],
+      },
+    };
+    await fixture.reg.configure();
+    expect(fixture.reg.status().servers[0].state).toBe("on");
+    // A stale "@latest" or "--offline" on the old row is dropped the same way.
+    expect(
+      fixture.reg.argv(
+        files({
+          command: "/fake/bin/npx",
+          args: ["--offline", "-y", `${PACKAGE}@latest`, "/Users/u/scratch"],
+        }),
+      ),
+    ).toEqual(LIVE());
+  });
+
+  it("runs a pasted npx row offline when it may not reach the network, and as given otherwise", async () => {
+    const pasted = (over: Partial<ToolServer> = {}) =>
+      row({
+        id: "pasted",
+        name: "Pasted",
+        command: "/fake/bin/npx",
+        args: ["-y", "some-mcp-server", "--flag"],
+        network: "none",
+        ...over,
+      });
+    const captured: ProviderSource[] = [];
+    const fixture = registry({
+      settings: byom({
+        servers: [pasted(), pasted({ id: "net", network: "internet" })],
+      }),
+      launch: LAUNCH,
+      tables: {
+        apple: { specs: [] },
+        pasted: { specs: [] },
+        net: { specs: [] },
+      },
+    });
+    const local = fixture.state.settings.tools.servers[0];
+    const net = fixture.state.settings.tools.servers[1];
+    expect(fixture.reg.argv(local)).toEqual([
+      LAUNCH,
+      "--no-network",
+      "--",
+      "/fake/bin/npx",
+      "--offline",
+      "-y",
+      "some-mcp-server",
+      "--flag",
+    ]);
+    expect(fixture.reg.argv(net)).toEqual([
+      LAUNCH,
+      "--",
+      "/fake/bin/npx",
+      "-y",
+      "some-mcp-server",
+      "--flag",
+    ]);
+    // Already offline: not doubled. A command that is not npx: as given.
+    expect(
+      fixture.reg
+        .argv(pasted({ args: ["--offline", "-y", "some-mcp-server"] }))
+        .filter((a) => a === "--offline"),
+    ).toHaveLength(1);
+    expect(
+      fixture.reg.argv(pasted({ command: "/fake/bin/uvx", args: ["srv"] })),
+    ).toEqual([LAUNCH, "--no-network", "--", "/fake/bin/uvx", "srv"]);
+    // The pin covers the argv as run, and the provider is handed it.
+    expect(fixture.reg.approval(local)).toBe(
+      commandHash({
+        argv: fixture.reg.argv(local),
+        cwd: "",
+        envNames: [],
+        url: "",
+      }),
+    );
+    const spied = createToolRegistry({
+      settings: () => fixture.state.settings,
+      credentials: () => ({ env: {}, headers: {} }),
+      helper: (name) => `/fake/bin/${name}`,
+      launch: () => LAUNCH,
+      home: "/fake/home",
+      version: "0.1.0-test",
+      fs: {
+        isExecutable: (path) => path.startsWith("/fake/bin/"),
+        list: () => [],
+      },
+      createProvider: (source, options) => {
+        captured.push(source);
+        return fixture.fake.create(source, options);
+      },
+      builtin: [],
+      recipes: [FILESYSTEM],
+    });
+    await spied.configure();
+    const sources = captured.filter(
+      (s): s is Extract<ProviderSource, { kind: "server" }> =>
+        s.kind === "server",
+    );
+    expect(sources.map((s) => [s.row.id, s.command, s.args])).toEqual([
+      [
+        "pasted",
+        "/fake/bin/npx",
+        ["--offline", "-y", "some-mcp-server", "--flag"],
+      ],
+      ["net", "/fake/bin/npx", ["-y", "some-mcp-server", "--flag"]],
+    ]);
+    await spied.closeAll();
   });
 });

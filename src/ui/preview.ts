@@ -421,6 +421,7 @@ export function previewBridge(): Bridge {
     },
     testToolServer: async () => ({
       ok: false,
+      state: "off",
       toolCount: 0,
       argv: [],
       tools: [],

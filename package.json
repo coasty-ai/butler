@@ -30,6 +30,7 @@
     "eval:jev": "node --import tsx scripts/eval-jev.mjs",
     "test:native-input": "node --import tsx scripts/native-input-smoke.mjs",
     "test:live": "node --import tsx scripts/live-task.mjs",
+    "tools:check": "node --import tsx scripts/mcp-check.mjs",
     "bench": "node scripts/bench.mjs",
     "cycle": "node scripts/harness-cycle.mjs",
     "loop": "node scripts/harness-loop.mjs",

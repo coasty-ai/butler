@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
+import { join } from "node:path";
 import type { Settings, ToolServer } from "../core/schema";
 import {
   TOOL_DENYLIST,
@@ -23,14 +24,24 @@ import {
 } from "../core/tools";
 import { toolClock } from "./clock";
 import {
+  INSTALL_TIMEOUT_MS,
+  defaultInstaller,
+  installEnv,
+  installPrefix,
+  isInstalled,
+  liveArgs,
+  npmInstallArgs,
+  type Installer,
+} from "./install";
+import {
   createMcpProvider,
   type McpProvider,
   type ProviderSource,
   type ServerSource,
 } from "./mcp";
-import { commandHash, secretsDigest } from "./pins";
+import { commandHash, secretsDigest, traceCode } from "./pins";
 import { BUILTIN_SERVERS, RECIPES } from "./providers";
-import { resolveCommand, type ResolveFs } from "./resolve";
+import { realFs, resolveCommand, type ResolveFs } from "./resolve";
 import { resultLines, resultText, sanitizeResult } from "./result";
 
 /**
@@ -65,13 +76,31 @@ export interface RegistryOptions {
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
+  /**
+   * Where a recipe's installed package lives (<userData>/mcp, one folder per
+   * row); under the user's Library when the app does not say.
+   */
+  installRoot?: string;
+  /** Runs one npm install (src/tools/install.ts defaultInstaller); tests record the request. */
+  installer?: Installer;
   /** Tests: fake providers and tables in place of the MCP client and src/tools/providers. */
   createProvider?: typeof createMcpProvider;
   builtin?: readonly BuiltinServer[];
   recipes?: readonly ServerRecipe[];
 }
+/** The install step of a preview or an approval: whether it ran, and how it went. */
+export interface InstallStep {
+  ran: boolean;
+  ok: boolean;
+  durationMs: number;
+  /** npm's exit status when it exited; absent when npm was not found, could not be spawned or was killed at the timeout. */
+  exitCode?: number;
+  timedOut?: boolean;
+}
 export interface ToolServerTest {
   ok: boolean;
+  /** What the pane says: the probe's state, or why nothing was probed. */
+  state: ProviderState;
   toolCount: number;
   argv: string[];
   tools: {
@@ -81,6 +110,8 @@ export interface ToolServerTest {
     denied: boolean;
   }[];
   code?: string;
+  /** The install step when the recipe has one and it ran. */
+  install?: InstallStep;
 }
 export type AppleAccess = Record<AppleConsent, AccessState>;
 export interface ToolRegistry {
@@ -96,7 +127,13 @@ export interface ToolRegistry {
   approval(row: ToolServer): string;
   /** The row's ticks after ticking one tool at its current pin. */
   tick(id: string, tool: string, on: boolean): ToolServer["tools"];
-  /** Connects once, lists, disconnects: the consent sheet's preview. */
+  /**
+   * Installs a recipe's pinned package when it is not yet installed (attended,
+   * with network, up to INSTALL_TIMEOUT_MS); nothing to do for any other row.
+   * The preview and the approval both run it; a run never does.
+   */
+  install(id: string): Promise<InstallStep>;
+  /** Installs if needed, then connects once, lists, disconnects: the consent sheet's preview. */
   test(id: string): Promise<ToolServerTest>;
   retry(id: string): Promise<void>;
   /** Re-reads what macOS has granted the Apple bridge; never prompts. */
@@ -176,6 +213,11 @@ type Startable =
 export function createToolRegistry(o: RegistryOptions): ToolRegistry {
   const now = o.now ?? Date.now;
   const exec = o.exec ?? defaultExec;
+  const fs = o.fs ?? realFs;
+  const installer = o.installer ?? defaultInstaller;
+  const installRoot =
+    o.installRoot ??
+    join(o.home, "Library/Application Support/coarena-open-assist/mcp");
   const clock = o.clock ?? (() => toolClock());
   const createProvider = o.createProvider ?? createMcpProvider;
   const builtinServers = o.builtin ?? BUILTIN_SERVERS;
@@ -192,17 +234,25 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
   /** One call in flight per server: later calls queue behind the first. */
   const inFlight = new Map<string, Promise<unknown>>();
   const undos: { token: string; spec: ToolSpec; expiresAt: number }[] = [];
+  /** Rows whose last install in this process failed: npm's exit status, or -1. */
+  const installFailed = new Map<string, number>();
   let appleAccess: AppleAccess = UNKNOWN_ACCESS;
 
   const row = (id: string) =>
     o.settings().tools.servers.find((r) => r.id === id);
   const recipeOf = (r: ToolServer) =>
     recipes.find((recipe) => recipe.id === r.recipe);
+  /** The package the app installs for this row's recipe, if any. */
+  const installOf = (r: ToolServer) => recipeOf(r)?.install;
+  const prefixOf = (r: ToolServer) => installPrefix(installRoot, r.id);
+  /** An installed recipe runs node, whatever an older row's command says. */
+  const commandOf = (r: ToolServer) => (installOf(r) ? "node" : r.command);
   const resolved = (r: ToolServer) =>
-    r.transport === "stdio" ? resolveCommand(r.command, o.home, o.fs) : {};
+    r.transport === "stdio" ? resolveCommand(commandOf(r), o.home, o.fs) : {};
+  const liveArgsOf = (r: ToolServer) => liveArgs(r, installOf(r), prefixOf(r));
   const argv = (r: ToolServer): string[] => {
     if (r.transport !== "stdio") return [];
-    const command = resolved(r).path ?? r.command;
+    const command = resolved(r).path ?? commandOf(r);
     const launch = o.launch();
     return launch
       ? [
@@ -210,9 +260,19 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
           ...(r.network === "none" ? ["--no-network"] : []),
           "--",
           command,
-          ...r.args,
+          ...liveArgsOf(r),
         ]
-      : [command, ...r.args];
+      : [command, ...liveArgsOf(r)];
+  };
+  /** Why an installed recipe's row cannot run: its package is missing, or the last install failed. */
+  const uninstalled = (r: ToolServer): Startable | undefined => {
+    const install = installOf(r);
+    if (!install || isInstalled(prefixOf(r), install, fs)) return undefined;
+    return {
+      ok: false,
+      state: "needs_install",
+      code: installFailed.has(r.id) ? "INSTALL_FAILED" : "NOT_INSTALLED",
+    };
   };
   const approval = (r: ToolServer) =>
     commandHash({
@@ -226,6 +286,7 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     row: r,
     recipe: recipeOf(r),
     command: resolved(r).path,
+    args: liveArgsOf(r),
     launch: r.transport === "stdio" ? o.launch() : undefined,
     secrets: o.credentials(r.id),
   });
@@ -255,6 +316,10 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     const found = resolved(r);
     if (!found.path)
       return { ok: false, state: "needs_install", code: found.code };
+    // A recipe's package that is gone or never installed is reported, never
+    // fetched here: the install runs only attended (install below).
+    const missing = uninstalled(r);
+    if (missing) return missing;
     if (blockedLocal(r, s)) return { ok: false, state: "blocked_local" };
     return { ok: true, source: source(r) };
   };
@@ -362,6 +427,66 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
       await ensure(r.id, check.ok ? check.source : undefined);
     }
     for (const id of [...providers.keys()]) if (!wanted.has(id)) await stop(id);
+  };
+
+  /**
+   * The install step for one row: nothing for a row without a recipe package
+   * or with it already installed at its pin; else npm, resolved as commands
+   * are, into the row's own prefix, with network and the fixed environment,
+   * bounded by INSTALL_TIMEOUT_MS. Traces carry the server's code, npm's exit
+   * status and the duration; nothing npm prints is read.
+   */
+  const install = async (id: string): Promise<InstallStep> => {
+    const current = row(id);
+    if (!current) throw new Error("That server is no longer configured.");
+    const spec = installOf(current);
+    if (!spec) return { ran: false, ok: true, durationMs: 0 };
+    return serialised(id, async () => {
+      const prefix = prefixOf(current);
+      if (isInstalled(prefix, spec, fs))
+        return { ran: false, ok: true, durationMs: 0 };
+      const server = traceCode("s", id);
+      const startedAt = now();
+      trace("ToolInstallStarted", { server });
+      const npm = resolveCommand("npm", o.home, o.fs);
+      if (!npm.path) {
+        installFailed.set(id, -1);
+        trace("ToolInstallFailed", {
+          server,
+          code: "NPM_NOT_FOUND",
+          durationMs: 0,
+        });
+        return { ran: true, ok: false, durationMs: 0 };
+      }
+      const result = await installer({
+        npm: npm.path,
+        prefix,
+        args: npmInstallArgs(prefix, spec),
+        env: installEnv(npm.path, o.home, o.fs),
+        timeoutMs: INSTALL_TIMEOUT_MS,
+      }).catch(() => ({ exitCode: null, timedOut: false }));
+      const durationMs = now() - startedAt;
+      if (result.exitCode === 0 && isInstalled(prefix, spec, fs)) {
+        installFailed.delete(id);
+        trace("ToolInstallFinished", { server, durationMs });
+        return { ran: true, ok: true, durationMs };
+      }
+      installFailed.set(id, result.exitCode ?? -1);
+      trace("ToolInstallFailed", {
+        server,
+        code: result.timedOut ? "TIMED_OUT" : "INSTALL_FAILED",
+        ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+        timedOut: result.timedOut,
+        durationMs,
+      });
+      return {
+        ran: true,
+        ok: false,
+        durationMs,
+        ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+        timedOut: result.timedOut,
+      };
+    });
   };
 
   const outcome = (
@@ -615,36 +740,38 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
       else delete ticks[tool];
       return ticks;
     },
+    install,
     async test(id) {
       const current = row(id);
       if (!current) throw new Error("That server is no longer configured.");
-      const list = argv(current);
+      const nothing = (state: ProviderState, code: string | undefined) => ({
+        ok: false,
+        state,
+        toolCount: 0,
+        argv: argv(current),
+        tools: [],
+        code,
+      });
       // The preview is a connection like any other: the privacy gate that
       // keeps a server from starting keeps it from being probed.
       if (blockedLocal(current, o.settings()))
-        return {
-          ok: false,
-          toolCount: 0,
-          argv: list,
-          tools: [],
-          code: "blocked_local",
-        };
+        return nothing("blocked_local", "blocked_local");
       if (current.transport === "stdio" && !resolved(current).path)
-        return {
-          ok: false,
-          toolCount: 0,
-          argv: list,
-          tools: [],
-          code: "needs_install",
-        };
+        return nothing("needs_install", resolved(current).code);
+      // A recipe's package is installed here, before the connection, so the
+      // preview shows the server as it will run.
+      const step = await install(id);
+      if (!step.ok)
+        return { ...nothing("needs_install", "INSTALL_FAILED"), install: step };
       const probe = create(source(current));
       try {
         await probe.start();
         const state = probe.state();
         return {
           ok: usable(state.state),
+          state: state.state,
           toolCount: state.toolCount,
-          argv: list,
+          argv: argv(current),
           tools: probe.catalog().map(({ name, description, tier, denied }) => ({
             name,
             description,
@@ -652,6 +779,7 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
             denied,
           })),
           code: state.code,
+          ...(step.ran ? { install: step } : {}),
         };
       } finally {
         await probe.close();

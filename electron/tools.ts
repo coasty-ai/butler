@@ -44,6 +44,8 @@ export function createToolLayer(o: {
   credentials: () => Credentials;
   paths: ToolPaths;
   home: string;
+  /** app.getPath("userData"): a recipe's installed package lives under <dataDir>/mcp/<rowId>. */
+  dataDir: string;
   version: string;
   trace?: DiagnosticSink;
   onTicks?: (id: string, tools: ToolServer["tools"]) => void;
@@ -54,6 +56,7 @@ export function createToolLayer(o: {
     helper: (name) => helperBinary(name, o.paths),
     launch: () => launchShim(o.paths),
     home: o.home,
+    installRoot: join(o.dataDir, "mcp"),
     version: o.version,
     trace: o.trace,
     onTicks: o.onTicks,

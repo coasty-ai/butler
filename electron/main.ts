@@ -966,6 +966,7 @@ function getTools() {
       resourcesPath: process.resourcesPath,
     },
     home: app.getPath("home"),
+    dataDir: app.getPath("userData"),
     version: app.getVersion(),
     trace: debug,
     // A server's first listing ticks its recipe's default tools; the pins
@@ -4557,6 +4558,11 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       const row = toolServer(z.string().min(1).max(40).parse(args[0]));
       // A run's tool list is part of what its model was told.
       ensureIdle();
+      // A recipe's package is installed here, attended and with network, so
+      // approving again is the remedy for a missing or failed install; a
+      // failure leaves the row approved and configure() names it
+      // (needs_install, INSTALL_FAILED). The runtime path never fetches.
+      await getTools().install(row.id);
       const approved = withToolServer(settings, row.id, (r) => ({
         ...r,
         enabled: true,

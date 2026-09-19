@@ -7,7 +7,13 @@
  */
 import React, { useEffect, useState } from "react";
 import type { Settings } from "../core/schema";
-import type { AppleConsent, ProviderState, ToolTier } from "../core/tools";
+import {
+  TOOL_INSTALL_REMEDY,
+  runsNpxOffline,
+  type AppleConsent,
+  type ProviderState,
+  type ToolTier,
+} from "../core/tools";
 import { RECIPES } from "../tools/providers";
 import type { AppInfo, Bridge, ToolServerTest, ToolsStatus } from "./api";
 
@@ -65,7 +71,14 @@ export function stateNote(state: ProviderState, code?: string): string {
     case "needs_approval":
       return "Needs your approval";
     case "needs_install":
-      return "Not found: install Node 22+ or give the full path";
+      // A recipe's package the app installs: missing, or its last install
+      // failed (INSTALL_FAILED carries npm's exit status in the trace, never
+      // its text). Anything else is the command itself not found.
+      return code === "INSTALL_FAILED"
+        ? `Could not install the server's package. ${TOOL_INSTALL_REMEDY}`
+        : code === "NOT_INSTALLED"
+          ? `Not installed. ${TOOL_INSTALL_REMEDY}`
+          : "Not found: install Node 22+ or give the full path";
     case "needs_sign_in":
       return "Needs a token";
     case "needs_permission":
@@ -113,6 +126,23 @@ function summary(s: Settings, status: ToolsStatus): string {
 const downloads = (argv: string[]) =>
   argv.some((a) => /(?:^|\/)(?:npx|uvx|bunx)$/.test(a)) &&
   (argv.includes("-y") || argv.some((a) => /(?:^|\/)uvx$/.test(a)));
+/**
+ * What the consent sheet adds about the argv itself: a pasted npx row that
+ * may not reach the network runs offline (the registry adds --offline), so
+ * its package must already be in npx's cache; a runner that fetches on
+ * first start says so. Nothing for an installed recipe or a plain command.
+ */
+export function argvNote(argv: string[]): string {
+  if (runsNpxOffline(argv))
+    return " Runs npx offline inside the network sandbox: the package must already be in npx's cache on this Mac, or the server fails to start at once (ENOTCACHED) rather than hang.";
+  if (downloads(argv))
+    return " May download the package the first time it starts; not available in Private local.";
+  return "";
+}
+/** Whether a state is the install remedy's: the pane offers Approve again. */
+export const installRemedy = (state: ProviderState, code?: string) =>
+  state === "needs_install" &&
+  (code === "INSTALL_FAILED" || code === "NOT_INSTALLED");
 
 export function SettingsTools({
   s,
@@ -250,7 +280,7 @@ export function SettingsTools({
               title={
                 local && !recipe.privateLocal
                   ? "Not available in Private local"
-                  : recipe.install
+                  : recipe.installNote
               }
               onClick={() =>
                 void apply(() => api.addToolServer({ recipe: recipe.id }))
@@ -398,22 +428,20 @@ export function SettingsTools({
                       {server.disclaimed
                         ? ", with its own macOS permission prompts"
                         : ", with Butler’s macOS permissions"}
-                      . {recipe?.consent ?? ""} {recipe?.install ?? ""}
-                      {downloads(server.argv)
-                        ? " May download the package the first time it starts; not available in Private local."
-                        : ""}
+                      . {recipe?.consent ?? ""} {recipe?.installNote ?? ""}
+                      {argvNote(server.argv)}
                       {local && server.network !== "none"
                         ? " Not available in Private local."
                         : ""}
                     </p>
                     {preview && (
                       <p>
+                        {preview.install?.ran && preview.install.ok
+                          ? `Installed its package in ${Math.max(1, Math.round(preview.install.durationMs / 1000))} s. `
+                          : ""}
                         {preview.ok
                           ? `Lists ${preview.toolCount} tool${preview.toolCount === 1 ? "" : "s"}.`
-                          : `Could not connect: ${stateNote(
-                              (preview.code as ProviderState) ?? "failed",
-                              preview.code,
-                            )}`}
+                          : `Could not connect: ${stateNote(preview.state, preview.code)}`}
                       </p>
                     )}
                     {preview?.ok && (
@@ -450,6 +478,28 @@ export function SettingsTools({
                         }
                       >
                         Approve and start
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {installRemedy(server.state, server.code) && (
+                  <div className="correction-note">
+                    <p>
+                      Butler will run exactly: {server.argv.join(" ")}.
+                      Approving again installs the package first (
+                      {recipe?.installNote ?? ""}
+                      ).
+                    </p>
+                    <div className="review-buttons">
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy || working || !server.resolved}
+                        onClick={() =>
+                          void apply(() => api.approveToolServer(server.id))
+                        }
+                      >
+                        Approve again and install
                       </button>
                     </div>
                   </div>

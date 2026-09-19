@@ -59,11 +59,10 @@ describe("server recipes", () => {
       folder,
       addedAt: 1,
     });
-    expect(files.args).toEqual([
-      "-y",
-      "@modelcontextprotocol/server-filesystem",
-      folder,
-    ]);
+    // The installed bin is the registry's to put in front (src/tools/install.ts
+    // liveArgs); the row carries the recipe's own arguments alone.
+    expect(files.command).toBe("node");
+    expect(files.args).toEqual([folder]);
     expect(files.cwd).toBe("");
     const agent = serverFromRecipe(recipe("claude-code"), {
       folder,
@@ -145,10 +144,10 @@ describe("server recipes", () => {
       );
       expect(r.consent.length).toBeLessThanOrEqual(400);
       expect(r.consent).not.toMatch(/[\n\r]/);
-      expect(r.install.length).toBeGreaterThan(10);
+      expect(r.installNote.length).toBeGreaterThan(10);
     }
     expect(recipe("filesystem").consent).toContain(
-      "Fetches the package with npx the first time",
+      "Butler installs its package from npm when you test or approve it, and never again while it runs",
     );
     expect(recipe("playwright").consent).toContain(
       "Protected websites are still refused",
@@ -156,14 +155,56 @@ describe("server recipes", () => {
     expect(recipe("claude-code").consent).toContain(
       "Butler asks before each run",
     );
-    expect(recipe("github").install).toContain(
+    expect(recipe("github").installNote).toContain(
       "OAuth sign-in arrives in a later increment",
     );
-    expect(recipe("slack").install).toMatch(/OAuth sign-in.*later increment/);
-    expect(recipe("slack").install).toContain("(verify)");
+    expect(recipe("slack").installNote).toMatch(
+      /OAuth sign-in.*later increment/,
+    );
+    expect(recipe("slack").installNote).toContain("(verify)");
   });
 
-  it("never runs through a shell or a script interpreter", () => {
+  it("pins the Node packages the app installs, by version and bin, and keeps npx off every recipe", () => {
+    // npx inside the network sandbox asks the registry for the latest tag and
+    // hangs (measured 2026-09-19); the app installs the pinned package itself.
+    expect(recipe("filesystem").install).toEqual({
+      package: "@modelcontextprotocol/server-filesystem",
+      version: "2026.8.31",
+      bin: "mcp-server-filesystem",
+    });
+    // The bin name is part of the pin: it changed between 0.0.50 and 0.0.70.
+    expect(recipe("playwright").install).toEqual({
+      package: "@playwright/mcp",
+      version: "0.0.82",
+      bin: "playwright-mcp",
+    });
+    expect(recipe("playwright").args).toEqual(["--extension"]);
+    for (const r of RECIPES) {
+      expect(r.command ?? "", r.id).not.toMatch(/npx|uvx|bunx/);
+      for (const arg of r.args ?? []) {
+        expect(arg, r.id).not.toMatch(/@latest|^-y$/);
+        // The bin comes from install; no argument names a package or a path.
+        if (r.install) expect(arg, r.id).not.toMatch(/^@|\//);
+      }
+      if (!r.install) continue;
+      expect(r.command, r.id).toBe("node");
+      expect(r.install.version, r.id).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(r.install.bin, r.id).toMatch(/^[a-z][a-z0-9-]*$/);
+      expect(r.install.package, r.id).toMatch(
+        /^(?:@[a-z0-9-]+\/)?[a-z0-9._-]+$/,
+      );
+      expect(r.installNote, r.id).toContain(
+        `${r.install.package} ${r.install.version}`,
+      );
+      expect(r.installNote, r.id).toMatch(/network/);
+    }
+    expect(RECIPES.filter((r) => r.install).map((r) => r.id)).toEqual([
+      "filesystem",
+      "playwright",
+    ]);
+  });
+
+  it("never runs through a shell or a script interpreter, node only on a bin the app installed", () => {
     const refused = new Set([
       "sh",
       "bash",
@@ -174,12 +215,14 @@ describe("server recipes", () => {
       "sudo",
       "open",
       "python",
-      "node",
     ]);
     for (const r of RECIPES) {
       if (r.transport === "stdio") {
         expect(r.command, r.id).toBeDefined();
         expect(refused.has(r.command!.split("/").pop()!), r.id).toBe(false);
+        // node runs only what install names; a recipe without one never
+        // points node at a script.
+        expect(r.command === "node", r.id).toBe(!!r.install);
         expect(r.command).not.toContain("/");
         expect(r.url).toBeUndefined();
         for (const arg of r.args ?? []) expect(arg).not.toMatch(/[;&|`$]/);

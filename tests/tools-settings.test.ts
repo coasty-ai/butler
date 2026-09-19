@@ -7,7 +7,12 @@ import {
   type ToolServer,
 } from "../src/core/schema";
 import { localToolSettings, validateToolSettings } from "../src/core/privacy";
-import { RESERVED_PROVIDERS, toolsAllowed } from "../src/core/tools";
+import {
+  RESERVED_PROVIDERS,
+  TOOL_INSTALL_REMEDY,
+  toolsAllowed,
+} from "../src/core/tools";
+import { argvNote, installRemedy, stateNote } from "../src/ui/settings-tools";
 
 const row = (over: Partial<ToolServer> = {}): ToolServer =>
   toolServerSchema.parse({
@@ -172,5 +177,68 @@ describe("tool settings", () => {
         { transport: "builtin", local: true },
       ),
     ).toBe(false);
+  });
+});
+
+describe("the Tools pane's notes", () => {
+  it("names a missing or failed install with the one remedy, and a missing command as before", () => {
+    expect(TOOL_INSTALL_REMEDY).toBe(
+      "Approve the server again to install it; needs Node 22 and network for that step.",
+    );
+    expect(stateNote("needs_install", "INSTALL_FAILED")).toBe(
+      `Could not install the server's package. ${TOOL_INSTALL_REMEDY}`,
+    );
+    expect(stateNote("needs_install", "NOT_INSTALLED")).toBe(
+      `Not installed. ${TOOL_INSTALL_REMEDY}`,
+    );
+    for (const code of ["NOT_FOUND", "REFUSED", "RELATIVE", undefined])
+      expect(stateNote("needs_install", code)).toBe(
+        "Not found: install Node 22+ or give the full path",
+      );
+    // npm's exit status is a number in the trace, and its output is never
+    // read: the pane's sentence is fixed, whatever npm said.
+    expect(stateNote("needs_install", "INSTALL_FAILED")).not.toMatch(
+      /npm|exit|ENOTCACHED|ERR/,
+    );
+    // The remedy states are where the pane offers Approve again.
+    expect(installRemedy("needs_install", "INSTALL_FAILED")).toBe(true);
+    expect(installRemedy("needs_install", "NOT_INSTALLED")).toBe(true);
+    expect(installRemedy("needs_install", "NOT_FOUND")).toBe(false);
+    expect(installRemedy("needs_approval", "INSTALL_FAILED")).toBe(false);
+    expect(stateNote("needs_approval")).toBe("Needs your approval");
+    expect(stateNote("failed", "exhausted")).toContain("repeated exits");
+  });
+
+  it("says a pasted npx row runs offline in the sandbox, that a fetching runner may download, and nothing for an installed recipe", () => {
+    const launch = "/Applications/Butler.app/Contents/Resources/coarena-launch";
+    const npx = "/Users/u/.nvm/versions/node/v22.23.2/bin/npx";
+    const offline = argvNote([
+      launch,
+      "--no-network",
+      "--",
+      npx,
+      "--offline",
+      "-y",
+      "srv",
+    ]);
+    expect(offline).toContain("Runs npx offline inside the network sandbox");
+    expect(offline).toContain("ENOTCACHED");
+    expect(argvNote([launch, "--", npx, "-y", "srv"])).toBe(
+      " May download the package the first time it starts; not available in Private local.",
+    );
+    // "--offline" belongs to npx; a server's own --offline argument is not it.
+    expect(argvNote([launch, "--", "/usr/local/bin/srv", "--offline"])).toBe(
+      "",
+    );
+    expect(
+      argvNote([
+        launch,
+        "--no-network",
+        "--",
+        "/Users/u/.nvm/versions/node/v22.23.2/bin/node",
+        "/Users/u/Library/Application Support/coarena-open-assist/mcp/filesystem/node_modules/.bin/mcp-server-filesystem",
+        "/Users/u/Documents",
+      ]),
+    ).toBe("");
   });
 });

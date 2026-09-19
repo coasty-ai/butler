@@ -275,6 +275,33 @@ describe("MCP client: the launcher and the environment", () => {
     expect(provider.stderrBytes()).toBe("fixture started\n".length);
   });
 
+  it("runs the arguments the registry hands it in place of the row's: an installed recipe's bin, a pasted npx offline", async () => {
+    // The row says one thing (an old npx form); the registry's live argv
+    // (src/tools/install.ts liveArgs) is what reaches the launcher.
+    const provider = createMcpProvider(
+      {
+        kind: "server",
+        row: row({
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/nowhere"],
+        }),
+        command: process.execPath,
+        args: [fixture],
+        launch: launcher,
+        secrets: { env: {}, headers: {} },
+      },
+      { home, version: "0.1.0-test", ticks: () => ({}) },
+    );
+    providers.push(provider);
+    await provider.start();
+    expect(provider.state().state).toBe("on");
+    const [record] = records();
+    expect(record.flags).toEqual(["--no-network"]);
+    expect(record.command).toBe(process.execPath);
+    expect(record.args).toEqual([fixture]);
+    expect(record.args).not.toContain("/nowhere");
+  });
+
   it("spawns directly when there is no launcher", async () => {
     const { provider } = await started({ launch: false });
     expect(provider.state().state).toBe("on");

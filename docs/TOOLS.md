@@ -17,6 +17,7 @@ shared contract is `src/core/tools.ts`.
 | Shim     | `native/macos/Launch.swift` (`coarena-launch`)                                                                                                    | Starts a user-added server with TCC responsibility disclaimed and, when asked, without network. Passes stdio through, returns the child's status.                                                                                       |
 | Table    | `src/tools/providers/apple.ts`                                                                                                                    | The bridge as the registry sees it: title, description, tier, consent, date keys, the approval question, and parsers for exactly the recorded result shapes.                                                                            |
 | Recipes  | `src/tools/providers/recipes.ts`                                                                                                                  | The community servers and the coding agent the pane offers by name, with their argv, consent text, install note, default tools and tier overrides; `serverFromRecipe` shapes one into a settings row.                                   |
+| Install  | `src/tools/install.ts`                                                                                                                            | The app's own install of a recipe's pinned Node package (npm into `<userData>/mcp/<rowId>`), the live argv that runs its bin with `node`, and `--offline` for a pasted npx row that may not reach the network. npx never runs a recipe. |
 | Tests    | `tests/native/AppleRulesTests.swift`, `AppleProtocolTests.swift`, `LaunchTests.swift`, `tests/tools-apple.test.ts`, `tests/tools-recipes.test.ts` | The fixtures under `tests/fixtures/apple` are the contract: the Swift tests replay every exchange against a fixture store and compare bytes; the app's tests parse the same replies.                                                    |
 
 `npm run test:native-safety` runs the Swift tests; `node scripts/build-native.mjs`
@@ -193,13 +194,88 @@ note before the row can be enabled, and ticks only `defaultTools` when the
 server first lists its tools. Only `filesystem` may run in PRIVATE_LOCAL
 (stdio, `network: "none"`, under the sandbox); the others are BYOM only.
 
-| Recipe        | Connection                                                                       | Default tools                                                                      | Consent                                                                                                                                                                                 | Install                                                                                                                                                                 |
-| ------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `filesystem`  | stdio `npx -y @modelcontextprotocol/server-filesystem {folder}`, network none    | `list_directory`, `read_text_file`, `search_files`                                 | Reads and, if you tick them, changes files inside {folder} only. No network: nothing leaves this Mac through it. Runs as you. Fetches the package with npx the first time.              | Needs Node 22+ (npx fetches @modelcontextprotocol/server-filesystem the first time).                                                                                    |
-| `playwright`  | stdio `npx @playwright/mcp@latest --extension`, internet                         | `browser_snapshot`, `browser_navigate` (tiered `write`)                            | Drives your signed-in Chrome through the Playwright extension. Page text reaches the model. Protected websites are still refused by Butler's own policy. Runs as you.                   | Needs Node 18+ and the Playwright MCP Bridge extension in Chrome (npx fetches @playwright/mcp the first time).                                                          |
-| `github`      | http `https://api.githubcopilot.com/mcp/`, `Authorization` header from the vault | `search_repositories`, `get_me`, `list_pull_requests`                              | Talks to GitHub over the internet with your personal access token; what its tools read and change there reaches the model. Runs as you, with the token's permissions.                   | Needs a GitHub personal access token, stored as the Authorization header (Bearer <token>); OAuth sign-in arrives in a later increment.                                  |
-| `slack`       | http `https://mcp.slack.com/mcp`, `Authorization` header                         | none                                                                               | Talks to Slack over the internet with your token; the channel and message text its tools read reaches the model. Runs as you, with the token's permissions.                             | Slack's server needs OAuth sign-in, which arrives in a later increment; a user token may work in the meantime (verify). Shown as needs sign-in until a token is stored. |
-| `claude-code` | stdio `claude mcp serve` in {folder}, internet                                   | `Agent` (destructive, long-running); `Read`, `Glob`, `Grep`, `LS` offered as reads | Runs Claude Code in {folder} with its own permissions and your Claude account; it can read, edit and run code there. Butler asks before each run and reports what it says. Runs as you. | Needs the Claude Code CLI (claude) on this Mac.                                                                                                                         |
+| Recipe        | Connection                                                                                                                                                 | Default tools                                                                      | Consent                                                                                                                                                                                                                        | Install                                                                                                                                                                         |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filesystem`  | stdio `node <mcp>/filesystem/node_modules/.bin/mcp-server-filesystem {folder}`, network none; installs `@modelcontextprotocol/server-filesystem@2026.8.31` | `list_directory`, `read_text_file`, `search_files`                                 | Reads and, if you tick them, changes files inside {folder} only. No network: nothing leaves this Mac through it. Runs as you. Butler installs its package from npm when you test or approve it, and never again while it runs. | Needs Node 22+. Butler installs @modelcontextprotocol/server-filesystem 2026.8.31 into its own folder when you test or approve; that step needs network.                        |
+| `playwright`  | stdio `node <mcp>/playwright/node_modules/.bin/playwright-mcp --extension`, internet; installs `@playwright/mcp@0.0.82`                                    | `browser_snapshot`, `browser_navigate` (tiered `write`)                            | Drives your signed-in Chrome through the Playwright extension. Page text reaches the model. Protected websites are still refused by Butler's own policy. Runs as you.                                                          | Needs Node 18+ and the Playwright MCP Bridge extension in Chrome. Butler installs @playwright/mcp 0.0.82 into its own folder when you test or approve; that step needs network. |
+| `github`      | http `https://api.githubcopilot.com/mcp/`, `Authorization` header from the vault                                                                           | `search_repositories`, `get_me`, `list_pull_requests`                              | Talks to GitHub over the internet with your personal access token; what its tools read and change there reaches the model. Runs as you, with the token's permissions.                                                          | Needs a GitHub personal access token, stored as the Authorization header (Bearer <token>); OAuth sign-in arrives in a later increment.                                          |
+| `slack`       | http `https://mcp.slack.com/mcp`, `Authorization` header                                                                                                   | none                                                                               | Talks to Slack over the internet with your token; the channel and message text its tools read reaches the model. Runs as you, with the token's permissions.                                                                    | Slack's server needs OAuth sign-in, which arrives in a later increment; a user token may work in the meantime (verify). Shown as needs sign-in until a token is stored.         |
+| `claude-code` | stdio `claude mcp serve` in {folder}, internet                                                                                                             | `Agent` (destructive, long-running); `Read`, `Glob`, `Grep`, `LS` offered as reads | Runs Claude Code in {folder} with its own permissions and your Claude account; it can read, edit and run code there. Butler asks before each run and reports what it says. Runs as you.                                        | Needs the Claude Code CLI (claude) on this Mac.                                                                                                                                 |
+
+`<mcp>` is `~/Library/Application Support/coarena-open-assist/mcp` (the app's
+`userData` and `mcp`), one folder per row id.
+
+### The install step
+
+`npx -y <package>` never worked from a recipe. The Filesystem row ran through
+`coarena-launch --no-network`, and inside that sandbox npx never answers: even
+with the package cached it asks the registry for the `latest` dist-tag, the
+blocked request hangs, and the 10 s connect timeout reports `REQUEST_TIMEOUT`
+with the row stuck on "Starting…" (measured 2026-09-19 with a JSON-RPC
+`initialize` probe: bare `npx -y …` 858 ms; through the shim without the
+sandbox 3.2 s; with it, 0 bytes for 25 s). `npx --offline` answers inside the
+sandbox only when npx's cache already holds the package and its whole
+dependency tree, and `npm cache add` caches the tarball alone, so a fresh Mac
+fails with `ENOTCACHED`. So the app owns the install:
+
+- A recipe that runs a Node package names it in `install` as package, version
+  and bin (`src/core/tools.ts NodeInstall`), the version pinned by hand, never
+  a tag, the bin read from the package's own `bin` field (`@playwright/mcp`
+  renamed its bin between 0.0.50 and 0.0.70, so the bin is part of the pin).
+  The recipe's `command` is `node` and its `args` are the server's own; the
+  registry puts the installed bin in front (`src/tools/install.ts liveArgs`).
+- At the consent preview (`registry.test`, the pane's Test) and at the
+  approval (`approveToolServer`, the pane's Approve and start), the registry
+  runs `registry.install(id)` first: when the bin under
+  `<mcp>/<rowId>/node_modules/.bin/` is not executable or the installed
+  `package.json` is not at the pinned version, it runs
+  `npm install --prefix <mcp>/<rowId> --no-audit --no-fund --ignore-scripts --loglevel=error <package>@<version>`
+  with npm resolved as every command is (`src/tools/resolve.ts`), the fixed
+  child environment (HOME, TMPDIR, LANG, LC_ALL, PATH), network allowed,
+  output ignored, a 180 s bound. Nothing fetched from the registry runs at
+  install time (`--ignore-scripts`; the pinned servers ship built). Then it
+  connects once and lists as before. The pane's preview says "Installed its
+  package in N s."
+- The live argv is
+  `coarena-launch [--no-network] -- <node> <mcp>/<rowId>/node_modules/.bin/<bin> <args>`;
+  npx is never on it. `approvedCommand` hashes that argv, so the consent sheet
+  shows the command that runs.
+- The runtime path never fetches. A row whose package is gone (a fresh Mac, a
+  deleted folder) reads `needs_install` with code `NOT_INSTALLED`; one whose
+  last install in this session failed reads `needs_install` with
+  `INSTALL_FAILED`. Both say "Approve the server again to install it; needs
+  Node 22 and network for that step", and the pane offers Approve again and
+  install in those states. The connect timeout stays the backstop for anything
+  else. Traces: `ToolInstallStarted` with the server's code,
+  `ToolInstallFinished` with the server and `durationMs`, `ToolInstallFailed`
+  with the server, a `code` (`INSTALL_FAILED`, `TIMED_OUT` or
+  `NPM_NOT_FOUND`), npm's `exitCode` as a number when it exited, `timedOut`
+  and `durationMs`; never a line of npm's output, a package name or a path.
+- The install reaches registry.npmjs.org with the package name and version and
+  nothing else, only while you test or approve, in Private local too (the
+  Filesystem server is the one recipe that runs there); the server itself then
+  runs with no network.
+
+### Rows from before
+
+A Filesystem or Playwright row added before this change stores the npx form
+(`npx -y @modelcontextprotocol/server-filesystem <folder>`). The registry
+computes the new argv for it (npx's own arguments and the package are dropped,
+the folder kept), so its `approvedCommand` no longer matches and the pane shows
+the consent sheet again with the real command; Test or Approve installs the
+package and pins the new argv. Nothing is migrated in the stored row.
+
+A pasted or imported row (no recipe) runs as given, with one change: when its
+command is `npx` and it declares `network: "none"`, the registry adds
+`--offline` right after `npx`, so a package missing from npx's cache fails at
+once with `ENOTCACHED` instead of hanging on the registry; the consent sheet
+says so. Such a row's approval pins the argv with `--offline`.
+
+`npm run tools:check` (`scripts/mcp-check.mjs`) is the headless check of this
+path on the developer's Mac: the Apple bridge's status, the Filesystem recipe's
+install into a scratch root with a space in its path, the preview, a second
+preview that skips the install, then `configure`, the list, `prepare` and one
+`list_directory` call. It prints codes, counts and tool names only.
 
 `claude mcp serve` (Claude Code 2.1.221, measured) lists 25 tools with no
 annotations, `Bash`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch`,
@@ -227,3 +303,10 @@ default account` and `make new note … with properties {body}` name the note
 - That `sandbox-exec` and the disclaim behave the same on the macOS release the
   user runs; if either fails, PRIVATE_LOCAL refuses user servers and BYOM rows
   say "runs with Butler's access".
+- The Settings pane through the install: that Test and Approve and start keep
+  the pane in its working state for the length of an npm install without a
+  progress line (the IPC returns once), that the preview then reads "Installed
+  its package in N s. Lists 14 tools.", that an install failure shows the
+  remedy and the Approve again and install button, and that a row from before
+  shows the consent sheet again with the node argv. `npm run tools:check`
+  proves the path headlessly, not the pane.

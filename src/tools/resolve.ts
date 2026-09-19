@@ -1,4 +1,10 @@
-import { accessSync, constants, readdirSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  readdirSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 /**
@@ -22,8 +28,10 @@ export type ResolveCode = "NOT_FOUND" | "REFUSED" | "RELATIVE";
 export interface ResolveFs {
   isExecutable(path: string): boolean;
   list(dir: string): string[];
+  /** A small text file's content (an installed package's package.json), or undefined; optional for tests' tables. */
+  read?(path: string): string | undefined;
 }
-const realFs: ResolveFs = {
+export const realFs: ResolveFs = {
   isExecutable(path) {
     try {
       accessSync(path, constants.X_OK);
@@ -37,6 +45,13 @@ const realFs: ResolveFs = {
       return readdirSync(dir);
     } catch {
       return [];
+    }
+  },
+  read(path) {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      return undefined;
     }
   },
 };

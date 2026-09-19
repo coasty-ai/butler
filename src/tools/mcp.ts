@@ -50,6 +50,12 @@ export interface ServerSource {
   /** The absolute command a stdio row's name resolved to (src/tools/resolve.ts). */
   command?: string;
   /**
+   * The arguments after the command when they differ from the row's
+   * (src/tools/install.ts liveArgs): an installed recipe's bin before its
+   * arguments, a pasted npx run offline. The row's args otherwise.
+   */
+  args?: string[];
+  /**
    * coarena-launch when it exists: the child is spawned through it with TCC
    * responsibility disclaimed, and inside the network sandbox when the row
    * declares network "none".
@@ -375,6 +381,7 @@ export function createMcpProvider(
         requestInit: { headers: secrets.headers },
       });
     const command = source.command ?? row.command;
+    const args = source.args ?? row.args;
     return new StdioClientTransport({
       command: launch ?? command,
       args: launch
@@ -382,9 +389,9 @@ export function createMcpProvider(
             ...(row.network === "none" ? ["--no-network"] : []),
             "--",
             command,
-            ...row.args,
+            ...args,
           ]
-        : row.args,
+        : args,
       env: { ...env(command), ...row.env, ...secrets.env },
       cwd: row.cwd || undefined,
       stderr: "pipe",
