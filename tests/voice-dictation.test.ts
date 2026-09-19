@@ -110,6 +110,18 @@ describe("dictationRequest", () => {
 
   it("applies the wake-phrase restart before reading the words", () => {
     expect(dictationRequest("open Notes hey butler type hello")).toBe("Hello");
+    // The recognizer's "right" for "write" (cycle 2, 2026-09-19).
+    expect(dictationRequest("right buy oat milk tomorrow")).toBe(
+      "Buy oat milk tomorrow",
+    );
+    expect(dictationRequest("right a note to Dana")).toBeUndefined();
+    for (const own of [
+      "right click the save button",
+      "right now open notes",
+      "right here",
+      "right",
+    ])
+      expect(dictationRequest(own), own).toBeUndefined();
   });
 
   it("never exceeds the type_text limit", () => {

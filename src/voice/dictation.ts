@@ -128,8 +128,16 @@ const LEADING_WAKE = new RegExp(
 );
 const LEAD =
   /^(?:(?:ok|okay|so|hey|now|just|please|also|then|and|(?:can|could|would|will) you)[,\s]+)*/i;
-/** "type up my notes" composes, as "write up" does (COMPOSE); it is no verb here. */
-const VERB = /^(type(?!\s+up\b)|dictate|write(?:\s+down)?)\b[\s:,—–-]*/i;
+/**
+ * "type up my notes" composes, as "write up" does (COMPOSE); it is no verb
+ * here. "right" is how the recognizer writes "write" (cycle 2, 2026-09-19:
+ * "right by oat milk tomorrow"); it counts only where "write" would, and
+ * never before the words that make it its own ("right click", "right now").
+ */
+const VERB =
+  /^(type(?!\s+up\b)|dictate|write(?:\s+down)?|right(?!\s+(?:click|now|here|there|away|on|side|hand|after|before|then|so)\b))\b[\s:,—–-]*/i;
+const spokenVerb = (verb: string) =>
+  verb.toLowerCase() === "right" ? "write" : verb.toLowerCase();
 /** A place named right after the verb: "type in Notes hello", "write to Dana". */
 const LEADING_PLACE = /^(?:in|into|on|to)\b/i;
 /** A place named at the end: "in the note", "into Slack", "on the page". */
@@ -171,7 +179,7 @@ export function dictationRequest(text: string): string | undefined {
       .split(/\s+/)
       .map((word) => word.replace(/[.!?,:;]+$/, ""))
       .filter(Boolean);
-    if (verb[1].toLowerCase() === "write" && COMPOSE.has(said[0]))
+    if (spokenVerb(verb[1]) === "write" && COMPOSE.has(said[0]))
       return undefined;
     const pointed = said.filter((word) => word !== "the");
     if (pointed.length <= 3 && pointed.every((word) => POINTERS.has(word)))
