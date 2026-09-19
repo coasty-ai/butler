@@ -189,6 +189,38 @@
       {
         "in": "Hey Butler hey Butler open Safari",
         "out": "hey Butler open Safari"
+      },
+      {
+        "in": "Hey Butler, sure go for it",
+        "out": "sure go for it"
+      },
+      {
+        "in": "Hey Butler sure go for it",
+        "out": "sure go for it"
+      },
+      {
+        "in": "hey butler yeah",
+        "out": "yeah"
+      },
+      {
+        "in": "Hey Butler thanks",
+        "out": "thanks"
+      },
+      {
+        "in": "Hey Butler good morning",
+        "out": "good morning"
+      },
+      {
+        "in": "Hey Butler actually cancel that",
+        "out": "actually cancel that"
+      },
+      {
+        "in": "Hey Butler okay do it",
+        "out": "okay do it"
+      },
+      {
+        "in": "Hey Butler not now",
+        "out": "not now"
       }
     ],
     "activateFused": [],
@@ -305,6 +337,14 @@
       {
         "in": "Hey Butler um",
         "out": "um"
+      },
+      {
+        "in": "Hey Butler sure",
+        "out": "sure"
+      },
+      {
+        "in": "Hey Butler thanks",
+        "out": "thanks"
       }
     ],
     "liveNever": ["Hey Butler's", "Hey Butlers", "Hey", "Butler", "Hey but a"]

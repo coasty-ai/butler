@@ -27,8 +27,16 @@ let wakeOpeners = ["what", "whats", "when", "where", "who", "why", "how", "can",
 // (Every command in the speech test began with "open"; these are the ones a hands-free user
 // most needs to say in one breath.)
 let wakeControlWords = ["stop", "cancel", "pause", "wait", "hold", "continue", "resume", "yes", "no", "never"]
+// Replies, greetings and the words people put before a request pass the same way: "Hey Butler,
+// sure go for it", "Hey Butler thanks", "Hey Butler good morning", "Hey Butler actually cancel
+// that" are each one breath, and a recognizer writes no comma after the name (live trial
+// 2026-09-18: "sure go for it" went unheard). None of them follows the name in a sentence
+// about someone else ("Hey Butler's on the phone" still fails: no space after the name).
+let wakeReplyWords = ["sure", "yeah", "yep", "yup", "ok", "okay", "alright", "fine", "right", "correct", "nah", "nope",
+    "not", "do", "thanks", "thank", "hello", "hi", "good", "morning", "afternoon", "evening", "night",
+    "actually", "so", "also", "one", "quick", "quickly", "just", "now"]
 private let wakePause = #"(?:[,.:;!?—-]|(?:um|uh|uhm|umm|er|erm|hmm|hm|mm)\b)"#
-private let wakeVerbs = (actionVerbs.sorted() + wakeControlWords).joined(separator: "|")
+private let wakeVerbs = (actionVerbs.sorted() + wakeControlWords + wakeReplyWords).joined(separator: "|")
 private let wakeOpenersPattern = wakeOpeners.joined(separator: "|")
 private func wakeGate(openers: Bool, ended: Bool) -> String {
     let apart = ended ? #"(?=\s*(?:\#(wakePause)|$))"# : #"(?=\s*\#(wakePause))"#

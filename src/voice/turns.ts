@@ -815,6 +815,11 @@ const WAKE_FOLLOWERS = [
   ...ACTION_VERBS,
   // Control words (native wakeControlWords): "Hey Butler stop" never waits.
   ..."stop cancel pause wait hold continue resume yes no never".split(" "),
+  // Replies, greetings and lead-in words (native wakeReplyWords): "Hey Butler
+  // sure go for it" is one breath, and a recognizer writes no comma after the name.
+  ..."sure yeah yep yup ok okay alright fine right correct nah nope not do thanks thank hello hi good morning afternoon evening night actually so also one quick quickly just now".split(
+    " ",
+  ),
   // Question openers (native wakeOpeners).
   ..."what whats when where who why how can could would will please tell give i im let lets".split(
     " ",
