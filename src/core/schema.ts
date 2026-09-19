@@ -370,6 +370,18 @@ export const settingsSchema = z
     maxCost: z.number().min(0.01).max(50),
     inputPrice: z.number().min(0).max(1000),
     outputPrice: z.number().min(0).max(1000),
+    /**
+     * When a step carries its screenshot (src/core/vision.ts). "always":
+     * every step, at full size. "auto" (the default): full size on a run's
+     * first step, after a step whose target native input could not verify,
+     * when the screenshot had to be read for text, on a blind or unknown
+     * surface, after the model calls capture and at least every 4th step;
+     * left out while the screen is unchanged since the last step; otherwise
+     * reduced to at most 1024 px wide when the accessibility context already
+     * describes the screen. "text-first": as auto, but left out instead of
+     * reduced.
+     */
+    visionMode: z.enum(["always", "auto", "text-first"]).default("auto"),
     protectedApps: z.array(z.string().max(100)).max(100),
     protectedDomains: z.array(z.string().max(200)).max(100),
     displayId: z.number().int().nonnegative().optional(),
@@ -594,6 +606,7 @@ export const defaultSettings: Settings = {
   maxCost: 1,
   inputPrice: 0,
   outputPrice: 0,
+  visionMode: "auto",
   protectedApps: [
     "com.1password.1password",
     "com.agilebits.onepassword7",
@@ -685,6 +698,12 @@ export interface Frame {
   context?: ScreenContext;
   /** Native capture stage times in ms (settle, content, shot, context, controls, ocr, encode, total). */
   timings?: Record<string, number>;
+  /**
+   * The screenshot at most 1024 px wide as a JPEG, for the model's reduced
+   * look (settings.visionMode). The PNG in image stays the frame of record:
+   * it is what the hash names, what review shows and what is stored.
+   */
+  preview?: { image: string; width: number; height: number };
 }
 export interface ScreenContext {
   appName: string;
@@ -901,6 +920,28 @@ export interface Usage {
   inputTokens: number;
   outputTokens: number;
   cost: number;
+  /**
+   * Of inputTokens, the tokens the provider served from its prompt cache
+   * (Anthropic cache reads, OpenAI cached_tokens, Gemini cached content).
+   * Absent when the provider reports no cache.
+   */
+  cachedInputTokens?: number;
+}
+/** Why a step carries its screenshot at full size, reduced, or not at all (src/core/vision.ts). */
+export type ScreenshotReason =
+  | "always"
+  | "first"
+  | "requested"
+  | "blind"
+  | "ocr"
+  | "unconfirmed"
+  | "cadence"
+  | "unchanged"
+  | "described"
+  | "changed";
+export interface ScreenshotUse {
+  send: "full" | "reduced" | "none";
+  reason: ScreenshotReason;
 }
 export interface Observation {
   task: string;
@@ -910,6 +951,8 @@ export interface Observation {
   memory?: MemoryContext;
   /** The tools this run may call, on the model's copy only; never persisted. */
   tools?: { now: string; list: ToolSummary[]; unavailable: ToolUnavailable[] };
+  /** How much of the frame's screenshot to send; a full screenshot when absent. */
+  screenshot?: ScreenshotUse;
 }
 export interface MemoryContext {
   /** Learned preferences relevant to the task (sanitized, short). */

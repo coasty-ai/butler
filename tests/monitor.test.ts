@@ -736,7 +736,9 @@ describe("what leaves the watch", () => {
     expect(instruction).toContain(
       "monitor(reason, every_s 5-60, max_min 1-180, until 'done'|'input'|'change')",
     );
-    const context = JSON.parse(request.body.input[0].content[0].text);
+    // The watch context is a step detail: it follows the image, after the
+    // workspace part.
+    const context = JSON.parse(request.body.input[0].content[2].text);
     expect(context.context.watch).toEqual({
       cause: "done",
       state: "idle",

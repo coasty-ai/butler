@@ -65,6 +65,7 @@ import {
   toolUndoLine,
 } from "./tool-text";
 import { entityTokens } from "./entities";
+import { actionConfirmed, contextDigest, screenshotUse } from "./vision";
 import { redactSecrets, scanText } from "./sanitize";
 import {
   HelperUnavailableError,
@@ -159,20 +160,32 @@ const knownType = (input: unknown) => {
 /** History entries the model sees whole; the steps before them become one line. */
 export const MODEL_HISTORY_FULL = 6;
 /**
+ * The longest result line a whole entry carries to the model: room for an
+ * executed step's line with two of the advice notes, never a runaway one.
+ */
+export const MODEL_RESULT_CHARS = 640;
+/**
  * The model's copy of the history: the last MODEL_HISTORY_FULL entries whole
  * (rejections with their echoed actions, refusals, the loop and no-progress
  * notes), behind one line naming every earlier step and how it ended. Twelve
  * whole entries were 1.1-1.5k input tokens a step on the 2026-09-19 runs (a
- * 24-step run grew from 7.5k to 9.7k). Typed text never enters the line.
+ * 24-step run grew from 7.5k to 9.7k). Typed text never enters the line, no
+ * entry carries an image, and every result is cut at MODEL_RESULT_CHARS.
  */
 export function modelHistory(history: History): History {
-  if (history.length <= MODEL_HISTORY_FULL) return history;
+  const whole = history
+    .slice(-MODEL_HISTORY_FULL)
+    .map((entry) => ({
+      ...entry,
+      result: bound(entry.result, MODEL_RESULT_CHARS),
+    }));
+  if (history.length <= MODEL_HISTORY_FULL) return whole;
   return [
     {
       type: "earlier_steps",
       result: summarizeSteps(history.slice(0, -MODEL_HISTORY_FULL)),
     },
-    ...history.slice(-MODEL_HISTORY_FULL),
+    ...whole,
   ];
 }
 function summarizeSteps(entries: History): string {
@@ -834,6 +847,14 @@ export class Runner {
   private sinceLoopWarning = 0;
   /** The screen the last executed action ran on, with that action's type. */
   private progress?: { type: string; probe: ProgressProbe };
+  /**
+   * What the model saw last (src/core/vision.ts): the hash and context of the
+   * frame it was sent, the steps since it last had a screenshot, and the
+   * action executed since, with whether native input verified its target.
+   */
+  private shown?: { sha256: string; context: string };
+  private sinceImage = 0;
+  private lastStep?: { type: string; confirmed: boolean };
   /** Type of the run of actions that is changing nothing, and its length. */
   private stalledType?: string;
   private stalls = 0;
@@ -867,6 +888,13 @@ export class Runner {
   private executed: Action[] = [];
   /** The tools this run may call, listed once and frozen; unset without the tool layer. */
   private toolList?: ToolList;
+  /**
+   * The clock line the frozen list is shown with, taken when the list is:
+   * context.tools rides in the request's cacheable workspace part, so it
+   * must not change from step to step (policy grounds dates on the live
+   * clock, never on this line).
+   */
+  private toolNow?: string;
   /** The tool whose call did not go through, named on the next screen step's status line. */
   private toolFallback?: string;
   /**
@@ -915,6 +943,9 @@ export class Runner {
     this.switchWarned = false;
     this.loopWarned = false;
     this.sinceLoopWarning = 0;
+    // The user may have changed the screen: the next step sees all of it.
+    this.shown = undefined;
+    this.lastStep = undefined;
     this.resetProgress();
   }
   private resetProgress() {
@@ -1525,6 +1556,7 @@ export class Runner {
     this.appsSeen = new Set();
     this.prelude = undefined;
     this.toolList = undefined;
+    this.toolNow = undefined;
     this.toolFallback = undefined;
   }
   /**
@@ -1637,6 +1669,7 @@ export class Runner {
       ? list.unavailable.slice(0, TOOL_LIMITS.unavailable)
       : [];
     this.toolList = { tools: listed, unavailable };
+    this.toolNow = clockLine(tools.clock());
     this.event("ToolsListed", {
       toolCount: listed.length,
       unavailableCount: unavailable.length,
@@ -1649,7 +1682,7 @@ export class Runner {
     list: ToolList,
   ): NonNullable<Observation["tools"]> {
     return {
-      now: clockLine(tools.clock()),
+      now: this.toolNow ?? clockLine(tools.clock()),
       list: list.tools.map(({ id, title, does, params }) => ({
         id,
         title,
@@ -2110,7 +2143,9 @@ export class Runner {
     if (frame.appId && this.appsSeen.size < 50) this.appsSeen.add(frame.appId);
     this.snapshot.frame = frame;
     this.snapshot.run!.frames++;
-    this.recorder.frame(this.snapshot.run!.id, frame);
+    // The PNG is the frame of record; the model's reduced rendition is not kept.
+    const { preview: _preview, ...stored } = frame;
+    this.recorder.frame(this.snapshot.run!.id, stored);
     this.event("FrameCaptured", {
       frame_id: frame.id,
       sha256: frame.sha256,
@@ -2181,6 +2216,10 @@ export class Runner {
     this.resetCounters();
     run.actions++;
     this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
+    this.lastStep = {
+      type: action.type,
+      confirmed: actionConfirmed(action, actionSurface, outcome),
+    };
     const launched =
       action.type === "open_app" &&
       outcome &&
@@ -2610,10 +2649,23 @@ export class Runner {
         }
         if (!result) {
           this.status("thinking", "Choosing the next action.");
-          this.event("ModelRequestStarted");
+          const screenshot = screenshotUse({
+            mode: this.settings.visionMode,
+            frame,
+            surface: this.lastSurface,
+            shown: this.shown,
+            sinceImage: this.sinceImage,
+            executed: this.lastStep,
+          });
+          this.lastStep = undefined;
+          this.event("ModelRequestStarted", {
+            screenshot: screenshot.send,
+            screenshotReason: screenshot.reason,
+          });
           try {
             result = await this.provider.next(
               {
+                screenshot,
                 // run.task, not the start() argument: amendTask may replace it.
                 task:
                   run.task +
@@ -2663,11 +2715,22 @@ export class Runner {
           }
           if (this.held || epoch !== this.epoch) continue;
           this.providerFailures = 0;
+          // The model saw this frame, with or without its screenshot.
+          this.shown = { sha256: frame.sha256, context: contextDigest(frame) };
+          this.sinceImage =
+            screenshot.send === "none" ? this.sinceImage + 1 : 0;
           this.check();
           for (const k of ["inputTokens", "outputTokens", "cost"] as const) {
             if (!Number.isFinite(result.usage[k]) || result.usage[k] < 0)
               throw new Error("Invalid usage accounting.");
             run.usage[k] += result.usage[k];
+          }
+          const cached = result.usage.cachedInputTokens;
+          if (cached !== undefined) {
+            if (!Number.isFinite(cached) || cached < 0)
+              throw new Error("Invalid usage accounting.");
+            run.usage.cachedInputTokens =
+              (run.usage.cachedInputTokens ?? 0) + cached;
           }
           this.event("ModelResponseReceived", { usage: result.usage });
           this.check();

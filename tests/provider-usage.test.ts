@@ -76,6 +76,7 @@ describe("cached prompt tokens", () => {
       settings("openai", { inputPrice: 0.75, outputPrice: 4.5 }),
     );
     expect(usage.inputTokens).toBe(2000);
+    expect(usage.cachedInputTokens).toBe(1500);
     expect(usage.outputTokens).toBe(50);
     // ((500 + 1500 * 0.1) * 0.75 + 50 * 4.5) / 1e6
     expect(usage.cost).toBeCloseTo(0.0007125, 12);
@@ -88,6 +89,7 @@ describe("cached prompt tokens", () => {
       settings("google", { inputPrice: 0.3, outputPrice: 2.5 }),
     );
     expect(usage.inputTokens).toBe(2000);
+    expect(usage.cachedInputTokens).toBe(1500);
     expect(usage.outputTokens).toBe(50);
     // ((500 + 1500 * 0.1) * 0.3 + 50 * 2.5) / 1e6
     expect(usage.cost).toBeCloseTo(0.00032, 12);
@@ -174,6 +176,8 @@ describe("cached prompt tokens", () => {
       expect(usage, provider).toEqual({
         inputTokens: 10,
         outputTokens: 2,
+        // Every cloud provider reports its cache, as zero here; Ollama has none.
+        ...(provider !== "ollama" && { cachedInputTokens: 0 }),
         cost: 0.000014,
       });
     }
@@ -346,6 +350,7 @@ describe("cached prompt tokens", () => {
     expect(result.usage).toEqual({
       inputTokens: 2000,
       outputTokens: 50,
+      cachedInputTokens: 1500,
       cost: expect.closeTo(0.0007125, 12),
     });
     const google = await new HttpProvider(

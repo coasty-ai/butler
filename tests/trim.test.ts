@@ -1,13 +1,19 @@
 import { describe, it, expect } from "vitest";
 import { buildRequest } from "../src/providers/http";
 import { cleanScreenContext, trimScreenContext } from "../src/core/context";
-import { MODEL_HISTORY_FULL, modelHistory } from "../src/core/runner";
+import {
+  MODEL_HISTORY_FULL,
+  MODEL_RESULT_CHARS,
+  modelHistory,
+} from "../src/core/runner";
 import { normalizeLabel } from "../src/core/labels";
+import { contextDigest, screenshotUse } from "../src/core/vision";
 import {
   defaultSettings,
   type Frame,
   type Observation,
   type ScreenContext,
+  type ScreenshotUse,
   type Settings,
 } from "../src/core/schema";
 
@@ -390,9 +396,19 @@ function sections(context: Record<string, any>) {
     }),
   };
 }
-/** Anthropic's rule of thumb for an image's tokens: width * height / 750. */
-const imageTokens = (g: typeof geometry) =>
-  Math.ceil((g.model_width * g.model_height) / 750);
+/**
+ * Anthropic's rule for an image's tokens: width × height / 750, after scaling
+ * an image above 1.15 megapixels down to it (1440x900 is 1.3 megapixels).
+ */
+const imageTokens = (width: number, height: number) =>
+  Math.ceil(Math.min(width * height, 1.15e6) / 750);
+/** The request's two JSON parts read as the one object the sections split. */
+const sentJson = (request: { body: any }) => {
+  const [workspace, , step] = request.body.messages[0].content;
+  const a = JSON.parse(workspace.text),
+    b = JSON.parse(step.text);
+  return { ...a, ...b, context: { ...a.context, ...b.context } };
+};
 
 /**
  * One step's request, before and after the trims, as the provider sends it.
@@ -404,7 +420,7 @@ function measure(o: Observation) {
     ...o,
     history: modelHistory(o.history),
   });
-  const after = JSON.parse(request.body.messages[0].content[1].text);
+  const after = sentJson(request);
   // A fixture over a bound would be dropped whole and measure as nothing.
   expect(after.context.appName).toBe(o.frame.context?.appName);
   const before = {
@@ -419,7 +435,10 @@ function measure(o: Observation) {
   const fixed = {
     instruction: tokens(request.body.system[0].text),
     tools: tokens(request.body.tools),
-    image: imageTokens(o.frame.geometry),
+    image: imageTokens(
+      o.frame.geometry.model_width,
+      o.frame.geometry.model_height,
+    ),
   };
   return {
     before: sections(before),
@@ -444,7 +463,7 @@ function report(name: string, m: ReturnType<typeof measure>) {
       `${name}: estimated tokens (chars/4), before -> after`,
       `${"instruction".padEnd(16)}${String(m.fixed.instruction).padStart(6)} (cached on Anthropic)`,
       `${"tools".padEnd(16)}${String(m.fixed.tools).padStart(6)}`,
-      `${"image".padEnd(16)}${String(m.fixed.image).padStart(6)} (1440x900 / 750)`,
+      `${"image".padEnd(16)}${String(m.fixed.image).padStart(6)} (1440x900, scaled to 1.15 MP, / 750)`,
       ...lines,
       `${"step JSON".padEnd(16)}${String(m.beforeJson).padStart(6)}${String(m.afterJson).padStart(7)}  -${Math.round((1 - m.afterJson / m.beforeJson) * 100)}%`,
       `${"request".padEnd(16)}${String(total(m.beforeJson)).padStart(6)}${String(total(m.afterJson)).padStart(7)}  -${Math.round((1 - total(m.afterJson) / total(m.beforeJson)) * 100)}%`,
@@ -460,7 +479,7 @@ describe("what one step costs", () => {
     // Live 2026-09-19: 6748-6881 input tokens a step to open Notes. The
     // instruction and the screenshot are most of it; the estimate is close
     // enough to say where the rest goes.
-    expect(total(m.beforeJson)).toBeGreaterThan(5500);
+    expect(total(m.beforeJson)).toBeGreaterThan(5300);
     expect(total(m.beforeJson)).toBeLessThan(8000);
     expect(m.fixed.instruction).toBeGreaterThan(fixed / 2);
     // The per-step JSON shrinks by at least a quarter on this screen.
@@ -473,8 +492,9 @@ describe("what one step costs", () => {
     const instruction: string = buildRequest(settings, "K", notes).body
       .system[0].text;
     // 13,924 characters before the action list lost its JSON schema repeats;
-    // 14,800 with the tools paragraph (.data/design/mcp-integrated.md §2.3.2).
-    expect(instruction.length).toBeLessThan(14850);
+    // 14,800 with the tools paragraph (.data/design/mcp-integrated.md §2.3.2);
+    // the two-part context and the left-out screenshot added 420 more.
+    expect(instruction.length).toBeLessThan(15300);
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
     expect(instruction).not.toContain('{"type":"menu_item"');
@@ -627,16 +647,21 @@ describe("screen context the model sees", () => {
         "K",
         notes,
       );
-      const text: string =
+      // The workspace part carries the menus; the step part the screen.
+      const [workspace, step]: string[] =
         provider === "anthropic"
-          ? r.body.messages[0].content[1].text
+          ? [
+              r.body.messages[0].content[0].text,
+              r.body.messages[0].content[2].text,
+            ]
           : provider === "openai"
-            ? r.body.input[0].content[0].text
-            : r.body.messages[1].content;
-      const context = JSON.parse(text).context;
+            ? [r.body.input[0].content[0].text, r.body.input[0].content[2].text]
+            : r.body.messages[1].content.split("\n");
+      const context = JSON.parse(step).context;
       expect(context.controls).toEqual(trimmed.controls);
       expect(context.screenText).toBe(trimmed.screenText);
-      expect(context.menus).toEqual(notesMenus);
+      expect(context.menus).toBeUndefined();
+      expect(JSON.parse(workspace).context.menus).toEqual(notesMenus);
     }
   });
 });
@@ -658,10 +683,18 @@ describe("history the model sees", () => {
       `Notes history: ${notesHistory.length} entries (${tokens(notesHistory)} tokens) -> ${seen.length} (${tokens(seen)} tokens)`,
     );
   });
-  it("passes a short history through unchanged", () => {
+  it("passes a short history through whole, with every result bounded", () => {
     const six = notesHistory.slice(0, MODEL_HISTORY_FULL);
-    expect(modelHistory(six)).toBe(six);
+    expect(modelHistory(six)).toEqual(six);
     expect(modelHistory([])).toEqual([]);
+    // A runaway result (a native message echoed whole) is cut for the model;
+    // the runner's own copy keeps it, and no entry ever carries an image.
+    const long = { type: "click", result: "x".repeat(5000) };
+    const seen = modelHistory([...six, long]);
+    expect(seen.at(-1)!.result).toHaveLength(MODEL_RESULT_CHARS);
+    expect(seen.at(-1)!.result.endsWith("…")).toBe(true);
+    expect(long.result).toHaveLength(5000);
+    expect(JSON.stringify(seen)).not.toContain("data:image");
   });
   it("names outcomes the way the whole entries do", () => {
     const seen = modelHistory([
@@ -698,5 +731,322 @@ describe("history the model sees", () => {
     expect(line).toMatch(/^34 earlier steps, oldest first: …; /);
     expect(line).toContain("“Control number 34” (done).");
     expect(line).not.toContain("“Control number 1”");
+  });
+});
+
+/* -------------------------------------------------------------- a session */
+
+// The desktop a run starts on: Finder describes its window well, so nothing
+// here is read from pixels.
+const finderContext: ScreenContext = {
+  appName: "Finder",
+  windowTitle: "Downloads",
+  windowCount: 1,
+  accessibility: "full",
+  visibleText: Array.from(
+    { length: 18 },
+    (_, i) =>
+      `Report draft ${i + 1}.pdf, Today at 9:${String(10 + i).padStart(2, "0")} AM, 1.2 MB`,
+  ).join("\n"),
+  controls: [
+    { role: "textfield", label: "Search", x: 0.9, y: 0.06 },
+    ...["Back", "Forward", "View", "Group", "Share", "Tag", "Action"].map(
+      (label, i) => ({ role: "button", label, x: 0.1 + i * 0.05, y: 0.06 }),
+    ),
+    ...["Recents", "Applications", "Desktop", "Documents", "Downloads"].map(
+      (label, i) => ({ role: "row", label, x: 0.06, y: 0.15 + i * 0.03 }),
+    ),
+  ],
+  menus: [
+    "File: New Finder Window [CMD+N], New Folder [SHIFT+CMD+N], Open [CMD+O], Close Window [CMD+W], Get Info [CMD+I], Duplicate [CMD+D], Move to Trash [CMD+BACKSPACE]",
+    "Go: Recents [SHIFT+CMD+F], Documents [SHIFT+CMD+O], Downloads [ALT+CMD+L], Applications [SHIFT+CMD+A], Go to Folder… [SHIFT+CMD+G]",
+  ],
+  openApps: openApps.map((line) =>
+    line.startsWith("Notes")
+      ? "Notes: Notes"
+      : line.replace("Finder:", "Finder (frontmost):"),
+  ),
+  recentWindows: recentWindows.slice(0, 8),
+};
+// Notes as the helper would describe it if the note text were published by
+// accessibility: the same screen with no recognized text and enough visible
+// text to be a described screen (src/core/vision.ts).
+const notesDescribedContext: ScreenContext = {
+  ...notesContext,
+  screenText: undefined,
+  visibleText: [
+    ...notesVisible,
+    ...notesToolbar,
+    "September 19, 2026 at 9:41 AM",
+    "Q3 planning with Sam",
+    ...notesBody,
+  ].join("\n"),
+};
+type SessionStep = {
+  /** The action executed before this step's frame; none after a rejected step. */
+  executed?: { type: string; confirmed: boolean };
+  /** Whether that action changed what the screen shows. */
+  changed: boolean;
+  entry: Observation["history"][number];
+};
+const did = (
+  type: string,
+  confirmed: boolean,
+  changed: boolean,
+  entry: Observation["history"][number],
+): SessionStep => ({ executed: { type, confirmed }, changed, entry });
+const noInput = (entry: Observation["history"][number]): SessionStep => ({
+  changed: false,
+  entry,
+});
+const clicked = (label: string) => ({
+  type: "click_control",
+  action: { type: "click_control", label },
+  result: `Executed click on button “${label}”. Verify the next screenshot.`,
+});
+/**
+ * Nineteen actions of a Notes run, in order, so twenty model steps: the
+ * twelve of the fixture history, then a scroll, more typing, a malformed
+ * reply, ENTER, a wait and a last click before done. Each says whether native
+ * input verified its target (actionConfirmed) and whether the screen changed.
+ */
+const sessionSteps: SessionStep[] = [
+  did("open_app", true, true, notesHistory[0]),
+  did("hotkey", true, true, notesHistory[1]),
+  did("type_text", true, true, notesHistory[2]),
+  did("key", true, true, notesHistory[3]),
+  did("type_text", true, true, notesHistory[4]),
+  noInput(notesHistory[5]),
+  did("click_control", true, true, notesHistory[6]),
+  noInput(notesHistory[7]),
+  did("menu_item", true, true, notesHistory[8]),
+  did("type_text", true, true, notesHistory[9]),
+  did("click_control", true, true, notesHistory[10]),
+  // CMD+B posted as keys with no visible change: unverified, unchanged.
+  did("hotkey", false, false, notesHistory[11]),
+  did("scroll", false, true, {
+    type: "scroll",
+    action: { type: "scroll", delta_x: 0, delta_y: 300 },
+    result: "Executed scroll. Verify the next screenshot.",
+  }),
+  did("click_control", true, true, clicked("Checklist")),
+  did("type_text", true, true, {
+    type: "type_text",
+    action: { type: "type_text", text: notesBody[4] },
+    result: executed(" typing into “Note”"),
+  }),
+  noInput({
+    type: "rejected",
+    result:
+      "No input was executed. Your last reply was not exactly one action (The response contained no action tool call.). Return exactly one action object using the frame_id from the current context.",
+  }),
+  did("key", true, true, notesHistory[3]),
+  did("wait", true, false, {
+    type: "wait",
+    action: { type: "wait", milliseconds: 800 },
+    result: "Executed. Verify the next screenshot.",
+  }),
+  did("click_control", true, true, clicked("Delete")),
+];
+const preview = {
+  image: "data:image/jpeg;base64,anBn",
+  width: 1024,
+  height: 640,
+};
+type SessionRow = {
+  step: number;
+  use: ScreenshotUse;
+  image: number;
+  stepJson: number;
+  workspace: number;
+  /** Tokens before the last cache breakpoint that the cache served. */
+  cached: number;
+  total: number;
+};
+/**
+ * Runs the session's screenshot decisions the way the runner does and
+ * estimates each request: the instruction and tools are cached from the
+ * second step on, the workspace part whenever it is byte-equal to the step
+ * before, the image by Anthropic's formula, the rest by chars/4.
+ */
+function simulate(
+  mode: Settings["visionMode"],
+  contexts: { first: ScreenContext; notes: ScreenContext },
+): SessionRow[] {
+  const history: Observation["history"] = [];
+  const rows: SessionRow[] = [];
+  let shown: { sha256: string; context: string } | undefined;
+  let sinceImage = 0,
+    sha = 0,
+    lastWorkspace: string | undefined;
+  for (let i = 0; i <= sessionSteps.length; i++) {
+    const before = i > 0 ? sessionSteps[i - 1] : undefined;
+    if (before) {
+      history.push(before.entry);
+      if (before.changed) sha++;
+    }
+    const f: Frame = {
+      ...frame(
+        i === 0 ? "com.apple.finder" : "com.apple.Notes",
+        i === 0 ? contexts.first : contexts.notes,
+      ),
+      id: `${String(i).padStart(8, "0")}-4e5f-4789-abcd-ef0123456789`,
+      sha256: `sha-${sha}`,
+      preview,
+    };
+    const use = screenshotUse({
+      mode,
+      frame: f,
+      shown,
+      sinceImage,
+      executed: before?.executed,
+    });
+    const request = buildRequest(settings, "K", {
+      ...notes,
+      frame: f,
+      history: modelHistory(history),
+      screenshot: use,
+    });
+    const content = request.body.messages[0].content;
+    const workspace: string = content[0].text,
+      step: string = content[content.length - 1].text;
+    expect(content).toHaveLength(use.send === "none" ? 2 : 3);
+    const prefix =
+      tokens(request.body.system[0].text) + tokens(request.body.tools);
+    const image =
+      use.send === "none"
+        ? 0
+        : use.send === "reduced"
+          ? imageTokens(preview.width, preview.height)
+          : imageTokens(geometry.model_width, geometry.model_height);
+    rows.push({
+      step: i + 1,
+      use,
+      image,
+      stepJson: tokens(step),
+      workspace: tokens(workspace),
+      cached:
+        (i > 0 ? prefix : 0) +
+        (workspace === lastWorkspace ? tokens(workspace) : 0),
+      total: prefix + tokens(workspace) + image + tokens(step),
+    });
+    lastWorkspace = workspace;
+    shown = { sha256: f.sha256, context: contextDigest(f) };
+    sinceImage = use.send === "none" ? sinceImage + 1 : 0;
+  }
+  return rows;
+}
+const average = (rows: SessionRow[], pick: (row: SessionRow) => number) =>
+  Math.round(rows.reduce((sum, row) => sum + pick(row), 0) / rows.length);
+/** Per step: everything, what the cache served, the rest, and the rest plus cache reads at a tenth. */
+function averages(rows: SessionRow[]) {
+  const total = average(rows, (r) => r.total),
+    cached = average(rows, (r) => r.cached),
+    uncached = total - cached;
+  return {
+    total,
+    cached,
+    uncached,
+    billed: Math.round(uncached + cached / 10),
+  };
+}
+function reportSession(name: string, rows: SessionRow[]) {
+  const a = averages(rows);
+  console.info(
+    [
+      `${name}: estimated tokens a step over ${rows.length} steps (chars/4; image by width × height / 750)`,
+      ...rows.map(
+        (r) =>
+          `${String(r.step).padStart(4)}  ${`${r.use.send}:${r.use.reason}`.padEnd(18)}image${String(r.image).padStart(5)}  step${String(r.stepJson).padStart(5)}  workspace${String(r.workspace).padStart(4)}  cached${String(r.cached).padStart(5)}  total${String(r.total).padStart(5)}`,
+      ),
+      `  average: total ${a.total}, cached ${a.cached}, uncached ${a.uncached}, billed-equivalent ${a.billed} (uncached + cache reads at 0.1)`,
+    ].join("\n"),
+  );
+  return a;
+}
+const notesAsObserved = { first: finderContext, notes: notesContext };
+const notesDescribed = { first: finderContext, notes: notesDescribedContext };
+
+describe("what a 20-step Notes session costs", () => {
+  const modes = ["always", "auto", "text-first"] as const;
+  it("never drops a screenshot the rules require, in any mode", () => {
+    for (const contexts of [notesAsObserved, notesDescribed])
+      for (const mode of modes) {
+        const rows = simulate(mode, contexts);
+        expect(rows).toHaveLength(20);
+        // The first step, and every step after an unverified action.
+        expect(rows[0].use.send).toBe("full");
+        for (const [i, step] of sessionSteps.entries())
+          if (step.executed && !step.executed.confirmed)
+            expect(rows[i + 1].use.send, `step ${i + 2}`).toBe("full");
+        // At least every fourth step.
+        for (let i = 3; i < rows.length; i++)
+          expect(
+            rows.slice(i - 3, i + 1).some((r) => r.use.send !== "none"),
+            `steps ${i - 2}-${i + 1}`,
+          ).toBe(true);
+        if (mode === "always")
+          expect(rows.every((r) => r.use.reason === "always")).toBe(true);
+      }
+    // Notes as observed publishes little, so the helper read every frame:
+    // the OCR rule keeps the full screenshot on every Notes step.
+    const auto = simulate("auto", notesAsObserved);
+    expect(auto.slice(1).every((r) => r.use.reason === "ocr")).toBe(true);
+    // With the note text published, the same run reduces and drops: the
+    // switch to Notes lands on a described screen, the two steps nothing
+    // ran on (7 and 9), the malformed reply (17) and the wait (19) send
+    // none, the blind CMD+B and the scroll (13, 14) keep the full one, and
+    // no three steps in a row go without, so the cadence never has to.
+    const described = simulate("auto", notesDescribed);
+    expect(described.map((r) => r.use.reason)).toEqual([
+      "first",
+      ...Array<string>(5).fill("described"),
+      "unchanged",
+      "described",
+      "unchanged",
+      "described",
+      "described",
+      "described",
+      "unconfirmed",
+      "unconfirmed",
+      "described",
+      "described",
+      "unchanged",
+      "described",
+      "unchanged",
+      "described",
+    ]);
+    expect(described[1].use.send).toBe("reduced");
+    expect(simulate("text-first", notesDescribed)[1].use.send).toBe("none");
+  });
+  it("costs less a step in auto than always, and less again in text-first", () => {
+    const measured: Record<string, ReturnType<typeof averages>> = {};
+    for (const [name, contexts] of [
+      ["Notes as observed", notesAsObserved],
+      ["Notes described", notesDescribed],
+    ] as const)
+      for (const mode of modes)
+        measured[`${name} / ${mode}`] = reportSession(
+          `${name} / ${mode}`,
+          simulate(mode, contexts),
+        );
+    for (const name of ["Notes as observed", "Notes described"]) {
+      const always = measured[`${name} / always`],
+        auto = measured[`${name} / auto`],
+        textFirst = measured[`${name} / text-first`];
+      expect(auto.uncached).toBeLessThanOrEqual(always.uncached);
+      expect(textFirst.uncached).toBeLessThanOrEqual(auto.uncached);
+      // The instruction, tools and workspace part are served from the cache
+      // on every step but the first: over half of every request.
+      expect(auto.cached).toBeGreaterThan(auto.total / 2);
+    }
+    // The owner's target: 2.5k a step with the instruction cached. Met on a
+    // described screen; on Notes as observed the OCR rule keeps the full
+    // screenshot (1.5k) on every step, so the remainder is the image.
+    const described = measured["Notes described / auto"];
+    expect(described.uncached).toBeLessThanOrEqual(2500);
+    expect(described.billed).toBeLessThanOrEqual(2500);
+    const observed = measured["Notes as observed / auto"];
+    expect(observed.uncached).toBeLessThanOrEqual(2700);
   });
 });

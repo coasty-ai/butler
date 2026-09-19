@@ -52,6 +52,35 @@ const configs: Record<string, string> = {
   compatible: "https://openrouter.ai/api/v1",
   ollama: "http://127.0.0.1:11434",
 };
+/**
+ * What a request carries: the workspace part, the step part and the image
+ * between them, wherever the provider keeps them.
+ */
+function sent(provider: Settings["provider"], body: any) {
+  const parts: any[] =
+    provider === "anthropic" || provider === "compatible"
+      ? body.messages[body.messages.length - 1].content
+      : provider === "openai"
+        ? body.input[0].content
+        : provider === "google"
+          ? body.contents[0].parts
+          : undefined;
+  if (!parts) {
+    const [workspace, step] = body.messages[1].content.split("\n");
+    return {
+      workspace: JSON.parse(workspace),
+      step: JSON.parse(step),
+      image: body.messages[1].images?.[0],
+    };
+  }
+  const text = (part: any) => part.text ?? part.input_text;
+  const texts = parts.filter((part) => typeof text(part) === "string");
+  return {
+    workspace: JSON.parse(text(texts[0])),
+    step: JSON.parse(text(texts[1])),
+    image: parts.find((part) => typeof text(part) !== "string"),
+  };
+}
 const s = (provider: Settings["provider"]): Settings => ({
   ...defaultSettings,
   provider,
@@ -121,10 +150,26 @@ describe("provider-neutral adapters", () => {
     expect(JSON.stringify([a.tools, a.system])).toBe(
       JSON.stringify([b.tools, b.system]),
     );
-    // Per-step data stays after the breakpoint and carries no cache marker.
-    expect(JSON.stringify(a.messages)).toContain("Use Safari");
-    expect(JSON.stringify(a.messages)).not.toContain("cache_control");
+    // The workspace part (objective, menus, memory) ends the cacheable prefix
+    // with the second breakpoint; the image and the step part carry none.
+    const [workspace, image, step] = a.messages[0].content;
+    expect(workspace).toMatchObject({
+      type: "text",
+      cache_control: { type: "ephemeral" },
+    });
+    expect(workspace.text).toContain("Use Safari");
+    expect(image.type).toBe("image");
+    expect(image).not.toHaveProperty("cache_control");
+    expect(step.type).toBe("text");
+    expect(step).not.toHaveProperty("cache_control");
     expect(JSON.stringify(a.tools)).not.toContain("cache_control");
+    // The same application and objective: the workspace part is byte-equal.
+    const c = buildRequest(s("anthropic"), "K", {
+      ...o,
+      memory,
+      frame: { ...o.frame, id: "99999999-0000-0000-0000-000000000000" },
+    }).body;
+    expect(c.messages[0].content[0]).toEqual(workspace);
   });
   it("prices Anthropic cache writes and reads and counts them as input", () => {
     const response = (usage: Record<string, unknown>) => ({
@@ -144,6 +189,8 @@ describe("provider-neutral adapters", () => {
     ).usage;
     expect(first.inputTokens).toBe(2000);
     expect(first.outputTokens).toBe(50);
+    // A write is not a cached read.
+    expect(first.cachedInputTokens).toBe(0);
     // (400 * 2 + 1600 * 2 * 1.25 + 50 * 10) / 1e6
     expect(first.cost).toBeCloseTo(0.0053, 12);
     const next = parseResponse(
@@ -157,6 +204,7 @@ describe("provider-neutral adapters", () => {
       priced,
     ).usage;
     expect(next.inputTokens).toBe(2000);
+    expect(next.cachedInputTokens).toBe(1600);
     // (400 * 2 + 1600 * 2 * 0.1 + 50 * 10) / 1e6
     expect(next.cost).toBeCloseTo(0.00162, 12);
     // Malformed cache counts are ignored rather than poisoning the budget.
@@ -170,7 +218,12 @@ describe("provider-neutral adapters", () => {
       }),
       priced,
     ).usage;
-    expect(odd).toEqual({ inputTokens: 400, outputTokens: 50, cost: 0.0013 });
+    expect(odd).toEqual({
+      inputTokens: 400,
+      outputTokens: 50,
+      cachedInputTokens: 0,
+      cost: 0.0013,
+    });
   });
   it("sends Gemini a schema without additionalProperties", () => {
     const body = buildRequest(s("google"), "SECRET", o).body;
@@ -198,11 +251,12 @@ describe("provider-neutral adapters", () => {
     expect(a.body.instructions).toContain("open_app(name)");
     expect(a.body.instructions).toContain("open_file(path)");
     expect(a.body.instructions).toContain("x=0.5, y=0.5");
-    const context = JSON.parse(a.body.input[0].content[0].text);
-    expect(context.frame_id).toBe("f0a1b2c3d");
-    expect(context.image_width_px).toBe(100);
-    expect(context.image_height_px).toBe(100);
-    expect(context.width).toBeUndefined();
+    const { workspace, step } = sent("openai", a.body);
+    expect(workspace.objective).toBe("local task");
+    expect(step.frame_id).toBe("f0a1b2c3d");
+    expect(step.image_width_px).toBe(100);
+    expect(step.image_height_px).toBe(100);
+    expect(step.width).toBeUndefined();
     expect(JSON.stringify(a.body)).not.toContain(frame.id);
     const ollama = buildRequest(s("ollama"), "", o).body.messages[0].content;
     expect(ollama).not.toContain("coarena_action");
@@ -286,19 +340,19 @@ describe("provider-neutral adapters", () => {
       },
     };
     const request = buildRequest(s("openai"), "K", { ...o, frame });
-    const context = JSON.parse(request.body.input[0].content[0].text).context;
-    expect(context.accessibility).toBe("none");
+    const { workspace, step } = sent("openai", request.body);
+    expect(step.context.accessibility).toBe("none");
     // The window count reaches the model beside the other screen details.
     const windowless = buildRequest(s("openai"), "K", {
       ...o,
       frame: { ...frame, context: { ...frame.context, windowCount: 0 } },
     });
-    expect(
-      JSON.parse(windowless.body.input[0].content[0].text).context.windowCount,
-    ).toBe(0);
+    expect(sent("openai", windowless.body).step.context.windowCount).toBe(0);
     expect(windowless.body.instructions).toBe(request.body.instructions);
-    expect(context.menus).toEqual(menus);
-    expect(context.appName).toBe("Spotify");
+    // The menus stay the same from step to step: they go in the workspace part.
+    expect(workspace.context.menus).toEqual(menus);
+    expect(step.context.menus).toBeUndefined();
+    expect(step.context.appName).toBe("Spotify");
     // An unknown level is dropped with the rest of an unbounded context.
     const bad = buildRequest(s("openai"), "K", {
       ...o,
@@ -307,9 +361,8 @@ describe("provider-neutral adapters", () => {
         context: { ...frame.context, accessibility: "?" } as any,
       },
     });
-    expect(
-      JSON.parse(bad.body.input[0].content[0].text).context,
-    ).toBeUndefined();
+    expect(sent("openai", bad.body).step.context).toBeUndefined();
+    expect(sent("openai", bad.body).workspace.context).toBeUndefined();
   });
   it("explains the playbook and the no-progress note in the instruction", () => {
     const instruction = buildRequest(s("openai"), "K", o).body.instructions;
@@ -342,7 +395,7 @@ describe("provider-neutral adapters", () => {
       },
     };
     const request = buildRequest(s("openai"), "K", { ...o, frame: spotify });
-    const context = JSON.parse(request.body.input[0].content[0].text).context;
+    const context = sent("openai", request.body).workspace.context;
     expect(context.playbook).toEqual(playbookFor("com.spotify.client"));
     expect(context.playbook.join(" ")).toContain("Edit > Search");
     expect(context.playbook.length).toBeLessThanOrEqual(PLAYBOOK_MAX_LINES);
@@ -353,9 +406,9 @@ describe("provider-neutral adapters", () => {
       ...o,
       frame: spotify,
     }).body;
-    expect(
-      JSON.parse(anthropic.messages[0].content[1].text).context.playbook,
-    ).toEqual(context.playbook);
+    expect(sent("anthropic", anthropic).workspace.context.playbook).toEqual(
+      context.playbook,
+    );
     // ...and never in the cached system instruction, which stays byte-equal.
     expect(JSON.stringify(anthropic.system)).not.toContain("CMD+K, type the");
     expect(anthropic.system).toEqual(
@@ -366,9 +419,9 @@ describe("provider-neutral adapters", () => {
       ...o,
       frame: { ...spotify, appId: undefined },
     });
-    expect(
-      JSON.parse(named.body.input[0].content[0].text).context.playbook,
-    ).toEqual(context.playbook);
+    expect(sent("openai", named.body).workspace.context.playbook).toEqual(
+      context.playbook,
+    );
   });
   it("carries the run's tool list per request beside memory, never in the cached instruction", () => {
     const tools = {
@@ -475,16 +528,15 @@ describe("provider-neutral adapters", () => {
   });
   it("omits the playbook for an unknown app and under a learned skill", () => {
     // Nothing identifies the frontmost application: no hints to send.
-    const plain = JSON.parse(
-      buildRequest(s("openai"), "K", o).body.input[0].content[0].text,
-    );
-    expect(plain.context).toBeUndefined();
+    const plain = sent("openai", buildRequest(s("openai"), "K", o).body);
+    expect(plain.workspace.context).toBeUndefined();
+    expect(plain.step.context).toBeUndefined();
     const frame = { ...o.frame, appId: "com.google.Chrome" };
     const playbook = (memory?: Observation["memory"]) =>
-      JSON.parse(
-        buildRequest(s("openai"), "K", { ...o, frame, memory }).body.input[0]
-          .content[0].text,
-      ).context?.playbook;
+      sent(
+        "openai",
+        buildRequest(s("openai"), "K", { ...o, frame, memory }).body,
+      ).workspace.context?.playbook;
     expect(playbook()).toEqual(playbookFor("com.google.Chrome"));
     // A learned skill already has the steps that worked for this task.
     expect(
@@ -535,7 +587,7 @@ describe("provider-neutral adapters", () => {
       },
     };
     const r = buildRequest(s("openai"), "K", { ...o, memory });
-    const context = JSON.parse(r.body.input[0].content[0].text);
+    const context = sent("openai", r.body).workspace;
     const m = context.context.memory;
     expect(m.preferences).toHaveLength(5);
     m.preferences.forEach((p: string) =>
@@ -614,7 +666,7 @@ describe("provider-neutral adapters", () => {
     ] as any[]) {
       expect(memoryForModel(memory)).toBeUndefined();
       const r = buildRequest(s("anthropic"), "K", { ...o, memory });
-      const text = r.body.messages[0].content[1].text;
+      const text = r.body.messages[0].content[0].text;
       expect(text).not.toContain("memory");
     }
     expect(memoryForModel("x" as any)).toBeUndefined();
@@ -624,7 +676,7 @@ describe("provider-neutral adapters", () => {
       ...o,
       memory: { preferences: ["Use Safari"], episodes: [] },
     });
-    expect(JSON.parse(r.body.messages[0].content[1].text).context).toEqual({
+    expect(sent("anthropic", r.body).workspace.context).toEqual({
       memory: { preferences: ["Use Safari"] },
     });
   });
@@ -646,12 +698,12 @@ describe("provider-neutral adapters", () => {
         { type: "executed", result: "Pressed ENTER. frame not a uuid" },
       ],
     });
-    const text = r.body.messages[0].content[1].text;
+    const text = JSON.stringify(r.body.messages);
     for (const id of [current, earlier, older]) {
       expect(text).not.toContain(id);
       expect(text.toLowerCase()).not.toContain(id.toLowerCase());
     }
-    const context = JSON.parse(text);
+    const context = sent("anthropic", r.body).step;
     expect(context.frame_id).toBe("fabcdef12");
     expect(context.history[0]).toEqual({
       type: "rejected",
@@ -694,6 +746,7 @@ describe("provider-neutral adapters", () => {
     expect(result.usage).toEqual({
       inputTokens: 10,
       outputTokens: 102,
+      cachedInputTokens: 0,
       cost: 0.000214,
     });
   });
@@ -789,6 +842,10 @@ describe("provider-neutral adapters", () => {
     ).toThrow("no action tool call");
   });
   const usage = { inputTokens: 10, outputTokens: 2, cost: 0.000014 };
+  const usageOf = (provider: Settings["provider"]) => ({
+    ...usage,
+    ...(provider !== "ollama" && { cachedInputTokens: 0 }),
+  });
   const problemCases: [Settings["provider"], string, Record<string, any>][] = [
     [
       "openai",
@@ -970,7 +1027,7 @@ describe("provider-neutral adapters", () => {
       ).next(o, new AbortController().signal);
       expect(result).toEqual({
         action: undefined,
-        usage,
+        usage: usageOf(provider),
         problem: providerProblems.refused,
         refused: true,
       });
@@ -1002,6 +1059,7 @@ describe("provider-neutral adapters", () => {
     expect(result.action).toEqual(action);
     // inputPrice 1, outputPrice 2: (100 + 1000 * 0.1) * 1 + 20 * 2 = 240
     expect(result.usage.inputTokens).toBe(1100);
+    expect(result.usage.cachedInputTokens).toBe(1000);
     expect(result.usage.outputTokens).toBe(20);
     expect(result.usage.cost).toBeCloseTo(0.00024, 12);
   });
@@ -1035,9 +1093,12 @@ describe("provider-neutral adapters", () => {
       const result = await p.next(o, new AbortController().signal);
       expect(result.action).toBeUndefined();
       expect(result.problem).toContain(problem);
-      expect(result.usage).toEqual(usage);
+      expect(result.usage).toEqual(usageOf(provider));
       const malformed = events.find(([name]) => name === "ProviderMalformed");
-      expect(malformed?.[1]).toMatchObject({ problem: result.problem, usage });
+      expect(malformed?.[1]).toMatchObject({
+        problem: result.problem,
+        usage: usageOf(provider),
+      });
       expect(JSON.stringify(events)).not.toContain("SECRET");
     },
   );

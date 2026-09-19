@@ -39,7 +39,12 @@ const fields = new Set([
   "usage",
   "inputTokens",
   "outputTokens",
+  "cachedInputTokens",
   "cost",
+  // ModelRequestStarted: whether the step carried its screenshot, and why
+  // (fixed codes from src/core/vision.ts).
+  "screenshot",
+  "screenshotReason",
   "actionType",
   "targetRole",
   "focusedRole",
@@ -557,6 +562,8 @@ export class LocalDiagnostics {
         reason: e.data.actionType === "tool_call" ? undefined : e.data.reason,
         questionKind: code(e.data.questionKind),
         usage: e.data.usage,
+        screenshot: e.data.screenshot,
+        screenshotReason: e.data.screenshotReason,
         frameId: e.data.frame_id,
         geometry: e.data.geometry,
         synthetic: s.run.synthetic,

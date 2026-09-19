@@ -1471,6 +1471,20 @@ func geometry(_ display: SCDisplay, width: Int, height: Int) -> [String:Any] {
     let b = CGDisplayBounds(display.displayID)
     return ["display_id":Int(display.displayID),"x":Double(b.origin.x),"y":Double(b.origin.y),"width":Double(b.width),"height":Double(b.height),"native_width":CGDisplayPixelsWide(display.displayID),"native_height":CGDisplayPixelsHigh(display.displayID),"model_width":width,"model_height":height,"scale_factor":Double(CGDisplayPixelsWide(display.displayID))/Double(b.width)]
 }
+/// The frame's `preview`: the screenshot at most 1024 px wide as a JPEG at
+/// quality 0.6, with its size, for steps whose accessibility context already
+/// describes the screen (settings.visionMode; src/core/vision.ts). Image
+/// tokens follow pixel area on every provider, so it costs about half the
+/// PNG's. Nil when scaling or encoding fails; the step then sends the PNG.
+func previewRendition(_ image: CGImage) -> [String:Any]? {
+    let scale = min(1, 1024 / Double(image.width))
+    let width = Int((Double(image.width) * scale).rounded()), height = Int((Double(image.height) * scale).rounded())
+    guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { return nil }
+    context.interpolationQuality = .high
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    guard let scaled = context.makeImage(), let jpeg = NSBitmapImageRep(cgImage: scaled).representation(using: .jpeg, properties: [.compressionFactor: 0.6]) else { return nil }
+    return ["image": "data:image/jpeg;base64," + jpeg.base64EncodedString(), "width": width, "height": height]
+}
 /// Blocking work (image encoding, Vision) on a global queue, awaited off the
 /// cooperative pool, so two such stages of a capture can run at once.
 func offThread<T>(_ work: @escaping () -> T) async -> T {
@@ -1531,8 +1545,10 @@ func capture() async throws -> [String:Any] {
     for _ in 0..<2 where captured == nil { captured = try await attempt() }
     guard let (before, afterWindow, image) = captured else { throw changedScreen("The active window changed during capture.") }
     mark("shot")
-    // The PNG is only for the model: encode it while accessibility is read.
+    // The PNG is only for the model: encode it, and its reduced rendition,
+    // while accessibility is read.
     let encoding = Task { await offThread { NSBitmapImageRep(cgImage:image).representation(using:.png, properties:[:]) } }
+    let previewing = Task { await offThread { previewRendition(image) } }
     var context=screenContext();try ensureRunning()
     mark("context")
     // Little or no text from accessibility: read it from the screenshot, while
@@ -1555,9 +1571,11 @@ func capture() async throws -> [String:Any] {
     mark("ocr")
     try ensureRunning()
     guard let png = await encoding.value else { throw ControlError("Screenshot encoding failed.") }
+    let preview = await previewing.value
     mark("encode")
     timings["total"] = Int(((ProcessInfo.processInfo.systemUptime - startedAt) * 1000).rounded())
-    let frame: [String:Any] = ["id":UUID().uuidString.lowercased(),"sha256":SHA256.hash(data:png).map{String(format:"%02x",$0)}.joined(),"image":"data:image/png;base64,"+png.base64EncodedString(),"geometry":geometry(display,width:config.width,height:config.height),"capturedAt":ProcessInfo.processInfo.systemUptime*1000,"synthetic":false,"appId":before["appId"] ?? "unknown","context":context,"timings":timings]
+    var frame: [String:Any] = ["id":UUID().uuidString.lowercased(),"sha256":SHA256.hash(data:png).map{String(format:"%02x",$0)}.joined(),"image":"data:image/png;base64,"+png.base64EncodedString(),"geometry":geometry(display,width:config.width,height:config.height),"capturedAt":ProcessInfo.processInfo.systemUptime*1000,"synthetic":false,"appId":before["appId"] ?? "unknown","context":context,"timings":timings]
+    if let preview { frame["preview"] = preview }
     guard let pixels = ScreenPixels(image) else { throw ControlError("Screenshot comparison failed.") }
     setCurrentFrame(["frame":frame,"pid":before["pid"] ?? 0,"window":afterWindow,"pixels":pixels])
     return frame

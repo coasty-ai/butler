@@ -55,6 +55,8 @@ export interface AttemptResult {
   cost: number;
   inputTokens: number;
   outputTokens: number;
+  /** Of inputTokens, what the provider's prompt cache served, when it reports it. */
+  cachedInputTokens?: number;
   modelCalls: number;
   approvals: number;
   approvalsDeclined: number;

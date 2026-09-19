@@ -2026,6 +2026,19 @@ function SettingsPanel({
                 onChange={(e) => set("endpoint", e.target.value)}
               />
             </label>
+            <label>
+              Screenshots
+              <select
+                value={s.visionMode}
+                onChange={(e) =>
+                  set("visionMode", e.target.value as Settings["visionMode"])
+                }
+              >
+                <option value="auto">When they add information</option>
+                <option value="always">Every step, full size</option>
+                <option value="text-first">Text first, only when needed</option>
+              </select>
+            </label>
             {s.provider !== "ollama" && (
               <>
                 <label>

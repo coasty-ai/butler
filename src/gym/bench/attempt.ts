@@ -885,6 +885,7 @@ export async function runAttempt(
       cost: journal.cost,
       inputTokens: currentRun?.usage?.inputTokens ?? 0,
       outputTokens: currentRun?.usage?.outputTokens ?? 0,
+      cachedInputTokens: currentRun?.usage?.cachedInputTokens,
       modelCalls: journal.modelCalls,
       approvals: journal.approvals,
       approvalsDeclined: journal.approvalsDeclined,
