@@ -78,7 +78,11 @@ import {
   type FastContext,
   type JevClient,
 } from "../src/voice/fast";
-import type { ModuleRegistry, PortAdapter } from "../src/modules/registry";
+import type {
+  ModuleRegistry,
+  PortAdapter,
+  ModulePorts,
+} from "../src/modules/registry";
 import { fastActionOf } from "./modules";
 import {
   verifyOpening,
@@ -113,7 +117,7 @@ export interface StreamingDeps {
   /** The Jev client while the decider is on (--decide-with-jev or the setting); unused with a registry. */
   jev?(): JevClient | undefined;
   /** The module registry (electron/main.ts getModules): the ports above. */
-  modules?(): Pick<ModuleRegistry, "port"> | undefined;
+  modules?(): ModulePorts | undefined;
   /** A fast action was issued; main shows the line on the listening pill. Nothing speaks it. */
   onAction(label: string): void;
   /** The final started no run: the pill says what was opened. */

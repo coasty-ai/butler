@@ -1014,6 +1014,9 @@ describe("status and traces", () => {
     expect(before.urlOpener).toEqual({
       kind: "mcp",
       target: "mods/open_url",
+      server: "mods",
+      tool: "open_url",
+      fallback: true,
       calls: 0,
       fallbacks: 0,
     });
@@ -1025,6 +1028,8 @@ describe("status and traces", () => {
     await h.registry.port("fastDecider").call(decideInput("go to youtube"));
     expect(h.registry.status().fastDecider).toEqual({
       kind: "http",
+      url: "https://modules.example/decide",
+      fallback: true,
       target: HTTP,
       lastCode: "bad_reply",
       lastMs: expect.any(Number),

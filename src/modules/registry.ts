@@ -69,6 +69,12 @@ export interface PortStatus {
   kind: AdapterKind;
   /** "<server>/<tool>", the endpoint, or the model id; none for the built-in. */
   target?: string;
+  /** The target's parts, for the pane: mcp server and tool, http url, openrouter model, the choice's fallback. */
+  server?: string;
+  tool?: string;
+  url?: string;
+  model?: string;
+  fallback?: boolean;
   /** "ok" or the code of the last failure or refusal. */
   lastCode?: string;
   lastMs?: number;
@@ -78,13 +84,32 @@ export interface PortStatus {
 }
 export type BuiltinFn<P extends PortName> = (
   input: PortInput<P>,
-  signal: AbortSignal | undefined,
+  signal?: AbortSignal,
 ) => PortResult<P> | Promise<PortResult<P>>;
 /** Today's code, one function per port; the choice model is a JevClient. */
 export interface ModuleBuiltins {
   clauseSegmenter?: BuiltinFn<"clauseSegmenter">;
   fastDecider?: BuiltinFn<"fastDecider">;
   choiceModel?: JevClient;
+  urlOpener?: BuiltinFn<"urlOpener">;
+  tts?: BuiltinFn<"tts">;
+}
+/** The consumers' view of an adapter: its call alone (a fake in tests is just that). */
+export type PortAdapter<P extends PortName> = Pick<Adapter<P>, "call">;
+/** What a consumer needs of the registry: its ports' calls (a ModuleRegistry satisfies it). */
+export interface ModulePorts {
+  port<P extends PortName>(name: P): PortAdapter<P>;
+}
+/** status() as the pane reads it. */
+export type ModulesStatus = Record<PortName, PortStatus>;
+/**
+ * ModuleBuiltins as electron/modules.ts builds them: the choice model may be
+ * a JevClient or a plain function over the choose input.
+ */
+export interface Builtins {
+  clauseSegmenter?: BuiltinFn<"clauseSegmenter">;
+  fastDecider?: BuiltinFn<"fastDecider">;
+  choiceModel?: JevClient | BuiltinFn<"choiceModel">;
   urlOpener?: BuiltinFn<"urlOpener">;
   tts?: BuiltinFn<"tts">;
 }
@@ -99,7 +124,7 @@ export interface ModuleRegistryOptions {
   tools: Pick<ToolRegistry, "access" | "status">;
   credentials: ModuleCredentials;
   trace?: (event: string, data: Record<string, unknown>) => void;
-  builtin: ModuleBuiltins;
+  builtin: Builtins;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -430,8 +455,21 @@ export function createModuleRegistry(o: ModuleRegistryOptions): ModuleRegistry {
     signal: AbortSignal | undefined,
   ): Promise<Raw> {
     if (port === "choiceModel") {
-      const client = o.builtin.choiceModel;
-      if (!client) return fail("no_builtin");
+      const raw = o.builtin.choiceModel;
+      if (!raw) return fail("no_builtin");
+      // A plain function over the choose input is wrapped as the client shape.
+      const client: JevClient =
+        typeof raw === "function"
+          ? {
+              ask: async (question, state, signal) => {
+                const input = chooseInputOf("choice", question, state);
+                const out = await raw(input, signal);
+                return out
+                  ? jevAnswerOf(out, input.question.choices)
+                  : undefined;
+              },
+            }
+          : raw;
       const { question, state: jevState } = input as ChooseInput;
       const answer = await client.ask(
         chooseQuestion(question),
@@ -584,12 +622,25 @@ export function createModuleRegistry(o: ModuleRegistryOptions): ModuleRegistry {
         PORT_NAMES.map((name) => {
           const choice = resolve(settings, name);
           const target = targetOf(choice);
+          const parts =
+            choice.kind === "mcp"
+              ? {
+                  server: choice.server,
+                  tool: choice.tool,
+                  fallback: choice.fallback,
+                }
+              : choice.kind === "http"
+                ? { url: choice.url, fallback: choice.fallback }
+                : choice.kind === "openrouter"
+                  ? { model: choice.model, fallback: choice.fallback }
+                  : {};
           return [
             name,
             {
               ...state[name],
               kind: choice.kind,
               ...(target ? { target } : {}),
+              ...parts,
             },
           ];
         }),

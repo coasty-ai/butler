@@ -1005,7 +1005,12 @@ function getModules() {
   moduleRegistry ??= createModuleRegistry({
     settings: () => settings,
     tools: getTools(),
-    credentials: () => credentials,
+    // The vault: no per-endpoint headers yet (an https module endpoint runs
+    // without one), the OpenRouter key from the Jev slot.
+    credentials: {
+      headers: () => ({}),
+      openRouterKey: () => jevKey(credentials),
+    },
     trace: debug,
     builtin: moduleBuiltins({
       controller: () => {

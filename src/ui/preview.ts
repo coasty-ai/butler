@@ -448,7 +448,7 @@ export function previewBridge(): Bridge {
     // The preview has no registry and no data folder: every port built-in, no file.
     modulesStatus: async () =>
       Object.fromEntries(
-        PORTS.map((port) => [
+        (Object.keys(PORTS) as (keyof typeof PORTS)[]).map((port) => [
           port,
           {
             kind: port === "choiceModel" ? "jev" : "builtin",

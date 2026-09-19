@@ -51,7 +51,7 @@ import {
   type JevFailure,
   type JevVerdict,
 } from "./jev";
-import type { ModuleRegistry } from "../src/modules/registry";
+import type { ModuleRegistry, ModulePorts } from "../src/modules/registry";
 import { choiceQuestionOf } from "./modules";
 import {
   buildDialogState,
@@ -116,7 +116,7 @@ export interface AssistantOptions {
    * Jev over OpenRouter and whose adapter may be any choice model the user
    * picked (.data/design/modules.md §6). Without one, Jev is asked directly.
    */
-  modules?: () => Pick<ModuleRegistry, "port"> | undefined;
+  modules?: () => ModulePorts | undefined;
   fetch: typeof fetch;
   view: () => RunView;
   /** Optional context, already gated by settings; never a helper call. */
@@ -875,7 +875,7 @@ export class AssistantSession implements AssistantSessionApi {
    * charged the request's own estimate, since an adapter reports no price.
    */
   private async askChoicePort(
-    modules: Pick<ModuleRegistry, "port">,
+    modules: ModulePorts,
     question: JevChoiceQuestion,
     state: unknown,
     signal: AbortSignal,
@@ -897,7 +897,7 @@ export class AssistantSession implements AssistantSessionApi {
         },
         signal,
       );
-      if (!acts.includes(out.choice))
+      if (!out || !acts.includes(out.choice))
         return { ok: false, code: "bad_choice", ms: ms(), cost };
       const p = Math.min(1, Math.max(0, Number(out.p) || 0));
       return { ok: true, act: out.choice, p, confidence: p, ms: ms(), cost };

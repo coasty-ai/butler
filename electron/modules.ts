@@ -25,8 +25,8 @@
 import type { Action, ExecutionResult } from "../src/core/schema";
 import { actionSchema } from "../src/core/schema";
 import type {
-  ModuleRegistry,
   Builtins,
+  ModulePorts,
   PortAdapter,
 } from "../src/modules/registry";
 import type { PortInput, PortOutput } from "../src/modules/contracts";
@@ -55,7 +55,7 @@ export interface BuiltinDeps {
   jev(): { key: string; enabled: boolean };
   fetch: typeof fetch;
   /** The registry itself, once created: the decider reaches the choice model through it. */
-  registry(): Pick<ModuleRegistry, "port"> | undefined;
+  registry(): ModulePorts | undefined;
   timeoutMs?: number;
   now?: () => number;
 }
@@ -156,7 +156,11 @@ export function jevQuestionOf(
   question: PortInput<"choiceModel">["question"],
 ): JevQuestion {
   try {
-    const parsed = JSON.parse(question.prompt) as {
+    const parsed = (
+      typeof question.prompt === "string"
+        ? JSON.parse(question.prompt)
+        : question.prompt
+    ) as {
       instructions?: unknown;
       criteria?: unknown;
     };
@@ -209,7 +213,7 @@ export function jevClientOverPort(
           },
           signal,
         );
-        if (!(out.choice in question.criteria)) return undefined;
+        if (!out || !(out.choice in question.criteria)) return undefined;
         const p = Math.min(1, Math.max(0, out.p));
         return {
           choice: out.choice,

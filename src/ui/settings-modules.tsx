@@ -122,7 +122,7 @@ export const MODULE_ROWS: readonly ModuleRowInfo[] = [
     fixed: "Declared for later adapters; memory stays encrypted on this Mac.",
   },
 ];
-const PORT_SET = new Set<string>(PORTS);
+const PORT_SET = new Set<string>(Object.keys(PORTS));
 const isPort = (row: ModuleRow): row is PortName => PORT_SET.has(row);
 type SettingsPort = Exclude<
   keyof ModulesSettings,
@@ -156,20 +156,17 @@ export function choiceFromValue(
   if (value.startsWith("mcp:")) {
     const [, server, ...rest] = value.split(":");
     const tool = rest.join(":");
-    return row === "choiceModel"
-      ? { kind: "mcp", server, tool }
-      : { kind: "mcp", server, tool, fallback };
+    return { kind: "mcp", server, tool, fallback };
   }
   if (value === "http") {
     const url = previous && "url" in previous ? previous.url : "";
-    return row === "choiceModel"
-      ? { kind: "http", url }
-      : { kind: "http", url, fallback };
+    return { kind: "http", url, fallback };
   }
   if (value === "openrouter")
     return {
       kind: "openrouter",
       model: previous && "model" in previous ? previous.model : "",
+      fallback,
     };
   if (value === "command")
     return {
@@ -184,11 +181,13 @@ export function adapterLabel(
   status: PortStatus | undefined,
   choice: AnyChoice | undefined,
   tools: ToolsStatus,
+  row?: string,
 ): string {
   const kind = status?.kind ?? choice?.kind ?? "builtin";
   switch (kind) {
     case "builtin":
-      return "Built-in";
+      // The choice model's built-in is Jev (the registry reports it as builtin).
+      return row === "choiceModel" ? "Jev (OpenRouter)" : "Built-in";
     case "jev":
       return "Jev (OpenRouter)";
     case "openrouter":
@@ -367,7 +366,7 @@ export function SettingsModules({
                   </>
                 ) : pluggable ? (
                   <>
-                    Now: {adapterLabel(portStatus, choice, tools)}
+                    Now: {adapterLabel(portStatus, choice, tools, row.row)}
                     {isPort(row.row) ? ` · ${statusLine(portStatus)}` : ""}
                     <br />
                     <label>

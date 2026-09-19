@@ -27,7 +27,7 @@ import {
   modulesWithoutServer,
   validateModuleSettings,
 } from "../src/core/privacy";
-import { PORTS } from "../src/modules/contracts";
+import { PORTS, type PortName } from "../src/modules/contracts";
 import {
   createModuleRegistry,
   type ModulesStatus,
@@ -158,9 +158,18 @@ describe("settings.modules", () => {
     expect(defaultSettings.modules).toEqual({});
     expect(
       modulesSettingsSchema.parse({
-        fastDecider: { kind: "mcp", server: "memo", tool: "decide_clause" },
+        fastDecider: {
+          kind: "mcp",
+          server: "memo",
+          tool: "decide_clause",
+          fallback: true,
+        },
         tts: { kind: "http", url: "https://tts.example/speak" },
-        choiceModel: { kind: "openrouter", model: "openai/gpt-5-mini" },
+        choiceModel: {
+          kind: "openrouter",
+          model: "openai/gpt-5-mini",
+          fallback: true,
+        },
         recognizer: {
           kind: "command",
           command: "/usr/local/bin/whisper-voice",
@@ -174,7 +183,11 @@ describe("settings.modules", () => {
         fallback: true,
       },
       tts: { kind: "http", url: "https://tts.example/speak", fallback: true },
-      choiceModel: { kind: "openrouter", model: "openai/gpt-5-mini" },
+      choiceModel: {
+        kind: "openrouter",
+        model: "openai/gpt-5-mini",
+        fallback: true,
+      },
       recognizer: {
         kind: "command",
         command: "/usr/local/bin/whisper-voice",
@@ -215,7 +228,10 @@ describe("settings.modules", () => {
     expect(moduleReachesInternet({ kind: "builtin" }, servers)).toBe(false);
     expect(moduleReachesInternet({ kind: "jev" }, servers)).toBe(false);
     expect(
-      moduleReachesInternet({ kind: "openrouter", model: "m" }, servers),
+      moduleReachesInternet(
+        { kind: "openrouter", model: "m", fallback: true },
+        servers,
+      ),
     ).toBe(true);
     expect(
       moduleReachesInternet(
@@ -306,7 +322,9 @@ describe("settings.modules", () => {
     ).toThrow(/Private local/);
     expect(() =>
       validateModuleSettings(
-        local({ choiceModel: { kind: "openrouter", model: "m" } }),
+        local({
+          choiceModel: { kind: "openrouter", model: "m", fallback: true },
+        }),
       ),
     ).toThrow(/Private local/);
     expect(() =>
@@ -339,7 +357,12 @@ describe("settings.modules", () => {
             fallback: true,
           },
           tts: { kind: "mcp", server: "other", tool: "b", fallback: true },
-          choiceModel: { kind: "mcp", server: "memo", tool: "c" },
+          choiceModel: {
+            kind: "mcp",
+            server: "memo",
+            tool: "c",
+            fallback: true,
+          },
           urlOpener: {
             kind: "http",
             url: "https://x.example/",
@@ -357,35 +380,40 @@ describe("settings.modules", () => {
 
 describe("the Modules pane", () => {
   const status: ModulesStatus = {
-    clauseSegmenter: { kind: "builtin", fallback: true, calls: 0 },
+    clauseSegmenter: { kind: "builtin", calls: 0, fallbacks: 0 },
     fastDecider: {
       kind: "mcp",
+      target: "memo/decide_clause",
       server: "memo",
       tool: "decide_clause",
       fallback: true,
       lastCode: "timeout",
       lastMs: 620,
       calls: 3,
+      fallbacks: 1,
     },
+    // The choice model's built-in is Jev; the registry reports it as builtin.
     choiceModel: {
-      kind: "jev",
-      fallback: true,
+      kind: "builtin",
       lastCode: "ok",
       lastMs: 164,
       calls: 1,
+      fallbacks: 0,
     },
-    urlOpener: { kind: "builtin", fallback: true, calls: 0 },
+    urlOpener: { kind: "builtin", calls: 0, fallbacks: 0 },
     tts: {
       kind: "http",
+      target: "https://tts.example/speak",
       url: "https://tts.example/speak",
       fallback: false,
       lastCode: "ok",
       lastMs: 900,
       calls: 12,
+      fallbacks: 0,
     },
   };
   it("has one row per port and stage, each with its fixed sentence", () => {
-    for (const port of PORTS)
+    for (const port of Object.keys(PORTS) as PortName[])
       expect(MODULE_ROWS.map((r) => r.row)).toContain(port);
     expect(MODULE_ROWS.map((r) => r.row)).toEqual(
       expect.arrayContaining([
@@ -420,7 +448,7 @@ describe("the Modules pane", () => {
     });
     expect(
       choiceFromValue("mcp:memo:choose", "choiceModel", undefined),
-    ).toEqual({ kind: "mcp", server: "memo", tool: "choose" });
+    ).toEqual({ kind: "mcp", server: "memo", tool: "choose", fallback: true });
     expect(
       choiceFromValue("http", "tts", {
         kind: "mcp",
@@ -444,15 +472,16 @@ describe("the Modules pane", () => {
     expect(choiceFromValue("openrouter", "choiceModel", undefined)).toEqual({
       kind: "openrouter",
       model: "",
+      fallback: true,
     });
     expect(adapterLabel(status.fastDecider, undefined, tools)).toBe(
       "Memo · decide_clause",
     );
     expect(adapterLabel(status.tts, undefined, tools)).toBe("HTTP endpoint");
     expect(adapterLabel(undefined, undefined, tools)).toBe("Built-in");
-    expect(adapterLabel(status.choiceModel, undefined, tools)).toBe(
-      "Jev (OpenRouter)",
-    );
+    expect(
+      adapterLabel(status.choiceModel, undefined, tools, "choiceModel"),
+    ).toBe("Jev (OpenRouter)");
     expect(statusLine(status.fastDecider)).toBe(
       "Last call failed: timeout · 620 ms · 3 calls",
     );
@@ -738,7 +767,7 @@ describe("the registry stub", () => {
     const registry = createModuleRegistry({
       settings: () => settings,
       tools: { access: () => undefined, status: () => tools },
-      credentials: () => ({}),
+      credentials: { headers: () => ({}), openRouterKey: () => "" },
       builtin: {
         clauseSegmenter: async () => ({ clauses: [], events: [] }),
         fastDecider: async () => ({ kind: "none", reason: "unsure" }),
@@ -753,34 +782,35 @@ describe("the registry stub", () => {
     expect(
       await registry.port("urlOpener").call({ url: "https://x.example/" }),
     ).toEqual({ navigated: true, method: "open" });
-    await expect(
-      registry.port("choiceModel").call({
+    // A throwing built-in is a fallback to the port's NONE (undefined for the
+    // choice model), traced as builtin_error; the call itself never rejects.
+    expect(
+      await registry.port("choiceModel").call({
         question: { id: "a", choices: ["x", "y"], prompt: "p" },
         state: {},
       }),
-    ).rejects.toThrow("jev_off");
+    ).toBeUndefined();
     const status = registry.status();
-    expect(Object.keys(status).sort()).toEqual([...PORTS].sort());
-    expect(status.urlOpener).toEqual({
+    expect(Object.keys(status).sort()).toEqual(Object.keys(PORTS).sort());
+    expect(status.urlOpener).toMatchObject({
       kind: "builtin",
-      fallback: true,
       lastCode: "ok",
-      lastMs: 5,
       calls: 1,
+      fallbacks: 0,
     });
-    expect(status.choiceModel).toEqual({
-      kind: "jev",
-      fallback: true,
-      lastCode: "jev_off",
-      lastMs: 5,
+    expect(status.choiceModel).toMatchObject({
+      kind: "builtin",
+      lastCode: "builtin_error",
       calls: 1,
     });
     expect(status.fastDecider).toEqual({
       kind: "mcp",
+      target: "memo/decide_clause",
       server: "memo",
       tool: "decide_clause",
       fallback: false,
       calls: 0,
+      fallbacks: 0,
     });
   });
 });

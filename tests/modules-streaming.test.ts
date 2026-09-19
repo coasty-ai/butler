@@ -37,7 +37,13 @@ import {
   decideFast,
   type FastAction,
 } from "../src/voice/fast";
-import type { ModuleRegistry, PortAdapter } from "../src/modules/registry";
+import type {
+  ModuleRegistry,
+  PortAdapter,
+  ModulePorts,
+  BuiltinFn,
+  Builtins,
+} from "../src/modules/registry";
 import {
   contracts,
   type PortInput,
@@ -193,7 +199,7 @@ type Scripts = {
 /** A registry whose ports the test scripts; every call is recorded by port. */
 function fakeRegistry(scripts: Scripts) {
   const portCalls: { port: PortName; input: unknown }[] = [];
-  const registry: Pick<ModuleRegistry, "port"> = {
+  const registry: ModulePorts = {
     port<P extends PortName>(name: P): PortAdapter<P> {
       return {
         call: async (input: PortInput<P>) => {
@@ -370,10 +376,12 @@ describe("streaming through the module registry", () => {
   });
   it("uses a decider adapter's reply, naming an open_url without a site code by its host", async () => {
     const t = setup({
-      decide: () => ({
-        kind: "open_url",
-        url: "https://www.youtube.com/results?search_query=cats",
-      }),
+      // An adapter's reply without a site code or label (the contract allows it).
+      decide: () =>
+        ({
+          kind: "open_url",
+          url: "https://www.youtube.com/results?search_query=cats",
+        }) as unknown as FastAction,
     });
     t.begin();
     t.next(committed(clause(0, "fire up some cat videos", 600)));
@@ -684,7 +692,7 @@ describe("electron/modules.ts", () => {
       fastActionOf({
         kind: "open_url",
         url: "https://en.wikipedia.org/w/index.php?search=x",
-      }),
+      } as unknown as FastAction),
     ).toEqual({
       kind: "open_url",
       url: "https://en.wikipedia.org/w/index.php?search=x",
@@ -736,16 +744,19 @@ describe("electron/modules.ts", () => {
       },
       registry: () => registry,
     });
+    const b = builtins as Required<Omit<Builtins, "choiceModel">> & {
+      choiceModel: BuiltinFn<"choiceModel">;
+    };
     const ctx = { protectedHosts: defaultSettings.protectedDomains };
     expect(
-      await builtins.fastDecider({
+      await b.fastDecider({
         clause: clauseOf("go to youtube"),
         context: ctx,
       }),
     ).toEqual(YOUTUBE);
     // Unsure and Jev off: unsure, the choice model never asked.
     expect(
-      await builtins.fastDecider({
+      await b.fastDecider({
         clause: clauseOf("fire up slack"),
         context: ctx,
       }),
@@ -753,26 +764,27 @@ describe("electron/modules.ts", () => {
     expect(choice).not.toHaveBeenCalled();
     enabled = true;
     expect(
-      await builtins.fastDecider({
+      await b.fastDecider({
         clause: clauseOf("fire up slack"),
         context: ctx,
       }),
     ).toEqual({ kind: "open_app", name: "slack" });
     expect(choice).toHaveBeenCalledTimes(1);
-    expect(
-      await builtins.urlOpener({ url: "https://www.youtube.com/" }),
-    ).toEqual({ navigated: true, method: "script" });
+    expect(await b.urlOpener({ url: "https://www.youtube.com/" })).toEqual({
+      navigated: true,
+      method: "script",
+    });
     expect(opened).toEqual(["https://www.youtube.com/"]);
     await expect(
-      builtins.urlOpener({ url: "https://user:pw@x.com/" }),
+      b.urlOpener({ url: "https://user:pw@x.com/" }),
     ).rejects.toThrow();
-    expect(await builtins.tts({ text: "hello" })).toEqual({
+    expect(await b.tts({ text: "hello" })).toEqual({
       played: false,
       ms: 0,
     });
     enabled = false;
     await expect(
-      builtins.choiceModel({
+      b.choiceModel({
         question: choiceQuestionOf(CLAUSE_QUESTION, "clause"),
         state: {},
       }),

@@ -1,6 +1,10 @@
 import type { Settings } from "../src/core/schema";
 import { moduleReachesInternet } from "../src/core/privacy";
-import type { ModuleRegistry, PortAdapter } from "../src/modules/registry";
+import type {
+  ModuleRegistry,
+  PortAdapter,
+  ModulePorts,
+} from "../src/modules/registry";
 import {
   KokoroError,
   kokoroSupported,
@@ -125,7 +129,7 @@ export interface SpeechOutputDeps {
    * above. In Private local an adapter that reaches the internet is refused
    * before it is asked, the rule the task model has.
    */
-  modules?: () => Pick<ModuleRegistry, "port"> | undefined;
+  modules?: () => ModulePorts | undefined;
 }
 
 /**

@@ -1932,7 +1932,7 @@ describe("assistant session: the act question through the choice model port", ()
     expect([...r.asked[0].question.choices].sort()).toEqual(
       [...DIALOG_ACTS].sort(),
     );
-    const prompt = JSON.parse(r.asked[0].question.prompt);
+    const prompt = JSON.parse(String(r.asked[0].question.prompt));
     expect(Object.keys(prompt.criteria).sort()).toEqual(
       [...DIALOG_ACTS].sort(),
     );
