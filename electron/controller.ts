@@ -862,6 +862,9 @@ export class NativeController implements Controller {
   private helper: HelperProcess;
   private timeout: typeof nativeTimeout;
   private slowLimit: typeof nativeSlowLimit;
+  private urlRoute?: (
+    action: Extract<Action, { type: "open_url" }>,
+  ) => Promise<ExecutionResult["navigated"]>;
   constructor(
     binary: string,
     emergency: () => void,
@@ -889,10 +892,19 @@ export class NativeController implements Controller {
       targetSelfActivated?: (token: string) => void;
       /** The binding behind the token died or became protected. */
       targetGone?: (token: string, code: TargetCode) => void;
+      /**
+       * The open_url route (electron/open-url.ts): the browser is told the
+       * address by Apple Event or LaunchServices, never through the helper.
+       * Without it open_url fails as a step no route can take.
+       */
+      openUrl?: (
+        action: Extract<Action, { type: "open_url" }>,
+      ) => Promise<ExecutionResult["navigated"]>;
     } = {},
   ) {
     this.timeout = hooks.timeout ?? nativeTimeout;
     this.slowLimit = hooks.slowLimit ?? nativeSlowLimit;
+    this.urlRoute = hooks.openUrl;
     this.helper = new HelperProcess(binary, {
       name: "Native",
       diagnostics,
@@ -1080,6 +1092,8 @@ export class NativeController implements Controller {
     signal: AbortSignal,
   ): Promise<void | ExecutionResult> {
     signal.throwIfAborted();
+    // A web address never reaches the helper: the browser is told it.
+    if (action.type === "open_url") return this.openUrl(action);
     const stop = () => this.stop();
     signal.addEventListener("abort", stop, { once: true });
     try {
@@ -1100,6 +1114,20 @@ export class NativeController implements Controller {
     } finally {
       signal.removeEventListener("abort", stop);
     }
+  }
+  /**
+   * Loads a web address in the chosen browser (electron/open-url.ts), by
+   * Apple Event on the app's own front tab or by LaunchServices; no key,
+   * no click, and no request to the helper, whose stop latch stays as it
+   * is. The result names the host and the browser.
+   */
+  async openUrl(
+    action: Extract<Action, { type: "open_url" }>,
+  ): Promise<ExecutionResult> {
+    if (!this.urlRoute)
+      throw new Error("No browser route is configured for web addresses.");
+    const navigated = await this.urlRoute(action);
+    return navigated ? { navigated } : {};
   }
   async revalidate(action: Action, _frame: Frame): Promise<Frame> {
     const frame: Frame = await this.request("revalidate", { action });

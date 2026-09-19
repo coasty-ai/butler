@@ -41,6 +41,22 @@ const base = {
   frame_id: z.string().min(1).max(100),
   note: z.string().max(200).optional(),
 };
+/**
+ * The URL an open_url may load, parsed: http or https with a host, and no
+ * credentials in the address (a "user:secret@host" URL carries a secret
+ * where a page would be). Undefined for anything else.
+ */
+export function webAddress(value: string): URL | undefined {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  if (!url.hostname || url.username || url.password) return undefined;
+  return url;
+}
 // A plain application display name, never a path, bundle identifier, URL or
 // document: what open_app launches and what open_file may open an item in.
 // Both resolve it natively against the same allow-listed application folders.
@@ -213,6 +229,37 @@ export const actionSchema = z.discriminatedUnion("type", [
           "Use a ~/ path from context.",
         ),
       app: applicationName.optional(),
+    })
+    .strict(),
+  /**
+   * Loads a web address in the browser: a full http or https URL, handed to
+   * the browser itself (AppleScript on its front tab, or LaunchServices),
+   * never typed into an address field and never clicked. The policy judges
+   * the host alone (protectedHost) and nothing else about the address. Built
+   * by the fast decider from a site recipe while the user is still speaking
+   * (src/voice/fast.ts; siteKey names the recipe), or proposed by the model
+   * after the final.
+   */
+  z
+    .object({
+      ...base,
+      type: z.literal("open_url"),
+      url: z
+        .string()
+        .trim()
+        .min(8)
+        .max(2000)
+        .refine(
+          (value) => webAddress(value) !== undefined,
+          "Use a full http or https address without credentials.",
+        ),
+      siteKey: z
+        .string()
+        .trim()
+        .min(1)
+        .max(40)
+        .regex(/^[A-Za-z][A-Za-z0-9_-]*$/, "A short site code.")
+        .optional(),
     })
     .strict(),
   /**
@@ -1118,6 +1165,16 @@ export interface ExecutionResult {
     path: string;
     kind: "document" | "folder";
     appId?: string;
+  };
+  /**
+   * For an open_url: the host the browser was sent to, the browser, and the
+   * route: "script" set the URL of its front tab (a tab this app navigated
+   * before), "open" handed the URL to LaunchServices (a new tab or window).
+   */
+  navigated?: {
+    host: string;
+    appId?: string;
+    via?: "script" | "open";
   };
   /**
    * For a step delivered to a bound window: the rung that delivered it and

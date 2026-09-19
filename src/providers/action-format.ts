@@ -131,6 +131,7 @@ export const strictActionParameters = {
         }),
         variant("open_app", { name: string }),
         variant("open_file", { path: string, app: nullable(string) }),
+        variant("open_url", { url: string, siteKey: nullable(string) }),
         variant("monitor", {
           reason: string,
           every_s: integer(5, 60),

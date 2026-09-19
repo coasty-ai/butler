@@ -1,4 +1,5 @@
-import type { Action, Settings, Surface } from "./schema";
+import { webAddress, type Action, type Settings, type Surface } from "./schema";
+import { KNOWN_FOLDERS } from "./places";
 import { scanText } from "./sanitize";
 import type { ToolClock, ToolPrepared, ToolSpec } from "./tools";
 import { toolDecision } from "./tool-policy";
@@ -740,6 +741,35 @@ function openAppDecision(
     reason: `No input was sent. No installed application matches "${quote(action.name)}" exactly.${candidates ? ` Candidates: ${candidates}.` : ""} Use one of them, or request_user if it is not installed.`,
   };
 }
+/** The refusal for a web address on a protected host: a floor, never a question. */
+export const PROTECTED_SITE_REFUSAL =
+  "That website is protected. Ask the user to open it with request_user.";
+/**
+ * open_url loads an address in the browser without typing or clicking, so
+ * the only thing to judge is where it goes: the host, against the protected
+ * websites, refused outright as the page in front would be (surfacePolicy)
+ * and never asked about, whatever the autonomy setting. Nothing else about
+ * the address is read; the schema already requires http or https with no
+ * credentials.
+ */
+function openUrlDecision(
+  action: Extract<Action, { type: "open_url" }>,
+  settings: Settings,
+  synthetic: boolean,
+): Decision {
+  if (synthetic)
+    return { kind: "RETRY", reason: "The tutorial has no websites to open." };
+  const url = webAddress(action.url);
+  if (!url)
+    return {
+      kind: "RETRY",
+      reason:
+        "No input was sent. Use a full http or https address without credentials.",
+    };
+  if (protectedHost(url.hostname, settings))
+    return { kind: "DENY", reason: PROTECTED_SITE_REFUSAL };
+  return { kind: "ALLOW", reason: "Load a web address in the browser." };
+}
 /** Lowercase words, so a name can be found as a whole-word run in a sentence. */
 function words(text: string): string {
   return ` ${text
@@ -1247,6 +1277,32 @@ export interface PolicyContext {
    * must belong to it.
    */
   target?: { pid: number; appName: string };
+  /**
+   * The user is still speaking (.data/design/streaming-execution.md §3.3):
+   * the step is a fast action on a committed clause, before the final. Only
+   * going somewhere is allowed then (open_app, open_url on a non-protected
+   * host, open_file of a standard folder, scroll); every other step, and any
+   * step that would ask, gets RETRY with SPEAKING_RETRY. The protected
+   * floors are unchanged.
+   */
+  speaking?: boolean;
+}
+/** Every step but navigation, while the user is still speaking. */
+export const SPEAKING_RETRY = "Waiting for the end of the sentence.";
+const knownFolderPath = (path: string) =>
+  [...KNOWN_FOLDERS.values()].includes(path.replace(/\/+$/, ""));
+/** What may run before the sentence ends: a place to go, nothing done there. */
+export function speakingAllowed(action: Action): boolean {
+  switch (action.type) {
+    case "open_app":
+    case "open_url":
+    case "scroll":
+      return true;
+    case "open_file":
+      return action.app === undefined && knownFolderPath(action.path);
+    default:
+      return false;
+  }
 }
 /** The decision reason that marks the one clipboard press native may send. */
 export const PASTE_ALLOWED = "Paste what the user copied, as asked.";
@@ -1265,11 +1321,19 @@ export function evaluate(
   synthetic: boolean,
   context: PolicyContext = {},
 ): Decision {
+  // Mid-sentence, before the rules: a step that is not navigation is not
+  // judged, it waits for the final (nothing here loosens what follows).
+  if (context.speaking && !speakingAllowed(action))
+    return { kind: "RETRY", reason: SPEAKING_RETRY };
   const decision = decideAction(action, surface, settings, synthetic, context);
-  return withoutAsking(
+  const judged = withoutAsking(
     backgroundRefusal(action, surface, context, decision) ?? decision,
     settings,
   );
+  // Nobody can be asked a question in the middle of their sentence.
+  if (context.speaking && judged.kind === "CONFIRM")
+    return { kind: "RETRY", reason: SPEAKING_RETRY };
+  return judged;
 }
 /**
  * What a run bound to a background window cannot do there (design §2.5):
@@ -1290,7 +1354,11 @@ function backgroundRefusal(
   if (decision.kind === "DENY" || decision.kind === "USER_TAKEOVER")
     return undefined;
   const app = quote(context.target?.appName ?? surface.appName ?? "") || "it";
-  if (action.type === "open_app" || action.type === "open_file")
+  if (
+    action.type === "open_app" ||
+    action.type === "open_file" ||
+    action.type === "open_url"
+  )
     return {
       kind: "RETRY",
       reason: `No input was sent. This run works in ${app}'s window in the background: it is already the window in the screenshot, so nothing else is opened or switched to. Work in it, or finish with done.`,
@@ -1416,6 +1484,8 @@ function decideAction(
     return openAppDecision(action, surface, settings, synthetic);
   if (action.type === "open_file")
     return openFileDecision(action, surface, settings, synthetic, context);
+  if (action.type === "open_url")
+    return openUrlDecision(action, settings, synthetic);
   if (synthetic)
     return { kind: "ALLOW", reason: "CoArena-owned tutorial surface." };
   // Only consulted where an identified target or field is missing; it never

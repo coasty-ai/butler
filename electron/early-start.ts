@@ -28,7 +28,12 @@ import type {
   Surface,
 } from "../src/core/schema";
 import { validateAction } from "../src/core/schema";
-import { evaluate, normalizeAppName, surfacePolicy } from "../src/core/policy";
+import {
+  evaluate,
+  normalizeAppName,
+  surfacePolicy,
+  type PolicyContext,
+} from "../src/core/policy";
 import { nativeAction, type RunPrelude } from "../src/core/runner";
 import { trace, type DiagnosticSink } from "../src/core/diagnostics";
 import { KNOWN_FOLDERS } from "../src/core/places";
@@ -123,6 +128,109 @@ export interface EarlyClaim {
 type Step = Omit<RunPrelude, "completes">;
 type Primed = { frame: Frame; at: number };
 type Opening = RunPrelude["action"];
+/** What to open, and how sure the heard name is. */
+export type OpeningSpec =
+  | {
+      type: "open_app";
+      /** The name as heard, or the browser a site loads in. */
+      name: string;
+      /** The heard words, lowercased: the everyday-name rule reads them. */
+      key: string;
+      /**
+       * How the clause settled: a boundary proves the name was finished, so
+       * the installed name may extend it ("Chrome and…" may be Google
+       * Chrome); eager (the name alone) accepts the one installed name that
+       * begins with the heard words; a pause takes the exact name only.
+       */
+      by: Settle["by"];
+    }
+  | { type: "open_file"; path: string | undefined };
+export type Verified =
+  | {
+      ok: true;
+      action: Opening;
+      surface: Surface;
+      reason: string;
+      /** The installed app's display name (normalizeAppName), for an app. */
+      resolved?: string;
+    }
+  | { ok: false; code: EarlyCode };
+/**
+ * Builds an open_app or open_file for the frame, asks the helper how the
+ * name or path resolves (surface(action)) and judges it exactly as the
+ * early step always has: the screen must not have changed since the frame,
+ * a folder must resolve as a folder, an app to one installed application
+ * whose name is exact or finished as `by` allows, and the policy must ALLOW
+ * (with the caller's context: the streaming turn says it is still
+ * speaking). Shared by the early step and by electron/streaming.ts, so the
+ * launcher checks live once. A failing helper read throws; every refusal
+ * is a code.
+ */
+export async function verifyOpening(
+  c: Pick<EarlyController, "surface">,
+  settings: Settings,
+  frame: Frame,
+  spec: OpeningSpec,
+  context: PolicyContext = {},
+): Promise<Verified> {
+  let action: Opening;
+  try {
+    const valid = validateAction(
+      spec.type === "open_file"
+        ? { type: "open_file", path: spec.path, frame_id: frame.id }
+        : { type: "open_app", name: spec.name, frame_id: frame.id },
+      frame,
+    );
+    // Built here and only here: nothing else can ever run early.
+    if (valid.type !== "open_app" && valid.type !== "open_file")
+      return { ok: false, code: "policy" };
+    action = valid;
+  } catch {
+    return { ok: false, code: "unresolved" };
+  }
+  const surface = await c.surface(action);
+  // The user switched apps since the screenshot.
+  if (surface.appId !== frame.appId)
+    return { ok: false, code: "screen_changed" };
+  let resolved: string | undefined;
+  if (action.type === "open_file") {
+    if (surface.fileStatus !== "resolved" || surface.fileKind !== "folder")
+      return {
+        ok: false,
+        code: surface.fileStatus === "refused" ? "refused" : "unresolved",
+      };
+  } else {
+    if (surface.launcherStatus !== "resolved")
+      return { ok: false, code: surface.launcherStatus ?? "unresolved" };
+    // Without a boundary the name may be unfinished ("open Visual…", "open
+    // Google…"), so only the app's exact display name counts, or, settled
+    // eagerly, the one installed name that begins with the heard words; a
+    // boundary proves the name was finished, so "Chrome and…" may be Google
+    // Chrome. Everyday words ("settings") always need the exact name,
+    // whatever followed them: "open settings and…" must not open System
+    // Settings.
+    const heard = normalizeAppName(action.name);
+    const installed = normalizeAppName(surface.launcherName ?? "");
+    const by = spec.type === "open_app" ? spec.by : "pause";
+    const key = spec.type === "open_app" ? spec.key : "";
+    const finished =
+      by === "boundary" ||
+      (by === "eager" && installed.startsWith(heard + " "));
+    if (installed !== heard && (!finished || EARLY_GENERIC_NAMES.has(key)))
+      return { ok: false, code: "not_exact" };
+    resolved = installed;
+  }
+  const decision = evaluate(action, surface, settings, false, context);
+  if (decision.kind !== "ALLOW")
+    return {
+      ok: false,
+      code:
+        surface.launcherAppId && surface.launcherAppId === surface.appId
+          ? "frontmost"
+          : "policy",
+    };
+  return { ok: true, action, surface, reason: decision.reason, resolved };
+}
 interface EarlyTurn {
   invocation: number;
   /** main's voiceContext: rememberForeground for this activation. */
@@ -261,6 +369,15 @@ export class EarlyStart {
     const turn = this.turn;
     if (!turn || turn.invocation !== invocation || !turn.settle) return false;
     return !!turn.executing || !turn.closed;
+  }
+  /**
+   * Runs a native section on the early start's chain, after every section
+   * queued before it: electron/streaming.ts opens a later clause's app or
+   * takes its frame here, so the stop latch is never lifted by one while
+   * the other's step is in flight.
+   */
+  section<T>(fn: () => Promise<T | undefined>): Promise<T | undefined> {
+    return this.enqueue(fn);
   }
   /** Resolves when no early native section is open or queued. */
   async idle(): Promise<void> {
@@ -428,67 +545,30 @@ export class EarlyStart {
     const name =
       settle.target === "site" ? this.deps.browser?.() : settle.clause.name;
     if (!name) return refuse("unresolved");
-    let action: Opening;
+    // The launcher checks, shared with the streaming turn (verifyOpening).
+    let verified: Verified;
     try {
-      const valid = validateAction(
-        settle.target === "folder"
-          ? {
-              type: "open_file",
-              path: KNOWN_FOLDERS.get(settle.clause.key),
-              frame_id: primed.frame.id,
-            }
-          : { type: "open_app", name, frame_id: primed.frame.id },
+      verified = await verifyOpening(
+        c,
+        settings,
         primed.frame,
+        settle.target === "folder"
+          ? { type: "open_file", path: KNOWN_FOLDERS.get(settle.clause.key) }
+          : {
+              type: "open_app",
+              name,
+              key: settle.clause.key,
+              by: settle.by,
+            },
       );
-      // Built here and only here: nothing else can ever run early.
-      if (valid.type !== "open_app" && valid.type !== "open_file")
-        return refuse("policy");
-      action = valid;
-    } catch {
-      return refuse("unresolved");
-    }
-    let surface: Surface;
-    try {
-      surface = await c.surface(action);
     } catch (error) {
       return refuse(this.failure(turn, error));
     }
-    // The user switched apps since the screenshot.
-    if (surface.appId !== primed.frame.appId) return refuse("screen_changed");
-    if (action.type === "open_file") {
-      if (surface.fileStatus !== "resolved" || surface.fileKind !== "folder")
-        return refuse(
-          surface.fileStatus === "refused" ? "refused" : "unresolved",
-        );
-    } else {
-      if (surface.launcherStatus !== "resolved")
-        return refuse(surface.launcherStatus ?? "unresolved");
-      // Without a boundary the name may be unfinished ("open Visual…", "open
-      // Google…"), so only the app's exact display name counts, or, settled
-      // eagerly, the one installed name that begins with the heard words; a
-      // boundary proves the name was finished, so "Chrome and…" may be Google
-      // Chrome. Everyday words ("settings") always need the exact name,
-      // whatever followed them: "open settings and…" must not open System
-      // Settings.
-      const heard = normalizeAppName(action.name);
-      const resolved = normalizeAppName(surface.launcherName ?? "");
-      const finished =
-        settle.by === "boundary" ||
-        (settle.by === "eager" && resolved.startsWith(heard + " "));
-      if (
-        resolved !== heard &&
-        (!finished || EARLY_GENERIC_NAMES.has(settle.clause.key))
-      )
-        return refuse("not_exact");
-      if (settle.target === "app") turn.opened = resolved;
-    }
-    const decision = evaluate(action, surface, settings, false);
-    if (decision.kind !== "ALLOW")
-      return refuse(
-        surface.launcherAppId && surface.launcherAppId === surface.appId
-          ? "frontmost"
-          : "policy",
-      );
+    if (!verified.ok) return refuse(verified.code);
+    const { action, surface } = verified;
+    const decision = { reason: verified.reason, kind: "ALLOW" as const };
+    if (settle.target === "app" && verified.resolved)
+      turn.opened = verified.resolved;
     const again = this.gate(turn);
     if (again) return refuse(again);
     // Past this point the open is on its way and cannot be called off.

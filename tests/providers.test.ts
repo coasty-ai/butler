@@ -1863,11 +1863,13 @@ describe("the action's wire format", () => {
               ? frame.id
               : key === "path"
                 ? "~/Documents/Notes.txt"
-                : key === "tool"
-                  ? "apple__calendar.create"
-                  : key === "args_json"
-                    ? '{"title":"x"}'
-                    : "Notes";
+                : key === "url"
+                  ? "https://www.example.com/search?q=notes"
+                  : key === "tool"
+                    ? "apple__calendar.create"
+                    : key === "args_json"
+                      ? '{"title":"x"}'
+                      : "Notes";
           case "integer":
           case "number":
             return node.minimum ?? 0;

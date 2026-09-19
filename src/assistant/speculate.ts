@@ -58,6 +58,8 @@ export type SpeculationCode =
   | "ptt"
   | "window"
   | "early_step"
+  /** A fast action already changed the screen for this activation (electron/streaming.ts). */
+  | "streamed"
   | "blocked"
   | "disabled"
   | "once"

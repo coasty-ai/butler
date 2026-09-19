@@ -117,6 +117,10 @@ import {
   type ScrollEndReport,
 } from "./controller";
 import { EarlyStart, type EarlyClaim } from "./early-start";
+import { StreamingTurn, jevClientFor, type StreamClaim } from "./streaming";
+import { UrlOpener } from "./open-url";
+import { streamedStepSchema } from "../src/core/streamed";
+import { JEV_TIMEOUT_MS } from "../src/providers/jev";
 import { preferredBrowser } from "../src/memory/intents";
 import type { AppMatch } from "../src/voice/early";
 import {
@@ -237,6 +241,7 @@ import {
   type Credentials,
 } from "./credentials";
 import {
+  jevEnabled,
   jevSettingsToSave,
   launchDecideWithJev,
   migrateDecisions,
@@ -402,6 +407,88 @@ function earlyBlocked() {
               : undefined;
 }
 /**
+ * Acts on each clause of the sentence while the user is still talking
+ * (.data/design/streaming-execution.md): "go to youtube and play a midwest
+ * safety video" has YouTube loading in the browser at "and" and its results
+ * page at "video", through the browser itself (open_url), never a key or a
+ * click. The leading clause's app is the early step's (above); a later
+ * clause's app runs on its chain with its checks. Every fast action passes
+ * the policy with speaking: true. receiveVoice is its only feeder.
+ */
+const urlOpener = new UrlOpener();
+const streaming = new StreamingTurn({
+  controller: () => {
+    try {
+      return process.platform === "darwin" ? getNative() : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  settings: () => settings,
+  blocked: () => streamingBlocked(),
+  browser: () => preferredBrowser(installedApps, memory?.data()).name,
+  early,
+  scroll: (direction) => streamScroll(direction),
+  jev: () =>
+    jevClientFor(
+      jevEnabled(settings, jevKey(credentials)),
+      jevKey(credentials),
+      JEV_TIMEOUT_MS,
+    ),
+  onAction: (label) => {
+    // The pill says what is loading while the user still speaks; nothing is
+    // spoken. A prepared first step saw a screen that is no longer there.
+    if (listening && pill.phase === "listening")
+      setPill({ label: `${label.slice(0, 48)} · Listening…` });
+    if (speculation?.invocation === voiceInvocation)
+      discardSpeculation("streamed");
+  },
+  onLeft: (summary) => {
+    // The final started no run (a question, a fragment): what was opened
+    // stays, and the idle card says so once nothing else is showing.
+    if (!listening && !runActive() && pill.phase === "done")
+      setPill({ label: summary });
+  },
+  trace: debug,
+});
+/**
+ * The fast actions' own gates beside the early step's: a push-to-talk turn
+ * ends on release, and words in an approval or answer window answer
+ * something, never start anything.
+ */
+function streamingBlocked() {
+  return (
+    earlyBlocked() ??
+    (activationSource === "ptt"
+      ? "ptt"
+      : activationWindow === "approval" || activationWindow === "answer"
+        ? "window"
+        : undefined)
+  );
+}
+/**
+ * A fast "scroll down" while the user still speaks: the helper's continuous
+ * scroll exactly as the spoken scroll starts it (runPlan), with nothing
+ * hidden or restored, since the screen is what the fast actions made it.
+ * The helper lifts its own latch for the scroll; the next words end it.
+ */
+async function streamScroll(direction: ScrollDirection) {
+  const pace = await getNative().scroll(direction, 1);
+  clearTimeout(scrollHold);
+  scrollHold = undefined;
+  scrolling = {
+    session: pace.session,
+    direction,
+    speed: pace.speed,
+    held: false,
+  };
+  debug("ScrollStarted", {
+    direction,
+    linesPerTick: pace.linesPerTick,
+    tickMs: pace.tickMs,
+  });
+}
+/**
  * The run's first step prepared while the user is still talking
  * (docs/VOICE_PRODUCT.md "Thinking ahead"; design endpoint-decider.md §3.3:
  * speculate on computation, never on the turn). A hands-free turn ends about
@@ -478,6 +565,8 @@ async function speculate(invocation: number, text: string) {
   if (earlyBlocked()) return skip("blocked");
   // A turn whose leading clause is opening an app keeps to that one step.
   if (early.engaged(invocation)) return skip("early_step");
+  // A fast action already changed the screen: a step prepared on it is stale.
+  if (streaming.engaged(invocation)) return skip("streamed");
   const candidate = speculationCandidate(text);
   if ("code" in candidate) return skip(candidate.code);
   // Words for a coding agent start no run (codingTurn).
@@ -584,6 +673,11 @@ function claimSpeculation(
   }
   if (hasPrelude) {
     discardSpeculation("early_step");
+    return undefined;
+  }
+  // A fast action on a clause changed the screen after the step was prepared.
+  if (streaming.engaged(invocation)) {
+    discardSpeculation("streamed");
     return undefined;
   }
   if (!sameWords(task, s.step.task)) {
@@ -1892,6 +1986,13 @@ function getNative() {
       {
         inputIdle: (report) => void resumeAfterManualInput(report),
         scrollEnded,
+        // open_url: the browser the early step would bring forward is told
+        // the address (electron/open-url.ts); the helper is never asked.
+        openUrl: (action) =>
+          urlOpener.open(
+            action.url,
+            preferredBrowser(installedApps, memory?.data()),
+          ),
         targetSelfActivated: () => runner?.targetSelfActivated(),
         targetGone: (_token, code) => runner?.targetGone(code),
         onSlow: (method) => {
@@ -2358,6 +2459,7 @@ function getVoice() {
           voiceInvocation += 1;
           abortTurn();
           early.cancel("cancelled");
+          streaming.cancel("cancelled");
           showFailure("Voice restarted. Try again.");
         },
         onRestart: () => {
@@ -2451,6 +2553,7 @@ function cancelVoiceCapture() {
   voiceInvocation += 1;
   voiceGate = undefined;
   early.cancel("cancelled");
+  streaming.cancel("cancelled");
   discardSpeculation("cancelled");
   void voice?.call("cancel").catch(() => {});
 }
@@ -2706,6 +2809,7 @@ async function receiveVoice(event: VoiceEvent) {
       voiceContext = getNative().request("rememberForeground");
       // The early step reads the partials of this activation from here on.
       early.begin(invocation, voiceContext);
+      streaming.begin(invocation, voiceContext);
       await voiceContext;
       if (!listening || invocation !== voiceInvocation) return;
       prewarmIndex();
@@ -2731,6 +2835,7 @@ async function receiveVoice(event: VoiceEvent) {
         lastPartial = event.text ?? "";
         setPill({ transcript: lastPartial, closing: false });
         early.partial(voiceInvocation, lastPartial);
+        streaming.partial(voiceInvocation, lastPartial);
         watchHypothesis(voiceInvocation, lastPartial);
       }
     } else if (event.event === "audio_level") {
@@ -2748,8 +2853,9 @@ async function receiveVoice(event: VoiceEvent) {
     } else if (event.event === "voice_cancelled") {
       listening = false;
       voiceInvocation += 1;
-      // An app the early step already opened stays open.
+      // An app the early step already opened stays open; so does a page.
       early.cancel("cancelled");
+      streaming.cancel("cancelled");
       discardSpeculation("cancelled");
       // A decision still in flight for the cancelled words must not act.
       abortTurn();
@@ -2777,6 +2883,7 @@ async function receiveVoice(event: VoiceEvent) {
       const heard = transcriptRequest(event);
       if (!heard.text) {
         early.cancel("no_final");
+        streaming.cancel("no_final");
         throw new Error("Didn’t catch that. Try again.");
       }
       await command(heard.text, true, voiceCommandConfidence(event), {
@@ -2786,6 +2893,7 @@ async function receiveVoice(event: VoiceEvent) {
       });
     } else if (event.event === "transcript_unconfirmed") {
       early.cancel("no_final");
+      streaming.cancel("no_final");
       discardSpeculation("no_final");
       if (!listening) return;
       listening = false;
@@ -2814,6 +2922,7 @@ async function receiveVoice(event: VoiceEvent) {
       }
     } else if (event.event === "voice_error" || event.event === "wake_error") {
       early.cancel("no_final");
+      streaming.cancel("no_final");
       discardSpeculation("no_final");
       listening = false;
       if (event.code === "empty") {
@@ -2833,6 +2942,7 @@ async function receiveVoice(event: VoiceEvent) {
   } catch (error) {
     listening = false;
     early.cancel("native_error");
+    streaming.cancel("native_error");
     discardSpeculation("native_error");
     showFailure(
       error instanceof Error ? error.message : "Something went wrong.",
@@ -2879,18 +2989,26 @@ async function command(
   // for the run they start, otherwise left as it is (the app stays open).
   const turnInvocation = extra.invocation ?? voiceInvocation;
   const claim = fromVoice ? early.finish(turnInvocation, text) : undefined;
+  // Likewise the fast actions taken on the sentence's clauses: a run takes
+  // them as its prelude; anything else leaves what they opened as it is.
+  const streamed = fromVoice
+    ? streaming.finish(turnInvocation, text)
+    : undefined;
   try {
     await planCommand(
       text,
       fromVoice,
       confidence,
       extra,
+      streamed,
       claim,
       turnInvocation,
     );
   } finally {
     // A no-op once the run took the step.
     claim?.release("plan_not_start");
+    // And the fast actions: the pill says what was opened, nothing more.
+    streamed?.release("plan_not_start");
     // Likewise the prepared first step: only a start adopts it (runPlan).
     if (speculation?.invocation === turnInvocation)
       discardSpeculation("plan_not_start");
@@ -2901,6 +3019,7 @@ async function planCommand(
   fromVoice: boolean,
   confidence: number,
   extra: { segments?: number; recovered?: boolean },
+  streamed: StreamClaim | undefined,
   claim: EarlyClaim | undefined,
   turnInvocation?: number,
 ) {
@@ -3075,6 +3194,7 @@ async function planCommand(
       plan.kind === "status" ? statusText() : (toolAnswer ?? replyText),
     replyPending: !!reply && !!decision?.sentences,
     early: claim,
+    streamed,
     invocation: fromVoice ? turnInvocation : undefined,
     toolStep,
   };
@@ -3116,6 +3236,8 @@ type PlanCtx = {
   replyPending?: boolean;
   /** The step the early start took while the user spoke, for a run to keep. */
   early?: EarlyClaim;
+  /** The fast actions taken on the sentence's clauses while the user spoke (electron/streaming.ts). */
+  streamed?: StreamClaim;
   /** The voice activation this plan belongs to; a newer one cancels it. */
   invocation?: number;
   /** The one builtin tool step the fast path decided for a start. */
@@ -3515,6 +3637,7 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       // words the user never said, in the user's name.
       if (plan.kind === "start" && active) {
         ctx.early?.release("run_active_at_final");
+        ctx.streamed?.release("run_active_at_final");
         await runPlan(
           { kind: "queue", text: plan.text, taskSource: plan.taskSource },
           ctx,
@@ -3527,6 +3650,10 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       // so the turn is checked again afterwards: a stop, a cancel or a new
       // activation in that gap must not still start the run.
       const prelude = !active && ctx.early ? await ctx.early.take() : undefined;
+      // The fast actions taken on the clauses ride in beside it, once every
+      // one in flight has ended (a URL is quick; an app may still launch).
+      const streamed =
+        !active && ctx.streamed ? await ctx.streamed.take() : undefined;
       if (ctx.invocation !== undefined && ctx.invocation !== voiceInvocation) {
         debug("EarlyStartEnded", { phase: "cancelled", code: "reactivated" });
         return;
@@ -3566,6 +3693,7 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
             taskSource:
               (plan.kind === "start" && plan.taskSource) || ctx.taskSource,
             ...(ctx.toolStep ? { toolStep: ctx.toolStep } : {}),
+            ...(streamed?.length ? { streamed } : {}),
           },
           prelude,
           adopt,
@@ -3806,6 +3934,9 @@ const startFromSchema = z
       .optional(),
     // The task is a spoken "undo" right after a run ended (runPlan).
     undo: z.boolean().optional(),
+    // The fast actions taken on the sentence's clauses while the user spoke
+    // (electron/streaming.ts); only runPlan's voice start passes them.
+    streamed: z.array(streamedStepSchema).max(20).optional(),
     // One builtin tool step the fast path decided (planCommand); only runPlan
     // passes it, and the runner still validates, gates and approves it.
     toolStep: z
@@ -3962,6 +4093,9 @@ async function startRun(
         ...(from?.watch ? { watch: from.watch } : {}),
         ...(from?.watch && from.chain ? { chain: from.chain } : {}),
         ...(prelude && !tutorial ? { prelude } : {}),
+        ...(from?.streamed?.length && !tutorial
+          ? { streamed: from.streamed }
+          : {}),
         ...(dictation ? { dictation } : {}),
         ...(from?.undo ? { undo: true } : {}),
         ...(from?.toolStep ? { toolStep: from.toolStep } : {}),

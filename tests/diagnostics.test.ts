@@ -1729,3 +1729,161 @@ describe("dialog and streamed-speech fields", () => {
       expect(JSON.parse(lines.at(-1)!).data).toEqual({});
     }));
 });
+
+describe("acting while the user speaks", () => {
+  it("keeps each Stream* event's own codes and numbers, never a word, an address or a name", () =>
+    fixture((log) => {
+      log.write("StreamClauseCommitted", {
+        index: 1,
+        by: "stable",
+        words: 5,
+        leadMs: 700,
+        text: "play a midwest safety video",
+      });
+      log.write("StreamedAction", {
+        kind: "open_url",
+        siteKey: "youtube",
+        clauseIndex: 1,
+        decideMs: 3,
+        issueMs: 48,
+        url: "https://www.youtube.com/results?search_query=midwest+safety",
+        label: "YouTube search for midwest safety",
+      });
+      log.write("StreamedActionDropped", {
+        kind: "open_url",
+        clauseIndex: 0,
+        url: "https://www.youtube.com/",
+      });
+      log.write("StreamedRunStarted", {
+        streamedSteps: 2,
+        dropped: 1,
+        task: "go to youtube",
+      });
+      // A site code that is not a code, a word count that is text.
+      log.write("StreamedAction", {
+        kind: "open_url",
+        siteKey: "you tube.com",
+        clauseIndex: "one",
+        decideMs: 3,
+        issueMs: 48,
+      });
+      const lines = readFileSync(log.file, "utf8")
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(lines.map((x) => x.data)).toEqual([
+        { index: 1, by: "stable", words: 5, leadMs: 700 },
+        {
+          kind: "open_url",
+          siteKey: "youtube",
+          clauseIndex: 1,
+          decideMs: 3,
+          issueMs: 48,
+        },
+        { kind: "open_url", clauseIndex: 0 },
+        { streamedSteps: 2, dropped: 1 },
+        { kind: "open_url", decideMs: 3, issueMs: 48 },
+      ]);
+      expect(readFileSync(log.file, "utf8")).not.toMatch(
+        /midwest|youtube\.com|https/,
+      );
+    }));
+  it("writes a run's streamed steps by kind, site code, clause and outcome, and their executed rows flagged streamed and early with the site code", () =>
+    fixture((log) => {
+      const id = crypto.randomUUID();
+      const event = (
+        sequence: number,
+        type: string,
+        data: Record<string, unknown>,
+      ) => ({
+        event_id: crypto.randomUUID(),
+        run_id: id,
+        sequence_number: sequence,
+        monotonic_timestamp: 0,
+        wall_clock_timestamp: new Date().toISOString(),
+        schema_version: 1 as const,
+        type,
+        data,
+      });
+      const snapshot: Snapshot = {
+        run: {
+          id,
+          task: "go to youtube and play a midwest safety video",
+          createdAt: new Date().toISOString(),
+          status: "executing",
+          privacy: "PRIVATE_LOCAL",
+          provider: "openai",
+          model: "gpt",
+          synthetic: false,
+          actions: 0,
+          frames: 1,
+          usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          summary: "",
+        },
+        frame: null,
+        message: "",
+        events: [
+          event(1, "StreamedStep", {
+            kind: "open_url",
+            siteKey: "youtube",
+            clauseIndex: 1,
+            outcome: "dropped",
+          }),
+          event(2, "ActionExecuted", {
+            action: {
+              type: "open_url",
+              url: "https://www.youtube.com/results?search_query=midwest+safety",
+              siteKey: "youtube",
+              frame_id: "streamed",
+            },
+            streamed: true,
+            early: true,
+            clauseIndex: 1,
+            outcome: "done",
+          }),
+          // The model's own open_url later: the same site, not early.
+          event(3, "ActionExecuted", {
+            action: {
+              type: "open_url",
+              url: "https://www.youtube.com/",
+              siteKey: "youtube",
+              frame_id: "f",
+            },
+            frame_id: "f",
+          }),
+        ],
+      };
+      log.snapshot(snapshot);
+      const lines = readFileSync(log.file, "utf8")
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(lines.map((x) => x.event)).toEqual([
+        "StreamedStep",
+        "ActionExecuted",
+        "ActionExecuted",
+        "RunState",
+      ]);
+      expect(lines[0].data).toMatchObject({
+        kind: "open_url",
+        siteKey: "youtube",
+        clauseIndex: 1,
+        outcome: "dropped",
+      });
+      expect(lines[1].data).toMatchObject({
+        actionType: "open_url",
+        streamed: true,
+        early: true,
+        siteKey: "youtube",
+      });
+      expect(lines[2].data).toMatchObject({
+        actionType: "open_url",
+        siteKey: "youtube",
+      });
+      expect(lines[2].data.streamed).toBeUndefined();
+      expect(lines[2].data.early).toBeUndefined();
+      expect(readFileSync(log.file, "utf8")).not.toMatch(
+        /midwest|youtube\.com|https/,
+      );
+    }));
+});

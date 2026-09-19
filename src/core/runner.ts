@@ -34,9 +34,11 @@ import type {
   TrajectoryStep,
 } from "./memory";
 import {
+  actionSchema,
   validateAction,
   sameGeometry,
   normalizePixelCoordinates,
+  webAddress,
   withoutWindow,
 } from "./schema";
 import {
@@ -95,6 +97,8 @@ import {
 import { entityTokens } from "./entities";
 import { actionConfirmed, contextDigest, screenshotUse } from "./vision";
 import { redactSecrets, scanText } from "./sanitize";
+import { streamedPrelude, type StreamedStep } from "./streamed";
+export type { StreamedStep } from "./streamed";
 import {
   HelperSlowError,
   HelperUnavailableError,
@@ -123,6 +127,7 @@ const actionTypes = new Set([
   "hotkey",
   "open_app",
   "open_file",
+  "open_url",
   "menu_item",
   "click_control",
   "wait",
@@ -168,6 +173,14 @@ export function echoAction(input: unknown): Record<string, unknown> {
     echo.name = bound(a.name, 100);
   if (a.type === "open_file" && typeof a.app === "string")
     echo.app = bound(a.app, 100);
+  // The site code and the host: where it went, never the query it carried.
+  if (a.type === "open_url") {
+    if (typeof a.siteKey === "string") echo.siteKey = bound(a.siteKey, 40);
+    if (typeof a.url === "string") {
+      const host = webAddress(a.url)?.hostname;
+      if (host) echo.host = bound(host, 100);
+    }
+  }
   if (a.type === "monitor")
     for (const field of ["every_s", "max_min", "until"] as const)
       if (["number", "string"].includes(typeof a[field]))
@@ -941,6 +954,30 @@ interface Preparation {
   code?: string;
   ready: Promise<void>;
 }
+/** The frame id a streamed step's row carries: it had no frame of its own. */
+export const STREAMED_FRAME_ID = "streamed";
+/** A streamed step as the Action its executed row records; undefined when it fits no action. */
+export function streamedAction(step: StreamedStep): Action | undefined {
+  const a = step.action;
+  const parsed = actionSchema.safeParse(
+    a.kind === "open_app"
+      ? { type: "open_app", name: a.name, frame_id: STREAMED_FRAME_ID }
+      : a.kind === "open_url"
+        ? {
+            type: "open_url",
+            url: a.url,
+            ...(a.siteKey ? { siteKey: a.siteKey } : {}),
+            frame_id: STREAMED_FRAME_ID,
+          }
+        : {
+            type: "scroll",
+            delta_x: 0,
+            delta_y: a.direction === "down" ? 300 : -300,
+            frame_id: STREAMED_FRAME_ID,
+          },
+  );
+  return parsed.success ? parsed.data : undefined;
+}
 /** The words of two task texts, compared: case, punctuation and spacing aside. */
 const taskWords = (text: string) =>
   text
@@ -958,6 +995,14 @@ export interface StartOptions {
   chain?: WatchChain;
   /** A step taken while the user was still speaking (electron/early-start.ts). */
   prelude?: RunPrelude;
+  /**
+   * The fast actions taken on the sentence's clauses while the user was
+   * still speaking (electron/streaming.ts; src/core/streamed.ts): journaled
+   * as their own entry kind and named to the model in the first
+   * observation's prelude. Not model actions: amendTask still accepts a
+   * longer task after them.
+   */
+  streamed?: StreamedStep[];
   /**
    * The words only asked to type this text ("type see you at six",
    * src/voice/dictation.ts): with a known text field focused on the first
@@ -1646,6 +1691,9 @@ export class Runner {
   async amendTask(text: string) {
     if (!this.active()) throw new Error("No active run.");
     const run = this.snapshot.run!;
+    // Model actions only: the fast actions taken while the user spoke
+    // (StartOptions.streamed) count in neither, so a sentence that grew
+    // after they ran still replaces the task.
     if (run.actions !== 0 || this.attempted !== 0)
       throw new Error("The run already acted. Give a correction instead.");
     if (this.snapshot.pending || run.status === "confirming")
@@ -2903,6 +2951,45 @@ export class Runner {
     };
   }
   /**
+   * Journals the fast actions taken while the user spoke (design §3.3), each
+   * as its own content-free entry (the kind, the site code, the clause and
+   * how it ended; never a URL or a word), and puts the prelude in front of
+   * the model's history so its first step continues from the screen as the
+   * actions left it. Nothing here counts as a model action: run.actions and
+   * the attempted count stay at zero, so amendTask still accepts a longer
+   * task, and a recalled plan is not advanced.
+   */
+  private applyStreamed(steps: StreamedStep[]) {
+    for (const step of steps) {
+      this.event("StreamedStep", {
+        kind: step.action.kind,
+        ...(step.action.kind === "open_url"
+          ? { siteKey: step.action.siteKey }
+          : {}),
+        clauseIndex: step.clauseIndex,
+        outcome: step.outcome,
+      });
+      // The same step as an executed row too, flagged streamed and early
+      // (taken before the run, while the user spoke), so every reader of
+      // executed steps (the pill's last step, progress, the streaming
+      // report's repeat count: a later open_app or open_url without the
+      // flag) sees it; a step that failed changed nothing and has no row.
+      if (step.outcome === "failed") continue;
+      const action = streamedAction(step);
+      if (action)
+        this.event("ActionExecuted", {
+          action,
+          streamed: true,
+          early: true,
+          clauseIndex: step.clauseIndex,
+          outcome: step.outcome,
+        });
+    }
+    const prelude = streamedPrelude(steps);
+    if (prelude)
+      this.history.push({ type: "streamed", result: redactSecrets(prelude) });
+  }
+  /**
    * The bookkeeping after an executed step, shared by the loop and by a step
    * taken before the run existed (a prelude): counters, the plan position,
    * what memory learns, the journal entry and the history line the model
@@ -2964,6 +3051,19 @@ export class Runner {
           }
         : undefined;
     if (action.type === "open_file") this.lastOpened = !!opened;
+    const navigated =
+      action.type === "open_url" &&
+      outcome &&
+      outcome.navigated &&
+      typeof outcome.navigated.host === "string"
+        ? {
+            host: bound(outcome.navigated.host, 200),
+            ...(typeof outcome.navigated.appId === "string" &&
+            outcome.navigated.appId
+              ? { appId: bound(outcome.navigated.appId, 200) }
+              : {}),
+          }
+        : undefined;
     const via =
       action.type === "hotkey" &&
       outcome &&
@@ -3041,16 +3141,18 @@ export class Runner {
             : `Launch requested for ${launched.appId}; not frontmost yet. Wait briefly before retrying.`
           : opened
             ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`
-            : outcome?.rung
-              ? backgroundResult(
-                  action,
-                  executedTarget(action, actionSurface, via),
-                  outcome,
-                  this.target?.appName || "the application",
-                )
-              : ["type_text", "key", "hotkey"].includes(action.type)
-                ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
-                : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
+            : navigated
+              ? `Loading ${navigated.host}${navigated.appId ? ` in ${navigated.appId}` : " in the browser"}. Wait briefly if the page is not there yet, and verify the next screenshot.`
+              : outcome?.rung
+                ? backgroundResult(
+                    action,
+                    executedTarget(action, actionSurface, via),
+                    outcome,
+                    this.target?.appName || "the application",
+                  )
+                : ["type_text", "key", "hotkey"].includes(action.type)
+                  ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
+                  : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
         (o.reaimed ? reaimNote : "") +
         (loop === "warn" ? loopWarning : "") +
         (thrashing ? appSwitchWarning : ""),
@@ -3439,6 +3541,8 @@ export class Runner {
       if (!adopting) {
         if (options.prelude && !run.synthetic)
           this.applyPrelude(options.prelude);
+        if (options.streamed?.length && !run.synthetic)
+          this.applyStreamed(options.streamed);
         if (
           options.background &&
           this.settings.workInBackground &&
@@ -4212,13 +4316,15 @@ export class Runner {
             ? toolFallbackLine(fallback)
             : action.type === "open_app"
               ? `Opening ${bound(action.name, 100)}.`
-              : action.type === "open_file"
-                ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}${action.app ? ` in ${bound(action.app, 60)}` : ""}.`
-                : action.type === "menu_item"
-                  ? `Choosing ${bound(action.path.join(" › "), 100)}.`
-                  : action.type === "click_control"
-                    ? `Clicking ${bound(action.label, 100)}.`
-                    : `Executing ${action.type.replaceAll("_", " ")}.`,
+              : action.type === "open_url"
+                ? `Opening ${bound(webAddress(action.url)?.hostname ?? "the page", 100)}.`
+                : action.type === "open_file"
+                  ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}${action.app ? ` in ${bound(action.app, 60)}` : ""}.`
+                  : action.type === "menu_item"
+                    ? `Choosing ${bound(action.path.join(" › "), 100)}.`
+                    : action.type === "click_control"
+                      ? `Clicking ${bound(action.label, 100)}.`
+                      : `Executing ${action.type.replaceAll("_", " ")}.`,
         );
         const { frame_id: _frameId, ...executedAction } = action;
         const interrupted = () => {

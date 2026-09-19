@@ -207,6 +207,7 @@ const fields = new Set([
   "earlyMs",
   "leadMs",
   "early",
+  "streamed",
   // A spoken scroll: its direction, pace and how many ticks it posted.
   "direction",
   "linesPerTick",
@@ -255,6 +256,18 @@ const fields = new Set([
   // its deadline passed and the helper was found alive (the wait extended)
   // or not (the helper killed). A measurement beside the method's name.
   "waitedMs",
+  // Acting while the user speaks (Stream* events and the run's StreamedStep
+  // entries): which clause committed and how, its word count and its lead
+  // on the final; the fast action's kind and site code, its clause, how
+  // long the decision and the issue took; how many steps a run started with
+  // and how many the final dropped. Never a word, a URL or a name.
+  "by",
+  "words",
+  "siteKey",
+  "clauseIndex",
+  "decideMs",
+  "issueMs",
+  "streamedSteps",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -268,6 +281,9 @@ const countFields = new Set([
   "segments",
   "sentences",
   "dropped",
+  "words",
+  "clauseIndex",
+  "streamedSteps",
   "launchedWindows",
   "ticks",
   "channels",
@@ -330,6 +346,8 @@ const numberFields = new Set([
   "savedMs",
   "frameAgeMs",
   "waitedMs",
+  "decideMs",
+  "issueMs",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
@@ -350,6 +368,8 @@ const flagFields = new Set([
   "pinned",
   "finish",
   "longRunning",
+  // An executed row for a fast action taken while the user spoke (beside early).
+  "streamed",
   // Unparseable arguments: how they begin and end; a reply's action repaired.
   "startsWithBrace",
   "endsWithBrace",
@@ -400,6 +420,9 @@ const codeFields = new Set([
   "project",
   // The JSON parser's complaint about model arguments, as a fixed code.
   "parseError",
+  // A clause's commit ("boundary" or "stable") and a fast action's site code.
+  "by",
+  "siteKey",
 ]);
 /**
  * The early step's own events keep only these keys, whatever else a caller
@@ -434,6 +457,19 @@ const speculationFields = new Set([
   "savedMs",
   "frameAgeMs",
   "usage",
+]);
+/**
+ * Acting while the user speaks (electron/streaming.ts): each event keeps
+ * only its own keys, whatever else a caller passes. Codes and numbers only.
+ */
+const streamEvents = new Map<string, Set<string>>([
+  ["StreamClauseCommitted", new Set(["index", "by", "words", "leadMs"])],
+  [
+    "StreamedAction",
+    new Set(["kind", "siteKey", "clauseIndex", "decideMs", "issueMs"]),
+  ],
+  ["StreamedActionDropped", new Set(["kind", "clauseIndex"])],
+  ["StreamedRunStarted", new Set(["streamedSteps", "dropped"])],
 ]);
 const memoryEvents = new Set([
   "MemoryRecalled",
@@ -570,7 +606,13 @@ export class LocalDiagnostics {
                       speculationFields.has(key),
                     ),
                   )
-                : data,
+                : streamEvents.has(event) && !this.verbose
+                  ? Object.fromEntries(
+                      Object.entries(data).filter(([key]) =>
+                        streamEvents.get(event)!.has(key),
+                      ),
+                    )
+                  : data,
           ),
         }) + "\n";
       if (this.bytes + Buffer.byteLength(line) > this.maxBytes) {
@@ -651,6 +693,19 @@ export class LocalDiagnostics {
         via: e.data.via,
         // A step taken before the run existed, while the user was speaking.
         early: e.data.early,
+        // Its executed row, when the step was a fast action on a clause.
+        streamed: e.data.streamed,
+        // A fast action taken on a clause while the user spoke, journaled by
+        // the run it started (StreamedStep): its kind, site code, clause and
+        // outcome as codes and a count.
+        ...(e.type === "StreamedStep"
+          ? {
+              kind: code(e.data.kind),
+              siteKey: code(e.data.siteKey),
+              clauseIndex: count(e.data.clauseIndex),
+              outcome: code(e.data.outcome),
+            }
+          : {}),
         // The first step prepared while the user spoke, adopted or let go by
         // the run: its kind and timings (Speculation* events).
         ...(speculationEvents.has(e.type)
@@ -756,6 +811,11 @@ export class LocalDiagnostics {
                 action.type === "open_app" && typeof action.name === "string"
                   ? action.name.length
                   : undefined,
+              // An open_url's site code (a recipe's key), never its address:
+              // a streamed row and a later model row of the same site read
+              // as a repeat (scripts/streaming-report.mjs).
+              siteKey:
+                action.type === "open_url" ? code(action.siteKey) : undefined,
               // The model's note is a value it read on screen: its length only.
               noteLength:
                 typeof action.note === "string"

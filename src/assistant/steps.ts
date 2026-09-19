@@ -4,7 +4,7 @@
  * type_text becomes "typed N characters", so a password or a message body
  * can never be read back over voice or texted to a phone.
  */
-import type { Action } from "../core/schema";
+import { webAddress, type Action } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
 import { builtinToolTitle } from "../core/tool-text";
 
@@ -60,6 +60,9 @@ function describe(action: Action): string | undefined {
       return `opened ${action.name}`;
     case "open_file":
       return `opened ${basename(action.path)}`;
+    case "open_url":
+      // The host alone: the address may carry the words of a search.
+      return `opened ${webAddress(action.url)?.hostname.replace(/^www\./, "") ?? "a web page"}`;
     case "menu_item":
       return `chose ${action.path.join(" › ")}`;
     case "click_control":
