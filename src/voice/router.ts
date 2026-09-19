@@ -58,6 +58,8 @@ export function describeAction(action: Action): string {
     }
     case "drag":
       return "Drag the selected item to a new position.";
+    case "menu_item":
+      return `Choose ${action.path.join(" › ")}.`;
     default:
       return action.type.replaceAll("_", " ");
   }

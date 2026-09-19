@@ -248,6 +248,8 @@ const NOTICE_MS = 4000;
 const taskQueue = new TaskQueue();
 /** The most recent run that ended, for "how's it going?" while idle. */
 let lastFinished: Run | undefined;
+/** When it ended: "undo that" said within a minute of it means its last step. */
+let lastFinishedAt: number | undefined;
 let drainTimer: ReturnType<typeof setTimeout> | undefined;
 const QUEUE_DRAIN_MS = 2000;
 const QUEUE_DRAIN_ATTEMPTS = 15;
@@ -830,6 +832,7 @@ async function steerFromRemote(
     gateMatches: !!gate,
     now: Date.now(),
     run: planRun(),
+    lastRun: lastRunInput(),
     proposal: assistant.proposal(),
   });
   debug("TurnPlanned", {
@@ -2014,6 +2017,9 @@ function planRun() {
           snapshot.message === TARGET_HANDOFF_MESSAGE)),
   };
 }
+function lastRunInput() {
+  return lastFinishedAt === undefined ? undefined : { endedAt: lastFinishedAt };
+}
 async function command(
   text: string,
   fromVoice = false,
@@ -2060,6 +2066,7 @@ async function planCommand(
     gateMatches: fromVoice ? !!voiceGate && voiceGate === gate : !!gate,
     now: Date.now(),
     run: planRun(),
+    lastRun: lastRunInput(),
     proposal: assistant.proposal(),
     ...context,
   });
@@ -2346,6 +2353,32 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       }
       await resumeHeldRun(runHeld);
       return;
+    case "undo": {
+      // Edit > Undo in the app the user was in: the run under way takes it as
+      // its next step and waits; right after a run ended, a short run of its
+      // own does, so the step goes through the same policy and journal.
+      voiceHeld = false;
+      const active = runActive();
+      if (!(snapshot.run?.synthetic && active)) {
+        hide();
+        await native?.request("restoreRemembered");
+      }
+      show({
+        phase: "working",
+        label: "Taking that back.",
+        transcript: "",
+        canApprove: false,
+        closing: false,
+      });
+      if (active) await runner!.undo(plan.words);
+      else
+        await startRun(plan.words, false, {
+          origin: ctx.origin,
+          taskSource: ctx.taskSource,
+          undo: true,
+        });
+      return;
+    }
     case "acknowledge":
       // With the dialog on and able to answer, an "okay" or "thanks" said by
       // voice lets the run this very activation paused carry on. Any other
@@ -2576,6 +2609,7 @@ function trackRun(s: Snapshot) {
   const ended = lastFinished?.id !== run.id;
   lastFinished = run;
   if (!ended) return;
+  lastFinishedAt = Date.now();
   stopPresenceRefresh();
   scheduleQueueDrain();
 }
@@ -2765,6 +2799,8 @@ const startFromSchema = z
     taskSource: z
       .enum(["user_words", "user_words_unsure", "model_rewrite", "proposal"])
       .optional(),
+    // The task is a spoken "undo" right after a run ended (runPlan).
+    undo: z.boolean().optional(),
     // Why a watch woke the model; only the queue drain passes it.
     watch: z
       .object({
@@ -2885,6 +2921,7 @@ async function startRun(
         ...(from?.watch && from.chain ? { chain: from.chain } : {}),
         ...(prelude && !tutorial ? { prelude } : {}),
         ...(dictation ? { dictation } : {}),
+        ...(from?.undo ? { undo: true } : {}),
       })
       .catch((error) => {
         debug("RunStartFailed", errorDetails(error));

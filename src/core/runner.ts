@@ -521,6 +521,14 @@ export const MANUAL_PAUSE_MESSAGE = "Paused — you’re controlling the compute
 /** Hand-off after repeated unidentified targets; a click by the user resolves it. */
 export const TARGET_HANDOFF_MESSAGE =
   "I can’t find the right control. Click it for me and I’ll continue.";
+/**
+ * The one step a spoken "undo" takes: the frontmost application's own Edit >
+ * Undo, pressed by name like any menu item (never a raw CMD+Z), and what the
+ * run says about it afterwards.
+ */
+export const UNDO_MENU_PATH = ["Edit", "Undo"];
+export const UNDONE_MESSAGE = "Undone.";
+export const NOTHING_TO_UNDO_MESSAGE = "Nothing to undo.";
 /** Plans never contain terminal or free-form steps; those stay model-only. */
 const unplannable = new Set([
   "done",
@@ -753,6 +761,13 @@ export class Runner {
     display: string;
     completes: boolean;
   };
+  /**
+   * A spoken "undo" waiting to be pressed as the next step. `own`: the run
+   * exists for it alone (start with `undo`) and ends with what happened;
+   * otherwise it steers a run under way, which pauses again afterwards. A
+   * pause meanwhile (the user's, or a declined approval) drops it.
+   */
+  private undoRequest?: { own: boolean };
   constructor(
     private controller: Controller,
     private provider: Provider,
@@ -974,6 +989,7 @@ export class Runner {
     this.snapshot.pending = undefined;
     // The screen may change while held; a replay never continues after it.
     this.abandonPlan("paused");
+    this.undoRequest = undefined;
     this.event("RunPaused");
     this.status("paused", message);
   }
@@ -1069,7 +1085,9 @@ export class Runner {
       this.voiceApproval = false;
       if (this.planPending !== undefined) this.abandonPlan("declined");
       this.recordDecline(pending.action, source);
-      this.pause();
+      // A run that exists only for a declined undo has nothing left to do.
+      if (this.undoRequest?.own) this.stop("Left as it was.");
+      else this.pause();
       return;
     }
     if (this.voiceApproval) {
@@ -1115,6 +1133,31 @@ export class Runner {
     // A correction changes the task; a known plan no longer applies.
     this.abandonPlan("correction");
     if (!this.held) this.pause();
+    this.recordCorrection(text);
+    this.resetCounters();
+    this.resetLoop();
+    await this.resume();
+  }
+  /**
+   * "Undo that" during a run: a steering command, not a correction the model
+   * reads. The run pauses, its next step is Edit > Undo in the frontmost
+   * application (through surface, policy and the approval an "ask" setting
+   * still wants, never a model call), and it reports what happened and
+   * waits. The words are recorded as a correction, so when the run goes on
+   * the model sees the step was taken back at the user's request.
+   */
+  async undo(words: string) {
+    if (!this.active()) throw new Error("No active run.");
+    this.handsOn = true;
+    this.abandonPlan("undo");
+    if (!this.held) this.pause();
+    this.recordCorrection(words);
+    this.undoRequest = { own: false };
+    this.resetCounters();
+    this.resetLoop();
+    await this.resume();
+  }
+  private recordCorrection(text: string) {
     const correction = {
       text,
       after_action: this.snapshot.run!.actions,
@@ -1123,9 +1166,17 @@ export class Runner {
     (this.snapshot.run!.corrections ??= []).push(correction);
     this.event("UserCorrectionRecorded", correction);
     this.recorder.save(this.snapshot.run!);
-    this.resetCounters();
-    this.resetLoop();
-    await this.resume();
+  }
+  /** What a spoken undo came to: the run it steered waits; one of its own ends. */
+  private endUndo(undo: { own: boolean }, message: string) {
+    this.undoRequest = undefined;
+    if (!undo.own) {
+      this.pause(message);
+      return;
+    }
+    this.snapshot.run!.summary = message;
+    this.event("RunCompleted");
+    this.status("completed", message);
   }
   /**
    * Replace the task with a continuation the user spoke before any action ran
@@ -1885,12 +1936,19 @@ export class Runner {
        * frame it is typed there without a model call and the run is over.
        */
       dictation?: string;
+      /**
+       * The task is the user's spoken "undo" right after a run ended: the one
+       * step is Edit > Undo, without a model call, and the run ends with what
+       * happened.
+       */
+      undo?: boolean;
     } = {},
   ) {
     if (this.active()) throw new Error("A run is already active.");
     this.settled = false;
     this.watchContext = options.watch;
     this.watchChain = options.chain;
+    this.undoRequest = options.undo ? { own: true } : undefined;
     this.executed = [];
     this.started = Date.now();
     this.heldMs = 0;
@@ -1940,11 +1998,13 @@ export class Runner {
     const history = this.history;
     // A wake-up run neither recalls nor learns: its objective is a follow-up
     // that quotes the watched request, and a plan recalled for that request
-    // would replay its steps with nobody at the Mac.
+    // would replay its steps with nobody at the Mac. An undo run's one step
+    // is fixed, so there is nothing to recall or learn for it either.
     this.memoryRun =
       !!this.memory &&
       !run.synthetic &&
       run.origin !== "watch" &&
+      !options.undo &&
       this.controller.kind !== "tutorial" &&
       this.settings.memory !== false;
     // Abandon a proposed plan step that did not execute.
@@ -2080,6 +2140,20 @@ export class Runner {
             };
             dictated = true;
           }
+        }
+        // The one step a spoken undo takes, proposed like a plan step: no
+        // model call, while policy and the approval "ask" wants still apply.
+        const undo = result ? undefined : this.undoRequest;
+        if (undo) {
+          this.status("thinking", "Taking the last step back.");
+          result = {
+            action: {
+              type: "menu_item",
+              frame_id: frame.id,
+              path: UNDO_MENU_PATH,
+            },
+            usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          };
         }
         if (!result && routed) {
           // The application's own search command, as a normal proposed step.
@@ -2237,6 +2311,18 @@ export class Runner {
             : evaluated;
         if (this.held || epoch !== this.epoch) {
           planFail("interrupted");
+          continue;
+        }
+        // An undo is never retried or routed around: a greyed-out or missing
+        // Edit > Undo means there is nothing to take back, and anything else
+        // refused is reported in policy's own words.
+        if (undo && decision.kind !== "ALLOW" && decision.kind !== "CONFIRM") {
+          this.endUndo(
+            undo,
+            ["disabled", "missing"].includes(actionSurface.menuStatus ?? "")
+              ? NOTHING_TO_UNDO_MESSAGE
+              : decision.reason,
+          );
           continue;
         }
         if (decision.kind !== "ALLOW" && decision.kind !== "CONFIRM")
@@ -2518,6 +2604,7 @@ export class Runner {
           this.status("completed", run.summary);
           break;
         }
+        if (undo) this.endUndo(undo, UNDONE_MESSAGE);
       }
     } catch (e) {
       if (this.active()) {

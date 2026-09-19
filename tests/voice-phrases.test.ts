@@ -32,7 +32,14 @@ import {
 } from "../src/voice/turns";
 import { actionSchema } from "../src/core/schema";
 
-const actionable = new Set(["stop", "pause", "resume", "approve", "decline"]);
+const actionable = new Set([
+  "stop",
+  "pause",
+  "resume",
+  "undo",
+  "approve",
+  "decline",
+]);
 /** The native wake pattern, widened to every echo the first segment strips. */
 const wake = new RegExp(
   String.raw`^\s*(?:(?:hey|hay|hi|hei|his|a)[\s,]+(?:${WAKE_NAME}|sir|aye,?\s+sir|i,?\s+sir|i\s+say|i\s+saw)|${FUSED_WAKE})(?![a-z])`,

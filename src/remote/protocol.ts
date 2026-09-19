@@ -253,6 +253,8 @@ export function remoteReply(
       return "Paused.";
     case "resume":
       return "Continuing.";
+    case "undo":
+      return "Taking the last step back on the Mac.";
     case "approve":
     case "needClick":
       return o.reason === "restricted"

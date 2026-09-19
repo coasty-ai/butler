@@ -126,6 +126,7 @@ export type VoiceIntentKind =
   | "stop"
   | "pause"
   | "resume"
+  | "undo"
   | "approve"
   | "decline"
   | "unclear"
@@ -155,6 +156,15 @@ const pauseHead =
 const pauseFiller = "please|now|wait|a sec|a second|a minute|a moment|for me";
 const PAUSE_UTTERANCE = new RegExp(
   `^(?:no )?(?:please )?(?:${pauseHead})(?: (?:${pauseHead}|${pauseFiller}))*$`,
+);
+// Whole-utterance too: "undo that", "take it back", "revert the last step"
+// ask for the last step back and nothing else. "Undo the formatting" names
+// something of its own and "don't undo that" is negated: both stay commands
+// for the model, as does "redo".
+const undoObject =
+  "it|that|this|that one|(?:the )?last (?:one|step|action|change|edit)|(?:that|this) (?:step|action|change|edit)";
+const UNDO_UTTERANCE = new RegExp(
+  `^(?:(?:no|oops|wait|actually) )?(?:(?:can|could) you )?(?:(?:undo|revert)(?: (?:${undoObject}))?|take (?:it|that|this) back|(?:press|hit) undo)(?: (?:now|for me))?$`,
 );
 const APPROVE_TOKENS = new Set(["yes", "yeah", "yep", "sure"]);
 const DECLINE_TOKENS = new Set(["no", "nope", "dont"]);
@@ -239,6 +249,7 @@ export function voiceIntent(text: string): VoiceIntent {
   )
     return result("stop");
   if (PAUSE_UTTERANCE.test(k)) return result("pause");
+  if (UNDO_UTTERANCE.test(k)) return result("undo");
   if (
     key.length <= 5 &&
     key.some((w) => APPROVE_TOKENS.has(w)) &&
@@ -693,6 +704,11 @@ export type TurnPlan =
   | { kind: "stop" }
   | { kind: "pause" }
   | { kind: "resume" }
+  // "Undo that": Edit > Undo in the frontmost application, as the next step
+  // of the run under way (which pauses, undoes, reports and waits) or of a
+  // short run of its own right after one ended. `words` are the user's own,
+  // for that run's record.
+  | { kind: "undo"; words: string }
   | { kind: "approve" }
   | { kind: "decline" }
   | { kind: "confirmAgain" }
@@ -778,6 +794,8 @@ export interface VoiceTurnInput {
   run?: VoiceTurnRun;
   fragment?: VoiceFragment;
   lastTurn?: VoiceLastTurn;
+  /** When the last run ended, whatever its outcome: an undo said soon after refers to it. */
+  lastRun?: { endedAt: number };
   /**
    * A task the assistant offered ("Want me to …?") that a "yes" accepts while
    * no approval is pending. Its text is the assistant's, so the run it starts
@@ -790,6 +808,8 @@ export const APPROVAL_MIN_CONFIDENCE = 0.65;
 export const FOLLOW_UP_APPROVAL_MIN_CONFIDENCE = 0.75;
 export const CONTINUATION_WINDOW_MS = 3000;
 export const MAX_TURN_MS = 45000;
+/** How long after a run ended "undo that" still means its last step. */
+export const UNDO_WINDOW_MS = 60000;
 const TERMINAL = new Set(["completed", "cancelled", "failed"]);
 
 /**
@@ -1080,6 +1100,19 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
     if (!run.held) return { kind: "stillWorking" };
     return { kind: "resume" };
   }
+  // 4b. "Undo that" takes the last step back through Edit > Undo: the run
+  // under way, whatever it is doing (an approval it is waiting on is not
+  // answered by it), or the run that ended less than a minute ago. It sends
+  // input, so speech needs the confidence the user's own words need, which
+  // a recovered hypothesis that stood still long enough has; heard less
+  // clearly, or long after any run, it is a correction or task the model
+  // reads like any other.
+  if (
+    intent.kind === "undo" &&
+    (typed || input.confidence >= APPROVAL_MIN_CONFIDENCE) &&
+    (run || (input.lastRun && now - input.lastRun.endedAt <= UNDO_WINDOW_MS))
+  )
+    return { kind: "undo", words: typed ? text.trim() : cleanTaskText(text) };
   // 5. "How's it going?" is answered, with or without a run, and never
   // becomes a correction to the run.
   if (isStatusQuestion(text)) return { kind: "status" };

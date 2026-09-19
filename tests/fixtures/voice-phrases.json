@@ -77,8 +77,22 @@
     "great",
     "fine"
   ],
+  "undo": [
+    "undo",
+    "Undo that.",
+    "undo it please",
+    "take that back",
+    "revert that",
+    "undo the last step",
+    "no, undo that",
+    "oops, undo",
+    "u-u-undo that"
+  ],
   "command": [
     "Stop scrolling and click Save",
+    "Don't undo that",
+    "undo the formatting in the second paragraph",
+    "redo that",
     "Don't stop",
     "stop and open Safari",
     "pause the video",

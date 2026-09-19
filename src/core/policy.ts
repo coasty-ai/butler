@@ -943,6 +943,22 @@ const CLIPBOARD_REFUSAL =
   "Clipboard access is disabled. Pasting is allowed only when the user asked for a paste and a text field is focused; copying and cutting never are.";
 /** Edit > Copy, Cut, Paste and their variants ("Copy Link", "Paste and Match Style"). */
 const clipboardMenuTitle = /^(?:copy|cut|paste)\b/i;
+/** Edit > Undo, as applications title it ("Undo", "Undo Typing"). */
+const undoMenuTitle = /^undo\b/;
+export const UNDO_QUESTION = "Undo the last change?";
+/**
+ * Edit > Undo takes the last step back, whoever asked for it: the user's
+ * spoken "undo that", or the model correcting its own step. Reversible by
+ * definition, so only "ask" asks; every other setting runs and reports it.
+ */
+function undoDecision(title: string, settings: Settings): Decision {
+  return settings.autonomy === "ask"
+    ? { kind: "CONFIRM", reason: UNDO_QUESTION }
+    : {
+        kind: "ALLOW",
+        reason: `${quote(title)} takes the last step back: done without asking, and reported.`,
+      };
+}
 /**
  * A menu item the frontmost application publishes, pressed by name. The native
  * helper resolved the path against the live menu bar and reported what it
@@ -1008,6 +1024,7 @@ function menuItemDecision(
   const title = normalizeControlLabel(
     surface.menuLabel ?? action.path[action.path.length - 1],
   );
+  if (undoMenuTitle.test(title)) return undoDecision(title, settings);
   if (consequential.test(title))
     return consequentialDecision(title, settings, context);
   return {

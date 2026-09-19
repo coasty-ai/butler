@@ -501,6 +501,7 @@ export class Conversation {
         "stop",
         "pause",
         "resume",
+        "undo",
         "queue",
       ].includes(plan.kind)
     )
@@ -645,6 +646,10 @@ export class Conversation {
           break;
         case "amendTask":
         case "acknowledge":
+          break;
+        // The run reports the undo itself, a moment later: "Undone." or
+        // "Nothing to undo." as its pause or its result.
+        case "undo":
           break;
       }
     } else if (model) afterReply(undefined);
