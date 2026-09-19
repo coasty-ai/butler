@@ -12,7 +12,11 @@ import {
   reversibleLabel,
   type PolicyContext,
 } from "../src/core/policy";
-import { autonomyHint } from "../src/ui/settings-voice";
+import {
+  AUTONOMY_ALL_ACKNOWLEDGEMENT,
+  autonomyChange,
+  autonomyHint,
+} from "../src/ui/settings-voice";
 
 /**
  * How often a run stops to ask. The line the settings never cross: a step
@@ -168,6 +172,104 @@ describe("how often it asks: the setting", () => {
           .kind,
       ).not.toBe("ALLOW");
     }
+  });
+});
+
+describe("how often it asks: allow everything", () => {
+  const all = (over: Partial<Settings> = {}): Settings => ({
+    ...structuredClone(defaultSettings),
+    autonomy: "all",
+    autonomyAllAcknowledged: true,
+    ...over,
+  });
+  const decideAll = (
+    action: Action,
+    surface: Partial<Surface>,
+    settings: Settings,
+    context: PolicyContext = {},
+  ) => evaluate(action, { ...base, ...surface }, settings, false, context);
+
+  it("asks for nothing once it is chosen and acknowledged", () => {
+    for (const label of ["Send", "Pay", "Delete", "Install", "Sign out"]) {
+      const decision = decideAll(menu(label), menuSurface(label), all());
+      expect(decision.kind, label).toBe("ALLOW");
+      expect(decision.reason).toMatch(/as you set\. Reported when done/);
+    }
+  });
+
+  it("does nothing without the acknowledgement: the mode alone is not consent", () => {
+    const unacknowledged = all({ autonomyAllAcknowledged: false });
+    // It behaves as the quiet mode: undoable steps run, the rest ask.
+    expect(
+      decideAll(menu("Send"), menuSurface("Send"), unacknowledged).kind,
+    ).toBe("CONFIRM");
+    expect(
+      decideAll(menu("Delete"), menuSurface("Delete"), unacknowledged).kind,
+    ).toBe("CONFIRM");
+    expect(
+      decideAll(menu("Save"), menuSurface("Save"), unacknowledged).kind,
+    ).toBe("CONFIRM");
+  });
+
+  it("still refuses what is refused, not asked", () => {
+    const settings = all();
+    // A password manager is refused however the user set the asking.
+    const passwords = { appId: "com.1password.1password" };
+    expect(decideAll(control("Save"), passwords, settings).kind).not.toBe(
+      "ALLOW",
+    );
+    // Typing into a credential field, and typing a secret anywhere.
+    expect(
+      decideAll(
+        act({ type: "type_text", text: "hunter2" }),
+        { focusedRole: "AXSecureTextField" },
+        settings,
+      ).kind,
+    ).not.toBe("ALLOW");
+    expect(
+      decideAll(
+        act({
+          type: "type_text",
+          text: "sk-ant-api03-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+        }),
+        { focusedRole: "AXTextField" },
+        settings,
+      ).kind,
+    ).not.toBe("ALLOW");
+  });
+
+  it("keeps the acknowledgement and the mode together", () => {
+    const current = { ...defaultSettings, autonomy: "task" as const };
+    // Picking it without ticking leaves the mode alone.
+    expect(autonomyChange(current, "all", false)).toEqual({
+      autonomy: "task",
+      autonomyAllAcknowledged: false,
+    });
+    expect(autonomyChange(current, "all", true)).toEqual({
+      autonomy: "all",
+      autonomyAllAcknowledged: true,
+    });
+    // Leaving it, or unticking, drops the acknowledgement with it.
+    const on = {
+      ...current,
+      autonomy: "all" as const,
+      autonomyAllAcknowledged: true,
+    };
+    expect(autonomyChange(on, "flow", true)).toEqual({
+      autonomy: "flow",
+      autonomyAllAcknowledged: false,
+    });
+    expect(autonomyChange(on, "all", false)).toEqual({
+      autonomy: "flow",
+      autonomyAllAcknowledged: false,
+    });
+    // And it says what it means before it is ticked.
+    expect(AUTONOMY_ALL_ACKNOWLEDGEMENT).toMatch(
+      /send, buy, delete and install without asking/,
+    );
+    expect(autonomyHint("all")).toMatch(/Nothing waits for you/);
+    expect(autonomyHint("all")).toMatch(/still reported/);
+    expect(autonomyHint("all")).toMatch(/Escape/);
   });
 });
 

@@ -25,7 +25,31 @@ export function autonomyHint(autonomy: Settings["autonomy"]): string {
     return "Every consequential step waits for you: saving, replacing, sending, buying, deleting.";
   if (autonomy === "flow")
     return "Anything that can be undone just happens, and is reported. Money leaving, anything sent or published, deletions, installs and account settings still wait for you.";
+  if (autonomy === "all")
+    return "Nothing waits for you, including sending, buying, deleting and installing. Every step is still reported as it happens, one Escape still stops a run, and password managers, credential fields and protected websites are still refused outright.";
   return "A step you asked for that can be undone just happens (you said “save the draft”, so it saves). Anything else consequential waits for you, and so do money, sending, deleting, installing and account settings, always.";
+}
+/** The line beside the tick that turns "allow everything" on. */
+export const AUTONOMY_ALL_ACKNOWLEDGEMENT =
+  "I understand it can send, buy, delete and install without asking me.";
+/**
+ * "Allow everything" runs only while the acknowledgement stands, so the
+ * settings the app saves keep the two together: picking another mode drops
+ * the acknowledgement, and picking this one without ticking leaves the mode
+ * where it was.
+ */
+export function autonomyChange(
+  current: Settings,
+  autonomy: Settings["autonomy"],
+  acknowledged: boolean,
+): Pick<Settings, "autonomy" | "autonomyAllAcknowledged"> {
+  if (autonomy !== "all") return { autonomy, autonomyAllAcknowledged: false };
+  return acknowledged
+    ? { autonomy: "all", autonomyAllAcknowledged: true }
+    : {
+        autonomy: current.autonomy === "all" ? "flow" : current.autonomy,
+        autonomyAllAcknowledged: false,
+      };
 }
 /** What the "Talk naturally" hint says about where the words go. */
 export function conversationHint(s: Settings): string {
@@ -159,15 +183,36 @@ export function VoiceSettings({
         <select
           value={s.autonomy}
           aria-describedby={`${ids}-autonomy`}
-          onChange={(e) =>
-            set("autonomy", e.target.value as Settings["autonomy"])
-          }
+          onChange={(e) => {
+            const change = autonomyChange(
+              s,
+              e.target.value as Settings["autonomy"],
+              s.autonomyAllAcknowledged,
+            );
+            set("autonomy", change.autonomy);
+            set("autonomyAllAcknowledged", change.autonomyAllAcknowledged);
+          }}
         >
           <option value="ask">Ask me every time</option>
           <option value="task">Only for what I did not ask for</option>
           <option value="flow">Only when it cannot be undone</option>
+          <option value="all">Never ask, allow everything</option>
         </select>
       </label>
+      {(s.autonomy === "all" || s.autonomyAllAcknowledged) && (
+        <label className="consent">
+          <input
+            type="checkbox"
+            checked={s.autonomy === "all" && s.autonomyAllAcknowledged}
+            onChange={(e) => {
+              const change = autonomyChange(s, "all", e.target.checked);
+              set("autonomy", change.autonomy);
+              set("autonomyAllAcknowledged", change.autonomyAllAcknowledged);
+            }}
+          />
+          <span>{AUTONOMY_ALL_ACKNOWLEDGEMENT}</span>
+        </label>
+      )}
       <p id={`${ids}-autonomy`} className="field-hint">
         {autonomyHint(s.autonomy)}
       </p>

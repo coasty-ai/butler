@@ -347,12 +347,22 @@ export const settingsSchema = z
      * How often a run stops to ask. "ask": every consequential step, as
      * before. "task" (the default): a step the user's own words asked for
      * and that can be undone runs without asking, and is reported instead.
-     * "flow": every step that can be undone runs without asking. Money
+     * "flow": every step that can be undone runs without asking; money
      * leaving, anything going out under the user's name, deletions,
-     * installs and account or security settings always ask, in every mode,
-     * and protected apps and websites are refused as before.
+     * installs and account or security settings still ask. "all": those
+     * stop asking too — only when the user chose it and ticked what it
+     * means (autonomyAllAcknowledged); without that it behaves as "flow".
+     * What is refused rather than asked never changes: protected apps and
+     * websites, credential fields, secrets in typed text, the emergency
+     * stop. Every unasked step is still reported.
      */
-    autonomy: z.enum(["ask", "task", "flow"]).default("task"),
+    autonomy: z.enum(["ask", "task", "flow", "all"]).default("task"),
+    /**
+     * The user ticked the acknowledgement beside "allow everything": that it
+     * can send, buy, delete and install without asking. Kept separate from
+     * the mode so nothing but a deliberate choice can turn it on.
+     */
+    autonomyAllAcknowledged: z.boolean().default(false),
     /** Text model for dialog and summaries; "" means the run model. */
     dialogModel: z.string().max(100).default(""),
     /** Hourly ceiling for dialog and summary calls, in estimated dollars. */
@@ -514,6 +524,7 @@ export const defaultSettings: Settings = {
   voiceSounds: true,
   conversation: "model",
   autonomy: "task",
+  autonomyAllAcknowledged: false,
   dialogModel: "",
   dialogHourlyCost: 0.5,
   decisions: "auto",

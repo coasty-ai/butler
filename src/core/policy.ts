@@ -332,10 +332,12 @@ const reversible =
   /\b(save|like|dislike|archive|join|connect|comment|decline|block|disable|deactivate|turn off|replace|overwrite|don['’]?t save|discard|restart|shut down|force quit|submit)\b/;
 /**
  * A consequential step, as the user's autonomy setting has it. In "ask" it
- * always asks, as before. Otherwise a step that can be undone runs when the
- * user's own words asked for it ("task") or whatever they said ("flow"),
- * and the run reports it instead. Nothing here reaches the steps that
- * cannot be undone: those ask in every mode.
+ * always asks, as before. A step that can be undone runs when the user's
+ * own words asked for it ("task") or whatever they said ("flow"), and the
+ * run reports it instead. In "all", chosen and acknowledged in Settings,
+ * the steps that cannot be undone stop asking too; that setting removes the
+ * asking only, never a refusal (protected apps and websites, credential
+ * fields, secrets in typed text), and every step is still reported.
  */
 function consequentialDecision(
   title: string,
@@ -346,6 +348,11 @@ function consequentialDecision(
     kind: "CONFIRM",
     reason: consequentialReason(title),
   };
+  if (settings.autonomy === "all" && settings.autonomyAllAcknowledged)
+    return {
+      kind: "ALLOW",
+      reason: `${quote(title)}: done without asking, as you set. Reported when done.`,
+    };
   if (settings.autonomy === "ask" || !reversibleLabel(title)) return asks;
   if (settings.autonomy === "flow")
     return {
