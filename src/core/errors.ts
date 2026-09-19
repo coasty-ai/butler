@@ -87,6 +87,40 @@ export class NativeActionError extends Error {
 }
 
 /**
+ * The helper's refusals for a bound window (.data/design/background-actuation.md
+ * §6.1), fixed codes and content-free. TARGET_GONE: the pid, bundle, launch
+ * date or window behind the token no longer match (never re-resolved by
+ * name). TARGET_PROTECTED: the window became one the floors refuse. The
+ * rest say why a background rung could not deliver this step: the window is
+ * minimized or on another Space (no pointer input), its picture is stale
+ * under cover, the rung is unavailable for this application (a background
+ * scroll in Electron), or posted keys could land in a sibling window.
+ */
+export const targetCodes = [
+  "TARGET_GONE",
+  "TARGET_PROTECTED",
+  "TARGET_MINIMIZED",
+  "TARGET_OFF_SPACE",
+  "TARGET_COVERED_STALE",
+  "RUNG_NO_EFFECT",
+  "RUNG_UNAVAILABLE",
+  "KEYBOARD_AMBIGUOUS",
+] as const;
+export type TargetCode = (typeof targetCodes)[number];
+export function targetCode(value: unknown): TargetCode | undefined {
+  return targetCodes.find((code) => code === value);
+}
+export class TargetError extends Error {
+  constructor(
+    readonly code: TargetCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "TargetError";
+  }
+}
+
+/**
  * The native helper exited or stopped responding and is being restarted. The
  * run should pause until the user continues.
  */

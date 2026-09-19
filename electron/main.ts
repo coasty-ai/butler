@@ -27,6 +27,7 @@ import {
 } from "node:fs";
 import { z } from "zod";
 import {
+  actionSchema,
   defaultSettings,
   kokoroVoices,
   settingsSchema,
@@ -41,6 +42,8 @@ import {
   type WatchContext,
 } from "../src/core/schema";
 import { normalizeAppName } from "../src/core/policy";
+import { isForegroundRequest } from "../src/core/background";
+import { stepLine } from "../src/assistant/steps";
 import {
   MANUAL_PAUSE_MESSAGE,
   Runner,
@@ -1663,8 +1666,10 @@ function getNative() {
           canApprove: false,
         });
       },
-      () => {
-        runner?.manualTakeover();
+      (scope) => {
+        // A background run pauses only for input aimed at its window; the
+        // runner decides from the scope the helper's tap reported.
+        runner?.manualTakeover(scope);
         // Remember this hold so it can end on its own once the user lets go.
         if (snapshot.run?.status === "paused")
           manualHold = { sequence: lastSequence() };
@@ -1673,6 +1678,8 @@ function getNative() {
       {
         inputIdle: (report) => void resumeAfterManualInput(report),
         scrollEnded,
+        targetSelfActivated: () => runner?.targetSelfActivated(),
+        targetGone: (_token, code) => runner?.targetGone(code),
         onUnavailable: () => {
           if (shuttingDown) return;
           const run = snapshot.run;
@@ -3462,7 +3469,11 @@ function renderPill(s: Snapshot) {
       transcript: "",
       canApprove: false,
     });
-  else
+  else {
+    // A run working in a bound window names it and what it last did there,
+    // so the user sees the work without looking at the window; "I need Slack
+    // for a second." shows while the window is in front for a step.
+    const background = s.run?.target?.background ? s.run.target : undefined;
     setPill({
       ...common,
       phase: "working",
@@ -3471,12 +3482,32 @@ function renderPill(s: Snapshot) {
       label:
         status === "confirming"
           ? "Checking the screen…"
-          : s.frame?.context?.appName
-            ? `Working in ${s.frame.context.appName}`
-            : "Working…",
-      transcript: notice.until > Date.now() ? notice.text : "",
+          : background
+            ? isForegroundRequest(s.message)
+              ? s.message
+              : `Working in ${background.appName} in the background`
+            : s.frame?.context?.appName
+              ? `Working in ${s.frame.context.appName}`
+              : "Working…",
+      transcript:
+        notice.until > Date.now()
+          ? notice.text
+          : background
+            ? lastStepLine(s)
+            : "",
       canApprove: false,
     });
+  }
+}
+/** The last executed step of a run, as a redacted line ("clicked “Send”"). */
+function lastStepLine(s: Snapshot): string {
+  for (let i = s.events.length - 1; i >= 0; i--) {
+    const event = s.events[i];
+    if (event.type !== "ActionExecuted") continue;
+    const parsed = actionSchema.safeParse(event.data.action);
+    return (parsed.success && stepLine(parsed.data)) || "";
+  }
+  return "";
 }
 
 function ensureIdle() {
@@ -3643,6 +3674,15 @@ async function startRun(
     );
     voiceHeld = false;
     window.hide();
+    // Work in the bound window in the background while the user is at the
+    // Mac (design §2.2); away, in front is faster and better proven. A watch
+    // woke its window to the front already, and an undo acts on it.
+    const background =
+      !tutorial &&
+      settings.workInBackground &&
+      presence.current() !== "away" &&
+      !from?.watch &&
+      !from?.undo;
     void runner
       .start(task, {
         origin,
@@ -3653,6 +3693,7 @@ async function startRun(
         ...(dictation ? { dictation } : {}),
         ...(from?.undo ? { undo: true } : {}),
         ...(from?.toolStep ? { toolStep: from.toolStep } : {}),
+        ...(background ? { background: true } : {}),
       })
       .catch((error) => {
         debug("RunStartFailed", errorDetails(error));

@@ -14,6 +14,7 @@ import {
   markSkillIn,
   prune,
   recordAppUseIn,
+  recordBackgroundIn,
   stableId,
   upsertPreferenceIn,
   upsertSkillIn,
@@ -284,6 +285,21 @@ export function learnFromRun(
   }
   for (const bundleId of intentLaunched) seen.delete(bundleId);
   for (const bundleId of seen) recordAppUseIn(data, bundleId, undefined, now);
+
+  // What the bound window's application did with each background route:
+  // facts about the application, whatever became of the run.
+  const observed = (input.background ?? []).filter(
+    (o): o is NonNullable<typeof o> =>
+      !!o && typeof o.appId === "string" && !!o.appId,
+  );
+  for (const bundleId of new Set(observed.map((o) => o.appId)))
+    recordBackgroundIn(
+      data,
+      bundleId,
+      observed.find((o) => o.appId === bundleId && o.appName)?.appName,
+      observed.filter((o) => o.appId === bundleId),
+      now,
+    );
 
   // Episode.
   const task = bound(redactSecrets(String(input.task ?? "").trim()), 500);

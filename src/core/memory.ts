@@ -52,9 +52,35 @@ export interface ReplayPlan {
   outline: string[];
 }
 
+/**
+ * The four ways a step reaches a background window that memory keeps a
+ * verdict on, per application (design §5): rung-1 presses and writes by
+ * accessibility, rung-2 clicks and keys posted to the process.
+ */
+export type BackgroundRoute = "press" | "write" | "post" | "keys";
+/** "echo": the application echoed a written value back without rendering it. */
+export type BackgroundVerdict = "works" | "noop" | "echo";
+/** What the runner knows an application does with each route, from memory. */
+export type BackgroundKnowledge = Partial<
+  Record<BackgroundRoute, BackgroundVerdict>
+>;
+/** One postcondition read of a bound run, as memory learns it. */
+export interface BackgroundObservation {
+  appId: string;
+  appName?: string;
+  route: BackgroundRoute;
+  verdict: BackgroundVerdict;
+}
+
 export interface Recall {
   context: MemoryContext;
   plan?: ReplayPlan;
+  /**
+   * Per bundle id, the routes a background run may skip for that
+   * application. For the runner alone: the model gets the per-step result
+   * lines instead, and nothing here enters MemoryContext.
+   */
+  background?: Record<string, BackgroundKnowledge>;
 }
 
 /** What the runner saw for one executed step (for learning). */
@@ -106,6 +132,11 @@ export interface LearnInput {
     abandonReason?: string;
   };
   usage: Usage;
+  /**
+   * What the postcondition reads of a bound run found, one entry per rung
+   * tried (design §5): application names and verdicts only, never text.
+   */
+  background?: BackgroundObservation[];
 }
 
 /** Runner-facing access. Implementations must never throw into the run. */

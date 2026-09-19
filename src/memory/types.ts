@@ -1,4 +1,5 @@
 import type { RunStatus } from "../core/schema";
+import type { BackgroundVerdict } from "../core/memory";
 import type { ToolTier } from "../core/tools";
 
 /**
@@ -70,6 +71,29 @@ export interface AppUsage {
   name: string;
   count: number;
   lastUsed: string;
+  background?: AppBackground;
+}
+
+/**
+ * What background runs learned about this application
+ * (.data/design/background-actuation.md §5): which routes deliver and which
+ * it ignores, so the next run starts at the right rung. Verdicts only, never
+ * text. An entry older than BACKGROUND_RETRY_DAYS is not applied, so the
+ * route is tried once more and the verdict refreshed.
+ */
+export interface AppBackground {
+  /** Rung-1 presses (click_control, click, menu items, scroll by accessibility). */
+  press?: BackgroundVerdict;
+  /** Rung-1 text written by accessibility. */
+  write?: BackgroundVerdict;
+  /** Rung-2 clicks and scrolls posted to the process. */
+  post?: BackgroundVerdict;
+  /** Rung-2 keys posted to the process. */
+  keys?: BackgroundVerdict;
+  /** ISO time of the last observation. */
+  observedAt: string;
+  /** CFBundleShortVersionString at observation, when the helper reported one. */
+  appVersion?: string;
 }
 
 export interface MemoryData {

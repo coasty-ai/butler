@@ -7,9 +7,13 @@ import {
   NativeStoppedError,
   ScreenChangedError,
   SurfaceBlockedError,
+  TargetError,
   screenChange,
+  targetCode,
   type NativeActionCode,
+  type TargetCode,
 } from "../src/core/errors";
+import type { TakeoverScope } from "../src/core/runner";
 import {
   errorDetails,
   trace,
@@ -23,8 +27,11 @@ import type {
   OcrLine,
   ProbeResult,
   Region,
+  Rung,
+  RunTarget,
   Settings,
   Surface,
+  TargetSpec,
   WatchBinding,
 } from "../src/core/schema";
 
@@ -323,6 +330,8 @@ function nativeError(line: {
     return new ScreenChangedError(message, screenChange(line.change));
   if (line.code === "STOPPED") return new NativeStoppedError(message);
   if (line.code === "SURFACE_BLOCKED") return new SurfaceBlockedError(message);
+  const target = targetCode(line.code);
+  if (target) return new TargetError(target, message);
   if (
     typeof line.code === "string" &&
     nativeActionCodes.has(line.code as NativeActionCode)
@@ -432,6 +441,70 @@ const watchMethods = new Set([
   "setWatchMode",
   "focusWatch",
 ]);
+/**
+ * A bounded copy of the helper's run target, or undefined when its shape is
+ * not one. As with a watch binding, the token names the window only to the
+ * helper (.data/design/background-actuation.md §2.2).
+ */
+export function runTarget(value: unknown): RunTarget | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  if (
+    typeof v.token !== "string" ||
+    !/^[A-Za-z0-9-]{8,64}$/.test(v.token) ||
+    typeof v.appId !== "string" ||
+    typeof v.appName !== "string" ||
+    typeof v.pid !== "number" ||
+    !Number.isInteger(v.pid) ||
+    typeof v.windowId !== "number" ||
+    !Number.isInteger(v.windowId)
+  )
+    return undefined;
+  return {
+    token: v.token,
+    pid: v.pid,
+    windowId: v.windowId,
+    appId: v.appId.slice(0, 255),
+    appName: v.appName.slice(0, 120),
+    title: typeof v.title === "string" ? v.title.slice(0, 300) : "",
+  };
+}
+const rungs = new Set<Rung>(["ax", "post", "foreground"]);
+const effects = new Set<NonNullable<ExecutionResult["effect"]>>([
+  "changed",
+  "none",
+  "unverifiable",
+]);
+/**
+ * The helper's executeTarget reply: the rung that delivered the step and
+ * what its postcondition read found, plus the launch and open results an
+ * execute reply may carry. Undefined when the shape is not one; a reply that
+ * says the step was not executed becomes a TargetError with the helper's
+ * code, or RUNG_UNAVAILABLE when it names none the runner knows.
+ */
+export function targetResult(value: unknown): ExecutionResult | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  if (v.executed !== true)
+    throw new TargetError(
+      targetCode(v.code) ?? "RUNG_UNAVAILABLE",
+      typeof v.error === "string" && v.error
+        ? v.error.slice(0, 300)
+        : "The step could not be delivered to the window.",
+    );
+  const rung = rungs.has(v.rung as Rung) ? (v.rung as Rung) : undefined;
+  const effect = effects.has(v.effect as NonNullable<ExecutionResult["effect"]>)
+    ? (v.effect as NonNullable<ExecutionResult["effect"]>)
+    : undefined;
+  const launched = launchedResult(v.launched),
+    opened = openedResult(v.opened);
+  return {
+    ...(rung && { rung }),
+    ...(effect && { effect }),
+    ...(launched && { launched }),
+    ...(opened && { opened }),
+  };
+}
 /**
  * A bounded copy of the helper's watch binding, or undefined when its shape
  * is not one. The token is opaque: it names the window only to the helper.
@@ -603,19 +676,31 @@ export function nativeTimeout(
   method: string,
   data: Record<string, unknown> = {},
 ): number {
-  if (method === "capture" || method === "revalidate") return 25000;
+  // A bound window is captured and checked like the screen.
+  if (
+    ["capture", "revalidate", "captureTarget", "revalidateTarget"].includes(
+      method,
+    )
+  )
+    return 25000;
   // Spotlight metadata lookups are fast; memory recall never waits long.
   if (method === "index") return 3000;
   // A probe is one window capture and its OCR; binding and focusing list the
   // windows on screen and activate one; the rest flip a flag.
   if (method === "probe") return 10000;
-  if (method === "bindWatch" || method === "focusWatch") return 8000;
-  if (method === "unbindWatch" || method === "setWatchMode") return 3000;
+  if (
+    ["bindWatch", "focusWatch", "bindTarget", "foregroundTarget"].includes(
+      method,
+    )
+  )
+    return 8000;
+  if (["unbindWatch", "setWatchMode", "unbindTarget"].includes(method))
+    return 3000;
   // The helper answers presence on its reader thread, ahead of its command
   // queue, so it never waits behind a capture or paced typing and answers in
   // milliseconds; a slow answer means a wedged helper, not a long request.
   if (method === "presence") return 2000;
-  if (method === "execute") {
+  if (method === "execute" || method === "executeTarget") {
     const action = data.action as Partial<Action> | undefined;
     if (action?.type === "type_text" && typeof action.text === "string")
       return 15000 + 40 * action.text.length;
@@ -632,7 +717,12 @@ export class NativeController implements Controller {
   constructor(
     binary: string,
     emergency: () => void,
-    manualInput: () => void = () => {},
+    /**
+     * The user's own input, with where it landed for a background run: in
+     * the bound window ("target") or anywhere else ("screen", also every
+     * report from a helper that knows no targets).
+     */
+    manualInput: (scope: TakeoverScope) => void = () => {},
     private diagnostics?: DiagnosticSink,
     hooks: HelperHooks & {
       timeout?: typeof nativeTimeout;
@@ -640,6 +730,10 @@ export class NativeController implements Controller {
       inputIdle?: (report: { idleMs: number; kinds: string[] }) => void;
       /** A continuous scroll ended, with why and how many ticks it posted. */
       scrollEnded?: (report: ScrollEndReport) => void;
+      /** The bound application activated itself and the helper put the user's back. */
+      targetSelfActivated?: (token: string) => void;
+      /** The binding behind the token died or became protected. */
+      targetGone?: (token: string, code: TargetCode) => void;
     } = {},
   ) {
     this.timeout = hooks.timeout ?? nativeTimeout;
@@ -682,8 +776,11 @@ export class NativeController implements Controller {
           return true;
         }
         if (obj.event === "user_takeover") {
+          const scope: TakeoverScope =
+            obj.scope === "target" ? "target" : "screen";
           trace(this.diagnostics, "NativeUserTakeover", {
             source: obj.source,
+            scope,
             delta_x: obj.delta_x,
             delta_y: obj.delta_y,
             sourcePid: obj.sourcePid,
@@ -691,7 +788,20 @@ export class NativeController implements Controller {
             flags: obj.flags,
             pointerDistance: obj.pointerDistance,
           });
-          manualInput();
+          manualInput(scope);
+          return true;
+        }
+        if (obj.event === "target_self_activated") {
+          trace(this.diagnostics, "NativeTargetSelfActivated");
+          if (typeof obj.token === "string")
+            hooks.targetSelfActivated?.(obj.token);
+          return true;
+        }
+        if (obj.event === "target_gone") {
+          const code = targetCode(obj.code) ?? "TARGET_GONE";
+          trace(this.diagnostics, "NativeTargetGone", { code });
+          if (typeof obj.token === "string")
+            hooks.targetGone?.(obj.token, code);
           return true;
         }
         if (obj.event === "scroll_ended") {
@@ -723,11 +833,14 @@ export class NativeController implements Controller {
               ? // A slow probe costs one read of a background window; a
                 // restart would pause whatever run is going on.
                 { message: "The watch did not answer in time.", kill: false }
-              : {
-                  message:
-                    "Desktop control stopped responding and is restarting.",
-                  kill: true,
-                },
+              : method === "unbindTarget"
+                ? // Releasing a binding at the end of a run is never worth a restart.
+                  { message: "The target did not answer in time.", kill: false }
+                : {
+                    message:
+                      "Desktop control stopped responding and is restarting.",
+                    kill: true,
+                  },
       )
       .then(
         (result) => {
@@ -850,6 +963,67 @@ export class NativeController implements Controller {
   }
   async focusWatch(token: string) {
     await this.request("focusWatch", { token });
+  }
+  /**
+   * Background runs (.data/design/background-actuation.md §6.5). The helper
+   * binds the window and mints the token; every later call names it by the
+   * token alone, and the helper re-checks what is behind it before acting.
+   */
+  async bindTarget(spec: TargetSpec): Promise<RunTarget> {
+    const target = runTarget(await this.request("bindTarget", { ...spec }));
+    if (!target) throw new Error("Native controller returned no run target.");
+    return target;
+  }
+  async captureTarget(token: string): Promise<Frame> {
+    const frame: Frame = await this.request("captureTarget", { token });
+    frame.context = cleanScreenContext(frame.context);
+    return frame;
+  }
+  surfaceTarget(token: string, action?: Action): Promise<Surface> {
+    return this.request("surfaceTarget", {
+      token,
+      ...(action ? { action } : {}),
+    });
+  }
+  async revalidateTarget(
+    token: string,
+    action: Action,
+    _frame: Frame,
+  ): Promise<Frame> {
+    const frame: Frame = await this.request("revalidateTarget", {
+      token,
+      action,
+    });
+    frame.context = cleanScreenContext(frame.context);
+    return frame;
+  }
+  async executeTarget(
+    token: string,
+    action: Action,
+    _frame: Frame,
+    rungs: Rung[],
+    signal: AbortSignal,
+  ): Promise<ExecutionResult> {
+    signal.throwIfAborted();
+    const stop = () => this.stop();
+    signal.addEventListener("abort", stop, { once: true });
+    try {
+      const result = targetResult(
+        await this.request("executeTarget", { token, action, rungs }),
+      );
+      if (!result)
+        throw new Error("Native controller returned no target result.");
+      return result;
+    } finally {
+      signal.removeEventListener("abort", stop);
+    }
+  }
+  async foregroundTarget(token: string): Promise<{ frontmost: boolean }> {
+    const result = await this.request("foregroundTarget", { token });
+    return { frontmost: result?.frontmost === true };
+  }
+  async unbindTarget(token: string) {
+    await this.request("unbindTarget", { token });
   }
   /**
    * Scrolls the window in front gently until stopped (a spoken "scroll

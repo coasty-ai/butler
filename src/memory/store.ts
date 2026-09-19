@@ -10,7 +10,19 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "../storage/vault";
-import type { AppUsage, Episode, MemoryData, Preference, Skill } from "./types";
+import type {
+  AppBackground,
+  AppUsage,
+  Episode,
+  MemoryData,
+  Preference,
+  Skill,
+} from "./types";
+import type {
+  BackgroundKnowledge,
+  BackgroundObservation,
+  BackgroundRoute,
+} from "../core/memory";
 import { bound, tokenize } from "./retrieve";
 
 /** Retrieval tokens kept per preference (its text plus task context). */
@@ -158,6 +170,73 @@ export function recordAppUseIn(
   };
   data.apps[id] = usage;
   return usage;
+}
+
+/** A background verdict this old is tried once more instead of applied. */
+export const BACKGROUND_RETRY_DAYS = 30;
+const BACKGROUND_ROUTES: readonly BackgroundRoute[] = [
+  "press",
+  "write",
+  "post",
+  "keys",
+];
+/**
+ * What one run's postcondition reads say about an application's background
+ * routes (design §5): one "works" is enough; a "noop" or "echo" needs two
+ * consistent observations before it is stored. A verdict a run did not
+ * observe is kept as it was. Returns the stored entry, or undefined when the
+ * observations decided nothing.
+ */
+export function recordBackgroundIn(
+  data: MemoryData,
+  bundleId: string,
+  name: string | undefined,
+  observations: BackgroundObservation[],
+  now: Date,
+): AppBackground | undefined {
+  const verdicts: BackgroundKnowledge = {};
+  for (const route of BACKGROUND_ROUTES) {
+    const seen = observations.filter((o) => o.route === route);
+    if (!seen.length) continue;
+    if (seen.some((o) => o.verdict === "works")) verdicts[route] = "works";
+    else if (seen.filter((o) => o.verdict === "noop").length >= 2)
+      verdicts[route] = "noop";
+    else if (seen.filter((o) => o.verdict === "echo").length >= 2)
+      verdicts[route] = "echo";
+  }
+  if (!Object.keys(verdicts).length) return undefined;
+  const usage =
+    (Object.hasOwn(data.apps, bundleId) ? data.apps[bundleId] : undefined) ??
+    recordAppUseIn(data, bundleId, name, now);
+  if (!usage) return undefined;
+  usage.background = {
+    ...usage.background,
+    ...verdicts,
+    observedAt: now.toISOString(),
+  };
+  return usage.background;
+}
+/**
+ * The routes to skip per application, for the runner (design §5): verdicts
+ * observed within BACKGROUND_RETRY_DAYS; "works" says nothing to skip and
+ * is left out.
+ */
+export function backgroundKnowledge(
+  data: MemoryData,
+  now: Date,
+): Record<string, BackgroundKnowledge> {
+  const cutoff = now.getTime() - BACKGROUND_RETRY_DAYS * DAY_MS;
+  const known: Record<string, BackgroundKnowledge> = {};
+  for (const usage of Object.values(data.apps)) {
+    const learned = usage.background;
+    if (!learned || time(learned.observedAt) < cutoff) continue;
+    const skips: BackgroundKnowledge = {};
+    for (const route of BACKGROUND_ROUTES)
+      if (learned[route] === "noop" || learned[route] === "echo")
+        skips[route] = learned[route];
+    if (Object.keys(skips).length) known[usage.bundleId] = skips;
+  }
+  return known;
 }
 
 export function upsertSkillIn(data: MemoryData, skill: Skill) {

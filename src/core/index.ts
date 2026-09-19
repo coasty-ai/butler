@@ -14,7 +14,15 @@ export {
   terminal,
   MANUAL_PAUSE_MESSAGE,
   TARGET_HANDOFF_MESSAGE,
+  type TakeoverScope,
 } from "./runner";
+
+// Background runs: the note the model reads and the lines the pill shows.
+export {
+  BACKGROUND_NOTE,
+  isForegroundRequest,
+  spokenTargets,
+} from "./background";
 
 // Actions, settings and the geometry helpers.
 export {
@@ -70,10 +78,14 @@ export {
   NativeActionError,
   HelperUnavailableError,
   SurfaceBlockedError,
+  TargetError,
   screenChanges,
   screenChange,
+  targetCodes,
+  targetCode,
   type NativeActionCode,
   type ScreenChange,
+  type TargetCode,
 } from "./errors";
 
 export type {
@@ -97,6 +109,10 @@ export type {
   PrivacyMode,
   ProviderKind,
   MemoryContext,
+  RunTarget,
+  TargetSpec,
+  Rung,
+  BackgroundContext,
 } from "./schema";
 
 export type {

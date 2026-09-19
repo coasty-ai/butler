@@ -386,7 +386,7 @@ describe("takeover source", () => {
     await until(() => runner.snapshot.run?.status === "thinking");
     runner.manualTakeover();
     expect(m.of("UserTakeoverStarted").map((e) => e.data)).toEqual([
-      { source: "manual_input" },
+      { source: "manual_input", scope: "screen" },
     ]);
     release();
     runner.stop();

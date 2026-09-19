@@ -67,6 +67,20 @@ const contextSchema = z
       })
       .strict()
       .optional(),
+    // A bound run's window (design §2.3): flags the helper reports and the
+    // runner's standing note for the model, which survives the provider's
+    // second cleaning here.
+    background: z
+      .object({
+        appName: short,
+        title: short,
+        covered: z.boolean(),
+        staleRisk: z.boolean(),
+        minimized: z.boolean(),
+        note: bounded(800).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 // Context can contain useful names/addresses. Remove only the detected
@@ -140,6 +154,16 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
         ...(c.watch.panelText !== undefined && {
           panelText: clean(c.watch.panelText).slice(0, 1500),
         }),
+      },
+    }),
+    ...(c.background && {
+      background: {
+        appName: clean(c.background.appName),
+        title: clean(c.background.title),
+        covered: c.background.covered,
+        staleRisk: c.background.staleRisk,
+        minimized: c.background.minimized,
+        ...(c.background.note !== undefined && { note: c.background.note }),
       },
     }),
   };

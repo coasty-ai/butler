@@ -1132,6 +1132,12 @@ export interface PolicyContext {
   tool?: { spec: ToolSpec; prepared: ToolPrepared; calls: number };
   /** The tool layer's clock, so questions and grounding read dates in the user's zone. */
   clock?: ToolClock;
+  /**
+   * The window the run is bound to, while it works there in the background
+   * (design §4): input goes to that process alone, and the step's own target
+   * must belong to it.
+   */
+  target?: { pid: number; appName: string };
 }
 /** The decision reason that marks the one clipboard press native may send. */
 export const PASTE_ALLOWED = "Paste what the user copied, as asked.";
@@ -1150,10 +1156,52 @@ export function evaluate(
   synthetic: boolean,
   context: PolicyContext = {},
 ): Decision {
+  const decision = decideAction(action, surface, settings, synthetic, context);
   return withoutAsking(
-    decideAction(action, surface, settings, synthetic, context),
+    backgroundRefusal(action, surface, context, decision) ?? decision,
     settings,
   );
+}
+/**
+ * What a run bound to a background window cannot do there (design §2.5):
+ * the target is the window, so nothing opens or switches applications; a
+ * drag and a modifier chord the application does not publish as a menu item
+ * have no background route. A denial or a hand-off keeps its own reason, so
+ * this never loosens a refusal; a step the rules allowed, would ask about or
+ * would retry gets the background reason instead. Only while the run is
+ * bound.
+ */
+function backgroundRefusal(
+  action: Action,
+  surface: Surface,
+  context: PolicyContext,
+  decision: Decision,
+): Decision | undefined {
+  if (!context.target && !surface.target) return undefined;
+  if (decision.kind === "DENY" || decision.kind === "USER_TAKEOVER")
+    return undefined;
+  const app = quote(context.target?.appName ?? surface.appName ?? "") || "it";
+  if (action.type === "open_app" || action.type === "open_file")
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. This run works in ${app}'s window in the background: it is already the window in the screenshot, so nothing else is opened or switched to. Work in it, or finish with done.`,
+    };
+  if (action.type === "drag")
+    return {
+      kind: "RETRY",
+      reason:
+        "No input was sent. Dragging has no route to a background window. Use a listed control, the menu or the keyboard, or scroll.",
+    };
+  if (
+    action.type === "hotkey" &&
+    !surface.shortcutLabel &&
+    action.keys.some((k) => ["CMD", "CTRL", "ALT", "SHIFT"].includes(k))
+  )
+    return {
+      kind: "RETRY",
+      reason: `No input was sent. ${action.keys.join("+")} is not one of ${app}'s menu shortcuts, and a chord cannot be posted to a background window. Use menu_item with the command's name from context.menus, or a listed control.`,
+    };
+  return undefined;
 }
 const PROTECTED_SITE_QUESTION = "Open a protected website?";
 export function withoutAsking(
@@ -1225,6 +1273,19 @@ function decideAction(
     return toolDecision(action, settings, synthetic, context);
   if (["capture", "done", "fail", "wait"].includes(action.type))
     return { kind: "ALLOW", reason: "" };
+  // A bound run's input goes to one process (design §4): a surface the
+  // helper read from another one, or a hit target in another application,
+  // is never acted on, whatever the step.
+  if (
+    context.target &&
+    (surface.pid !== context.target.pid ||
+      (surface.targetAppId !== undefined &&
+        surface.targetAppId !== surface.appId))
+  )
+    return {
+      kind: "DENY",
+      reason: `No input was sent. The step's target is not the ${quote(context.target.appName)} window this run is bound to; input goes only to that window.`,
+    };
   // Watching reads the frontmost window and sends nothing; the protected
   // checks above already refused a window that must not be read.
   if (action.type === "monitor")

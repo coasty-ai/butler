@@ -9,18 +9,24 @@ import type {
   Run,
   RunOrigin,
   RunStatus,
+  RunTarget,
+  Rung,
   Settings,
   Snapshot,
   ScreenContext,
   Observation,
   Surface,
   MemoryContext,
+  TargetSpec,
   TaskSource,
   Usage,
   WatchBinding,
   WatchContext,
 } from "./schema";
 import type {
+  BackgroundKnowledge,
+  BackgroundObservation,
+  BackgroundRoute,
   MemoryAccess,
   Recall,
   ReplayPlan,
@@ -30,7 +36,24 @@ import {
   validateAction,
   sameGeometry,
   normalizePixelCoordinates,
+  withoutWindow,
 } from "./schema";
+import {
+  BACKGROUND_NOTE,
+  NO_BACKGROUND_ROUTE,
+  backgroundLadder,
+  backgroundResult,
+  backgroundRoute,
+  finishInFront,
+  foregroundCapReached,
+  foregroundHandoff,
+  foregroundRequest,
+  noWindowInFront,
+  routeSkipped,
+  spokenTargets,
+  targetGoneMessage,
+  targetHold,
+} from "./background";
 import {
   labelMatches,
   normalizeLabel,
@@ -74,7 +97,9 @@ import {
   ProviderTransientError,
   ScreenChangedError,
   SurfaceBlockedError,
+  TargetError,
   type ScreenChange,
+  type TargetCode,
 } from "./errors";
 export const terminal = (s: RunStatus) =>
   ["completed", "cancelled", "failed"].includes(s);
@@ -748,6 +773,14 @@ export type ApprovalSource = "voice" | "pill" | "typed" | "message" | "remote";
  */
 export type TakeoverSource =
   "manual_input" | "request_user" | "policy" | "surface" | "handoff";
+/**
+ * Where the user's own input landed, as the helper's tap reports it for a
+ * background run (design §3): "target" inside the bound window's uncovered
+ * rectangles, or a key while that application is frontmost; "screen" is
+ * anywhere else, which is normal life for a bound run and a takeover for
+ * every other run.
+ */
+export type TakeoverScope = "screen" | "target";
 /** The run a monitor step hands its window over from. */
 export interface MonitorHandoff {
   id: string;
@@ -915,6 +948,24 @@ export class Runner {
    * pause meanwhile (the user's, or a declined approval) drops it.
    */
   private undoRequest?: { own: boolean };
+  /**
+   * The window this run is bound to (design §2.2). It stays for the run's
+   * life so the pill can name it; run.target.background says whether steps
+   * still go to it in the background.
+   */
+  private target?: RunTarget;
+  /** Misses per rung and route this run: two, and that rung is skipped for the rest of it. */
+  private rungMisses = new Map<string, number>();
+  /** What the postcondition reads found this run, for memory (bounded). */
+  private backgroundObservations: BackgroundObservation[] = [];
+  /** Run steps at which the window had to come in front, for the cap. */
+  private foregroundSteps: number[] = [];
+  /** Routes memory says applications drop in the background, by bundle id. */
+  private backgroundKnowledge?: Record<string, BackgroundKnowledge>;
+  /** Routes memory pruned that the pill has named this run. */
+  private routesNoted = new Set<BackgroundRoute>();
+  /** The bound window is in front for a step: the user's input anywhere pauses the run, as it always did. */
+  private inFront = false;
   constructor(
     private controller: Controller,
     private provider: Provider,
@@ -1143,15 +1194,64 @@ export class Runner {
     this.event("RunPaused");
     this.status("paused", message);
   }
-  manualTakeover() {
+  /**
+   * The user's own mouse or keyboard. For a run bound to a background window
+   * their hands elsewhere are the point, not a takeover (design §3): only
+   * input aimed at the bound window pauses it, or any input while the window
+   * is in front for a step. Every other run pauses as it always did.
+   */
+  manualTakeover(scope: TakeoverScope = "screen") {
+    const target = this.boundTarget();
+    if (target && scope === "screen" && !this.inFront) return;
     if (this.snapshot.pending && this.snapshot.run?.status === "confirming") {
       this.interruptForVoice();
       return;
     }
     if (!this.active()) return;
     this.handsOn = true;
-    this.pause(MANUAL_PAUSE_MESSAGE);
-    this.event("UserTakeoverStarted", { source: "manual_input" });
+    this.pause(
+      target && scope === "target"
+        ? targetHold(target.appName)
+        : MANUAL_PAUSE_MESSAGE,
+    );
+    this.event("UserTakeoverStarted", {
+      source: "manual_input",
+      scope: target ? scope : "screen",
+    });
+  }
+  /**
+   * The bound application activated itself (Safari on an accessibility write,
+   * Electron on launch) with no input from the user, and the helper put the
+   * user's application back at once (design §3). Journaled; the run goes on.
+   */
+  targetSelfActivated() {
+    if (!this.boundTarget()) return;
+    this.event("TargetSelfActivated");
+  }
+  /**
+   * The helper found the binding dead (pid, bundle, launch date or window no
+   * longer match) or the window protected. Never re-resolved by name: the run
+   * pauses and, on continue, takes the screen as before.
+   */
+  targetGone(code: TargetCode) {
+    const target = this.boundTarget();
+    if (!target) return;
+    this.leaveBackground("gone", code);
+    this.pause(targetGoneMessage(target.appName));
+  }
+  /** The window this run still works in from the background, if any. */
+  private boundTarget(): RunTarget | undefined {
+    return this.active() && this.snapshot.run?.target?.background
+      ? this.target
+      : undefined;
+  }
+  /** Steps go to the screen from here on; the binding stays for the pill and release. */
+  private leaveBackground(reason: string, code?: TargetCode) {
+    const run = this.snapshot.run;
+    if (!run?.target?.background) return;
+    run.target.background = false;
+    this.event("TargetLeft", { reason, ...(code ? { code } : {}) });
+    this.recorder.save(run);
   }
   stop(reason = "Stopped by you.") {
     if (!this.active()) return;
@@ -1508,6 +1608,26 @@ export class Runner {
       return true;
     }
     if (this.recoverStateChange(error, action)) return true;
+    if (error instanceof TargetError) {
+      this.event("ActionFailed", { code: error.code });
+      if (error.code === "TARGET_PROTECTED") {
+        // As a protected surface in front: the helper refused before input.
+        this.takeover(error.message, "surface");
+        return true;
+      }
+      if (error.code === "TARGET_GONE") {
+        if (this.boundTarget()) this.targetGone(error.code);
+        else this.pause(bound(error.message, 300));
+        return true;
+      }
+      this.reject({
+        type: action?.type ?? "rejected",
+        ...(action ? { action: echoAction(action) } : {}),
+        result: noInput(bound(error.message, 300)),
+      });
+      this.countInvalid();
+      return true;
+    }
     if (error instanceof NativeActionError) {
       this.event("ActionFailed", { code: error.code });
       this.reject({
@@ -1556,6 +1676,13 @@ export class Runner {
     this.toolList = undefined;
     this.toolNow = undefined;
     this.toolFallback = undefined;
+    this.target = undefined;
+    this.rungMisses.clear();
+    this.backgroundObservations = [];
+    this.foregroundSteps = [];
+    this.backgroundKnowledge = undefined;
+    this.routesNoted.clear();
+    this.inFront = false;
   }
   /**
    * Awaits work for at most `ms`, cancelled with the run: a late answer, an
@@ -1613,6 +1740,9 @@ export class Runner {
     const context = recall.context;
     if (!context || typeof context !== "object") return;
     this.memoryContext = { ...context };
+    // For the runner alone: which routes to skip in a bound application.
+    if (recall.background && typeof recall.background === "object")
+      this.backgroundKnowledge = recall.background;
     const plan = recall.plan;
     if (
       plan &&
@@ -2012,6 +2142,9 @@ export class Runner {
         handsOn: this.handsOn,
         ...(this.planResult ? { plan: { ...this.planResult } } : {}),
         usage: { ...run.usage },
+        ...(this.backgroundObservations.length
+          ? { background: [...this.backgroundObservations] }
+          : {}),
       }) as unknown;
       if (result instanceof Promise) result.catch(() => {});
     } catch {
@@ -2042,6 +2175,14 @@ export class Runner {
       this.event("ActionFailed", { code: "MONITOR_UNAVAILABLE" });
       return reject(
         "No input was sent. Monitoring isn't available here; use wait, or finish with done.",
+      );
+    }
+    // bindWatch takes the frontmost window, which is the user's, not the
+    // bound one: a background run has no window to hand a watch.
+    if (this.boundTarget()) {
+      this.event("ActionFailed", { code: "MONITOR_UNAVAILABLE" });
+      return reject(
+        "No input was sent. Watching isn't available while working in the background; use wait, or finish with done.",
       );
     }
     let binding: WatchBinding;
@@ -2124,15 +2265,304 @@ export class Runner {
   }
   private async capture() {
     this.lastSurface = undefined;
-    const surface = await this.controller.surface();
+    const surface = await this.surfaceNow();
     this.lastSurface = surface;
     const decision = surfacePolicy(surface, this.settings);
     if (decision.kind !== "ALLOW") {
       this.takeover(decision.reason, "surface");
       return null;
     }
-    const frame = await this.controller.capture();
+    const target = this.boundTarget();
+    const frame = target
+      ? await this.controller.captureTarget!(target.token)
+      : await this.controller.capture();
     return this.recordFrame(frame);
+  }
+  /** The surface of the bound window while the run works there, else the screen's. */
+  private surfaceNow(action?: Action) {
+    const target = this.boundTarget();
+    return target
+      ? this.controller.surfaceTarget!(target.token, action)
+      : this.controller.surface(action);
+  }
+  /**
+   * The model's copy of a frame: the watch context of a wake-up run and, for
+   * a bound run, the window's background facts with the standing note. Only
+   * this copy carries them; snapshots, traces and saved frames do not.
+   */
+  private modelFrame(frame: Frame): Frame {
+    const target = this.boundTarget();
+    if (!frame.context || (!this.watchContext && !target)) return frame;
+    return {
+      ...frame,
+      context: {
+        ...frame.context,
+        ...(this.watchContext && { watch: this.watchContext }),
+        ...(target && {
+          background: {
+            appName: target.appName,
+            title: frame.context.windowTitle,
+            covered: false,
+            staleRisk: false,
+            minimized: false,
+            ...frame.context.background,
+            note: BACKGROUND_NOTE,
+          },
+        }),
+      },
+    };
+  }
+  /**
+   * Binds the window a background run works in (design §2.2), trying in
+   * order the windows the words name, the application the prelude opened, and
+   * the window focused when the wake word ended (for a run the user started
+   * at the Mac). A name that is not an application is skipped; an application
+   * the words named that the helper recognized but refused (no window, not
+   * running, protected) ends the search, so the run never works in another
+   * window than the one asked for: it takes the screen, saying so for a
+   * missing window.
+   */
+  private async bindTarget(run: Run, prelude?: RunPrelude) {
+    const opened =
+      prelude?.outcome?.launched?.name ||
+      (prelude?.action.type === "open_app" ? prelude.action.name : undefined);
+    const atMac = run.origin === "voice" || run.origin === "typed";
+    const candidates: {
+      spec: TargetSpec;
+      by: "words" | "prelude" | "focus";
+    }[] = [
+      ...spokenTargets(run.task).map((spec) => ({
+        spec,
+        by: "words" as const,
+      })),
+      ...(opened ? [{ spec: { app: opened }, by: "prelude" as const }] : []),
+      ...(atMac ? [{ spec: {}, by: "focus" as const }] : []),
+    ];
+    let message: string | undefined;
+    for (const { spec, by } of candidates) {
+      if (!this.active()) return;
+      try {
+        const target = await this.controller.bindTarget!(spec);
+        this.target = target;
+        run.target = { ...target, background: true };
+        this.event("TargetBound", {
+          appId: target.appId,
+          windowId: target.windowId,
+          by,
+        });
+        this.recorder.save(run);
+        return;
+      } catch (error) {
+        if (!(error instanceof TargetError) || by !== "words") continue;
+        if (error.code === "TARGET_GONE") message = noWindowInFront(spec.app!);
+        break;
+      }
+    }
+    if (message) this.status("capturing", message);
+  }
+  /**
+   * One step to the bound window (design §2.5-§2.8): the rungs the ladder
+   * and memory leave, each read back; a miss steps down a rung and is
+   * remembered; with the background rungs spent and a foreground route left,
+   * the window comes in front for the step. Returns undefined when nothing
+   * executed and the run already heard why (a history line or a hand-off).
+   */
+  private async executeBound(
+    target: RunTarget,
+    action: Action,
+    native: Action,
+    surface: Surface,
+    frame: Frame,
+    epoch: number,
+  ): Promise<{ outcome: ExecutionResult | undefined } | undefined> {
+    if (action.type === "wait") {
+      await this.sleep(action.milliseconds);
+      return { outcome: undefined };
+    }
+    if (action.type === "move") {
+      this.history.push({
+        type: action.type,
+        action: echoAction(action),
+        result:
+          "No input was sent. There is no cursor to move in a background window; click a listed control or a point directly.",
+      });
+      return undefined;
+    }
+    const ladder = backgroundLadder(action, surface.shortcutLabel, (route) =>
+      this.skipsRung(target, route),
+    );
+    // A capture: nothing is delivered to the window.
+    if (!ladder) return { outcome: undefined };
+    if (!ladder.rungs.length) {
+      if (ladder.foreground)
+        return this.foreground(target, action, native, frame, epoch, "pruned");
+      this.history.push({
+        type: action.type,
+        action: echoAction(action),
+        result: `No input was sent. ${target.appName} ignores this route in the background; use another control, the menu or the keyboard.`,
+      });
+      return undefined;
+    }
+    let outcome: ExecutionResult;
+    try {
+      outcome = await this.controller.executeTarget!(
+        target.token,
+        native,
+        frame,
+        ladder.rungs,
+        this.abort.signal,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof TargetError) ||
+        !NO_BACKGROUND_ROUTE.has(error.code)
+      )
+        throw error;
+      if (error.code === "RUNG_NO_EFFECT")
+        for (const rung of ladder.rungs)
+          this.recordMiss(
+            target,
+            action,
+            rung,
+            ladder.foreground ? "foreground" : undefined,
+          );
+      if (ladder.foreground)
+        return this.foreground(
+          target,
+          action,
+          native,
+          frame,
+          epoch,
+          error.code,
+        );
+      this.event("ActionFailed", { code: error.code });
+      this.history.push({
+        type: action.type,
+        action: echoAction(action),
+        result: noInput(bound(error.message, 300)),
+      });
+      return undefined;
+    }
+    // The rung that answered, and every rung before it read as no effect.
+    const rung =
+      outcome.rung && ladder.rungs.includes(outcome.rung)
+        ? outcome.rung
+        : ladder.rungs[ladder.rungs.length - 1];
+    outcome = { ...outcome, rung, effect: outcome.effect ?? "unverifiable" };
+    for (const missed of ladder.rungs.slice(0, ladder.rungs.indexOf(rung)))
+      this.recordMiss(target, action, missed, rung);
+    if (outcome.effect === "changed") {
+      this.observe(target, action, rung, "works");
+      return { outcome };
+    }
+    if (outcome.effect === "unverifiable") return { outcome };
+    this.recordMiss(
+      target,
+      action,
+      rung,
+      ladder.foreground ? "foreground" : undefined,
+    );
+    if (!ladder.foreground) return { outcome };
+    return this.foreground(target, action, native, frame, epoch, "no_effect");
+  }
+  /**
+   * Whether a rung is skipped for this step: the run saw this application
+   * ignore its route twice, or memory did (design §5), which the pill names
+   * once per route.
+   */
+  private skipsRung(target: RunTarget, route: BackgroundRoute) {
+    if ((this.rungMisses.get(route) ?? 0) >= 2) return true;
+    const known = this.backgroundKnowledge?.[target.appId]?.[route];
+    if (known !== "noop" && known !== "echo") return false;
+    if (!this.routesNoted.has(route)) {
+      this.routesNoted.add(route);
+      this.event("BackgroundRouteSkipped", { route });
+      this.status("executing", routeSkipped(target.appName, route));
+    }
+    return true;
+  }
+  private recordMiss(target: RunTarget, action: Action, rung: Rung, to?: Rung) {
+    const route = backgroundRoute(action, rung);
+    this.rungMisses.set(route, (this.rungMisses.get(route) ?? 0) + 1);
+    this.observe(target, action, rung, "noop");
+    if (to)
+      this.event("RungStepped", { from: rung, to, actionType: action.type });
+  }
+  private observe(
+    target: RunTarget,
+    action: Action,
+    rung: Rung,
+    verdict: BackgroundObservation["verdict"],
+  ) {
+    if (this.backgroundObservations.length >= 40) return;
+    this.backgroundObservations.push({
+      appId: target.appId,
+      appName: target.appName,
+      route: backgroundRoute(action, rung),
+      verdict,
+    });
+  }
+  /**
+   * Rung 3 (design §2.8): "I need Slack for a second"; the helper remembers
+   * the user's application and activates the bound one; the step runs on the
+   * HID tap with the frontmost floors and the helper restores the user's
+   * application. The user's input anywhere pauses the run meanwhile. Past
+   * three detours in ten steps the run says so, brings the window in front
+   * once more and finishes there.
+   */
+  private async foreground(
+    target: RunTarget,
+    action: Action,
+    native: Action,
+    frame: Frame,
+    epoch: number,
+    reason: string,
+  ): Promise<{ outcome: ExecutionResult } | undefined> {
+    const run = this.snapshot.run!;
+    this.foregroundSteps.push(run.actions);
+    const capped = foregroundCapReached(this.foregroundSteps, run.actions);
+    this.event("ForegroundRequested", {
+      reason,
+      actionType: action.type,
+      ...(capped ? { final: true } : {}),
+    });
+    this.status(
+      "executing",
+      capped
+        ? finishInFront(target.appName)
+        : foregroundRequest(target.appName),
+    );
+    this.inFront = true;
+    try {
+      const { frontmost } = await this.controller.foregroundTarget!(
+        target.token,
+      );
+      if (this.held || epoch !== this.epoch) return undefined;
+      if (!frontmost) {
+        this.takeover(foregroundHandoff(target.appName), "handoff");
+        return undefined;
+      }
+      const outcome = await this.controller.executeTarget!(
+        target.token,
+        native,
+        frame,
+        ["foreground"],
+        this.abort.signal,
+      );
+      if (capped && this.active() && !this.held && epoch === this.epoch) {
+        this.leaveBackground("cap");
+        await this.controller.foregroundTarget!(target.token);
+      }
+      return {
+        outcome: {
+          ...outcome,
+          rung: "foreground",
+          effect: outcome.effect ?? "unverifiable",
+        },
+      };
+    } finally {
+      this.inFront = false;
+    }
   }
   private recordFrame(frame: Frame) {
     this.check();
@@ -2290,6 +2720,13 @@ export class Runner {
       ...(o.early ? { early: true } : {}),
       // Whether a hotkey was pressed as its menu item or posted as keys.
       ...(via ? { via } : {}),
+      // The rung that reached a bound window and what its postcondition read found.
+      ...(outcome?.rung
+        ? {
+            rung: outcome.rung,
+            ...(outcome.effect && { effect: outcome.effect }),
+          }
+        : {}),
       ...(opened ? { opened: { kind: opened.kind } } : {}),
       ...(launched
         ? {
@@ -2327,9 +2764,16 @@ export class Runner {
             : `Launch requested for ${launched.appId}; not frontmost yet. Wait briefly before retrying.`
           : opened
             ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`
-            : ["type_text", "key", "hotkey"].includes(action.type)
-              ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
-              : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
+            : outcome?.rung
+              ? backgroundResult(
+                  action,
+                  executedTarget(action, actionSurface, via),
+                  outcome,
+                  this.target?.appName || "the application",
+                )
+              : ["type_text", "key", "hotkey"].includes(action.type)
+                ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
+                : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
         (o.reaimed ? reaimNote : "") +
         (loop === "warn" ? loopWarning : "") +
         (thrashing ? appSwitchWarning : ""),
@@ -2368,6 +2812,14 @@ export class Runner {
        * policy and approval apply as to any step, and a tool missing from the frozen list leaves it to the model.
        */
       toolStep?: { tool: string; args: Record<string, unknown> };
+      /**
+       * Work in a bound window in the background (design §2.2): the window
+       * the words name ("in Slack"), the one the prelude opened, or the one
+       * focused when the wake word ended. Asked for when the setting is on
+       * and the user is at the Mac; the run takes the screen as before when
+       * no window binds.
+       */
+      background?: boolean;
     } = {},
   ) {
     if (this.active()) throw new Error("A run is already active.");
@@ -2457,6 +2909,13 @@ export class Runner {
         : this.extras.tools;
     try {
       if (options.prelude && !run.synthetic) this.applyPrelude(options.prelude);
+      if (
+        options.background &&
+        this.settings.workInBackground &&
+        !run.synthetic &&
+        this.controller.bindTarget
+      )
+        await this.bindTarget(run, options.prelude);
       // Recall and the tool list overlap the first capture (the helper
       // answers the index off its queue); both are awaited before anything
       // decides on the frame, so a recalled plan, memory and the frozen tool
@@ -2671,17 +3130,12 @@ export class Runner {
                     ? "\nUser corrections, in order. Preserve earlier constraints unless explicitly superseded:\n" +
                       run.corrections.map((c) => c.text).join("\n")
                     : ""),
-                // Why a watch woke this run stays visible on every step, since
-                // the model only sees one screenshot and the last few history
-                // entries whole. Only the model's copy carries it: the panel
-                // text in it never enters a Snapshot, a trace or a saved frame.
-                frame:
-                  this.watchContext && frame.context
-                    ? {
-                        ...frame,
-                        context: { ...frame.context, watch: this.watchContext },
-                      }
-                    : frame,
+                // Why a watch woke this run, and the background note of a
+                // bound one, stay visible on every step, since the model only
+                // sees one screenshot and the last few history entries whole.
+                // Only the model's copy carries them: the panel text never
+                // enters a Snapshot, a trace or a saved frame.
+                frame: this.modelFrame(frame),
                 history: modelHistory(history),
                 ...(this.memoryContext ? { memory: this.memoryContext } : {}),
                 // The frozen tool list and the clock it runs on, on the
@@ -2795,8 +3249,9 @@ export class Runner {
         // action, so the protected-surface floors still run and its
         // arguments never reach the helper.
         let actionSurface: Surface;
+        const boundWindow = this.boundTarget();
         try {
-          actionSurface = await this.controller.surface(
+          actionSurface = await this.surfaceNow(
             action.type === "tool_call" ? undefined : action,
           );
         } catch (error) {
@@ -2826,6 +3281,16 @@ export class Runner {
             ),
             ...(userWords ? { userWords } : {}),
             ...toolContext,
+            // The same rules, on the bound window's surface, plus the one
+            // refusal a bound run adds: input goes to that process alone.
+            ...(boundWindow
+              ? {
+                  target: {
+                    pid: boundWindow.pid,
+                    appName: boundWindow.appName,
+                  },
+                }
+              : {}),
           },
         );
         // Only an ALLOW is replaced: every refusal keeps its own reason.
@@ -3040,16 +3505,27 @@ export class Runner {
           } else {
             // Replace the approval card before the slower restore/revalidate.
             this.status("capturing", "Checking the screen before acting.");
+            const boundNow = this.boundTarget();
             let fresh: Frame | null;
             try {
               if (relatch) await this.controller.resume();
-              await this.controller.restore?.(frame);
+              // The user's application stays in front of a bound run: there
+              // is nothing to restore, and its window is checked where it is.
+              if (!boundNow) await this.controller.restore?.(frame);
               await this.ready();
-              fresh = this.controller.revalidate
+              fresh = boundNow
                 ? this.recordFrame(
-                    await this.controller.revalidate(action, frame),
+                    await this.controller.revalidateTarget!(
+                      boundNow.token,
+                      action,
+                      frame,
+                    ),
                   )
-                : await this.capture();
+                : this.controller.revalidate
+                  ? this.recordFrame(
+                      await this.controller.revalidate(action, frame),
+                    )
+                  : await this.capture();
             } catch (error) {
               if (this.held || epoch !== this.epoch) {
                 planFail("interrupted");
@@ -3063,12 +3539,20 @@ export class Runner {
               planFail("interrupted");
               continue;
             }
+            // A bound window may move between the screenshot and the input
+            // without the display changing: the helper maps the input from
+            // its current frame and proved the control is still there.
             const change: ScreenChange | undefined =
               fresh.appId !== frame.appId
                 ? "APP_CHANGED"
-                : !sameGeometry(fresh.geometry, frame.geometry)
+                : !sameGeometry(
+                      boundNow ? withoutWindow(fresh.geometry) : fresh.geometry,
+                      boundNow ? withoutWindow(frame.geometry) : frame.geometry,
+                    )
                   ? "DISPLAY_CHANGED"
-                  : !this.controller.revalidate && fresh.sha256 !== frame.sha256
+                  : !boundNow &&
+                      !this.controller.revalidate &&
+                      fresh.sha256 !== frame.sha256
                     ? "PIXELS_CHANGED"
                     : undefined;
             if (change) {
@@ -3147,12 +3631,30 @@ export class Runner {
         let outcome: void | ExecutionResult;
         // Counted before execute: an interrupted action may still have acted.
         this.attempted++;
+        const native = nativeAction(action, decision, actionSurface);
         try {
-          outcome = await this.controller.execute(
-            nativeAction(action, decision, actionSurface),
-            executionFrame,
-            this.abort.signal,
-          );
+          const toWindow = this.boundTarget();
+          if (toWindow) {
+            const delivered = await this.executeBound(
+              toWindow,
+              action,
+              native,
+              actionSurface,
+              executionFrame,
+              epoch,
+            );
+            // Nothing executed, and the run already heard why.
+            if (!delivered) {
+              planFail("background");
+              continue;
+            }
+            outcome = delivered.outcome;
+          } else
+            outcome = await this.controller.execute(
+              native,
+              executionFrame,
+              this.abort.signal,
+            );
         } catch (e) {
           if (!this.active()) break;
           if (this.held || epoch !== this.epoch) {
@@ -3221,6 +3723,8 @@ export class Runner {
     } finally {
       clearTimeout(this.timer);
       this.controller.stop();
+      if (this.target)
+        void this.controller.unbindTarget?.(this.target.token).catch(() => {});
       this.learn(run);
       this.settled = true;
       this.recorder.save(run);

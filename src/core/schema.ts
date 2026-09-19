@@ -593,6 +593,15 @@ export const settingsSchema = z
      */
     setupComplete: z.boolean().default(false),
     tools: toolsSettingsSchema,
+    /**
+     * Work in the window a task names (or the one the user was in) without
+     * taking the screen while the user is at the Mac: the run binds that
+     * window, acts on it through accessibility and events posted to its
+     * process, and asks for the window only when the application ignores
+     * both (.data/design/background-actuation.md). Off means every run takes
+     * the screen as before ("Always in front").
+     */
+    workInBackground: z.boolean().default(true),
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
@@ -672,6 +681,7 @@ export const defaultSettings: Settings = {
     apple: { calendar: false, reminders: false, notes: false, mail: false },
     servers: [],
   },
+  workInBackground: true,
 };
 /** One phone the remote knows about (settings.remoteDevices). */
 export type RemoteDevice = Settings["remoteDevices"][number];
@@ -686,6 +696,13 @@ export interface Geometry {
   model_width: number;
   model_height: number;
   scale_factor: number;
+  /**
+   * The bound window of a background run, in display points: the image is
+   * that window alone and the model's fractions are of it. The helper maps
+   * them to screen points from the window's frame at execute time, so a
+   * window the user nudged still receives the input where the control is.
+   */
+  window?: { id: number; x: number; y: number; width: number; height: number };
 }
 export interface Frame {
   id: string;
@@ -767,7 +784,52 @@ export interface ScreenContext {
    * from its panel (bounded, redacted; untrusted screen text like the rest).
    */
   watch?: WatchContext;
+  /**
+   * The run works in this window in the background (design §2.3): the image
+   * is that window alone, captured while the user works elsewhere. `covered`
+   * means other windows hide nearly all of it; `staleRisk` that its engine
+   * (a browser or Electron) stops drawing when covered, so the picture may be
+   * the last frame before it was covered and the controls list is the truth.
+   * `note` is the runner's standing instruction for this mode, on the model's
+   * copy only (BACKGROUND_NOTE, src/core/background.ts).
+   */
+  background?: BackgroundContext;
 }
+export interface BackgroundContext {
+  appName: string;
+  title: string;
+  covered: boolean;
+  staleRisk: boolean;
+  minimized: boolean;
+  note?: string;
+}
+/**
+ * The window a background run is bound to for its whole life (design §2.2).
+ * The helper minted the token, as it does for watches: nothing in TypeScript
+ * can point input at a window the helper did not bind, and it re-checks the
+ * pid, bundle and launch date behind the token before every post.
+ */
+export interface RunTarget {
+  token: string;
+  pid: number;
+  windowId: number;
+  appId: string;
+  appName: string;
+  title: string;
+}
+/** What the helper needs to find the window to bind; empty means the window focused when the wake word ended. */
+export interface TargetSpec {
+  app?: string;
+  title?: string;
+  pid?: number;
+  windowId?: number;
+}
+/**
+ * How a step reached a background window: by accessibility (a press or a
+ * value written, no events), by events posted to the window's process, or
+ * with the window brought in front for a second, as every step went before.
+ */
+export type Rung = "ax" | "post" | "foreground";
 export interface WatchContext {
   cause: string;
   agent?: string;
@@ -915,6 +977,18 @@ export interface Surface {
    * terminal and the like), where typed text and ENTER run shell commands.
    */
   terminalFocus?: boolean;
+  /**
+   * Reported by surfaceTarget for a bound run: the window's state as the
+   * ladder needs it. `focusedWindow` and `siblingWindows` decide whether keys
+   * posted to the process can only land in this window (design §2.5).
+   */
+  target?: {
+    bound: true;
+    covered: boolean;
+    minimized: boolean;
+    focusedWindow: boolean;
+    siblingWindows: number;
+  };
 }
 export interface Usage {
   inputTokens: number;
@@ -1014,6 +1088,16 @@ export interface ExecutionResult {
     kind: "document" | "folder";
     appId?: string;
   };
+  /**
+   * For a step delivered to a bound window: the rung that delivered it and
+   * what the postcondition read found 120 and 400 ms later (design §2.7).
+   * "changed" is the window's controls, the field's value, its window count
+   * or its pixels moving; "none" both reads unchanged; "unverifiable" a
+   * write the application echoed without a change the helper could read.
+   * None of it is proof: the next screenshot is.
+   */
+  rung?: Rung;
+  effect?: "changed" | "none" | "unverifiable";
 }
 export interface Controller {
   kind: "tutorial" | "native";
@@ -1037,6 +1121,43 @@ export interface Controller {
   setWatchMode?(on: boolean): Promise<void>;
   /** Brings the bound window to the front before a wake-up run captures it. */
   focusWatch?(token: string): Promise<void>;
+  /**
+   * Background runs (.data/design/background-actuation.md §6.5). Native only;
+   * every method takes the helper's token and nothing else names the window.
+   * bindTarget refuses protected apps, terminals, launchers and protected
+   * sites exactly as bindWatch does; an empty spec binds the window focused
+   * when the wake word ended.
+   */
+  bindTarget?(spec: TargetSpec): Promise<RunTarget>;
+  /** The bound window's image and that application's tree, wherever the window is. */
+  captureTarget?(token: string): Promise<Frame>;
+  surfaceTarget?(token: string, action?: Action): Promise<Surface>;
+  revalidateTarget?(
+    token: string,
+    action: Action,
+    frame: Frame,
+  ): Promise<Frame>;
+  /**
+   * Walks the given rungs in order and returns the first whose postcondition
+   * read found a change (or an unverifiable write), else the last with
+   * effect "none". Events go only to the bound process. The "foreground"
+   * rung acts on the HID tap with the full frontmost floors and restores the
+   * application foregroundTarget remembered before it returns or throws.
+   */
+  executeTarget?(
+    token: string,
+    action: Action,
+    frame: Frame,
+    rungs: Rung[],
+    signal: AbortSignal,
+  ): Promise<ExecutionResult>;
+  /**
+   * Rung 3: remembers the user's frontmost application, activates the bound
+   * one and raises its window, and says whether the activation took (macOS
+   * 14 activation is intent-driven, so it may not).
+   */
+  foregroundTarget?(token: string): Promise<{ frontmost: boolean }>;
+  unbindTarget?(token: string): Promise<void>;
 }
 export type RunStatus =
   | "idle"
@@ -1080,6 +1201,13 @@ export interface Run {
   taskSource?: TaskSource;
   /** Tool calls this run made, and how many of them changed something. */
   tools?: { calls: number; writes: number };
+  /**
+   * The window a bound run works in (design §2.2) and whether it is still
+   * working there in the background: false once the run moved in front for
+   * good (the foreground cap, or the window went away). Absent on a run that
+   * took the screen as before.
+   */
+  target?: RunTarget & { background: boolean };
 }
 export interface Snapshot {
   run: Run | null;
@@ -1171,8 +1299,23 @@ export function sameGeometry(a: Geometry, b: Geometry): boolean {
   const keys = Object.keys(a) as (keyof Geometry)[];
   return (
     keys.length === Object.keys(b).length &&
-    keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key])
+    keys.every(
+      (key) =>
+        Object.hasOwn(b, key) &&
+        (key === "window" ? sameWindow(a.window, b.window) : a[key] === b[key]),
+    )
   );
+}
+function sameWindow(a: Geometry["window"], b: Geometry["window"]): boolean {
+  if (!a || !b) return a === b;
+  return (["id", "x", "y", "width", "height"] as const).every(
+    (key) => a[key] === b[key],
+  );
+}
+/** The geometry without the bound window's frame, which the user may move between a screenshot and the input without changing the display. */
+export function withoutWindow(g: Geometry): Geometry {
+  const { window: _window, ...rest } = g;
+  return rest;
 }
 export function mapPoint(g: Geometry, x: number, y: number) {
   unit.parse(x);

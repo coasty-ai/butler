@@ -10,7 +10,7 @@ import { matchIntent, mayBeQuickIntent } from "./intents";
 import { learnFromRun } from "./learn";
 import { recallContext } from "./retrieve";
 import { matchSkill, toPlan } from "./skills";
-import type { MemoryStore } from "./store";
+import { backgroundKnowledge, type MemoryStore } from "./store";
 import type { MemoryData } from "./types";
 
 export interface MemoryAccessOptions {
@@ -167,7 +167,16 @@ export function createMemoryAccess(
             note: PLAN_NOTES[plan.mode],
             steps: plan.outline,
           };
-        return plan ? { context, plan } : { context };
+        // For the runner alone, beside the context the model gets.
+        const background = backgroundKnowledge(
+          data,
+          options.now?.() ?? new Date(),
+        );
+        return {
+          context,
+          ...(plan ? { plan } : {}),
+          ...(Object.keys(background).length ? { background } : {}),
+        };
       } catch (error) {
         report(error);
         return empty();
