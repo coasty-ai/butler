@@ -1,19 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { actionSchema, type Action } from "../src/core/schema";
+import { actionSchema, type Action, type Geometry } from "../src/core/schema";
 import {
   BACKGROUND_NOTE,
   FOREGROUND_CAP,
   MAX_SPOKEN_TARGETS,
+  MISS_LIMIT,
+  aimAtDisplay,
   backgroundLadder,
   backgroundResult,
   backgroundRoute,
+  coveredStaleRetry,
   foregroundCapReached,
   foregroundRequest,
   isForegroundRequest,
+  missKey,
   routeSkipped,
   spokenTargets,
   targetHold,
 } from "../src/core/background";
+import { cleanScreenContext } from "../src/core/context";
 
 const act = (input: Record<string, unknown>): Action =>
   actionSchema.parse({ frame_id: "f", ...input });
@@ -110,12 +115,29 @@ describe("the actuation ladder (design §2.5)", () => {
   it("prunes what the run or memory saw ignored, keeping the way in front", () => {
     const typing = act({ type: "type_text", text: "hello" });
     expect(
-      backgroundLadder(typing, undefined, (route) => route === "write"),
+      backgroundLadder(typing, undefined, (_rung, route) => route === "write"),
     ).toEqual({ rungs: ["post"], foreground: true });
+    expect(
+      backgroundLadder(typing, undefined, (rung) => rung === "post"),
+    ).toEqual({ rungs: ["ax"], foreground: true });
     expect(backgroundLadder(typing, undefined, () => true)).toEqual({
       rungs: [],
       foreground: true,
     });
+  });
+  it("counts the run's misses by the kind of step and the rung, as the helper does", () => {
+    expect(MISS_LIMIT).toBe(2);
+    expect(missKey(act({ type: "click", x: 0.5, y: 0.5 }), "ax")).toBe(
+      "click|ax",
+    );
+    expect(
+      missKey(act({ type: "menu_item", path: ["File", "Save"] }), "ax"),
+    ).toBe("menu_item|ax");
+    // The same memory route, different keys: a click the application
+    // ignores never disables its menu items.
+    expect(backgroundRoute(act({ type: "click", x: 0.5, y: 0.5 }), "ax")).toBe(
+      backgroundRoute(act({ type: "menu_item", path: ["File", "Save"] }), "ax"),
+    );
   });
   it("names the memory route of each rung", () => {
     const typing = act({ type: "type_text", text: "hello" });
@@ -144,6 +166,141 @@ describe("the actuation ladder (design §2.5)", () => {
       { type: "move", x: 0.5, y: 0.5 },
     ])
       expect(backgroundLadder(act(input), undefined, never)).toBeUndefined();
+  });
+});
+
+describe("the second in front (design §2.8)", () => {
+  const display: Geometry = {
+    display_id: 1,
+    x: 0,
+    y: 0,
+    width: 1440,
+    height: 900,
+    native_width: 2880,
+    native_height: 1800,
+    model_width: 1280,
+    model_height: 800,
+    scale_factor: 2,
+  };
+  const window = { id: 77, x: 144, y: 90, width: 720, height: 450 };
+  it("re-aims a point from the window image to the display", () => {
+    const click = act({ type: "click", x: 0.5, y: 0.5, frame_id: "w" });
+    expect(aimAtDisplay(click, window, display)).toEqual({
+      ...click,
+      x: (144 + 360) / 1440,
+      y: (90 + 225) / 900,
+    });
+    // The window's corners land on its frame; a point past the display clamps.
+    expect(
+      aimAtDisplay(act({ type: "click", x: 0, y: 0 }), window, display),
+    ).toMatchObject({ x: 0.1, y: 0.1 });
+    expect(
+      aimAtDisplay(
+        act({ type: "click", x: 1, y: 1 }),
+        { ...window, x: 1200, y: 800 },
+        display,
+      ),
+    ).toMatchObject({ x: 1, y: 1 });
+    // A display that does not start at the origin.
+    expect(
+      aimAtDisplay(
+        act({ type: "click", x: 0.5, y: 0.5 }),
+        { ...window, x: 1440 + 144 },
+        { ...display, x: 1440 },
+      ),
+    ).toMatchObject({ x: (144 + 360) / 1440, y: (90 + 225) / 900 });
+  });
+  it("maps every point a step carries and leaves the rest alone", () => {
+    const drag = act({
+      type: "drag",
+      start_x: 0,
+      start_y: 0,
+      end_x: 1,
+      end_y: 1,
+      duration_ms: 200,
+    });
+    expect(aimAtDisplay(drag, window, display)).toMatchObject({
+      start_x: 0.1,
+      start_y: 0.1,
+      end_x: (144 + 720) / 1440,
+      end_y: (90 + 450) / 900,
+    });
+    const control = act({
+      type: "click_control",
+      label: "Send",
+      x: 0.5,
+      y: 0.5,
+    });
+    expect(aimAtDisplay(control, window, display)).toMatchObject({
+      label: "Send",
+      x: (144 + 360) / 1440,
+    });
+    const typing = act({ type: "type_text", text: "hello" });
+    expect(aimAtDisplay(typing, window, display)).toEqual(typing);
+    // No window frame to map through: the step passes unchanged.
+    const click = act({ type: "click", x: 0.5, y: 0.5 });
+    expect(aimAtDisplay(click, undefined, display)).toEqual(click);
+  });
+  it("tells the model to use a listed control before asking for a covered window", () => {
+    expect(coveredStaleRetry("Slack")).toContain("No input was sent.");
+    expect(coveredStaleRetry("Slack")).toContain("context.controls");
+    expect(coveredStaleRetry("Slack")).toContain("instead of a point");
+  });
+});
+
+describe("the bound window's context reaches the model (design §2.3)", () => {
+  // The keys the helper's targetContext writes (Controller.swift); the
+  // native test pins the same list against the source. Every one must pass
+  // the runner's strict schema, or the whole context is dropped.
+  const TARGET_CONTEXT_KEYS = [
+    "appName",
+    "windowTitle",
+    "documentName",
+    "visibleText",
+    "selectedText",
+    "windowCount",
+    "openApps",
+    "accessibility",
+    "menus",
+    "background",
+    "controls",
+    "screenText",
+  ];
+  it("accepts exactly the keys the helper writes for a bound window", () => {
+    const context = {
+      appName: "Slack",
+      windowTitle: "Prateek (DM)",
+      documentName: "notes.txt",
+      visibleText: "Running late",
+      selectedText: "late",
+      windowCount: 2,
+      openApps: ["Mail — Inbox"],
+      accessibility: "full",
+      menus: ["File: New Message"],
+      background: {
+        appName: "Slack",
+        title: "Prateek (DM)",
+        covered: true,
+        staleRisk: true,
+        minimized: false,
+      },
+      controls: [{ role: "button", label: "Send", x: 0.9, y: 0.9 }],
+      screenText: "Message Prateek",
+    };
+    expect(Object.keys(context).sort()).toEqual(
+      [...TARGET_CONTEXT_KEYS].sort(),
+    );
+    const clean = cleanScreenContext(context);
+    expect(clean?.background).toEqual(context.background);
+    expect(clean?.controls).toHaveLength(1);
+    // The field an accessibility write goes to is the surface's
+    // (focusedRole, focusedLabel), never a context key of its own.
+    expect(
+      cleanScreenContext({
+        ...context,
+        focusedField: { role: "textarea", label: "Message" },
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -227,6 +384,11 @@ describe("what the pill and the voice say", () => {
       false,
     );
     expect(isForegroundRequest(targetHold("Slack"))).toBe(false);
+  });
+  it("says what a hold in the window does today: continues when the hands go idle", () => {
+    expect(targetHold("Slack")).toBe(
+      "Paused — you’re in Slack. I’ll continue when your hands are idle.",
+    );
   });
   it("names a pruned route once in plain words", () => {
     expect(routeSkipped("Slack", "write")).toBe(

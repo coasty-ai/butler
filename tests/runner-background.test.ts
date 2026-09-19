@@ -25,6 +25,7 @@ import {
 } from "../src/core/runner";
 import {
   BACKGROUND_NOTE,
+  coveredStaleRetry,
   finishInFront,
   foregroundHandoff,
   foregroundRequest,
@@ -119,6 +120,8 @@ function surfaceFor(action?: Action): Partial<Surface> {
       targetRole: "AXButton",
       targetLabel: action.label,
     };
+  if (action.type === "click")
+    return { targetRole: "AXButton", targetLabel: "Reply" };
   if (action.type === "type_text") return { focusedRole: "AXTextArea" };
   if (action.type === "menu_item")
     return { menuStatus: "resolved", menuLabel: action.path.at(-1) };
@@ -136,9 +139,10 @@ type Deliver = (
   call: number,
 ) => ExecutionResult | Promise<ExecutionResult>;
 /**
- * A desktop with one Slack window to bind and the user's own app in front.
- * The screen methods answer as the user's app; the target methods as the
- * bound window.
+ * A desktop with one Slack window to bind and the user's own app (Mail) in
+ * front. The screen methods answer as whatever is in front; the target
+ * methods as the bound window. foregroundTarget brings Slack in front when
+ * the activation takes, and restoreRemembered gives Mail the front back.
  */
 function desktop(
   options: {
@@ -151,15 +155,21 @@ function desktop(
 ) {
   let captures = 0;
   let deliveries = 0;
+  let front: { appId: string; pid: number; appName: string } = {
+    appId: "com.apple.mail",
+    pid: 9,
+    appName: "Mail",
+  };
+  const mail = front;
   const deliver: Deliver =
     options.deliver ??
     ((_action, rungs) => ({ rung: rungs[0], effect: "changed" }));
   const controller = {
     kind: "native" as const,
-    // The screen: the user's own application.
+    // The screen: whatever application is in front.
     surface: vi.fn(async (action?: Action): Promise<Surface> => ({
-      appId: "com.apple.mail",
-      pid: 9,
+      appId: front.appId,
+      pid: front.pid,
       secureInput: false,
       unknown: false,
       ...surfaceFor(action),
@@ -171,14 +181,24 @@ function desktop(
       geometry: display,
       capturedAt: 0,
       synthetic: false,
-      appId: "com.apple.mail",
-      context: { appName: "Mail", windowTitle: "Inbox" },
+      appId: front.appId,
+      context: { appName: front.appName, windowTitle: "Inbox" },
     })),
-    execute: vi.fn(async (): Promise<void | ExecutionResult> => undefined),
+    execute: vi.fn(
+      async (
+        _action: Action,
+        _frame: Frame,
+        _signal: AbortSignal,
+      ): Promise<void | ExecutionResult> => undefined,
+    ),
     resume: vi.fn(async () => {}),
     stop: vi.fn(() => {}),
     restore: vi.fn(async () => {}),
+    restoreRemembered: vi.fn(async () => {
+      front = mail;
+    }),
     revalidate: vi.fn(async (_a: Action, f: Frame) => f),
+    inFront: () => front.appId,
     // The bound window.
     bindTarget: vi.fn(async (spec: TargetSpec) =>
       options.bind ? options.bind(spec) : target,
@@ -238,9 +258,12 @@ function desktop(
       async (_t: string, action: Action, _f: Frame, rungs: Rung[]) =>
         deliver(action, rungs, ++deliveries),
     ),
-    foregroundTarget: vi.fn(async () => ({
-      frontmost: options.frontmost ? await options.frontmost() : true,
-    })),
+    foregroundTarget: vi.fn(async (_token: string) => {
+      const frontmost = options.frontmost ? await options.frontmost() : true;
+      if (frontmost)
+        front = { appId: SLACK, pid: target.pid, appName: target.appName };
+      return { frontmost };
+    }),
     unbindTarget: vi.fn(async () => {}),
   };
   return controller as typeof controller & Controller;
@@ -494,6 +517,28 @@ describe("the ladder and what it remembers (design §2.5, §2.7, §5)", () => {
       { appId: SLACK, appName: "Slack", route: "post", verdict: "works" },
     ]);
   });
+  it("counts misses by the kind of step: a click the window ignores never disables its menus", async () => {
+    const c = desktop({
+      deliver: (action, rungs) =>
+        action.type === "menu_item"
+          ? { rung: "ax", effect: "changed" }
+          : { rung: rungs[rungs.length - 1], effect: "changed" },
+    });
+    const m = journal();
+    const menu = step({ type: "menu_item", path: ["File", "New Message"] });
+    await start(
+      runnerWith(c, scripted([reply, reply, menu, reply]), m),
+      "in Slack, reply",
+    );
+    expect(c.executeTarget.mock.calls.map((call) => call[3])).toEqual([
+      ["ax", "post"],
+      ["ax", "post"],
+      // Two accessibility misses on clicks: the menu item still gets its press.
+      ["ax"],
+      ["post"],
+    ]);
+    expect(c.foregroundTarget).not.toHaveBeenCalled();
+  });
   it("starts at the right rung from memory and names it once", async () => {
     const c = desktop();
     const m = journal();
@@ -557,30 +602,70 @@ describe("rung 3: the announced foreground hand-off (design §2.8)", () => {
     rungs[0] === "foreground"
       ? { rung: "foreground", effect: "changed" }
       : { rung: rungs[rungs.length - 1], effect: "none" };
-  it("says it needs the window, fronts it, acts as before, and returns to the background", async () => {
+  it("says it needs the window, fronts it, acts as before, gives the window back, and returns to the background", async () => {
     const order: string[] = [];
     const c = desktop({ deliver: missesThenFront });
-    c.foregroundTarget.mockImplementation(async () => {
+    const front = c.foregroundTarget.getMockImplementation()!;
+    c.foregroundTarget.mockImplementation(async (token) => {
       order.push("front");
-      return { frontmost: true };
+      return front(token);
     });
     c.executeTarget.mockImplementation(async (_t, action, _f, rungs) => {
       order.push(`execute:${rungs.join("+")}`);
       return missesThenFront(action, rungs, 0);
+    });
+    c.capture.mockImplementation(async () => {
+      order.push(`capture:${c.inFront()}`);
+      return {
+        id: `screen-${order.length}`,
+        sha256: "screen",
+        image: "",
+        geometry: display,
+        capturedAt: 0,
+        synthetic: false,
+        appId: c.inFront(),
+        context: { appName: "Slack", windowTitle: "Prateek (DM)" },
+      };
+    });
+    c.execute.mockImplementation(async (action: Action, frame: Frame) => {
+      order.push(`execute:screen:${frame.id}:${action.frame_id}`);
+      return undefined;
+    });
+    const restore = c.restoreRemembered.getMockImplementation()!;
+    c.restoreRemembered.mockImplementation(async () => {
+      order.push("restore");
+      return restore();
     });
     const m = journal();
     const messages: string[] = [];
     const provider = scripted([reply, reply]);
     const runner = runnerWith(c, provider, m, { messages });
     await start(runner, "in Slack, reply");
+    // The helper never performs the foreground rung: the runner fronts the
+    // window, captures the screen it now shows, acts on it the way every
+    // step went before, and gives the user's application back.
     expect(order).toEqual([
       "execute:ax+post",
       "front",
-      "execute:foreground",
+      `capture:${SLACK}`,
+      "execute:screen:screen-3:screen-3",
+      "restore",
       "execute:ax+post",
       "front",
-      "execute:foreground",
+      `capture:${SLACK}`,
+      "execute:screen:screen-8:screen-8",
+      "restore",
     ]);
+    expect(
+      c.executeTarget.mock.calls.every(
+        (call) => !call[3].includes("foreground"),
+      ),
+    ).toBe(true);
+    // The point moved from the window image to the display.
+    expect(c.execute.mock.calls[0][0]).toMatchObject({
+      type: "click_control",
+      label: "Reply",
+    });
     expect(messages).toContain(foregroundRequest("Slack"));
     expect(m.of("ForegroundRequested").map((e) => e.data)).toEqual([
       { reason: "no_effect", actionType: "click_control" },
@@ -592,14 +677,33 @@ describe("rung 3: the announced foreground hand-off (design §2.8)", () => {
       { from: "ax", to: "post", actionType: "click_control" },
       { from: "post", to: "foreground", actionType: "click_control" },
     ]);
+    // In front the step went as every step did before, with no read to report.
     expect(provider.observations[1].history.at(-1)?.result).toBe(
-      "Executed click on button “Reply” with Slack in front for a second; the window changed. Verify the next screenshot.",
+      "Executed click on button “Reply” with Slack in front for a second. Verify the next screenshot.",
     );
-    // Still a background run afterwards; the user's app was restored natively.
+    // Still a background run afterwards; Mail has the front back.
     expect(m.getRun().target?.background).toBe(true);
+    expect(c.inFront()).toBe("com.apple.mail");
     expect(c.restore).not.toHaveBeenCalled();
+    expect(c.unbindTarget).toHaveBeenCalledTimes(1);
   });
-  it("hands over when the activation does not take", async () => {
+  it("re-aims a point from the window image to the display for its second in front", async () => {
+    const c = desktop({ deliver: missesThenFront });
+    const m = journal();
+    const provider = scripted([step({ type: "click", x: 0.5, y: 0.5 })]);
+    await start(runnerWith(c, provider, m), "in Slack, click there");
+    expect(c.execute).toHaveBeenCalledTimes(1);
+    const [aimed, frame] = c.execute.mock.calls[0];
+    // windowFrame is 900x600 at (100, 80) on a 1440x900 display.
+    expect(aimed).toMatchObject({
+      type: "click",
+      x: (100 + 450) / 1440,
+      y: (80 + 300) / 900,
+      frame_id: frame.id,
+    });
+    expect(frame.geometry).toEqual(display);
+  });
+  it("hands over when the activation does not take, and the second still ends", async () => {
     const c = desktop({ deliver: missesThenFront, frontmost: () => false });
     const m = journal();
     const runner = runnerWith(c, scripted([reply]), m);
@@ -612,6 +716,30 @@ describe("rung 3: the announced foreground hand-off (design §2.8)", () => {
     expect(c.executeTarget.mock.calls.map((call) => call[3])).toEqual([
       ["ax", "post"],
     ]);
+    expect(c.execute).not.toHaveBeenCalled();
+    await until(() => c.restoreRemembered.mock.calls.length === 1);
+    runner.stop();
+    await running;
+  });
+  it("hands over, sending nothing, when another application took the front meanwhile", async () => {
+    const c = desktop({ deliver: missesThenFront });
+    c.capture.mockImplementationOnce(async () => ({
+      id: "screen-x",
+      sha256: "screen",
+      image: "",
+      geometry: display,
+      capturedAt: 0,
+      synthetic: false,
+      appId: "com.apple.Notes",
+      context: { appName: "Notes", windowTitle: "Groceries" },
+    }));
+    const m = journal();
+    const runner = runnerWith(c, scripted([reply]), m);
+    const running = start(runner, "in Slack, reply");
+    await until(() => runner.snapshot.run?.status === "takeover");
+    expect(runner.snapshot.message).toBe(foregroundHandoff("Slack"));
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(c.restoreRemembered).toHaveBeenCalledTimes(1);
     runner.stop();
     await running;
   });
@@ -632,7 +760,59 @@ describe("rung 3: the announced foreground hand-off (design §2.8)", () => {
       reason: "KEYBOARD_AMBIGUOUS",
     });
     expect(c.foregroundTarget).toHaveBeenCalledTimes(1);
+    expect(c.execute).toHaveBeenCalledTimes(1);
+    expect(c.restoreRemembered).toHaveBeenCalledTimes(1);
     expect(m.of("ActionExecuted")).toHaveLength(1);
+  });
+  it("a covered window's stale picture refuses a point once with advice, then goes in front", async () => {
+    const stale = () => {
+      throw new TargetError(
+        "TARGET_COVERED_STALE",
+        "The window is fully covered, so its picture may be stale; use a listed control instead of a point.",
+      );
+    };
+    const c = desktop({ deliver: stale });
+    const m = journal();
+    const click = step({ type: "click", x: 0.5, y: 0.5 });
+    const provider = scripted([click, click]);
+    await start(runnerWith(c, provider, m), "in Slack, click there");
+    expect(provider.observations[1].history.at(-1)?.result).toBe(
+      coveredStaleRetry("Slack"),
+    );
+    expect(m.of("ActionFailed").map((e) => e.data.code)).toEqual([
+      "TARGET_COVERED_STALE",
+    ]);
+    // The repeat went in front; the first refusal never did.
+    expect(c.foregroundTarget).toHaveBeenCalledTimes(1);
+    expect(m.of("ForegroundRequested").map((e) => e.data.reason)).toEqual([
+      "TARGET_COVERED_STALE",
+    ]);
+    expect(m.of("ActionExecuted")).toHaveLength(1);
+
+    // With no control listed there is nothing to advise: in front at once.
+    const bare = desktop({ deliver: stale, controls: [] });
+    const m2 = journal();
+    await start(runnerWith(bare, scripted([click]), m2), "in Slack, click");
+    expect(bare.foregroundTarget).toHaveBeenCalledTimes(1);
+    expect(m2.of("ActionExecuted")).toHaveLength(1);
+  });
+  it("a RUNG_NO_EFFECT the helper throws records no miss: nothing was tried", async () => {
+    const c = desktop({
+      deliver: (_a, rungs) => {
+        if (rungs[0] === "foreground")
+          return { rung: "foreground", effect: "changed" };
+        throw new TargetError("RUNG_NO_EFFECT", "Every rung is skipped.");
+      },
+    });
+    const m = journal();
+    const memory = fakeMemory({ context: { preferences: [], episodes: [] } });
+    await start(
+      runnerWith(c, scripted([reply]), m, { memory: memory.access }),
+      "in Slack, reply",
+    );
+    expect(c.foregroundTarget).toHaveBeenCalledTimes(1);
+    expect(m.of("RungStepped")).toHaveLength(0);
+    expect(memory.learned[0].background).toBeUndefined();
   });
   it("past three detours in ten steps it says so and finishes in front", async () => {
     const c = desktop({ deliver: missesThenFront });
@@ -650,18 +830,21 @@ describe("rung 3: the announced foreground hand-off (design §2.8)", () => {
     expect(messages).toContain(finishInFront("Slack"));
     expect(m.of("TargetLeft").map((e) => e.data)).toEqual([{ reason: "cap" }]);
     expect(m.getRun().target?.background).toBe(false);
-    // The third detour brought the window back in front for good.
-    expect(c.foregroundTarget).toHaveBeenCalledTimes(4);
-    // The fourth step went the way every step went before.
-    expect(c.execute).toHaveBeenCalledTimes(1);
-    expect(c.capture).toHaveBeenCalled();
-    // Two misses on each background route pruned them before the third step.
+    // Three detours, each fronting the window once; the third left it in
+    // front for good: the window was released, not given back.
+    expect(c.foregroundTarget).toHaveBeenCalledTimes(3);
+    expect(c.restoreRemembered).toHaveBeenCalledTimes(2);
+    expect(c.inFront()).toBe(SLACK);
+    // Released on the cap, and once more as the run ended.
+    expect(c.unbindTarget.mock.calls).toEqual([[target.token], [target.token]]);
+    // Three steps in front for a second, then the fourth the way every
+    // step went before, and the screen that ended the run.
+    expect(c.execute).toHaveBeenCalledTimes(4);
+    expect(c.capture).toHaveBeenCalledTimes(5);
+    // Two misses on each background rung pruned them before the third step.
     expect(c.executeTarget.mock.calls.map((call) => call[3])).toEqual([
       ["ax", "post"],
-      ["foreground"],
       ["ax", "post"],
-      ["foreground"],
-      ["foreground"],
     ]);
     expect(m.of("ForegroundRequested").map((e) => e.data.reason)).toEqual([
       "no_effect",
@@ -745,6 +928,9 @@ describe("the user's hands (design §3)", () => {
     expect(c.executeTarget.mock.calls.map((call) => call[3])).toEqual([
       ["ax", "post"],
     ]);
+    // The second ended with the takeover: nothing was sent, the handoff closed.
+    expect(c.execute).not.toHaveBeenCalled();
+    await until(() => c.restoreRemembered.mock.calls.length === 1);
     runner.stop();
     await running;
   });

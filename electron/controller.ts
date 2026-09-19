@@ -940,6 +940,10 @@ export class NativeController implements Controller {
   async restore() {
     await this.request("restore");
   }
+  /** The application remembered before a turn or a hand-off comes back in front; the hand-off ends. */
+  async restoreRemembered() {
+    await this.request("restoreRemembered");
+  }
   /** Binds the frontmost window for a detached watch; the helper mints the token. */
   async bindWatch(): Promise<WatchBinding> {
     const binding = watchBinding(await this.request("bindWatch"));

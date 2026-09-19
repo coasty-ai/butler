@@ -1226,11 +1226,20 @@ function decideAction(
   synthetic: boolean,
   context: PolicyContext = {},
 ): Decision {
-  const protectedSurface = surfacePolicy(surface, settings);
+  // On a bound window the surface's secure input is the target's (a secure
+  // field focused there, or secure event input anywhere): it pauses what
+  // carries text and nothing else, since a click carries none (design §4).
+  // The screen's own rule is unchanged: in front, secure input pauses all.
+  const carriesText = ["type_text", "key", "hotkey"].includes(action.type);
+  const judged =
+    context.target && surface.secureInput && !carriesText
+      ? { ...surface, secureInput: false }
+      : surface;
+  const protectedSurface = surfacePolicy(judged, settings);
   if (protectedSurface.kind !== "ALLOW") return protectedSurface;
   if (surface.targetAppId) {
     const targetPolicy = surfacePolicy(
-      { ...surface, appId: surface.targetAppId },
+      { ...judged, appId: surface.targetAppId },
       settings,
     );
     if (targetPolicy.kind !== "ALLOW") return targetPolicy;

@@ -100,6 +100,72 @@ describe("policy parity in the background (design §4)", () => {
       }).kind,
     ).toBe("USER_TAKEOVER");
   });
+  it("secure input on the target pauses what carries text; a click carries none (design §4)", () => {
+    // In front, secure input pauses every step, as it always did.
+    const secure = { secureInput: true, focusedRole: "AXTextField" };
+    for (const input of [
+      { type: "click_control", label: "Reply" },
+      { type: "type_text", text: "hello" },
+    ])
+      expect(
+        evaluate(act(input), { ...inFront, ...secure }, settings, false, {})
+          .kind,
+      ).toBe("USER_TAKEOVER");
+    // Bound: the field is the target's own; typing, keys and chords pause.
+    for (const input of [
+      { type: "type_text", text: "hello" },
+      { type: "key", key: "ENTER" },
+      { type: "hotkey", keys: ["CMD", "N"] },
+    ])
+      expect(
+        evaluate(act(input), { ...bound, ...secure }, settings, false, context)
+          .kind,
+      ).toBe("USER_TAKEOVER");
+    // Clicks, menus and scrolls go on: they carry no text.
+    const reply = control("Reply", secure);
+    expect(
+      evaluate(
+        reply.action,
+        { ...bound, ...reply.surface },
+        settings,
+        false,
+        context,
+      ).kind,
+    ).toBe("ALLOW");
+    expect(
+      evaluate(
+        act({ type: "menu_item", path: ["File", "New Message"] }),
+        {
+          ...bound,
+          ...secure,
+          menuStatus: "resolved",
+          menuLabel: "New Message",
+        },
+        settings,
+        false,
+        context,
+      ).kind,
+    ).toBe("ALLOW");
+    expect(
+      evaluate(
+        act({ type: "scroll", delta_x: 0, delta_y: 100 }),
+        { ...bound, ...secure },
+        settings,
+        false,
+        context,
+      ).kind,
+    ).toBe("ALLOW");
+    // Every other floor stands on a click: a protected target still pauses.
+    expect(
+      evaluate(
+        reply.action,
+        { ...bound, ...reply.surface, appId: "com.apple.Terminal" },
+        settings,
+        false,
+        { target: { pid: 501, appName: "Terminal" } },
+      ).kind,
+    ).toBe("USER_TAKEOVER");
+  });
   it("lets 'allow everything' remove the asking in both modes, never a refusal", () => {
     const all: Settings = {
       ...settings,

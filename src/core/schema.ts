@@ -1138,11 +1138,13 @@ export interface Controller {
     frame: Frame,
   ): Promise<Frame>;
   /**
-   * Walks the given rungs in order and returns the first whose postcondition
-   * read found a change (or an unverifiable write), else the last with
-   * effect "none". Events go only to the bound process. The "foreground"
-   * rung acts on the HID tap with the full frontmost floors and restores the
-   * application foregroundTarget remembered before it returns or throws.
+   * Walks the given background rungs ("ax", "post") in order and returns the
+   * first whose postcondition read found a change (or an unverifiable
+   * write), else the last with effect "none". Events go only to the bound
+   * process; nothing here activates the window. The helper never performs
+   * the "foreground" rung: the runner takes it through foregroundTarget,
+   * then capture and execute (today's HID path behind the frontmost floors),
+   * then restoreRemembered.
    */
   executeTarget?(
     token: string,
@@ -1154,9 +1156,17 @@ export interface Controller {
   /**
    * Rung 3: remembers the user's frontmost application, activates the bound
    * one and raises its window, and says whether the activation took (macOS
-   * 14 activation is intent-driven, so it may not).
+   * 14 activation is intent-driven, so it may not). Opens the helper's
+   * handoff, which restoreRemembered closes; a handoff nobody closes ends on
+   * its own after 20 s without input from the helper.
    */
   foregroundTarget?(token: string): Promise<{ frontmost: boolean }>;
+  /**
+   * Gives the application remembered before a turn or a handoff the front
+   * back and closes the handoff. The runner calls it at the end of every
+   * second in front, whichever way that second ended.
+   */
+  restoreRemembered?(): Promise<void>;
   unbindTarget?(token: string): Promise<void>;
 }
 export type RunStatus =

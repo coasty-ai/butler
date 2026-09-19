@@ -40,14 +40,18 @@ import {
 } from "./schema";
 import {
   BACKGROUND_NOTE,
+  MISS_LIMIT,
   NO_BACKGROUND_ROUTE,
+  aimAtDisplay,
   backgroundLadder,
   backgroundResult,
   backgroundRoute,
+  coveredStaleRetry,
   finishInFront,
   foregroundCapReached,
   foregroundHandoff,
   foregroundRequest,
+  missKey,
   noWindowInFront,
   routeSkipped,
   spokenTargets,
@@ -954,8 +958,10 @@ export class Runner {
    * still go to it in the background.
    */
   private target?: RunTarget;
-  /** Misses per rung and route this run: two, and that rung is skipped for the rest of it. */
+  /** Misses per kind of step and rung this run (missKey): two, and that rung is skipped for the rest of it. */
   private rungMisses = new Map<string, number>();
+  /** Points refused in a row because the covered window's picture may be stale: the second goes in front. */
+  private coveredStaleRefusals = 0;
   /** What the postcondition reads found this run, for memory (bounded). */
   private backgroundObservations: BackgroundObservation[] = [];
   /** Run steps at which the window had to come in front, for the cap. */
@@ -1678,6 +1684,7 @@ export class Runner {
     this.toolFallback = undefined;
     this.target = undefined;
     this.rungMisses.clear();
+    this.coveredStaleRefusals = 0;
     this.backgroundObservations = [];
     this.foregroundSteps = [];
     this.backgroundKnowledge = undefined;
@@ -2388,8 +2395,10 @@ export class Runner {
       });
       return undefined;
     }
-    const ladder = backgroundLadder(action, surface.shortcutLabel, (route) =>
-      this.skipsRung(target, route),
+    const ladder = backgroundLadder(
+      action,
+      surface.shortcutLabel,
+      (rung, route) => this.skipsRung(target, action, rung, route),
     );
     // A capture: nothing is delivered to the window.
     if (!ladder) return { outcome: undefined };
@@ -2418,14 +2427,24 @@ export class Runner {
         !NO_BACKGROUND_ROUTE.has(error.code)
       )
         throw error;
-      if (error.code === "RUNG_NO_EFFECT")
-        for (const rung of ladder.rungs)
-          this.recordMiss(
-            target,
-            action,
-            rung,
-            ladder.foreground ? "foreground" : undefined,
-          );
+      // A covered window whose picture may be stale refused the point: the
+      // listed controls are the truth there, so the model is told to use one
+      // before the window is asked for; a repeat, or no control to name, is.
+      if (
+        error.code === "TARGET_COVERED_STALE" &&
+        this.coveredStaleRefusals++ === 0 &&
+        frame.context?.controls?.length
+      ) {
+        this.event("ActionFailed", { code: error.code });
+        this.history.push({
+          type: action.type,
+          action: echoAction(action),
+          result: coveredStaleRetry(target.appName),
+        });
+        return undefined;
+      }
+      // A thrown RUNG_NO_EFFECT means the helper skipped every rung it had
+      // already seen miss twice: nothing was tried, so nothing is recorded.
       if (ladder.foreground)
         return this.foreground(
           target,
@@ -2443,6 +2462,7 @@ export class Runner {
       });
       return undefined;
     }
+    this.coveredStaleRefusals = 0;
     // The rung that answered, and every rung before it read as no effect.
     const rung =
       outcome.rung && ladder.rungs.includes(outcome.rung)
@@ -2467,11 +2487,17 @@ export class Runner {
   }
   /**
    * Whether a rung is skipped for this step: the run saw this application
-   * ignore its route twice, or memory did (design §5), which the pill names
-   * once per route.
+   * ignore it twice for this kind of step, or memory saw it ignore the
+   * rung's route (design §5), which the pill names once per route.
    */
-  private skipsRung(target: RunTarget, route: BackgroundRoute) {
-    if ((this.rungMisses.get(route) ?? 0) >= 2) return true;
+  private skipsRung(
+    target: RunTarget,
+    action: Action,
+    rung: Rung,
+    route: BackgroundRoute,
+  ) {
+    if ((this.rungMisses.get(missKey(action, rung)) ?? 0) >= MISS_LIMIT)
+      return true;
     const known = this.backgroundKnowledge?.[target.appId]?.[route];
     if (known !== "noop" && known !== "echo") return false;
     if (!this.routesNoted.has(route)) {
@@ -2482,8 +2508,8 @@ export class Runner {
     return true;
   }
   private recordMiss(target: RunTarget, action: Action, rung: Rung, to?: Rung) {
-    const route = backgroundRoute(action, rung);
-    this.rungMisses.set(route, (this.rungMisses.get(route) ?? 0) + 1);
+    const key = missKey(action, rung);
+    this.rungMisses.set(key, (this.rungMisses.get(key) ?? 0) + 1);
     this.observe(target, action, rung, "noop");
     if (to)
       this.event("RungStepped", { from: rung, to, actionType: action.type });
@@ -2504,11 +2530,14 @@ export class Runner {
   }
   /**
    * Rung 3 (design §2.8): "I need Slack for a second"; the helper remembers
-   * the user's application and activates the bound one; the step runs on the
-   * HID tap with the frontmost floors and the helper restores the user's
-   * application. The user's input anywhere pauses the run meanwhile. Past
-   * three detours in ten steps the run says so, brings the window in front
-   * once more and finishes there.
+   * the user's application and activates the bound one; the step then goes
+   * the way every step went before: a fresh capture of the screen, the
+   * point re-aimed from the window image to the display, today's execute on
+   * the HID tap behind the frontmost floors. The user's input anywhere
+   * pauses the run meanwhile. The second always ends: whatever way this
+   * returns, the helper gives the user's application back and closes the
+   * handoff, except past three detours in ten steps, when the run says so,
+   * releases the window and finishes in front.
    */
   private async foreground(
     target: RunTarget,
@@ -2533,6 +2562,7 @@ export class Runner {
         : foregroundRequest(target.appName),
     );
     this.inFront = true;
+    let staysInFront = false;
     try {
       const { frontmost } = await this.controller.foregroundTarget!(
         target.token,
@@ -2542,26 +2572,53 @@ export class Runner {
         this.takeover(foregroundHandoff(target.appName), "handoff");
         return undefined;
       }
-      const outcome = await this.controller.executeTarget!(
-        target.token,
-        native,
-        frame,
-        ["foreground"],
+      const screen = this.recordFrame(await this.controller.capture());
+      if (!screen || this.held || epoch !== this.epoch) return undefined;
+      // The second is the target's alone: input never goes to whatever else
+      // came in front meanwhile.
+      if ((screen.appId ?? "").toLowerCase() !== target.appId.toLowerCase()) {
+        this.takeover(foregroundHandoff(target.appName), "handoff");
+        return undefined;
+      }
+      const outcome = await this.controller.execute(
+        aimAtDisplay(
+          { ...native, frame_id: screen.id },
+          frame.geometry.window,
+          screen.geometry,
+        ),
+        screen,
         this.abort.signal,
       );
       if (capped && this.active() && !this.held && epoch === this.epoch) {
         this.leaveBackground("cap");
-        await this.controller.foregroundTarget!(target.token);
+        staysInFront = true;
       }
       return {
         outcome: {
-          ...outcome,
+          ...(outcome ?? {}),
           rung: "foreground",
-          effect: outcome.effect ?? "unverifiable",
+          effect: outcome?.effect ?? "unverifiable",
         },
       };
     } finally {
       this.inFront = false;
+      await this.endHandoff(target, staysInFront);
+    }
+  }
+  /**
+   * Closes the announced second whichever way it ended (design §2.8 step 4):
+   * the helper gives the user's application back and its handoff flag
+   * clears, so the tap scopes the user's input to the window again. A run
+   * that now finishes in front releases the window instead: nothing is
+   * restored, and the helper stops tracking it. Neither failure can mask
+   * the step's own result.
+   */
+  private async endHandoff(target: RunTarget, staysInFront: boolean) {
+    try {
+      if (staysInFront) await this.controller.unbindTarget?.(target.token);
+      else await this.controller.restoreRemembered?.();
+    } catch {
+      // The helper is gone or busy: the next call reports it in its own right.
     }
   }
   private recordFrame(frame: Frame) {
