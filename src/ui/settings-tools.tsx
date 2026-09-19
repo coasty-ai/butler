@@ -314,8 +314,14 @@ export function SettingsTools({
                 <label className="consent">
                   <input
                     type="checkbox"
-                    checked={server.state !== "off"}
-                    disabled={busy || working}
+                    checked={
+                      server.state !== "off" &&
+                      server.state !== "needs_approval"
+                    }
+                    // Approving a row (below) is what enables it.
+                    disabled={
+                      busy || working || server.state === "needs_approval"
+                    }
                     onChange={(e) =>
                       void apply(() =>
                         api.setToolServer(server.id, {

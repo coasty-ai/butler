@@ -984,6 +984,34 @@ describe("tool registry: lifecycle and status", () => {
     expect(JSON.stringify(fixture.reg.status())).not.toContain("ghp_");
   });
 
+  it("reports a recipe's row, which arrives off and unconsented, as needing approval, and names an unusable bridge by its apps", async () => {
+    const fixture = registry({
+      settings: byom({
+        servers: [
+          row({ id: "fresh", name: "Fresh", enabled: false, consented: false }),
+          row({ id: "paused", name: "Paused", enabled: false }),
+        ],
+      }),
+      launch: LAUNCH,
+      tables: { apple: { specs: [], state: "failed" } },
+    });
+    await fixture.reg.configure();
+    const states = Object.fromEntries(
+      fixture.reg.status().servers.map((s) => [s.id, s.state]),
+    );
+    // The pane shows the consent sheet for "fresh" and approving enables it;
+    // "paused" was approved once and switched off, and stays off.
+    expect(states).toEqual({ fresh: "needs_approval", paused: "off" });
+    expect(fixture.fake.log).toEqual(["start apple"]);
+    const list = await fixture.reg
+      .access({ synthetic: false })!
+      .list("anything", signal);
+    expect(list.unavailable).toEqual([
+      { title: "Apple apps", state: "failed" },
+      { title: "Fresh", state: "needs_approval" },
+    ]);
+  });
+
   it("keeps the connection preview behind the privacy gate that keeps a server from starting", async () => {
     const servers = [
       row({ id: "net", name: "Net", network: "internet", consented: false }),

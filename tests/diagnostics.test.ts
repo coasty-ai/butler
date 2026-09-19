@@ -1333,6 +1333,7 @@ describe("dialog and streamed-speech fields", () => {
         pinned: hostile,
         finish: hostile,
         longRunning: hostile,
+        restarts: hostile,
         command: hostile,
         argv: [hostile],
         url: "https://evil.example/mcp",

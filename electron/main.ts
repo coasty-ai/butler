@@ -64,7 +64,7 @@ import {
 } from "../src/core/privacy";
 import { TOOL_ID, TOOL_LIMITS, type AppleConsent } from "../src/core/tools";
 import { toolFastPath } from "../src/assistant/tool-answers";
-import { RECIPES } from "../src/tools/providers";
+import { RECIPES, serverFromRecipe } from "../src/tools/providers";
 import { importServers, serverId } from "../src/tools/import";
 import { answerByTool, createToolLayer, type ToolLayer } from "./tools";
 import { networkFailure } from "../src/providers/network";
@@ -682,11 +682,13 @@ const addToolServerSchema = z.union([
   z.object({ claudeDesktop: z.literal(true) }).strict(),
 ]);
 /**
- * A row from a recipe (src/tools/providers): the folder is asked for here,
- * in the Settings window, when the recipe needs one and none was given. The
- * row is enabled but unconsented, so the pane shows its consent sheet next.
+ * A row from a recipe (src/tools/providers serverFromRecipe, the one shaping):
+ * the folder is asked for here, in the Settings window, when the recipe needs
+ * one and none was given. The row arrives off and unconsented; the registry
+ * reports it as needing approval, so the pane shows its consent sheet next,
+ * and approving it is what enables it.
  */
-async function serverFromRecipe(
+async function rowFromRecipe(
   recipeId: string,
   folder?: string,
 ): Promise<ToolServer> {
@@ -702,21 +704,13 @@ async function serverFromRecipe(
     folder = picked.canceled ? undefined : picked.filePaths[0];
     if (!folder) throw new Error("Choose a folder first.");
   }
-  return toolServerSchema.parse({
-    id: serverId(recipe.id, new Set(settings.tools.servers.map((r) => r.id))),
-    name: recipe.name,
-    transport: recipe.transport,
-    command: recipe.command ?? "",
-    args: (recipe.args ?? []).map((a) => a.replace("{folder}", folder ?? "")),
-    cwd: recipe.cwdFromFolder ? (folder ?? "") : "",
-    url: recipe.url ?? "",
-    secretEnv: recipe.secretEnv ?? [],
-    secretHeaders: recipe.secretHeaders ?? [],
-    enabled: true,
-    network: recipe.network,
-    recipe: recipe.id,
-    addedAt: Date.now(),
-  });
+  return toolServerSchema.parse(
+    serverFromRecipe(recipe, {
+      folder,
+      addedAt: Date.now(),
+      id: serverId(recipe.id, new Set(settings.tools.servers.map((r) => r.id))),
+    }),
+  );
 }
 /** Claude Desktop's own configuration, read once and never kept. */
 function claudeDesktopConfig(): string {
@@ -3758,7 +3752,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       let rows: ToolServer[];
       let secrets: { id: string; name: string; value: string }[] = [];
       if ("recipe" in input)
-        rows = [await serverFromRecipe(input.recipe, input.folder)];
+        rows = [await rowFromRecipe(input.recipe, input.folder)];
       else {
         const imported = importServers(
           "paste" in input ? input.paste : claudeDesktopConfig(),

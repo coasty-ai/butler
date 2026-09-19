@@ -238,9 +238,13 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     s.privacy === "PRIVATE_LOCAL" &&
     (r.transport === "http" || r.network !== "none" || !o.launch());
   const startable = (r: ToolServer, s: Settings): Startable => {
-    if (!s.tools.enabled || !r.enabled) return { ok: false, state: "off" };
+    if (!s.tools.enabled) return { ok: false, state: "off" };
+    // A row that was never approved for its exact argv needs approval whether
+    // or not it is enabled: a recipe's row arrives off and unconsented, and
+    // approving it (electron/main.ts approveToolServer) is what enables it.
     if (!r.consented || r.approvedCommand !== approval(r))
       return { ok: false, state: "needs_approval" };
+    if (!r.enabled) return { ok: false, state: "off" };
     if (r.transport === "http") {
       if (blockedLocal(r, s)) return { ok: false, state: "blocked_local" };
       const headers = o.credentials(r.id).headers;
@@ -254,6 +258,9 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     if (blockedLocal(r, s)) return { ok: false, state: "blocked_local" };
     return { ok: true, source: source(r) };
   };
+  /** How an unusable first-party bridge is named to the model: the apps it fronts, not its id. */
+  const builtinTitle = (server: BuiltinServer) =>
+    server.id === "apple" ? "Apple apps" : server.id;
   /** The consents that are on and granted: what the Apple bridge may list. */
   const consents = () => {
     const apple = o.settings().tools.apple;
@@ -432,7 +439,8 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
           builtin.push(
             ...(await within(running.tools(signal), deadline - now(), [])),
           );
-        else if (state !== "off") unavailable.push({ title: server.id, state });
+        else if (state !== "off")
+          unavailable.push({ title: builtinTitle(server), state });
       }
       for (const r of s.tools.servers) {
         const running = providers.get(r.id)?.provider;

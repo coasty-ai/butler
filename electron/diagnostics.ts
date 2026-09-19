@@ -228,6 +228,7 @@ const countFields = new Set([
   "channels",
   "micChannel",
   "count",
+  "restarts",
   "toolCount",
   "unavailableCount",
   "resultItems",
