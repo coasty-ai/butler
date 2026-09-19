@@ -22,7 +22,10 @@ let wakeNamePattern = #"(?:butt?l[ae]r|budler|butla|batala)"#
 let fusedWakePattern = #"(?!)"#
 let wakeHeyPattern = #"(?:hey|hay|hi|hei)"#
 let wakeOpeners = ["what", "whats", "when", "where", "who", "why", "how", "can", "could", "would", "will", "please",
-    "tell", "give", "i", "im", "let", "lets"]
+    "tell", "give", "i", "im", "let", "lets",
+    // Yes/no and status questions: "Hey Butler anything on my calendar", "is Slack open",
+    // "do I have meetings", "should I leave now" (live trial 2026-09-18: "anything" went unheard).
+    "anything", "any", "is", "are", "am", "was", "were", "do", "does", "did", "have", "has", "should", "which", "whose"]
 // Control words pass the gate like task verbs: "Hey Butler stop" must never wait for a pause.
 // (Every command in the speech test began with "open"; these are the ones a hands-free user
 // most needs to say in one breath.)

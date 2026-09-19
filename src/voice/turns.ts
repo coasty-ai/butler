@@ -820,8 +820,9 @@ const WAKE_FOLLOWERS = [
   ..."sure yeah yep yup ok okay alright fine right correct nah nope not do thanks thank hello hi good morning afternoon evening night actually so also one quick quickly just now".split(
     " ",
   ),
-  // Question openers (native wakeOpeners).
-  ..."what whats when where who why how can could would will please tell give i im let lets".split(
+  // Question openers (native wakeOpeners), including yes/no and status
+  // questions: "Hey Butler anything on my calendar", "is Slack open".
+  ..."what whats when where who why how can could would will please tell give i im let lets anything any is are am was were do does did have has should which whose".split(
     " ",
   ),
 ];

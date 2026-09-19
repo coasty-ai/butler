@@ -221,6 +221,18 @@
       {
         "in": "Hey Butler so open Notes",
         "out": "so open Notes"
+      },
+      {
+        "in": "Hey Butler anything on my calendar today",
+        "out": "anything on my calendar today"
+      },
+      {
+        "in": "Hey Butler is Slack open",
+        "out": "is Slack open"
+      },
+      {
+        "in": "hey butler do I have meetings today",
+        "out": "do I have meetings today"
       }
     ],
     "activateFused": [],
