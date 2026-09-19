@@ -493,8 +493,10 @@ describe("provider-neutral adapters", () => {
     expect(request.body.instructions).toBe(
       buildRequest(s("openai"), "K", { ...o, task: "other" }).body.instructions,
     );
+    // The list rides in the workspace part (the first block of the user turn,
+    // before the image), so it ends the cacheable prefix beside memory.
     expect(
-      JSON.parse(anthropic.messages[0].content[1].text).context.tools,
+      JSON.parse(anthropic.messages[0].content[0].text).context.tools,
     ).toEqual(context.tools);
   });
   it("teaches tools first, the tool result as data, and lists tool_call once among the actions", () => {

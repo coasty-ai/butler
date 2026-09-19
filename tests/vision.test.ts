@@ -207,7 +207,7 @@ describe("screenshot rules", () => {
       ),
     ).toEqual({ send: "full", reason: "cadence" });
   });
-  it("sends none for an unchanged screen only when hash and context both match", () => {
+  it("sends none while the accessibility context is unchanged, whatever the pixels did", () => {
     const same = frame();
     expect(screenshotUse(input({ shown: shownFrame(same) })).send).toBe("none");
     // Same pixels, a control moved: the accessibility context changed.
@@ -222,16 +222,29 @@ describe("screenshot rules", () => {
     expect(
       screenshotUse(input({ frame: moved, shown: shownFrame(same) })),
     ).toEqual({ send: "reduced", reason: "described" });
-    // Same context, different pixels: something drew that accessibility
-    // does not carry.
+    // Same context, different pixels: still unchanged. Live, the menu-bar
+    // clock changes every PNG (370 frames, no consecutive hash repeated), so
+    // a rule that also wanted the same hash never fired; the digest alone
+    // decides, and the never-drop rules above still guard what matters.
     expect(
       screenshotUse(
         input({ frame: frame({ sha256: "sha-2" }), shown: shownFrame(same) }),
       ),
-    ).toEqual({ send: "reduced", reason: "described" });
+    ).toEqual({ send: "none", reason: "unchanged" });
   });
   it("reduces a described screen in auto mode and drops it in text-first", () => {
-    const changed = input({ frame: frame({ sha256: "sha-2" }) });
+    // The model last saw the same screen with other text: the context
+    // digest differs, so the screen changed.
+    const earlier = shownFrame(
+      frame({
+        sha256: "sha-0",
+        context: { ...described, visibleText: `${described.visibleText} then` },
+      }),
+    );
+    const changed = input({
+      frame: frame({ sha256: "sha-2" }),
+      shown: earlier,
+    });
     expect(screenshotUse(changed)).toEqual({
       send: "reduced",
       reason: "described",
@@ -682,8 +695,14 @@ describe("runner screenshot decisions", () => {
       const screen: Screen = { sha: "s0", context: described };
       const c = controller(screen);
       let step = 0;
+      // Every step changes the screen: new pixels and new text (the pixels
+      // alone would count as unchanged).
       vi.mocked(c.execute).mockImplementation(async () => {
         screen.sha = `s${++step}`;
+        screen.context = {
+          ...described,
+          visibleText: `${described.visibleText} ${step}`,
+        };
       });
       const p = scripted([named, named]);
       await new Runner(

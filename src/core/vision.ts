@@ -40,7 +40,10 @@ export interface ScreenshotInput {
   /**
    * What the model saw last: that frame's hash and context digest. Undefined
    * on a run's first step and after a pause, correction or takeover, when the
-   * user may have changed the screen.
+   * user may have changed the screen. Only the context digest decides
+   * "unchanged": live (370 frames, 59 runs) no consecutive frame hash ever
+   * repeated, since the menu-bar clock changes every PNG; the hash is kept
+   * for the record.
    */
   shown?: { sha256: string; context: string };
   /** Model steps since the model last saw a screenshot, full or reduced. */
@@ -64,8 +67,9 @@ export function contextDigest(frame: Frame): string {
  * capture, on a blind or unknown surface, when the helper had to read the
  * screenshot for text (screenText), after an action whose target native
  * input could not verify, or when the model has not had one for three steps.
- * Only then does an unchanged screen (same hash, same context) send none,
- * and a screen described by enough labeled controls and text send the
+ * Only then does an unchanged screen (same accessibility context as the
+ * model last saw; the pixels are not consulted, see ScreenshotInput.shown)
+ * send none, and a screen described by enough labeled controls and text send the
  * reduced rendition ("text-first": none). Anything else is a full screenshot.
  */
 export function screenshotUse(input: ScreenshotInput): ScreenshotUse {
@@ -83,7 +87,7 @@ export function screenshotUse(input: ScreenshotInput): ScreenshotUse {
   if (context.screenText !== undefined) return full("ocr");
   if (executed && !executed.confirmed) return full("unconfirmed");
   if (input.sinceImage >= SCREENSHOT_EVERY - 1) return full("cadence");
-  if (shown.sha256 === frame.sha256 && shown.context === contextDigest(frame))
+  if (shown.context === contextDigest(frame))
     return { send: "none", reason: "unchanged" };
   const labeled = context.controls?.filter((c) => c.label).length ?? 0;
   if (

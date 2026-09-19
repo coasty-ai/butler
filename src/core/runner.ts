@@ -173,12 +173,10 @@ export const MODEL_RESULT_CHARS = 640;
  * entry carries an image, and every result is cut at MODEL_RESULT_CHARS.
  */
 export function modelHistory(history: History): History {
-  const whole = history
-    .slice(-MODEL_HISTORY_FULL)
-    .map((entry) => ({
-      ...entry,
-      result: bound(entry.result, MODEL_RESULT_CHARS),
-    }));
+  const whole = history.slice(-MODEL_HISTORY_FULL).map((entry) => ({
+    ...entry,
+    result: bound(entry.result, MODEL_RESULT_CHARS),
+  }));
   if (history.length <= MODEL_HISTORY_FULL) return whole;
   return [
     {

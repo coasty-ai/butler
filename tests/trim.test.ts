@@ -493,8 +493,8 @@ describe("what one step costs", () => {
       .system[0].text;
     // 13,924 characters before the action list lost its JSON schema repeats;
     // 14,800 with the tools paragraph (.data/design/mcp-integrated.md §2.3.2);
-    // the two-part context and the left-out screenshot added 420 more.
-    expect(instruction.length).toBeLessThan(15300);
+    // 15,321 with the two-part context and the left-out screenshot.
+    expect(instruction.length).toBeLessThan(15400);
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
     expect(instruction).not.toContain('{"type":"menu_item"');
@@ -992,29 +992,29 @@ describe("what a 20-step Notes session costs", () => {
     // the OCR rule keeps the full screenshot on every Notes step.
     const auto = simulate("auto", notesAsObserved);
     expect(auto.slice(1).every((r) => r.use.reason === "ocr")).toBe(true);
-    // With the note text published, the same run reduces and drops: the
-    // switch to Notes lands on a described screen, the two steps nothing
-    // ran on (7 and 9), the malformed reply (17) and the wait (19) send
-    // none, the blind CMD+B and the scroll (13, 14) keep the full one, and
-    // no three steps in a row go without, so the cadence never has to.
+    // With the note text published, the switch to Notes lands on a described
+    // screen and is reduced. This fixture then publishes the same context on
+    // every Notes step (the pixels change, the digest does not), so the
+    // screen counts as unchanged and none is sent until the cadence asks for
+    // a full screenshot every fourth step; the blind CMD+B and the scroll
+    // (13, 14) keep the full one. Live, typing changes visibleText and the
+    // digest with it, so a described screen is reduced rather than dropped.
     const described = simulate("auto", notesDescribed);
     expect(described.map((r) => r.use.reason)).toEqual([
       "first",
-      ...Array<string>(5).fill("described"),
+      "described",
+      ...Array<string>(3).fill("unchanged"),
+      "cadence",
+      ...Array<string>(3).fill("unchanged"),
+      "cadence",
       "unchanged",
-      "described",
       "unchanged",
-      "described",
-      "described",
-      "described",
       "unconfirmed",
       "unconfirmed",
-      "described",
-      "described",
+      ...Array<string>(3).fill("unchanged"),
+      "cadence",
       "unchanged",
-      "described",
       "unchanged",
-      "described",
     ]);
     expect(described[1].use.send).toBe("reduced");
     expect(simulate("text-first", notesDescribed)[1].use.send).toBe("none");
