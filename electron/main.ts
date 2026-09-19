@@ -94,9 +94,8 @@ import { Conversation, ANSWER_WINDOW, type ReplyHandle } from "./conversation";
 import { AssistantSession, DIALOG_LIMITS } from "./assistant";
 import {
   dialogEligible,
-  fastStart,
   fastStartLine,
-  looksLikeQuestion,
+  turnFiller,
 } from "../src/assistant/arbitrate";
 import { textSettings } from "../src/providers/text";
 import {
@@ -1961,19 +1960,12 @@ async function command(
     const turn = new AbortController();
     turnAbort = turn;
     const invocation = voiceInvocation;
-    const fast = fastStart(base, text);
     // A voice turn gets a filler if the model is slow; a fast start speaks
     // its own fixed line the instant the run is dispatched.
     if (fromVoice)
       reply = conversation.expectReply(turnId, {
         voiceTurn: true,
-        filler: fast
-          ? undefined
-          : looksLikeQuestion(text)
-            ? "thinking"
-            : base.kind === "start"
-              ? "ackStart"
-              : "ackCorrection",
+        filler: turnFiller(base, text),
         fillerAfterMs: DIALOG_LIMITS.fillerAfterMs,
       });
     decision = await assistant.decide({
@@ -2211,21 +2203,25 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       if (runActive()) render();
       else idleCard("Okay.");
       return;
-    case "clarify":
+    case "clarify": {
       // No run starts and no correction is recorded; the answer completes it.
       // Dismissing the question must not resume a run the voice hold paused.
       voiceHeld = false;
+      // Only a line typed at the Mac takes the keyboard: a phone's question
+      // ("do that" from the remote or by text) is answered there.
+      const fragment = plan.fragment.replace(/[\s.,…]+$/, "");
       show(
         {
           phase: "text",
           label: plan.question,
-          transcript: `${plan.fragment.replace(/[\s.,…]+$/, "")} `,
+          transcript: fragment ? `${fragment} ` : "",
           canApprove: false,
           closing: false,
         },
-        ctx.channel !== "voice",
+        ctx.channel === "app",
       );
       return;
+    }
     case "status": {
       const text = ctx.replyText ?? statusText();
       if (snapshot.run?.status === "confirming" && snapshot.pending) {

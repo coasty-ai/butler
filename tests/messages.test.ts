@@ -792,6 +792,30 @@ describe("texted commands", () => {
     expect(control.resume).not.toHaveBeenCalled();
     expect(startTask).not.toHaveBeenCalled();
   });
+  it("asks what to do on words that only point at the Mac's screen", async () => {
+    const { messages, helper, startTask, text, poll } = channel();
+    await messages.configure();
+    // "That" is whatever a note on screen or a read-out notification says:
+    // never a run in the owner's name, as the voice router refuses too.
+    for (const line of [
+      "do that",
+      "do what she asked",
+      "do: go for it",
+      "do call the number in the note",
+      "Do send it to them",
+    ]) {
+      text(line);
+      await poll();
+    }
+    expect(startTask).not.toHaveBeenCalled();
+    expect(helper.sent).toEqual(
+      Array(5).fill("What would you like me to do?"),
+    );
+    helper.sent.length = 0;
+    text("do call Dana back");
+    await poll();
+    expect(startTask).toHaveBeenCalledWith("call Dana back");
+  });
   it("refuses a task containing credentials", async () => {
     const { messages, helper, startTask, text, poll } = channel();
     await messages.configure();

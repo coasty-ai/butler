@@ -17,6 +17,8 @@ import { isAbsolute } from "node:path";
 import { parseEnv } from "node:util";
 import type { Settings, Snapshot } from "../src/core/schema";
 import { scanText } from "../src/core/sanitize";
+import { PHRASES } from "../src/voice/phrases";
+import { deicticTask } from "../src/voice/turns";
 import {
   speakableApproval,
   speakableSummary,
@@ -1131,6 +1133,13 @@ export class MessagesChannel {
             "I can’t take passwords or keys by message. Enter those on the Mac.",
             "refused",
           );
+          return;
+        }
+        // Words that only point elsewhere ("do that", "do what she asked")
+        // name no task: a run would resolve them from the Mac's screen in
+        // the owner's name, as the voice router refuses to.
+        if (deicticTask(command.task)) {
+          this.send(PHRASES.whatToDo[0], "refused");
           return;
         }
         // The started moment is the acknowledgement, so the run is announced

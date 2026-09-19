@@ -701,7 +701,10 @@ export type TurnPlan =
   | { kind: "nothingRunning" }
   | { kind: "stillWorking" }
   | { kind: "acknowledge" }
-  | { kind: "clarify"; question: string; fragment: string }
+  // `words`: the user's own words when they named no task of their own
+  // ("do that", "go for it"); the dialog model may still resolve them to
+  // something the user said, so the plan stays open to it.
+  | { kind: "clarify"; question: string; fragment: string; words?: string }
   | { kind: "amendTask"; text: string }
   | { kind: "revise"; text: string }
   | { kind: "start"; text: string; taskSource?: TaskSource }
@@ -1039,7 +1042,8 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
     if (!queued || !run) return undefined;
     const question = !typed && clarifyFragment(queued);
     if (question) return { kind: "clarify", question, fragment: task.trim() };
-    return { kind: "queue", text: typed ? queued : cleanTaskText(queued) };
+    const text = typed ? queued : cleanTaskText(queued);
+    return deicticTask(text) ? askWhatToDo(text) : { kind: "queue", text };
   };
   const route = (task: string): TurnPlan => {
     const later = queue(task);
@@ -1048,14 +1052,21 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
     // 8–9. A correction or a new task. Fillers alone ("um uh") do nothing.
     if (!task || tokenize(task).every((w) => FILLERS.has(w)))
       return { kind: "acknowledge" };
+    // Words that only point at another text ("do what she asked", "call the
+    // number in the note") never start, queue or replace anything in the
+    // user's name: the run would resolve "that" from the screen or a
+    // notification, and whoever wrote it would speak with the user's voice.
+    // A correction to a run under way stays one; it answers the run.
+    const vague = deicticTask(task);
     // A run that stalled is waiting for a hint; a request about something
     // else entirely is the user moving on, not a hint. One waiting on an
     // approval is waiting for yes or no, which were handled above; a request
     // about something else is the user moving on.
     if (run?.stalled && startsNewTask(task, run.task))
-      return { kind: "replace", text: task };
-    return run
-      ? { kind: "revise", text: task }
+      return vague ? askWhatToDo(task) : { kind: "replace", text: task };
+    if (run) return { kind: "revise", text: task };
+    return vague
+      ? askWhatToDo(task)
       : { kind: "start", text: task, taskSource };
   };
   const later = queue(text);
@@ -1156,4 +1167,414 @@ export function startsNewTask(text: string, task: string): boolean {
   if (!mine.size) return false;
   const theirs = subjectWords(task);
   return ![...mine].some((word) => theirs.has(word));
+}
+
+// Words that point elsewhere -------------------------------------------------
+
+const wordSet = (list: string) => new Set(list.split(/\s+/).filter(Boolean));
+
+/**
+ * Agreement, politeness, hedges and fillers, a few from other languages as
+ * people mix them in ("sí, do it"): they say go ahead, never with what.
+ */
+const AGREEING = wordSet(`
+  yes yeah yep yup ya yea yah yas aye sure ok okay okey oki okie kk alright right fine cool great good
+  nice perfect sounds works absolutely definitely certainly totally course indeed gladly please pls plz
+  thanks thank thx ty cheers lets let just well so oh hey now then also too really want wanna like need
+  no nope actually instead rather maybe mind have think guess suppose reckon lol
+  si sí oui ja da vale claro dale bueno haan acha achha theek hai
+`);
+/**
+ * When, how and how often ("one more time"): never what to do.
+ */
+const MANNER = wordSet(`
+  quick quickly fast asap immediately soon straight away today tonight tomorrow later first real
+  properly carefully anyway anyways already behalf more once time times
+`);
+/**
+ * What the user calls the assistant: hollow at the edge of an utterance
+ * ("do it buddy"), a person in the middle or after "my" ("send that to my
+ * boss").
+ */
+const VOCATIVES = wordSet("buddy mate dude man bro boss pal babe");
+/** The user speaking for themselves: after a verb that sends, a message they dictate. */
+const FIRST_PERSON = wordSet("i im ill id ive we were weve wed");
+/** Verbs that stand in for an action named somewhere else. */
+const PRO_VERBS = wordSet(`
+  do does did doing done go going proceed handle take care deal carry follow act try make happen get
+  finish complete repeat redo pick choose select hazlo haz mach fais
+`);
+/**
+ * The stand-in verbs whose object is the whole request: "do that in
+ * Chrome" still does whatever "that" was. Not "make" or "get": "make it
+ * louder" and "get that file" say what they want.
+ */
+const STAND_INS = wordSet(`
+  do does doing done go going proceed handle handling take deal carry follow act try repeat redo finish
+  complete hazlo haz mach fais
+`);
+/** Words between a stand-in verb and its object: "go ahead with", "take care of". */
+const STAND_IN_PARTICLES = wordSet(
+  "for with ahead care of out up on along through me us just please now then",
+);
+/** Words that end an object: what follows says where, when or how. */
+const OBJECT_ENDS = wordSet(`
+  in on at from with for to by via using and then but so or before after when once while until because
+  if as through into onto over under about like
+`);
+/**
+ * Words that point at something said or shown elsewhere, among them the
+ * answers to a menu ("the second option", "option two") and the clitics
+ * other languages hang on a verb ("envoie-le", "schick es").
+ */
+const POINTERS = wordSet(`
+  that thats it this those these them what whats whatever whatevers which whichever whoever whomever
+  wherever same again one ones thing things stuff so such before earlier above last latest previous
+  something anything everything there here
+  first second third fourth fifth sixth seventh eighth ninth tenth two three four five six seven
+  eight nine ten
+  eso esto das es ça cela lo la le les los las
+`);
+/** People named only by a pronoun: whoever the other text came from. */
+const PERSONS = wordSet(
+  "she shes he hes they theyre her him them his hers their theirs someone somebody",
+);
+/** Verbs that report what another text says, asks for or carries. */
+const REPORTED = wordSet(`
+  asked asks said says told tells wanted wants requested requests suggested suggests mentioned mentions
+  wrote writes written sent sends meant means needed needs listed lists showed shows gave gives left
+  shared posted forwarded texted emailed messaged provided included attached
+`);
+/**
+ * Things whose value is written somewhere else: which number, which link,
+ * which invite, which of the buttons.
+ */
+const REFERENTS = wordSet(`
+  number numbers address addresses link links url urls code codes amount amounts account accounts
+  details info information instructions steps contact money payment funds request requests suggestion
+  suggestions task tasks plan option options choice choices button buttons item items invite
+  invitation invitations transaction transactions transfer transfers booking bookings attachment
+  attachments installer installers update updates
+`);
+/** "My number" is the user's own, not another text's. */
+const OWNED = wordSet("my our");
+/** Function words: no request of their own. */
+const FUNCTION_WORDS = wordSet(`
+  the a an to for of with at on in from about by into out through as is be me my you your i im ill id
+  ive us our we its and or ahead according all both can could would will should shall must might may
+  gotta
+`);
+/**
+ * Verbs whose object decides what they do to the world: sending, calling,
+ * paying, installing, deleting, agreeing, pressing, signing in, giving out.
+ * With only a pointer for an object ("send that", "call her back"), or none
+ * at all ("go ahead and accept"), the other text decides. A few from other
+ * languages, with the clitic people attach ("envíalo").
+ */
+const CONSEQUENTIAL = wordSet(`
+  send forward reply respond answer call dial ring phone text message email mail dm ping pay transfer
+  wire venmo buy purchase order book install download upload run execute delete remove erase trash
+  approve accept confirm sign submit share post publish invite schedule click press tap
+  give tell enter type paste agree authorize authorise allow permit enable disable activate
+  deactivate unlock verify validate authenticate login log signin join add uninstall wipe reset
+  format clear grant renew subscribe unsubscribe donate tip checkout
+  envía envia envíalo envialo envíala enviala envíaselo manda mándalo mandalo mándala llama llámalo
+  llamalo llámala llámale paga págalo pagalo págala envoie appelle paie réponds reponds schick
+  schicke sende ruf zahl bezahl antworte
+`);
+/**
+ * The verbs among them that take a message the user dictates: "text her
+ * that I'm on my way", "reply that works".
+ */
+const CLAUSE_VERBS = wordSet("reply respond answer text message tell email dm");
+/**
+ * Looking and opening: their pointers are theirs to keep ("open it", "play
+ * that again"), unless a verb that sends or signs follows ("open the link
+ * and sign in").
+ */
+const LOOKING = wordSet(`
+  open launch play show read look watch listen see view find search check visit browse preview
+`);
+/** Words a second verb follows: "open the link and sign in". */
+const JOINERS = wordSet("and then or also");
+/** Particles that finish such a verb: "call her back", "send it over". */
+const PARTICLES = wordSet("back up over along off on in out");
+/** "In the note", "on the screen": where another text lives. */
+const SOURCE_LEADS = wordSet(
+  "in on at from inside within under per off according",
+);
+const SOURCE_DETS = wordSet(
+  "to the this that these those my your his her their its a an",
+);
+const SOURCE_KINDS = wordSet(
+  "last latest new newest recent previous first same other top pinned",
+);
+const SOURCES = wordSet(`
+  note notes message messages msg email emails mail text texts notification notifications screen page
+  doc docs document documents file files chat chats thread dm dms banner alert alerts popup window tab
+  reminder reminders invite invitation post comment comments letter pdf attachment voicemail card inbox
+  conversation
+`);
+/** "What Dana asked", "the number Sam sent": a report of another text. */
+const REPORT_LEADS = new Set([
+  ...wordSet("what whatever as like thing things stuff one ones"),
+  ...REFERENTS,
+]);
+/** Requests put as questions: "why don't you …", "how about …". */
+const ASKING_FRAMES = [
+  ["why", "dont", "you"],
+  ["why", "not"],
+  ["how", "about"],
+  ["what", "about"],
+];
+const QUESTION_WORDS = wordSet("what who whom whose where when why how which");
+const QUESTION_CONTRACTIONS = wordSet("whats whos wheres whens whys hows");
+const AUXILIARIES = wordSet(`
+  is are am was were do does did can could would will should shall has have had isnt arent wasnt
+  werent doesnt didnt cant couldnt wont wouldnt shouldnt hasnt havent
+`);
+const POLITE = wordSet("can could would will");
+const ASKED_ABOUT = wordSet("i we they he she it you that this there");
+const ASKED_BY_DO = wordSet("i we they he she");
+
+/**
+ * Whether words ask rather than tell: "what's that?", "did she reply?",
+ * "who is she?", "should I approve it?". "Can you do that" and "what she
+ * asked" are requests; "do that" is an imperative.
+ */
+function asksQuestion([first, second = ""]: string[]): boolean {
+  if (QUESTION_CONTRACTIONS.has(first)) return true;
+  if (QUESTION_WORDS.has(first)) return AUXILIARIES.has(second);
+  if (!AUXILIARIES.has(first)) return false;
+  if (POLITE.has(first) && second === "you") return false;
+  // "Do you mind …" is a request; "do it" and "do what …" are imperatives.
+  if (first === "do") return ASKED_BY_DO.has(second);
+  // "Have you …?", but "have at it".
+  if (first === "have" || first === "has" || first === "had")
+    return ASKED_ABOUT.has(second);
+  return true;
+}
+
+/**
+ * Marks the words that name another text: "in the note", "what Dana asked",
+ * and with `referents` a thing whose value is written there ("the number").
+ */
+function pointsAt(words: string[], referents = true): boolean[] {
+  const elsewhere = words.map(() => false);
+  for (let i = 0; i < words.length; i++) {
+    if (!SOURCE_LEADS.has(words[i])) continue;
+    let j = i + 1;
+    while (j < words.length && SOURCE_DETS.has(words[j])) j++;
+    while (j < words.length && SOURCE_KINDS.has(words[j])) j++;
+    if (j < words.length && SOURCES.has(words[j]))
+      for (let k = i; k <= j; k++) elsewhere[k] = true;
+  }
+  // Whoever wrote the other text: one name at most between the lead and the
+  // report ("what Dana asked", "what my boss said"), never a thing of the
+  // user's own ("all the photos she sent" keeps its photos).
+  for (let i = 0; i < words.length; i++) {
+    if (!REPORT_LEADS.has(words[i])) continue;
+    const j = words.findIndex((w, at) => at > i && REPORTED.has(w));
+    if (j === -1 || j - i > 3) continue;
+    const named = words
+      .slice(i + 1, j)
+      .filter(
+        (w) =>
+          !PERSONS.has(w) &&
+          !SOURCE_DETS.has(w) &&
+          !SOURCES.has(w) &&
+          !POINTERS.has(w),
+      ).length;
+    if (named <= 1) for (let k = i + 1; k < j; k++) elsewhere[k] = true;
+  }
+  return words.map(
+    (word, i) =>
+      elsewhere[i] ||
+      POINTERS.has(word) ||
+      PERSONS.has(word) ||
+      REPORTED.has(word) ||
+      (referents && REFERENTS.has(word) && !OWNED.has(words[i - 1] ?? "")),
+  );
+}
+
+/** Whether the word at `i` says nothing of its own. */
+function hollowAt(words: string[], i: number): boolean {
+  const word = words[i];
+  return (
+    AGREEING.has(word) ||
+    MANNER.has(word) ||
+    PRO_VERBS.has(word) ||
+    FUNCTION_WORDS.has(word) ||
+    (VOCATIVES.has(word) &&
+      (i === 0 || i === words.length - 1) &&
+      !OWNED.has(words[i - 1] ?? ""))
+  );
+}
+
+/**
+ * A stand-in verb whose object only points ("do that in Chrome", "take care
+ * of what she sent for me"): whatever follows the object says where or
+ * when, never what.
+ */
+function standInPoints(words: string[], points: boolean[]): boolean {
+  for (let i = 0; i < words.length; i++) {
+    if (!STAND_INS.has(words[i])) continue;
+    let j = i + 1;
+    while (j < words.length && STAND_IN_PARTICLES.has(words[j])) j++;
+    let pointed = false;
+    let hollow = j < words.length;
+    for (
+      ;
+      j < words.length && !(OBJECT_ENDS.has(words[j]) && !points[j]);
+      j++
+    ) {
+      if (points[j]) pointed = true;
+      else if (!hollowAt(words, j)) hollow = false;
+    }
+    if (pointed && hollow) return true;
+  }
+  return false;
+}
+
+/** The words before a noun: "the email", "that text", "my last message". */
+const OBJECT_DETS = new Set([...SOURCE_DETS, ...SOURCE_KINDS, ...OWNED]);
+
+/**
+ * Whether a task's words only point at something said or shown elsewhere:
+ * nothing but agreement, a stand-in verb and pointers ("sure, go for it",
+ * "okay do what she asked", "yeah do that", "do it again", "the second
+ * option"), a stand-in verb whose object only points ("do what it says in
+ * Chrome", "pick the first one"), or a verb that sends, pays, installs,
+ * deletes, agrees or signs in whose object is only a pointer ("send that",
+ * "call her back", "call the number in the note", "accept the invite") or
+ * nothing at all ("go ahead and accept", "reply yes", "call back"). Such
+ * words carry no task: a run would take its substance from the screen, a
+ * notification or whatever the assistant last read out, in the user's name.
+ *
+ * One word of the user's own (an app, a name, a thing, a message they
+ * dictate) makes it a task: "do the dishes list in Notes", "open that
+ * folder called Taxes", "text her that I'm late", "text Dana yes", "reply
+ * to that email" (the email is the thing, not a verb). Looking and opening
+ * verbs keep their pointers ("play that again", "open it"): they cannot
+ * send or spend on another text's say-so, unless such a verb follows them
+ * ("open the link and sign in"). Questions ("what's that?", "did she
+ * call?") ask rather than tell.
+ */
+export function deicticTask(text: string): boolean {
+  let words = keyParts(text).key;
+  const frame = ASKING_FRAMES.find((f) => f.every((w, i) => words[i] === w));
+  if (frame) words = words.slice(frame.length);
+  else if (asksQuestion(words)) return false;
+  if (!words.length) return false;
+  const points = pointsAt(words);
+  if (standInPoints(words, points)) return true;
+  let verb: string | undefined;
+  let verbAt = -1;
+  let looking = false;
+  for (const [i, word] of words.entries()) {
+    const prev = words[i - 1] ?? "";
+    // After a verb that takes a message, "that" begins the message the
+    // user dictates ("reply that works", "text her that I'm on my way"),
+    // unless the message itself only points ("reply that to them").
+    if (
+      verb &&
+      CLAUSE_VERBS.has(verb) &&
+      (word === "that" || word === "thats") &&
+      (i - 1 === verbAt || PERSONS.has(prev)) &&
+      i + 1 < words.length &&
+      !points.slice(i + 1).some(Boolean)
+    )
+      return false;
+    if (points[i]) continue;
+    if (CONSEQUENTIAL.has(word)) {
+      // The first verb, one joined to it ("open the link and sign in") or
+      // the button it names ("click allow", "press accept"). After a verb,
+      // "email", "text", "call" and the like following "the", "that" or
+      // "my" are the thing acted on: the user's own word.
+      if (
+        (!verb && !looking && !OBJECT_DETS.has(prev)) ||
+        JOINERS.has(prev) ||
+        i - 1 === verbAt
+      ) {
+        verb = word;
+        verbAt = i;
+        continue;
+      }
+      return false;
+    }
+    if (!verb && LOOKING.has(word)) {
+      looking = true;
+      continue;
+    }
+    if (verb && CLAUSE_VERBS.has(verb) && FIRST_PERSON.has(word)) return false;
+    if (verb && PARTICLES.has(word)) continue;
+    if (hollowAt(words, i)) continue;
+    return false;
+  }
+  // A verb that sends with only pointers, or nothing, for an object is as
+  // vague as agreement alone, which points at whatever was said last.
+  // Looking verbs keep their pointers.
+  return !!verb || !looking;
+}
+
+/**
+ * Whether words point at something said or shown elsewhere at all: a
+ * pointer, a pronoun for a person, a report of another text and, with
+ * `referents`, a thing whose value is written elsewhere ("the link"). A
+ * task resolved from a pointer ("do that") may not keep one ("send it to
+ * them in Safari"), though it may name a thing whose value it gives or is
+ * offered for ("wire $900 to account 55440011"); "again" only repeats a
+ * task the words name in full.
+ */
+export function pointsElsewhere(text: string, referents = true): boolean {
+  const words = keyParts(text).key.filter((w) => w !== "again");
+  return pointsAt(words, referents).some(Boolean);
+}
+
+/**
+ * The question for words that name no task (deicticTask). The answer stands
+ * alone: it is never joined to words that pointed elsewhere.
+ */
+export function askWhatToDo(words: string): TurnPlan {
+  return {
+    kind: "clarify",
+    question: PHRASES.whatToDo[0],
+    fragment: "",
+    words,
+  };
+}
+
+/**
+ * A phrase that lets go of a task, on its own: at the end of the words or
+ * before a pause or a joining word ("forget that, …", "never mind and …").
+ * "Skip this song" and "book something else for Friday" name an object.
+ */
+const LETS_GO = new RegExp(
+  `(?:^|[\\s,;:.!?—-])(?:${[
+    "forget (?:about )?(?:it|that|this)",
+    "never ?mind",
+    "(?:scrap|drop|ditch|abandon|skip) (?:it|that|this)",
+    "(?:stop|cancel|end) (?:it|that|this|the task)",
+    "something else|(?:a )?change of plans?|start over",
+  ].join("|")})(?=\\s*$|\\s*[,;:.!?—-]|\\s+(?:and|instead|actually|just|now|lets|let)\\b)`,
+);
+const INSTEAD = /\b(?:instead|rather)\b/;
+/**
+ * Whether the user's own words let go of the task they had under way
+ * ("forget that, instead …", "never mind, …", "start over"), or ask for a
+ * different one in its place ("read the note instead" while a song was
+ * stuck). Only then may the model's reading that they moved on end a run
+ * they paused. "Use the search instead" is a hint to that run, and "I'd
+ * rather use Chrome" a preference: neither lets go of anything.
+ */
+export function dropsCurrentTask(text: string, task = ""): boolean {
+  const lowered = text.toLowerCase().replace(/['’]/g, "");
+  if (LETS_GO.test(lowered)) return true;
+  if (!task || !INSTEAD.test(lowered)) return false;
+  return startsNewTask(lowered.replace(new RegExp(INSTEAD, "g"), " "), task);
+}
+
+/** Whether the words hold a verb that sends, spends, installs, deletes or agrees. */
+export function consequentialVerb(text: string): boolean {
+  return keyParts(text).key.some((w) => CONSEQUENTIAL.has(w));
 }

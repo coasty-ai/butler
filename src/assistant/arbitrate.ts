@@ -10,9 +10,15 @@
  */
 import type { TaskSource } from "../core/schema";
 import { scanText } from "../core/sanitize";
+import { PHRASES, type PhraseKind } from "../voice/phrases";
 import {
+  askWhatToDo,
   cleanTaskText,
+  consequentialVerb,
+  deicticTask,
+  dropsCurrentTask,
   intentKey,
+  pointsElsewhere,
   startsNewTask,
   type TurnPlan,
   type VoiceTurnRun,
@@ -25,15 +31,20 @@ const TERMINAL = new Set(["completed", "cancelled", "failed"]);
 /** The plans the model may reconsider. */
 export type EligiblePlan = Extract<
   TurnPlan,
-  { kind: "start" | "revise" | "replace" | "status" }
+  { kind: "start" | "revise" | "replace" | "status" | "clarify" }
 >;
-/** Plans the model may reconsider; everything else is settled by the router. */
+/**
+ * Plans the model may reconsider; everything else is settled by the router.
+ * A question about words that named no task ("do that") is among them: the
+ * model may still trace "that" to something the user said themselves.
+ */
 export function dialogEligible(plan: TurnPlan): plan is EligiblePlan {
   return (
     plan.kind === "start" ||
     plan.kind === "revise" ||
     plan.kind === "replace" ||
-    plan.kind === "status"
+    plan.kind === "status" ||
+    (plan.kind === "clarify" && plan.words !== undefined)
   );
 }
 
@@ -85,10 +96,15 @@ export function looksLikeQuestion(text: string): boolean {
 
 /**
  * A plain imperative with nothing running starts right away with the user's
- * own words and no model call, the way it does today.
+ * own words and no model call, the way it does today. Never words that
+ * only point elsewhere, and never a verb that sends, signs or spends on a
+ * target named elsewhere ("email the link to Dana", "open the link and sign
+ * in"): the model reads those with the notification in view.
  */
 export function fastStart(plan: TurnPlan, text: string): boolean {
-  if (plan.kind !== "start" || looksLikeQuestion(text)) return false;
+  if (plan.kind !== "start" || looksLikeQuestion(text) || deicticTask(text))
+    return false;
+  if (consequentialVerb(text) && pointsElsewhere(text)) return false;
   const key = intentKey(text).split(" ").filter(Boolean);
   const verb = key.find((word) => !LEADING.has(word));
   return (
@@ -102,6 +118,21 @@ const OPENERS = /^(?:open|launch|start)$/;
 const SWITCHERS = /^(?:switch|jump|go)$/;
 const TARGET_STOP = /^(?:and|then|,|;|so|please|for|with)$/;
 const TARGET_LEAD = new Set(["to", "the", "up", "my", "a", "an", "in", "on"]);
+
+/**
+ * The filler a turn plays while the model is slow: none for a fast start
+ * (its own line follows at once), a "let me check" for a question or for
+ * words that named no task (a question may be all that comes of them), and
+ * an acknowledgement for a request or a correction.
+ */
+export function turnFiller(
+  base: TurnPlan,
+  text: string,
+): PhraseKind | undefined {
+  if (fastStart(base, text)) return undefined;
+  if (looksLikeQuestion(text) || base.kind === "clarify") return "thinking";
+  return base.kind === "start" ? "ackStart" : "ackCorrection";
+}
 
 /**
  * The fixed line spoken the instant a fast start is dispatched: "Opening
@@ -217,7 +248,13 @@ export type GroundCheck =
   | { ok: true }
   | {
       ok: false;
-      code: "entity" | "vocabulary" | "too_long" | "secret" | "clipboard";
+      code:
+        | "entity"
+        | "vocabulary"
+        | "referent"
+        | "too_long"
+        | "secret"
+        | "clipboard";
     };
 
 /**
@@ -226,11 +263,20 @@ export type GroundCheck =
  * task or a short generic list; every entity must appear in text the user
  * wrote or said themselves, never in something the assistant repeated from
  * a notification or a screen; a paste must be the user's own request.
+ *
+ * `deictic`: the utterance only pointed at something ("do it again",
+ * deicticTask), so the rewrite is what the model resolved the pointer to.
+ * Then every content word, generic or not, must be the user's own, and at
+ * least one must come from a task they gave before this utterance: the
+ * thing pointed at. Earlier words that only pointed themselves ("call the
+ * number in the note", asked about) gave no task and lend none. A rewrite
+ * that still points ("send it to them in Safari", "call the note number")
+ * resolved the pointer to nothing the user said, and fails as "referent".
  */
 export function groundedTask(
   rewrite: string,
   utterance: string,
-  o: { context?: string[]; userWords?: string[] } = {},
+  o: { context?: string[]; userWords?: string[]; deictic?: boolean } = {},
 ): GroundCheck {
   const task = rewrite.trim();
   if (!task || task.length > 500) return { ok: false, code: "too_long" };
@@ -242,10 +288,34 @@ export function groundedTask(
   const ownEntities = new Set(entityTokens(own));
   for (const entity of entityTokens(task))
     if (!ownEntities.has(entity)) return { ok: false, code: "entity" };
-  const allowed = contentTokens([own, ...(o.context ?? [])].join(" "));
-  for (const token of contentTokens(task))
-    if (!allowed.has(token) && !GENERIC.has(token) && !/^\d+$/.test(token))
+  // A pointer resolved to words that still point ("send it to them in
+  // Safari") was resolved to nothing.
+  if (o.deictic && pointsElsewhere(task, false))
+    return { ok: false, code: "referent" };
+  const allowed = contentTokens(
+    [own, ...(o.deictic ? [] : (o.context ?? []))].join(" "),
+  );
+  const tokens = contentTokens(task);
+  for (const token of tokens)
+    if (
+      !allowed.has(token) &&
+      (o.deictic || (!GENERIC.has(token) && !/^\d+$/.test(token)))
+    )
       return { ok: false, code: "vocabulary" };
+  if (o.deictic) {
+    // The caller's user words may include the utterance itself (the session
+    // notes a turn before deciding it): only the turns before it count, and
+    // only those that named a task of their own.
+    const key = intentKey(utterance);
+    const before = contentTokens(
+      (o.userWords ?? [])
+        .filter((w) => intentKey(w) !== key && !deicticTask(w))
+        .join(" "),
+    );
+    const now = contentTokens(utterance);
+    if (![...tokens].some((t) => before.has(t) && !now.has(t)))
+      return { ok: false, code: "referent" };
+  }
   return { ok: true };
 }
 
@@ -307,7 +377,12 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
   const baseSource: TaskSource | undefined =
     base.kind === "start" ? base.taskSource : undefined;
   /** The user's own cleaned words, as the router would have run them. */
-  const words = base.kind === "status" ? utterance : base.text;
+  const words =
+    base.kind === "status"
+      ? utterance
+      : base.kind === "clarify"
+        ? (base.words ?? utterance)
+        : base.text;
   switch (head.act) {
     case "none":
     case "answer":
@@ -340,11 +415,43 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
   if (base.kind === "status") return settle(base, "task_refused");
   // A task act. The rewrite runs only when it is grounded.
   const rewrite = head.task?.trim() ?? "";
+  // Words that only point elsewhere ("sure go for it", "call the number in
+  // the note") name no task, so a TASK that repeats them, or points
+  // elsewhere itself, neither runs nor is offered: the run would resolve
+  // "that" from the screen or a notification in the user's name. The
+  // router's question stands, or its correction to the run under way.
+  const vague = deicticTask(words);
+  const unclear = (code: string): Arbitrated =>
+    settle(
+      base.kind === "revise" || base.kind === "clarify"
+        ? base
+        : askWhatToDo(words),
+      code,
+    );
+  if (rewrite && deicticTask(rewrite))
+    return vague ? unclear("vague") : settle(base, "rewrite_vague");
+  if (vague && !rewrite) return unclear("vague");
+  // The pointer resolved to words that still point ("send it to them in
+  // Safari", "do what Dana asked in Safari"): not even offered, since
+  // accepted it would resolve them from the screen all the same. A thing
+  // with its value ("wire $900 to account 55440011") is offered out loud.
+  if (vague && pointsElsewhere(rewrite, false))
+    return unclear("rewrite_points");
   const grounded = rewrite
-    ? groundedTask(rewrite, utterance, {
-        context: i.context,
-        userWords: i.userWords,
-      })
+    ? groundedTask(
+        rewrite,
+        utterance,
+        // Vague words lend a rewrite no authority of their own: what it
+        // resolved "that" to runs only when every word of it is the user's
+        // own and some of it is what they said before ("open Safari" … "do
+        // it again"), never because the assistant said it (a notification it
+        // read out, a page, its own offer), never on a generic word the model
+        // added ("open the latest tab" from a note) and never on the vague
+        // words alone reshuffled. Otherwise it is offered.
+        vague
+          ? { userWords: i.userWords, deictic: true }
+          : { context: i.context, userWords: i.userWords },
+      )
     : ({ ok: false, code: "too_long" } as const);
   const own = !!rewrite && intentKey(rewrite) === intentKey(words);
   const source: TaskSource = own
@@ -376,7 +483,9 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
       };
     return propose();
   }
-  if (head.act === "revise")
+  if (head.act === "revise") {
+    // Vague words the router asked about are not a correction either.
+    if (!task && base.kind === "clarify") return unclear("vague");
     return {
       // An ungrounded correction falls back to the user's own words: a
       // correction is a hint to the run in the user's name.
@@ -384,6 +493,7 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
       speakSay: true,
       code: task ? "revise" : "revise_words",
     };
+  }
   if (head.act === "queue") {
     if (task)
       return {
@@ -396,18 +506,42 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
   }
   // start or replace with a run under way: a healthy run is never replaced.
   const moveOn = run.stalled === true || startsNewTask(utterance, run.task);
+  // Nor do vague words the router asked about become a correction.
+  if (!moveOn && base.kind === "clarify") return unclear("vague");
   if (!moveOn)
     return {
       plan: { kind: "revise", text: words },
       speakSay: true,
       code: "replace_refused",
     };
-  if (task)
+  if (task) {
+    // A run the user paused or took over is theirs to end: the model reading
+    // them as moving on never stops it silently. Unless their own words let
+    // go of it ("forget that, instead …", "read the note instead"), they
+    // are asked first; a hint to the run ("use the search instead") is no
+    // such thing. The hold this very activation caused is not such a pause,
+    // and the router's own replace (a new request in the user's words to a
+    // stuck run) is theirs.
+    if (
+      run.held &&
+      !i.heldByVoice &&
+      base.kind !== "replace" &&
+      !dropsCurrentTask(utterance, run.task)
+    )
+      return settle(
+        {
+          kind: "clarify",
+          question: PHRASES.pausedFirst[0],
+          fragment: "",
+        },
+        "replace_held",
+      );
     return {
       plan: { kind: "replace", text: task },
       speakSay: true,
       taskSource: source,
       code: "replace",
     };
+  }
   return propose();
 }

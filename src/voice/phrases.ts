@@ -21,6 +21,8 @@ export type PhraseKind =
   | "needClick"
   | "didntCatch"
   | "goOn"
+  | "whatToDo"
+  | "pausedFirst"
   | "doneGeneric"
   | "failGeneric"
   | "repeatReason"
@@ -66,6 +68,11 @@ export const PHRASES: Record<PhraseKind, readonly string[]> = {
   ],
   // "Go on." resumes a run, so it is not a listening cue.
   goOn: ["I’m listening.", "Take your time."],
+  // Words that only point elsewhere ("do that", "go for it") name no task.
+  whatToDo: ["What would you like me to do?"],
+  // A new task would end the one the user paused: they decide, and the
+  // answers the question invites ("stop", "carry on") are the router's own.
+  pausedFirst: ["Your task is still paused. Should I stop it, or carry on?"],
   doneGeneric: ["Done.", "All done.", "Finished.", "That’s done."],
   failGeneric: ["Sorry, I couldn’t finish that.", "That didn’t work, sorry."],
   repeatReason: [

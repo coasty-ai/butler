@@ -49,6 +49,7 @@ import { containsSecret, speakableSentence } from "../src/voice/speakable";
 import {
   APPROVAL_MIN_CONFIDENCE,
   clarifyFragment,
+  deicticTask,
   intentKey,
   isStatusQuestion,
   isWakePhraseOnly,
@@ -160,6 +161,12 @@ interface Flight {
   error?: string;
   outcome?: TextOutcome;
   startedAt: number;
+  /**
+   * The model saw notification text (buildDialogState sends it only for a
+   * question about them): what it says is read out from it, so the turn is
+   * kept as untrusted, like any line read out from a notification.
+   */
+  readOut: boolean;
   /** Wakes anyone waiting on new events. */
   wake: () => void;
 }
@@ -430,9 +437,14 @@ export class AssistantSession implements AssistantSessionApi {
     }
     // An answer that offers in words to go and look ("I can check it on the
     // Mac if you like") is held to it: the user's own request, heard
-    // clearly, becomes the offer a "yes" accepts.
+    // clearly, becomes the offer a "yes" accepts. Words that only point
+    // elsewhere ("do what she asked") are no request to offer: accepted,
+    // the run would resolve them from the screen.
     const offer =
-      head.act === "answer" && a.plan.kind === "reply" && heard === "user_words"
+      head.act === "answer" &&
+      a.plan.kind === "reply" &&
+      heard === "user_words" &&
+      !deicticTask(i.text)
         ? i.text
         : undefined;
     return {
@@ -587,6 +599,7 @@ export class AssistantSession implements AssistantSessionApi {
       events: [],
       ended: false,
       startedAt: this.now(),
+      readOut: !!state.notifications?.length,
       wake: () => {},
     };
     this.flights.add(flight);
@@ -779,7 +792,12 @@ export class AssistantSession implements AssistantSessionApi {
           if (finished) return;
           finished = true;
           session.abort(flight);
-          if (spoken.length) session.noteAssistant(spoken.join(" "), channel);
+          // Read out from notifications, it is their words, not ours: never
+          // vocabulary for a later rewrite (contextWords).
+          if (spoken.length)
+            session.noteAssistant(spoken.join(" "), channel, {
+              untrusted: flight.readOut,
+            });
           const said = spoken.join(" ");
           if (offer?.trim() && session.epoch === epoch && offersInWords(said)) {
             session.live = {
