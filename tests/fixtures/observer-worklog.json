@@ -1,0 +1,6020 @@
+{
+  "version": 1,
+  "timezone": "America/Los_Angeles",
+  "utcOffsetMinutes": -420,
+  "tier": "structure",
+  "days": [
+    {
+      "day": "2026-09-14",
+      "weekday": 1,
+      "rows": [
+        {
+          "event": "observe_action",
+          "atMs": 1789401327000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789401330000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "general - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401334000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401340000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "dev-butler"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789401343000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "dev-butler - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401343000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401495000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789401497000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401502000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Inbox"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401508000,
+          "appId": "com.apple.mail",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401515000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Archive"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401621000,
+          "appId": "com.linear",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789401622000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "My issues – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401627000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "My issues"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401630000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401635000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Triage"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789401640000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "Triage – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789401640000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789403149000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789403150000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789403153000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 69,
+            "ms": 9315
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789403200546,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 37,
+            "ms": 5439
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789403217171,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 38,
+            "ms": 4522
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789403240050,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 62,
+            "ms": 6882
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789403894390,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789404623000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789404626000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789404631000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789404640000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789404646000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789404646000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789405853000,
+          "appId": "com.apple.Notes",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789405855000,
+          "appId": "com.apple.Notes",
+          "appName": "Notes",
+          "windowTitle": "Standup notes",
+          "focusedRole": "textArea",
+          "focusedLabel": "Note",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Note"
+            },
+            {
+              "role": "textArea",
+              "label": "Note"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789405860000,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 61,
+            "ms": 8235
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789405916399,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 103,
+            "ms": 14935
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789405982768,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 166,
+            "ms": 26394
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407608000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789407609000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Receipt - Acme Cloud — Inbox",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407614000,
+          "appId": "com.apple.mail",
+          "kind": "double_click",
+          "target": {
+            "role": "image",
+            "label": "Receipt - Acme Cloud.pdf"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789407619000,
+          "appId": "com.apple.Preview",
+          "appName": "Preview",
+          "windowTitle": "Receipt - Acme Cloud.pdf",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Zoom In"
+            },
+            {
+              "role": "button",
+              "label": "Share"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407624000,
+          "appId": "com.apple.Preview",
+          "kind": "menu_item",
+          "menu": ["File", "Export…"]
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789407627000,
+          "appId": "com.apple.Preview",
+          "appName": "Preview",
+          "windowTitle": "Receipt - Acme Cloud.pdf",
+          "focusedRole": "textField",
+          "focusedLabel": "Export As",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Export As"
+            },
+            {
+              "role": "popUpButton",
+              "label": "Where"
+            },
+            {
+              "role": "button",
+              "label": "Save"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407627000,
+          "appId": "com.apple.Preview",
+          "kind": "typing",
+          "typed": {
+            "field": "Export As",
+            "chars": 26,
+            "ms": 3172
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407632609,
+          "appId": "com.apple.Preview",
+          "kind": "click",
+          "target": {
+            "role": "popUpButton",
+            "label": "Where"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407637609,
+          "appId": "com.apple.Preview",
+          "kind": "menu_item",
+          "menu": ["Receipts"]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407643609,
+          "appId": "com.apple.Preview",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Save"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407651609,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789407654609,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789407660609,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Archive"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789409447000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789409450000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Morning briefing – News",
+          "host": "news.example.org",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789409453000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 6
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789409459000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Read more"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789409464000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789409470000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Back"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789410073000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Morning briefing – News",
+          "host": "news.example.org",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789410073000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789411235000,
+          "appId": "com.apple.iCal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789411238000,
+          "appId": "com.apple.iCal",
+          "appName": "Calendar",
+          "windowTitle": "September 2026",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Today"
+            },
+            {
+              "role": "button",
+              "label": "Week"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789411240000,
+          "appId": "com.apple.iCal",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Today"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789411244000,
+          "appId": "com.apple.iCal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789413047000,
+          "excluded": "idle"
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789416357000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789416359000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Release process – Wiki",
+          "host": "wiki.example.net",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789416365000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 9
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789416371000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Read more"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789416377000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 7
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789416980000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Release process – Wiki",
+          "host": "wiki.example.net",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789416980000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789419903000,
+          "runId": "run-7f3a",
+          "excluded": "own_run"
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789420859000,
+          "appId": "com.apple.finder",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789420862000,
+          "appId": "com.apple.finder",
+          "appName": "Finder",
+          "windowTitle": "Downloads",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Downloads"
+            },
+            {
+              "role": "button",
+              "label": "Documents"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789420867000,
+          "appId": "com.apple.finder",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Documents"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789420871000,
+          "appId": "com.apple.finder",
+          "appName": "Finder",
+          "windowTitle": "Documents",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Downloads"
+            },
+            {
+              "role": "button",
+              "label": "Documents"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789420871000,
+          "appId": "com.apple.finder",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789422059000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789422061000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789422064000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 25,
+            "ms": 4000
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789422080596,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 17,
+            "ms": 1734
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789422696920,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789423296920,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789423296920,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789425023000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789425024000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789425029000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 6
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789425036000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789425042000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789425042000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428638000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789428639000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Table"
+            },
+            {
+              "role": "button",
+              "label": "Chart"
+            },
+            {
+              "role": "button",
+              "label": "Format"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428642000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428704000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "menu_item",
+          "menu": ["File", "Export To", "PDF…"]
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789428710000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Next…"
+            },
+            {
+              "role": "popUpButton",
+              "label": "Image Quality"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428710000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Next…"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789428716000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "focusedRole": "textField",
+          "focusedLabel": "Save As",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Save As"
+            },
+            {
+              "role": "button",
+              "label": "Export"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428716000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "typing",
+          "typed": {
+            "field": "Save As",
+            "chars": 22,
+            "ms": 2442
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428720843,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Export"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428733843,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789428734843,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428738843,
+          "appId": "com.apple.mail",
+          "kind": "key_chord",
+          "chord": "CMD+N"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789428739843,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "New Message",
+          "focusedRole": "textField",
+          "focusedLabel": "To",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "To"
+            },
+            {
+              "role": "textField",
+              "label": "Subject"
+            },
+            {
+              "role": "textArea",
+              "label": "Message"
+            },
+            {
+              "role": "button",
+              "label": "Send"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428739843,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "To",
+            "chars": 24,
+            "ms": 2520
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428743389,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "Subject",
+            "chars": 30,
+            "ms": 4290
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428748713,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "Message",
+            "chars": 239,
+            "ms": 27246
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789428777547,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Send"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789430749000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789430750000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "general - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789430752000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789432826000,
+          "excluded": "locked"
+        }
+      ]
+    },
+    {
+      "day": "2026-09-15",
+      "weekday": 2,
+      "rows": [
+        {
+          "event": "observe_action",
+          "atMs": 1789487579000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789487582000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "general - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487588000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487595000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "dev-butler"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789487600000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "dev-butler - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487600000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487750000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789487753000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487755000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Inbox"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487757000,
+          "appId": "com.apple.mail",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487760000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Archive"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487860000,
+          "appId": "com.linear",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789487863000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "My issues – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487869000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "My issues"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487872000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487877000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Triage"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789487883000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "Triage – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789487883000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789489226000,
+          "appId": "com.apple.Notes",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789489228000,
+          "appId": "com.apple.Notes",
+          "appName": "Notes",
+          "windowTitle": "Standup notes",
+          "focusedRole": "textArea",
+          "focusedLabel": "Note",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Note"
+            },
+            {
+              "role": "textArea",
+              "label": "Note"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789489233000,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 171,
+            "ms": 17955
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789489302923,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 72,
+            "ms": 8928
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789490716000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789490719000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789490724000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 5
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789490727000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789490732000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789490732000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789491901000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789491902000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789491906000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 66,
+            "ms": 6864
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789491929821,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 59,
+            "ms": 8142
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789491969441,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 16,
+            "ms": 2448
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789492005885,
+          "appId": "com.apple.Terminal",
+          "kind": "key_chord",
+          "chord": "CMD+T"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789492609885,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789493209885,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789493209885,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789493815885,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789494651000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789494652000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Onboarding – Wiki",
+          "host": "wiki.example.net",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789494655000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789494662000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Read more"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789494664000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789494673000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Back"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789495275000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Onboarding – Wiki",
+          "host": "wiki.example.net",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789497030000,
+          "appId": "com.apple.iCal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789497033000,
+          "appId": "com.apple.iCal",
+          "appName": "Calendar",
+          "windowTitle": "September 2026",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Today"
+            },
+            {
+              "role": "button",
+              "label": "Week"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789497037000,
+          "appId": "com.apple.iCal",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Today"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789497039000,
+          "appId": "com.apple.iCal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 1
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789499140000,
+          "excluded": "idle"
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789505158000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789505161000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Sign in",
+          "host": "accounts.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789505164000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Sign in"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789505168000,
+          "appId": "com.apple.Safari",
+          "excluded": "secure_input"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789505196000,
+          "appId": "com.apple.Safari",
+          "excluded": "secure_input"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789505216000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Account",
+          "host": "accounts.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789506938000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789506940000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Receipt - Northwind Hosting — Inbox",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789506942000,
+          "appId": "com.apple.mail",
+          "kind": "double_click",
+          "target": {
+            "role": "image",
+            "label": "Receipt - Northwind Hosting.pdf"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789506949000,
+          "appId": "com.apple.Preview",
+          "appName": "Preview",
+          "windowTitle": "Receipt - Northwind Hosting.pdf",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Zoom In"
+            },
+            {
+              "role": "button",
+              "label": "Share"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789506954000,
+          "appId": "com.apple.Preview",
+          "kind": "menu_item",
+          "menu": ["File", "Export…"]
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789506958000,
+          "appId": "com.apple.Preview",
+          "appName": "Preview",
+          "windowTitle": "Receipt - Northwind Hosting.pdf",
+          "focusedRole": "textField",
+          "focusedLabel": "Export As",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Export As"
+            },
+            {
+              "role": "popUpButton",
+              "label": "Where"
+            },
+            {
+              "role": "button",
+              "label": "Save"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789506958000,
+          "appId": "com.apple.Preview",
+          "kind": "typing",
+          "typed": {
+            "field": "Export As",
+            "chars": 33,
+            "ms": 4587
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789506964099,
+          "appId": "com.apple.Preview",
+          "kind": "click",
+          "target": {
+            "role": "popUpButton",
+            "label": "Where"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789506969099,
+          "appId": "com.apple.Preview",
+          "kind": "menu_item",
+          "menu": ["Receipts"]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789506975099,
+          "appId": "com.apple.Preview",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Save"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789506984099,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789506986099,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789509601000,
+          "appId": "com.apple.Music",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789509602000,
+          "appId": "com.apple.Music",
+          "appName": "Music",
+          "windowTitle": "Music",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Play"
+            },
+            {
+              "role": "button",
+              "label": "Next"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789509606000,
+          "appId": "com.apple.Music",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Play"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789509682000,
+          "appId": "com.apple.MobileSMS",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789509685000,
+          "appId": "com.apple.MobileSMS",
+          "appName": "Messages",
+          "windowTitle": "Messages",
+          "focusedRole": "textField",
+          "focusedLabel": "iMessage",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "iMessage"
+            },
+            {
+              "role": "button",
+              "label": "Send"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789509690000,
+          "appId": "com.apple.MobileSMS",
+          "kind": "typing",
+          "typed": {
+            "field": "iMessage",
+            "chars": 69,
+            "ms": 10557
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789509701759,
+          "appId": "com.apple.MobileSMS",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Send"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789511428000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789511430000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Afternoon edition – News",
+          "host": "news.example.org",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789511436000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789511442000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Read more"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789511449000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789511455000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Back"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789513247000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789513250000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789513255000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 36,
+            "ms": 3708
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789513297106,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 23,
+            "ms": 3289
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789513339533,
+          "appId": "com.apple.Terminal",
+          "kind": "key_chord",
+          "chord": "CMD+T"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789513942533,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789514542533,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789514542533,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789516243000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789516246000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "general - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789516248000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789518654000,
+          "excluded": "locked"
+        }
+      ]
+    },
+    {
+      "day": "2026-09-16",
+      "weekday": 3,
+      "rows": [
+        {
+          "event": "observe_action",
+          "atMs": 1789574579000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789574582000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "general - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574586000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574595000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "dev-butler"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789574600000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "dev-butler - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574600000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574701000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789574704000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574706000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Inbox"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574711000,
+          "appId": "com.apple.mail",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574717000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Archive"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574821000,
+          "appId": "com.linear",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789574822000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "My issues – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574825000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "My issues"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574828000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574836000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Triage"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789574838000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "Triage – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789574838000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789576206000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789576207000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789576211000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 34,
+            "ms": 5100
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789576256622,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 25,
+            "ms": 2725
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789576284256,
+          "appId": "com.apple.Terminal",
+          "kind": "key_chord",
+          "chord": "CMD+T"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789576888256,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789577488256,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789578050000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789578052000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789578058000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789578069000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789578075000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789578075000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789581945000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789581946000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Receipt - Contoso Print — Inbox",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789581951000,
+          "appId": "com.apple.mail",
+          "kind": "double_click",
+          "target": {
+            "role": "image",
+            "label": "Receipt - Contoso Print.pdf"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789581954000,
+          "appId": "com.apple.Preview",
+          "appName": "Preview",
+          "windowTitle": "Receipt - Contoso Print.pdf",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Zoom In"
+            },
+            {
+              "role": "button",
+              "label": "Share"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789581962000,
+          "appId": "com.apple.Preview",
+          "kind": "menu_item",
+          "menu": ["File", "Export…"]
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789581967000,
+          "appId": "com.apple.Preview",
+          "appName": "Preview",
+          "windowTitle": "Receipt - Contoso Print.pdf",
+          "focusedRole": "textField",
+          "focusedLabel": "Export As",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Export As"
+            },
+            {
+              "role": "popUpButton",
+              "label": "Where"
+            },
+            {
+              "role": "button",
+              "label": "Save"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789581967000,
+          "appId": "com.apple.Preview",
+          "kind": "typing",
+          "typed": {
+            "field": "Export As",
+            "chars": 29,
+            "ms": 3451
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789581971565,
+          "appId": "com.apple.Preview",
+          "kind": "click",
+          "target": {
+            "role": "popUpButton",
+            "label": "Where"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789581975565,
+          "appId": "com.apple.Preview",
+          "kind": "menu_item",
+          "menu": ["Receipts"]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789581981565,
+          "appId": "com.apple.Preview",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Save"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789581988565,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789581990565,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789583730000,
+          "appId": "com.apple.Notes",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789583733000,
+          "appId": "com.apple.Notes",
+          "appName": "Notes",
+          "windowTitle": "Standup notes",
+          "focusedRole": "textArea",
+          "focusedLabel": "Note",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Note"
+            },
+            {
+              "role": "textArea",
+              "label": "Note"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789583737000,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 68,
+            "ms": 6120
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789583761000,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 169,
+            "ms": 17576
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789583821276,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 48,
+            "ms": 6288
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789586138000,
+          "excluded": "idle"
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789589440000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789589443000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Midweek – News",
+          "host": "news.example.org",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789589447000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789589457000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Read more"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789589463000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 8
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789589471000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Back"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789590078000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Midweek – News",
+          "host": "news.example.org",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789590078000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789591823000,
+          "appId": "com.apple.finder",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789591824000,
+          "appId": "com.apple.finder",
+          "appName": "Finder",
+          "windowTitle": "Downloads",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Downloads"
+            },
+            {
+              "role": "button",
+              "label": "Documents"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789591827000,
+          "appId": "com.apple.finder",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Documents"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789591830000,
+          "appId": "com.apple.finder",
+          "appName": "Finder",
+          "windowTitle": "Documents",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Downloads"
+            },
+            {
+              "role": "button",
+              "label": "Documents"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789591830000,
+          "appId": "com.apple.finder",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789591839000,
+          "appId": "com.apple.finder",
+          "kind": "right_click",
+          "target": {
+            "role": "image",
+            "label": "brief.pdf"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789593012000,
+          "appId": "com.apple.iCal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789593014000,
+          "appId": "com.apple.iCal",
+          "appName": "Calendar",
+          "windowTitle": "September 2026",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Today"
+            },
+            {
+              "role": "button",
+              "label": "Week"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789593019000,
+          "appId": "com.apple.iCal",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Today"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789593021000,
+          "appId": "com.apple.iCal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789594227000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789594229000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789594234000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789594243000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789594245000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789594245000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789597841000,
+          "appId": "com.apple.keychainaccess",
+          "excluded": "protected"
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789598419000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789598420000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789598423000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 20,
+            "ms": 2220
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789598449501,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 53,
+            "ms": 7155
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789598505638,
+          "appId": "com.apple.Terminal",
+          "kind": "key_chord",
+          "chord": "CMD+T"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789599106638,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789599106638,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789599716638,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789599716638,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789600326638,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789600326638,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 1
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602317000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789602318000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Table"
+            },
+            {
+              "role": "button",
+              "label": "Chart"
+            },
+            {
+              "role": "button",
+              "label": "Format"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602320000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602364000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "menu_item",
+          "menu": ["File", "Export To", "PDF…"]
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789602368000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Next…"
+            },
+            {
+              "role": "popUpButton",
+              "label": "Image Quality"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602368000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Next…"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789602373000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "focusedRole": "textField",
+          "focusedLabel": "Save As",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Save As"
+            },
+            {
+              "role": "button",
+              "label": "Export"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602373000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "typing",
+          "typed": {
+            "field": "Save As",
+            "chars": 22,
+            "ms": 2794
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602377788,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Export"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602387788,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789602389788,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602392788,
+          "appId": "com.apple.mail",
+          "kind": "key_chord",
+          "chord": "CMD+N"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789602395788,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "New Message",
+          "focusedRole": "textField",
+          "focusedLabel": "To",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "To"
+            },
+            {
+              "role": "textField",
+              "label": "Subject"
+            },
+            {
+              "role": "textArea",
+              "label": "Message"
+            },
+            {
+              "role": "button",
+              "label": "Send"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602395788,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "To",
+            "chars": 24,
+            "ms": 3384
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602399838,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "Subject",
+            "chars": 30,
+            "ms": 3600
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602404444,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "Message",
+            "chars": 240,
+            "ms": 23280
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789602429673,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Send"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789605311000,
+          "excluded": "locked"
+        }
+      ]
+    },
+    {
+      "day": "2026-09-17",
+      "weekday": 4,
+      "rows": [
+        {
+          "event": "observe_action",
+          "atMs": 1789660681000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789660682000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "general - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660688000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660692000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "dev-butler"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789660698000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "dev-butler - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660698000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660829000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789660832000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660834000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Inbox"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660836000,
+          "appId": "com.apple.mail",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660840000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Archive"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660911000,
+          "appId": "com.linear",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789660912000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "My issues – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660916000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "My issues"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660918000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660924000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Triage"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789660928000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "Triage – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789660928000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789662655000,
+          "appId": "com.google.Chrome",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789662658000,
+          "appId": "com.google.Chrome",
+          "appName": "Google Chrome",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789662661000,
+          "appId": "com.google.Chrome",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 6
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789662669000,
+          "appId": "com.google.Chrome",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789662676000,
+          "appId": "com.google.Chrome",
+          "appName": "Google Chrome",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789662676000,
+          "appId": "com.google.Chrome",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789665628000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789665631000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Sign in",
+          "host": "accounts.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789665635000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Sign in"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789665637000,
+          "appId": "com.apple.Safari",
+          "excluded": "secure_input"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789665665000,
+          "appId": "com.apple.Safari",
+          "excluded": "secure_input"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789665686000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Account",
+          "host": "accounts.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789666534000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789666535000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789666537000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 20,
+            "ms": 2220
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789666576492,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 16,
+            "ms": 1808
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789666607229,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 38,
+            "ms": 5054
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789666652904,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 12,
+            "ms": 1728
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789666703343,
+          "appId": "com.apple.Terminal",
+          "kind": "key_chord",
+          "chord": "CMD+T"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789667306343,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789667906343,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789667906343,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 1
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789668510343,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789669234000,
+          "appId": "com.apple.Notes",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789669235000,
+          "appId": "com.apple.Notes",
+          "appName": "Notes",
+          "windowTitle": "Standup notes",
+          "focusedRole": "textArea",
+          "focusedLabel": "Note",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Note"
+            },
+            {
+              "role": "textArea",
+              "label": "Note"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789669239000,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 164,
+            "ms": 21976
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789669317698,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 132,
+            "ms": 21120
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789671611000,
+          "excluded": "idle"
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789677041000,
+          "appId": "com.apple.Music",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789677042000,
+          "appId": "com.apple.Music",
+          "appName": "Music",
+          "windowTitle": "Music",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Play"
+            },
+            {
+              "role": "button",
+              "label": "Next"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789677047000,
+          "appId": "com.apple.Music",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Play"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789677100000,
+          "appId": "com.apple.MobileSMS",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789677103000,
+          "appId": "com.apple.MobileSMS",
+          "appName": "Messages",
+          "windowTitle": "Messages",
+          "focusedRole": "textField",
+          "focusedLabel": "iMessage",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "iMessage"
+            },
+            {
+              "role": "button",
+              "label": "Send"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789677106000,
+          "appId": "com.apple.MobileSMS",
+          "kind": "typing",
+          "typed": {
+            "field": "iMessage",
+            "chars": 30,
+            "ms": 4440
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789677112407,
+          "appId": "com.apple.MobileSMS",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Send"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789678852000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789678854000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Incident review – Wiki",
+          "host": "wiki.example.net",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789678859000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789678869000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Read more"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789678871000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 7
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789678879000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Back"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789679484000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Incident review – Wiki",
+          "host": "wiki.example.net",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789679484000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 1
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789681507000,
+          "appId": "com.google.Chrome",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789681510000,
+          "appId": "com.google.Chrome",
+          "appName": "Google Chrome",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789681516000,
+          "appId": "com.google.Chrome",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789681526000,
+          "appId": "com.google.Chrome",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789681530000,
+          "appId": "com.google.Chrome",
+          "appName": "Google Chrome",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789681530000,
+          "appId": "com.google.Chrome",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789683607000,
+          "appId": "com.apple.finder",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789683608000,
+          "appId": "com.apple.finder",
+          "appName": "Finder",
+          "windowTitle": "Downloads",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Downloads"
+            },
+            {
+              "role": "button",
+              "label": "Documents"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789683614000,
+          "appId": "com.apple.finder",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Documents"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789683621000,
+          "appId": "com.apple.finder",
+          "appName": "Finder",
+          "windowTitle": "Documents",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Downloads"
+            },
+            {
+              "role": "button",
+              "label": "Documents"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789683621000,
+          "appId": "com.apple.finder",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 1
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789683629000,
+          "appId": "com.apple.finder",
+          "kind": "right_click",
+          "target": {
+            "role": "image",
+            "label": "brief.pdf"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789684810000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789684811000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789684813000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 12,
+            "ms": 1152
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789684841676,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 46,
+            "ms": 5842
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789685481348,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789685481348,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 1
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789686090348,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789686690348,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789686690348,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789687831000,
+          "appId": "com.apple.iCal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789687833000,
+          "appId": "com.apple.iCal",
+          "appName": "Calendar",
+          "windowTitle": "September 2026",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Today"
+            },
+            {
+              "role": "button",
+              "label": "Week"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789687839000,
+          "appId": "com.apple.iCal",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Today"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789687846000,
+          "appId": "com.apple.iCal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 1
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789689620000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789689621000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "general - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789689625000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789692302000,
+          "excluded": "locked"
+        }
+      ]
+    },
+    {
+      "day": "2026-09-18",
+      "weekday": 5,
+      "rows": [
+        {
+          "event": "observe_action",
+          "atMs": 1789746840000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789746841000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "general - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789746843000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 3
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789746854000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "dev-butler"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789746858000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "dev-butler - Northwind",
+          "controls": [
+            {
+              "role": "button",
+              "label": "general"
+            },
+            {
+              "role": "button",
+              "label": "dev-butler"
+            },
+            {
+              "role": "textField",
+              "label": "Message #general"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789746858000,
+          "appId": "com.tinyspeck.slackmacgap",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789746983000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789746985000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789746991000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Inbox"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789746996000,
+          "appId": "com.apple.mail",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789747005000,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Archive"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789747105000,
+          "appId": "com.linear",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789747108000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "My issues – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789747110000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "My issues"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789747116000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789747120000,
+          "appId": "com.linear",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Triage"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789747123000,
+          "appId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "Triage – Linear",
+          "controls": [
+            {
+              "role": "button",
+              "label": "My issues"
+            },
+            {
+              "role": "button",
+              "label": "Triage"
+            },
+            {
+              "role": "button",
+              "label": "New issue"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789747123000,
+          "appId": "com.linear",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789748718000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789748720000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789748725000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 23,
+            "ms": 2530
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789748772166,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 50,
+            "ms": 5700
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789749422123,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789749422123,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789750025123,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789751134000,
+          "appId": "com.google.Chrome",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789751137000,
+          "appId": "com.google.Chrome",
+          "appName": "Google Chrome",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789751142000,
+          "appId": "com.google.Chrome",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 5
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789751146000,
+          "appId": "com.google.Chrome",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789751151000,
+          "appId": "com.google.Chrome",
+          "appName": "Google Chrome",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789751151000,
+          "appId": "com.google.Chrome",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789753215000,
+          "appId": "com.apple.Notes",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789753217000,
+          "appId": "com.apple.Notes",
+          "appName": "Notes",
+          "windowTitle": "Standup notes",
+          "focusedRole": "textArea",
+          "focusedLabel": "Note",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Note"
+            },
+            {
+              "role": "textArea",
+              "label": "Note"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789753220000,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 94,
+            "ms": 12878
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789753298253,
+          "appId": "com.apple.Notes",
+          "kind": "typing",
+          "typed": {
+            "field": "Note",
+            "chars": 50,
+            "ms": 6350
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789755328000,
+          "appId": "com.apple.Safari",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789755331000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Friday – News",
+          "host": "news.example.org",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789755334000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789755338000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Read more"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789755343000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789755348000,
+          "appId": "com.apple.Safari",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Back"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789755952000,
+          "appId": "com.apple.Safari",
+          "appName": "Safari",
+          "windowTitle": "Friday – News",
+          "host": "news.example.org",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789755952000,
+          "appId": "com.apple.Safari",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789758628000,
+          "excluded": "idle"
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789761630000,
+          "appId": "com.apple.iCal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789761631000,
+          "appId": "com.apple.iCal",
+          "appName": "Calendar",
+          "windowTitle": "September 2026",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Today"
+            },
+            {
+              "role": "button",
+              "label": "Week"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789761634000,
+          "appId": "com.apple.iCal",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Today"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789761641000,
+          "appId": "com.apple.iCal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789762822000,
+          "appId": "com.apple.Terminal",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789762823000,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": [
+            {
+              "role": "button",
+              "label": "New Tab"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789762829000,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 17,
+            "ms": 2618
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789762859445,
+          "appId": "com.apple.Terminal",
+          "kind": "typing",
+          "typed": {
+            "field": "Terminal",
+            "chars": 47,
+            "ms": 4841
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789762882480,
+          "appId": "com.apple.Terminal",
+          "kind": "key_chord",
+          "chord": "CMD+T"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789763485480,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789764085480,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789764685480,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789764685480,
+          "appId": "com.apple.Terminal",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 4
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789765290480,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789765890480,
+          "appId": "com.apple.Terminal",
+          "appName": "Terminal",
+          "windowTitle": "zsh — butler — 80×24",
+          "controls": []
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770025000,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789770026000,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Receipt - Fabrikam Domains — Inbox",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770029000,
+          "appId": "com.apple.mail",
+          "kind": "double_click",
+          "target": {
+            "role": "image",
+            "label": "Receipt - Fabrikam Domains.pdf"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789770036000,
+          "appId": "com.apple.Preview",
+          "appName": "Preview",
+          "windowTitle": "Receipt - Fabrikam Domains.pdf",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Zoom In"
+            },
+            {
+              "role": "button",
+              "label": "Share"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770039000,
+          "appId": "com.apple.Preview",
+          "kind": "menu_item",
+          "menu": ["File", "Export…"]
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789770042000,
+          "appId": "com.apple.Preview",
+          "appName": "Preview",
+          "windowTitle": "Receipt - Fabrikam Domains.pdf",
+          "focusedRole": "textField",
+          "focusedLabel": "Export As",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Export As"
+            },
+            {
+              "role": "popUpButton",
+              "label": "Where"
+            },
+            {
+              "role": "button",
+              "label": "Save"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770042000,
+          "appId": "com.apple.Preview",
+          "kind": "typing",
+          "typed": {
+            "field": "Export As",
+            "chars": 32,
+            "ms": 3872
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770048295,
+          "appId": "com.apple.Preview",
+          "kind": "click",
+          "target": {
+            "role": "popUpButton",
+            "label": "Where"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770053295,
+          "appId": "com.apple.Preview",
+          "kind": "menu_item",
+          "menu": ["Receipts"]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770058295,
+          "appId": "com.apple.Preview",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Save"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770066295,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789770067295,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789770069295,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Archive"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789771826000,
+          "appId": "com.google.Chrome",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789771829000,
+          "appId": "com.google.Chrome",
+          "appName": "Google Chrome",
+          "windowTitle": "Runbook · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789771832000,
+          "appId": "com.google.Chrome",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789771838000,
+          "appId": "com.google.Chrome",
+          "kind": "click",
+          "target": {
+            "role": "link",
+            "label": "Deploy checklist"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789771844000,
+          "appId": "com.google.Chrome",
+          "appName": "Google Chrome",
+          "windowTitle": "Deploy checklist · Docs",
+          "host": "docs.example.com",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Address and Search"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            },
+            {
+              "role": "button",
+              "label": "Reload"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789771844000,
+          "appId": "com.google.Chrome",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773607000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789773610000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Table"
+            },
+            {
+              "role": "button",
+              "label": "Chart"
+            },
+            {
+              "role": "button",
+              "label": "Format"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773616000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 2
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773655000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "menu_item",
+          "menu": ["File", "Export To", "PDF…"]
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789773657000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Next…"
+            },
+            {
+              "role": "popUpButton",
+              "label": "Image Quality"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773657000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Next…"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789773661000,
+          "appId": "com.apple.iWork.Numbers",
+          "appName": "Numbers",
+          "windowTitle": "Weekly metrics",
+          "focusedRole": "textField",
+          "focusedLabel": "Save As",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "Save As"
+            },
+            {
+              "role": "button",
+              "label": "Export"
+            },
+            {
+              "role": "button",
+              "label": "Cancel"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773661000,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "typing",
+          "typed": {
+            "field": "Save As",
+            "chars": 22,
+            "ms": 2024
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773664391,
+          "appId": "com.apple.iWork.Numbers",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Export"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773672391,
+          "appId": "com.apple.mail",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789773675391,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "Inbox – Work",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Inbox"
+            },
+            {
+              "role": "button",
+              "label": "Reply"
+            },
+            {
+              "role": "button",
+              "label": "Archive"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773678391,
+          "appId": "com.apple.mail",
+          "kind": "key_chord",
+          "chord": "CMD+N"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789773679391,
+          "appId": "com.apple.mail",
+          "appName": "Mail",
+          "windowTitle": "New Message",
+          "focusedRole": "textField",
+          "focusedLabel": "To",
+          "controls": [
+            {
+              "role": "textField",
+              "label": "To"
+            },
+            {
+              "role": "textField",
+              "label": "Subject"
+            },
+            {
+              "role": "textArea",
+              "label": "Message"
+            },
+            {
+              "role": "button",
+              "label": "Send"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773679391,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "To",
+            "chars": 24,
+            "ms": 2688
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773683529,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "Subject",
+            "chars": 30,
+            "ms": 2970
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773687924,
+          "appId": "com.apple.mail",
+          "kind": "typing",
+          "typed": {
+            "field": "Message",
+            "chars": 146,
+            "ms": 21024
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789773710028,
+          "appId": "com.apple.mail",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Send"
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789776035000,
+          "appId": "com.apple.finder",
+          "kind": "app_switch"
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789776038000,
+          "appId": "com.apple.finder",
+          "appName": "Finder",
+          "windowTitle": "Downloads",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Downloads"
+            },
+            {
+              "role": "button",
+              "label": "Documents"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789776042000,
+          "appId": "com.apple.finder",
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "label": "Documents"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789776047000,
+          "appId": "com.apple.finder",
+          "appName": "Finder",
+          "windowTitle": "Documents",
+          "controls": [
+            {
+              "role": "button",
+              "label": "Downloads"
+            },
+            {
+              "role": "button",
+              "label": "Documents"
+            },
+            {
+              "role": "button",
+              "label": "Back"
+            }
+          ]
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789776047000,
+          "appId": "com.apple.finder",
+          "kind": "scroll",
+          "scroll": {
+            "direction": "down",
+            "ticks": 1
+          }
+        },
+        {
+          "event": "observe_action",
+          "atMs": 1789776058000,
+          "appId": "com.apple.finder",
+          "kind": "right_click",
+          "target": {
+            "role": "image",
+            "label": "brief.pdf"
+          }
+        },
+        {
+          "event": "observe_frame",
+          "atMs": 1789777820000,
+          "excluded": "locked"
+        }
+      ]
+    }
+  ],
+  "planted": {
+    "routines": [
+      {
+        "id": "morning-triage",
+        "name": "Morning triage: Slack, Mail, Linear",
+        "apps": ["com.tinyspeck.slackmacgap", "com.apple.mail", "com.linear"],
+        "weekdays": [1, 2, 3, 4, 5],
+        "hourRange": [8, 10],
+        "days": [
+          "2026-09-14",
+          "2026-09-15",
+          "2026-09-16",
+          "2026-09-17",
+          "2026-09-18"
+        ]
+      }
+    ],
+    "procedures": [
+      {
+        "id": "file-receipt",
+        "name": "File a receipt from Mail into Documents › Receipts",
+        "steps": [
+          {
+            "kind": "double_click",
+            "appId": "com.apple.mail"
+          },
+          {
+            "kind": "menu_item",
+            "appId": "com.apple.Preview",
+            "menu": ["File", "Export…"]
+          },
+          {
+            "kind": "typing",
+            "appId": "com.apple.Preview",
+            "field": "Export As"
+          },
+          {
+            "kind": "click",
+            "appId": "com.apple.Preview",
+            "label": "Where"
+          },
+          {
+            "kind": "menu_item",
+            "appId": "com.apple.Preview",
+            "menu": ["Receipts"]
+          },
+          {
+            "kind": "click",
+            "appId": "com.apple.Preview",
+            "label": "Save"
+          }
+        ],
+        "runs": [
+          {
+            "day": "2026-09-14",
+            "fromMs": 1789407608000,
+            "toMs": 1789407651609,
+            "slot": "Acme Cloud"
+          },
+          {
+            "day": "2026-09-15",
+            "fromMs": 1789506938000,
+            "toMs": 1789506984099,
+            "slot": "Northwind Hosting"
+          },
+          {
+            "day": "2026-09-16",
+            "fromMs": 1789581945000,
+            "toMs": 1789581988565,
+            "slot": "Contoso Print"
+          },
+          {
+            "day": "2026-09-18",
+            "fromMs": 1789770025000,
+            "toMs": 1789770066295,
+            "slot": "Fabrikam Domains"
+          }
+        ],
+        "slots": ["vendor"]
+      },
+      {
+        "id": "weekly-report",
+        "name": "Export the weekly metrics to PDF and mail it",
+        "steps": [
+          {
+            "kind": "app_switch",
+            "appId": "com.apple.iWork.Numbers",
+            "appName": "Numbers"
+          },
+          {
+            "kind": "menu_item",
+            "appId": "com.apple.iWork.Numbers",
+            "menu": ["File", "Export To", "PDF…"]
+          },
+          {
+            "kind": "click",
+            "appId": "com.apple.iWork.Numbers",
+            "label": "Next…"
+          },
+          {
+            "kind": "typing",
+            "appId": "com.apple.iWork.Numbers",
+            "field": "Save As"
+          },
+          {
+            "kind": "click",
+            "appId": "com.apple.iWork.Numbers",
+            "label": "Export"
+          },
+          {
+            "kind": "app_switch",
+            "appId": "com.apple.mail",
+            "appName": "Mail"
+          },
+          {
+            "kind": "key_chord",
+            "appId": "com.apple.mail",
+            "chord": "CMD+N"
+          },
+          {
+            "kind": "typing",
+            "appId": "com.apple.mail",
+            "field": "To"
+          },
+          {
+            "kind": "typing",
+            "appId": "com.apple.mail",
+            "field": "Subject"
+          },
+          {
+            "kind": "typing",
+            "appId": "com.apple.mail",
+            "field": "Message"
+          },
+          {
+            "kind": "click",
+            "appId": "com.apple.mail",
+            "label": "Send"
+          }
+        ],
+        "runs": [
+          {
+            "day": "2026-09-14",
+            "fromMs": 1789428638000,
+            "toMs": 1789428783547
+          },
+          {
+            "day": "2026-09-16",
+            "fromMs": 1789602317000,
+            "toMs": 1789602435673
+          },
+          {
+            "day": "2026-09-18",
+            "fromMs": 1789773607000,
+            "toMs": 1789773720028
+          }
+        ],
+        "slots": []
+      }
+    ],
+    "preferences": [
+      {
+        "id": "docs-browser",
+        "subject": ["docs.example.com", "docs"],
+        "earlier": ["Safari"],
+        "later": ["Chrome"],
+        "flipDay": "2026-09-17"
+      }
+    ],
+    "decoys": [
+      {
+        "id": "music-messages",
+        "apps": ["com.apple.Music", "com.apple.MobileSMS"],
+        "days": ["2026-09-15", "2026-09-17"],
+        "note": "Music then Messages on two days at different hours: not a routine."
+      },
+      {
+        "id": "terminal-sessions",
+        "apps": ["com.apple.Terminal"],
+        "days": [
+          "2026-09-14",
+          "2026-09-15",
+          "2026-09-16",
+          "2026-09-17",
+          "2026-09-18"
+        ],
+        "note": "Terminal sessions at varying hours every day: an app in use, not a routine."
+      },
+      {
+        "id": "browsing",
+        "apps": ["com.apple.Safari"],
+        "days": [
+          "2026-09-14",
+          "2026-09-15",
+          "2026-09-16",
+          "2026-09-17",
+          "2026-09-18"
+        ],
+        "note": "News and wiki reading in Safari at varying hours: not a routine, and Safari stays the browser for these hosts after the flip."
+      }
+    ]
+  }
+}

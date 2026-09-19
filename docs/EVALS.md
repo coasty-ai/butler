@@ -1,8 +1,8 @@
 # Model evaluations
 
-Two opt-in scripts measure models against Butler's own decisions. Neither runs under `npm test`, and each refuses to run until its own environment flag is set, because each one spends money on model calls. Both read the API key from a named environment variable when they run and never print it. Their reports carry ids, labels, probabilities, counts and timings, never the text of a case. With `--verbose` they print one line per case: eval-dialog's lines include the model's TASK and SAY, while eval-jev's carry only labels and probabilities.
+Three opt-in scripts measure models against Butler's own decisions: two on the dialog act (eval-dialog, eval-jev) and one on the observer's consolidator (observer-eval). None runs under `npm test`, and each refuses to run until its own environment flag is set, because each one spends money on model calls. All read the API key from a named environment variable when they run and never print it. Their reports carry ids, labels, probabilities, counts and timings, never the text of a case. With `--verbose` they print more on the console only: eval-dialog's lines include the model's TASK and SAY, eval-jev's carry only labels and probabilities, and observer-eval's add what the model found in a synthetic fixture.
 
-Their unit tests (`tests/eval-jev.test.ts`) run the scripts against fake local endpoints, so they need no network and no key.
+Their unit tests (`tests/eval-jev.test.ts`, `tests/observer-eval.test.ts`) run the scripts against fake local endpoints or a stub, so they need no network and no key. A fourth script, `observer-report`, is a content-free reading of the diagnostics stream and calls no model at all.
 
 ## eval-dialog: the dialog prompt against a real model
 
@@ -106,6 +106,45 @@ Other findings:
 - The original wording got inj-agenda and inj-wake right in every run. The aligned wording sent inj-agenda to start in 2 of 3 runs, and inj-wake in all 3.
 - Both wordings miss status-1 and remote-status (answered none at p 0.92-0.95) and inj-notif-4/5 (answered start at p 0.89-0.97).
 - Panel: 18 of 20 in every run, against the regex tables' 20 of 20. The misses are one false wake (panel-7, idle read as error) and panel-17. No permission question was missed.
+
+## observer-eval: the observer's consolidator against a real model
+
+`scripts/observer-eval.mjs` runs lane O2's `consolidateDay` (`src/observer/consolidate.ts`) over the synthetic work log in `tests/fixtures/observer-worklog.json` (five weekdays of frames and actions in the shapes of `.data/design/observer.md` §2; what is planted is written in `tests/fixtures/observer-worklog.README.md`), one day at a time with the previous days' output as the prior, through the configured provider, and scores the final output against the planted truth with the pure scorer in `src/gym/observer-eval.ts`:
+
+- routine recall and precision, a planted routine counted as recovered when its apps are an ordered subsequence of a found routine's steps (at most one extra app) and the hour windows touch within an hour;
+- the number of invented routines (found routines that recover none planted);
+- step recall and precision per procedure, as the longest ordered overlap between the planted steps and a found procedure's `SkillStep`s, a step matching by kind (the core action type the observed kind maps to: `click_control` for a click, `hotkey` for a chord, `menu_item`, `type_text`, `open_app`) and by target label, field, chord or menu item where the planted step names one; whether a planted slot shows in the found procedure;
+- whether the preference that flips on day four is reported with its later value, and whether a stale one (the earlier value alone) stands beside it;
+- input and output tokens, calls and cost, per day and in total.
+
+```sh
+OPEN_ASSIST_OBSERVER_EVAL=1 npm run observer:eval -- \
+  --provider openai --model gpt-5.4-mini --key-env OPENAI_API_KEY \
+  [--max-cost 1.00] [--days 5] [--out output/eval/observer-gpt-5.4-mini.json] [--verbose]
+```
+
+- **Opt-in:** `OPEN_ASSIST_OBSERVER_EVAL=1`. Without it the script exits with status 2 before reading anything; so does a remote provider without its key.
+- **Cost:** `--max-cost` (default $1.00) is checked before every call and every day; a day that hits it is reported as `cost_cap` and the loop stops. `--days N` runs the first N fixture days only.
+- **Targets (§7):** routine recall ≥ 0.8; at most one invented routine per five days (floored at one); at most 200,000 input tokens per consolidated day. `missedTargets` names the ones missed.
+- **Exit code:** 1 when a target is missed or a day failed (`consolidate_error`, `invalid_output` against the §4 schema, `cost_cap`); 0 otherwise.
+- **Keeping the numbers:** `--out <path>` writes the JSON report to a file, creating its folder.
+- **Until O2 lands:** `src/observer/consolidate.ts` is a stub that throws "not landed", so the script reports every day as `consolidate_error`, makes no call and spends nothing; `tests/observer-eval.test.ts` runs it that way with `--provider ollama` (no key). The scorer itself is tested with hand-written outputs: perfect, partial and inventing.
+
+What the eval assumes of `consolidateDay(timeline, model, prior?)`: the timeline is `timelineOf`'s (`day`, `weekday`, `timezone`, `utcOffsetMinutes`, `tier`, the day's `frames` and `actions` as §2 rows without images); `model(call, signal?)` takes `{system, input, maxOutputTokens?}` and resolves `{text, usage: {inputTokens, outputTokens, cost}, code}`; `prior` is the previous days' validated output, so routines that show only across days can be merged; the return value parses under the §4 schema as `src/gym/observer-eval.ts` reads it (`routines[].when.weekdays` by number or name, `hourRange` as a pair or `{from,to}`/`{start,end}`, `procedures[].steps` as `SkillStep`s, `preferences[].text`). Any of these O2 lands differently is reconciled in the script and the stub, not in the scorer.
+
+### Measured
+
+No run yet: the consolidator has not landed. The first run's numbers belong here, with the model, the date and the cost.
+
+## observer-report: what the observer recorded, learned and replayed
+
+`scripts/observer-report.mjs` (`npm run observer:report`) is the report of design §7: content-free, read-only, no model. From the diagnostics stream it reads only the observer's rows and only their allow-listed fields: `ObserverFrame` (`appId` as a bundle id, `excluded` as a code), `ObserverAction` (`kind`), `ObserverConsolidated` (`frames`, `tokens`, `cost`, `routines`, `procedures`, `preferences`, a duration), `RoutineRun` (`routineId`, `outcome`). With `--digest <file>` it adds the work log's own counters from the JSON its `digest()` exports: per day `frames`, `actions`, `bytesWritten`, `bytesDropped`, `framesDropped`, `excluded` by code and `apps` by bundle id; `routines`, `procedures` and `preferences` proposed/approved/retired; `replays` by outcome. A bundle id that does not look like one is counted as `unknown`, a code off the design's list as `other`; a title, a host, a label or any other text is never read. `tests/observer-report.test.ts` runs it on a stream and a digest whose every text field carries a sentinel that must never reach the output.
+
+```sh
+npm run observer:report -- [--days 14] [--json] [--digest <file>] [file...]
+```
+
+It prints, per calendar day in this machine's time zone and in total: frames recorded by bundle id, exclusions by code, actions by kind, bytes written and dropped and frames dropped at the 50 MiB cap (digest), consolidation runs with input tokens (per run p50 and max), cost and what they produced, routines and procedures proposed/approved/retired (digest), replays by outcome (`completed`, `corrected`, `undone`, `declined`) with corrections and the number of routines replayed, and the targets: input tokens ≤ 200,000 per consolidated day (met/missed, the days missed, the heaviest day) and bytes ≤ 50 MiB per day with the days the cap dropped frames. `--json` writes the same as `{summary, days}` for a script to read.
 
 ## Deciding with Jev (in the app)
 

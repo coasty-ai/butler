@@ -36,7 +36,9 @@
     "loop": "node scripts/harness-loop.mjs",
     "voice:loop": "node scripts/voice-loop.mjs",
     "analyze-runs": "node scripts/analyze-runs.mjs",
-    "modules:check": "node scripts/modules-check.mjs"
+    "modules:check": "node scripts/modules-check.mjs",
+    "observer:report": "node scripts/observer-report.mjs",
+    "observer:eval": "node --import tsx scripts/observer-eval.mjs"
   },
   "build": {
     "appId": "ai.coarena.openassist",
