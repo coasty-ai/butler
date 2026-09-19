@@ -291,6 +291,43 @@ func targetActivation(lastManualInputAt: TimeInterval?, now: TimeInterval, hando
     return .selfActivated
 }
 
+// MARK: Naming the target
+
+/**
+ The application the words name (design §2.2, rule 1), decided from the
+ launcher's resolution of the words over the installed applications and the
+ bundle identifiers running now. Words that name no installed application, or
+ several, are a plain refusal: the runner tries its next candidate. An installed
+ application that is not running is TARGET_GONE: the run says so and opens it in
+ front. A protected one is TARGET_PROTECTED. Nothing is matched by a running
+ application's name alone, so "Notes" is the launcher's Notes and nothing else.
+ */
+enum TargetNameResolution: Equatable {
+    case running(bundleId: String, name: String)
+    case notRunning(name: String)
+    case protected
+    case unknown
+}
+func resolveTargetName(_ resolution: LaunchResolution, runningBundleIds: Set<String>) -> TargetNameResolution {
+    switch resolution {
+    case .resolved(let appId, let name, _):
+        return runningBundleIds.contains(appId.lowercased()) ? .running(bundleId: appId, name: name) : .notRunning(name: name)
+    case .refused: return .protected
+    case .ambiguous, .unresolved: return .unknown
+    }
+}
+
+// MARK: The handoff
+
+/// A handoff nobody closed (the runner died mid-step, or its restore never
+/// came) ends on its own once the helper has sent no input for this long: the
+/// flag clears and the application in front before comes back.
+let handoffIdleLimit: TimeInterval = 20
+/// Whether an open handoff has outlived the helper's own input by the limit.
+func handoffExpired(handoff: Bool, lastInputAt: TimeInterval, now: TimeInterval) -> Bool {
+    handoff && now - lastInputAt >= handoffIdleLimit
+}
+
 // MARK: Binding validity
 
 /// The process a binding was minted for: its pid, bundle identifier and launch

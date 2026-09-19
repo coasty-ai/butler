@@ -174,6 +174,25 @@ func backgroundInputChecks(_ check: (Bool, String) -> Void) {
     check(targetActivation(lastManualInputAt: 100.5, now: 100, handoff: false) == .selfActivated, "an input timestamp after now is not recent input")
     check(selfActivationWindow == 0.3, "the window is the design's 300 ms")
 
+    // The words name an application the launcher's way; only a bundle identifier finds the running one.
+    let installed = [LaunchCandidate(path: "/Applications/Slack.app", bundleId: "com.tinyspeck.slackmacgap", names: ["Slack"], displayName: "Slack", running: true, rootIndex: 1),
+                     LaunchCandidate(path: "/System/Applications/Notes.app", bundleId: "com.apple.Notes", names: ["Notes"], displayName: "Notes", running: false, rootIndex: 0),
+                     LaunchCandidate(path: "/Applications/1Password.app", bundleId: "com.1password.1password", names: ["1Password"], displayName: "1Password", running: true, rootIndex: 1)]
+    let runningNow: Set<String> = ["com.tinyspeck.slackmacgap", "com.1password.1password", "com.apple.finder"]
+    func named(_ words: String) -> TargetNameResolution { resolveTargetName(resolveLaunch(query: words, candidates: installed, protectedApps: []), runningBundleIds: runningNow) }
+    check(named("Slack") == .running(bundleId: "com.tinyspeck.slackmacgap", name: "Slack") && named("slack") == .running(bundleId: "com.tinyspeck.slackmacgap", name: "Slack"), "an installed, running application the words name is found by its bundle identifier")
+    check(named("Notes") == .notRunning(name: "Notes"), "an installed application that is not running is not running, so the run says so (TARGET_GONE)")
+    check(named("1Password") == .protected, "a protected application the words name is protected (TARGET_PROTECTED)")
+    check(named("Slack about lunch") == .unknown && named("Finder") == .unknown && named("the morning") == .unknown, "words that name no installed application are unknown, however a running process is called")
+    check(resolveTargetName(.ambiguous(["Slack", "Slack Beta"]), runningBundleIds: runningNow) == .unknown, "words that name several applications are unknown, so the next candidate is tried")
+    check(resolveTargetName(.resolved(appId: "com.apple.Notes", name: "Notes", path: "/x"), runningBundleIds: ["com.apple.notes"]) == .running(bundleId: "com.apple.Notes", name: "Notes"), "the running set is compared without case")
+
+    // A handoff nobody closed ends on its own once the helper's own input has been quiet for the limit.
+    check(handoffIdleLimit == 20, "the handoff's idle limit is twenty seconds")
+    check(!handoffExpired(handoff: false, lastInputAt: 0, now: 100), "no handoff, nothing to expire")
+    check(!handoffExpired(handoff: true, lastInputAt: 90, now: 100) && handoffExpired(handoff: true, lastInputAt: 80, now: 100), "an open handoff expires at the limit after the helper's last input, not before")
+    check(!handoffExpired(handoff: true, lastInputAt: 100, now: 100), "input just sent keeps the handoff open")
+
     // The binding names one process and its window; a recycled pid is never the same target.
     let bound = TargetIdentity(pid: 500, bundleId: "com.apple.Notes", launchedAt: 1000)
     check(targetLive(bound: bound, running: bound, windowOwner: 500), "the same process owning the window is live")
@@ -201,6 +220,26 @@ func backgroundInputChecks(_ check: (Bool, String) -> Void) {
     check(targetSection.contains("SCContentFilter(desktopIndependentWindow: window)") && !targetSection.contains("SCContentFilter(display:"), "a bound run captures the window alone")
     let beforeHandoff = section("// MARK: target", "func foregroundTarget(")
     check(!beforeHandoff.contains("app.activate(") && !beforeHandoff.contains("kAXRaiseAction") && !beforeHandoff.contains("unhide()"), "nothing before the announced handoff activates or raises the target")
+    let handoff = section("func foregroundTarget(", "\n}")
+    check(handoff.contains("startHandoffWatch()") && handoff.contains("kAXMinimizedAttribute, kCFBooleanFalse") && handoff.contains("!butlerOwn(front)"), "the handoff starts its watch, unminimizes the window before raising it, and never remembers Butler as the application to give the front back to")
+    let watch = section("func startHandoffWatch(", "\n}")
+    check(watch.contains("handoffExpired(handoff: targetHandoff, lastInputAt: lastInputTime") && watch.contains("endTargetHandoff()") && watch.contains("rememberedApplication()"), "the watch ends an expired handoff and gives the remembered application the front back")
+    check(section("func endTargetHandoff(", "\n}").contains("handoffWatch = nil") && section("func releaseTarget(", "\n}").contains("handoffWatch = nil"), "closing the handoff or releasing the target stops the watch")
+    // The context of a bound window carries only keys the runner's schema knows (src/core/context.ts), or it is dropped whole.
+    let contextSection = section("func targetContext(", "\n}")
+    let contextKeys = Set(contextSection.components(separatedBy: "result[\"").dropFirst().compactMap { $0.split(separator: "\"", maxSplits: 1).first.map(String.init) })
+    check(contextSection.contains("[\"appName\": bound.appName, \"windowTitle\": title]") && contextKeys == ["documentName", "visibleText", "selectedText", "windowCount", "openApps", "accessibility", "menus", "background"], "targetContext writes exactly the keys the runner's schema accepts: \(contextKeys.sorted())")
+    check(!targetSection.contains("focusedField"), "the field a write goes to is the surface's, never a context key")
+    // Naming and binding.
+    check(section("func runningApplication(named", "\n}").contains("resolveLaunch(query: name, candidates: applicationCandidates()") && section("func runningApplication(named", "\n}").contains("resolveTargetName("), "a spoken application resolves through the launcher's rules, then to a running instance")
+    check(section("func bindTarget(", "\n}").contains("rememberedApplication() ?? NSWorkspace.shared.frontmostApplication"), "an empty bind spec means the application remembered when the wake word ended, the front now only when nothing was remembered")
+    check(section("func rememberedApplication(", "\n}").contains("!butlerOwn(app)"), "Butler itself is never the remembered application")
+    // The cover: standard windows of other applications only.
+    let cover = section("func targetCover(", "\n}")
+    check(cover.contains("kCGWindowLayer as String] as? Int) == 0") && cover.contains("[getppid(), getpid()]"), "the cover counts standard-layer windows that are not Butler's own")
+    // TARGET_GONE reaches the runner once: in the reply when a call finds the binding dead, as an event only from the tracking tick.
+    check(targetSection.components(separatedBy: "emitting: true").count == 2 && section("func refreshTargetRects(", "\n}").contains("targetGone(bound, emitting: true)"), "the target_gone event is emitted only where no reply can carry the code")
+    check(section("func targetGone(", "\n}").contains("if emitting { emit("), "a thrown TARGET_GONE carries its code in the reply and emits nothing")
     check(section("func performTargetAction(", "\n}").contains("assertTargetElement(element, bound: bound)") && section("func setTargetAttribute(", "\n}").contains("assertTargetElement(element, bound: bound)"), "every accessibility action and write asserts the element is the bound process's")
     check(section("func installTap(", "\n}").contains("userTakeoverScope(type:type, location:event.location)") && section("func installTap(", "\n}").contains("\"scope\":scope.rawValue"), "the tap scopes the user's input and reports the scope, never a coordinate")
 }

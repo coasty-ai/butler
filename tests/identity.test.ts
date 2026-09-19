@@ -59,16 +59,21 @@ describe("identity guard: identifiers that stay after the Butler rename", () => 
     );
   });
 
-  it("keeps the seven self-protection checks keyed to the app's own bundle id", () => {
+  it("keeps the eight self-protection checks keyed to the app's own bundle id", () => {
     const literal = '"ai.coarena.openassist"';
     // Controller: the applications listed for the model, the window a spoken
-    // scroll may move, the windows a capture leaves out, and the app
-    // remembered before a turn and restored after it.
+    // scroll may move, the windows a capture leaves out, the app remembered
+    // before a turn and restored after it, and the one check a bound run
+    // shares (butlerOwn): never a target, never given the front back, never
+    // counted as covering the target.
     expect({
       controller: count(read("native/macos/Controller.swift"), literal),
       input: count(read("native/macos/InputSafety.swift"), literal),
       launch: count(read("native/macos/LaunchSafety.swift"), literal),
-    }).toEqual({ controller: 5, input: 1, launch: 1 });
+    }).toEqual({ controller: 6, input: 1, launch: 1 });
+    expect(read("native/macos/Controller.swift")).toMatch(
+      /func butlerOwn\(pid: pid_t\) -> Bool \{[^}]*"ai\.coarena\.openassist"/,
+    );
     const launch = read("native/macos/LaunchSafety.swift");
     expect(launch).toMatch(/launchFloorDenied[^\n]*"ai\.coarena\.openassist"/);
     const input = read("native/macos/InputSafety.swift");

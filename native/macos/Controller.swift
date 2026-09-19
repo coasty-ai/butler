@@ -2258,6 +2258,8 @@ var targetUncovered = [CGRect]()
 // Rung 3 is under way: the target was brought forward on purpose, so its
 // activation is expected and the user's input pauses the run as it does today.
 var targetHandoff = false
+// Ends a handoff nobody closed (BackgroundInput.swift handoffIdleLimit).
+var handoffWatch: DispatchSourceTimer?
 var targetMisses = RungMisses()
 var targetRectTimer: DispatchSourceTimer?
 var targetObserver: AXObserver?
@@ -2271,6 +2273,19 @@ enum TargetDelivery: Equatable { case none, acted, wrote(String) }
 
 func runningIdentity(_ app: NSRunningApplication) -> TargetIdentity {
     TargetIdentity(pid: app.processIdentifier, bundleId: app.bundleIdentifier ?? "", launchedAt: app.launchDate?.timeIntervalSince1970)
+}
+// Butler's own processes (the app this helper serves, and the helper): never
+// a target, never the application given the front back, never counted as
+// covering the target.
+func butlerOwn(pid: pid_t) -> Bool {
+    pid == getppid() || pid == getpid() || NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "ai.coarena.openassist"
+}
+func butlerOwn(_ app: NSRunningApplication) -> Bool { butlerOwn(pid: app.processIdentifier) }
+// The application in front when the wake word ended or the command was typed
+// (rememberForeground), while it still runs: an empty bind spec means it.
+func rememberedApplication() -> NSRunningApplication? {
+    guard let pid = rememberedPID, let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated, !butlerOwn(app) else { return nil }
+    return app
 }
 // Electron ships its framework inside the bundle; the class decides which
 // posted events are refused and which read-backs are trusted.
@@ -2297,18 +2312,26 @@ func windowID(of window: AXUIElement, pid: pid_t) -> CGWindowID? {
     }
     return nil
 }
-// A running application the words name: its display name or bundle identifier, exactly one.
+// The running application the words name, resolved as open_app resolves a
+// name (the launcher's rules over the installed applications, allow-listed
+// folders and floors), then found among the running ones by bundle identifier.
+// Words that are not an application are a plain refusal, so the runner tries
+// its next candidate; an installed application that is not running is
+// TARGET_GONE, so the run says so and opens it in front.
 func runningApplication(named name: String) throws -> NSRunningApplication {
-    let wanted = normalizeAppName(name)
-    guard !wanted.isEmpty else { throw ControlError("Name an application.") }
-    let matches = NSWorkspace.shared.runningApplications.filter { app in
-        app.activationPolicy == .regular && !app.isTerminated
-            && (normalizeAppName(app.localizedName ?? "") == wanted || (app.bundleIdentifier ?? "").lowercased() == wanted)
+    guard !normalizeAppName(name).isEmpty else { throw ControlError("Name an application.") }
+    let running = NSWorkspace.shared.runningApplications.filter { !$0.isTerminated && $0.activationPolicy == .regular }
+    let resolution = resolveTargetName(resolveLaunch(query: name, candidates: applicationCandidates(), protectedApps: protectedApps),
+                                       runningBundleIds: Set(running.compactMap { $0.bundleIdentifier?.lowercased() }))
+    switch resolution {
+    case .running(let bundleId, _):
+        let instances = running.filter { $0.bundleIdentifier?.lowercased() == bundleId.lowercased() }
+        guard let app = instances.first(where: { $0.isActive }) ?? instances.first else { throw ControlError("That application is not running.", code: TargetRefusal.gone.rawValue) }
+        return app
+    case .notRunning: throw ControlError("That application is not running.", code: TargetRefusal.gone.rawValue)
+    case .protected: throw ControlError("That application cannot be worked in the background.", code: TargetRefusal.protected.rawValue)
+    case .unknown: throw ControlError("No application is called that.")
     }
-    guard matches.count == 1, let app = matches.first else {
-        throw ControlError(matches.isEmpty ? "That application is not running." : "Several running applications are called that.", code: TargetRefusal.gone.rawValue)
-    }
-    return app
 }
 // The window a bound run works in: the one whose title the words name; else
 // the application's focused window, else its main window, else the largest
@@ -2344,10 +2367,13 @@ func bindTarget(_ spec: [String:Any]) throws -> [String:Any] {
     if let id = requestedWindow, let info = windowInfo(id), let owner = NSRunningApplication(processIdentifier: info.owner) { app = owner }
     else if let pid = spec["pid"] as? Int, let running = NSRunningApplication(processIdentifier: pid_t(pid)) { app = running }
     else if let name = spec["app"] as? String { app = try runningApplication(named: name) }
-    else if requestedWindow == nil, spec["pid"] == nil, let frontmost = NSWorkspace.shared.frontmostApplication { app = frontmost }
+    // Nothing named: the window focused when the wake word ended (design §2.2,
+    // rule 3), even if the user Cmd-Tabbed away since; the front now only when
+    // nothing was remembered.
+    else if requestedWindow == nil, spec["pid"] == nil, let focused = rememberedApplication() ?? NSWorkspace.shared.frontmostApplication { app = focused }
     else { throw ControlError("That window is not open.", code: TargetRefusal.gone.rawValue) }
     let appId = app.bundleIdentifier ?? ""
-    guard !app.isTerminated, app.processIdentifier != getppid(), app.processIdentifier != getpid(), appId != "ai.coarena.openassist", !watchRefused(appId) else {
+    guard !app.isTerminated, !butlerOwn(app), !watchRefused(appId) else {
         throw ControlError("That application cannot be worked in the background.", code: TargetRefusal.protected.rawValue)
     }
     exposeAccessibilityTree(app)
@@ -2373,14 +2399,16 @@ func bindTarget(_ spec: [String:Any]) throws -> [String:Any] {
     let front = NSWorkspace.shared.frontmostApplication
     withState {
         targetBinding = binding; targetMisses = RungMisses()
-        foregroundBeforeTarget = front.flatMap { $0.processIdentifier != binding.pid && $0.processIdentifier != getppid() && $0.bundleIdentifier != "ai.coarena.openassist" ? $0.processIdentifier : nil }
+        foregroundBeforeTarget = front.flatMap { $0.processIdentifier != binding.pid && !butlerOwn($0) ? $0.processIdentifier : nil }
     }
     refreshTargetRects()
     startTargetTracking(binding)
     return ["token": binding.token, "pid": Int(binding.pid), "windowId": Int(windowID), "appId": appId, "appName": binding.appName, "title": binding.title]
 }
 // The binding a token names, still naming its process and its window; anything
-// else is TARGET_GONE, reported once and released, never re-resolved by name.
+// else is TARGET_GONE, released and never re-resolved by name. Thrown to a
+// caller, the code travels in the reply and the runner acts on it there; the
+// event is for a target that dies between calls (targetTracking).
 func liveTarget(_ token: String) throws -> TargetBinding {
     guard let bound = withState({ targetBinding }), watchProbeAllowed(token: token, bound: bound.token) else { throw ControlError("Unknown target token.", code: TargetRefusal.gone.rawValue) }
     let running = NSRunningApplication(processIdentifier: bound.pid).flatMap { $0.isTerminated ? nil : runningIdentity($0) }
@@ -2388,9 +2416,10 @@ func liveTarget(_ token: String) throws -> TargetBinding {
           attribute(bound.window, kAXRoleAttribute) != nil else { throw targetGone(bound) }
     return bound
 }
-func targetGone(_ bound: TargetBinding) -> ControlError {
+@discardableResult
+func targetGone(_ bound: TargetBinding, emitting: Bool = false) -> ControlError {
     releaseTarget()
-    emit(["event": "target_gone", "token": bound.token, "code": TargetRefusal.gone.rawValue])
+    if emitting { emit(["event": "target_gone", "token": bound.token, "code": TargetRefusal.gone.rawValue]) }
     return ControlError("The target window is gone.", code: TargetRefusal.gone.rawValue)
 }
 // The floors of §4 on the target's own surface, never the frontmost
@@ -2419,26 +2448,42 @@ func setTargetAttribute(_ element: AXUIElement, _ name: String, _ value: CFTypeR
     try assertTargetElement(element, bound: bound)
     _ = AXUIElementSetAttributeValue(element, name as CFString, value)
 }
-func endTargetHandoff() { withState { targetHandoff = false } }
+// Closes the handoff (restoreRemembered, restore, release) and its watch.
+func endTargetHandoff() {
+    let watch = withState { () -> DispatchSourceTimer? in targetHandoff = false; let held = handoffWatch; handoffWatch = nil; return held }
+    watch?.cancel()
+}
 
 // The parts of the bound window the user can see, from the window server's
-// z-ordered list: every drawn window in front of it, of any application,
-// covers what it overlaps. No accessibility call, so a hung target cannot
-// stall the tap's cache. A window not on screen has nothing to click and
-// nothing fresh to show.
+// z-ordered list: every drawn standard window in front of it, of any other
+// application, covers what it overlaps. Butler's own pill and the overlays
+// above the normal layer (the menu bar, the Dock, banners, Spotlight) cover
+// nothing: they come and go without hiding the window from the user. No
+// accessibility call, so a hung target cannot stall the tap's cache. A window
+// not on screen has nothing to click and nothing fresh to show.
 func targetCover(_ bound: TargetBinding) -> (frame: CGRect?, coverage: Double, uncovered: [CGRect]) {
     let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] ?? []
     var above = [CGRect]()
+    let own = [getppid(), getpid()]
     for info in list {
         guard let number = info[kCGWindowNumber as String] as? Int, let raw = info[kCGWindowBounds as String] as? [String:Any],
               let rect = CGRect(dictionaryRepresentation: raw as CFDictionary) else { continue }
         if CGWindowID(number) == bound.windowID { return (rect, coverage(of: rect, above: above), uncoveredRects(of: rect, above: above)) }
+        guard (info[kCGWindowLayer as String] as? Int) == 0, let owner = info[kCGWindowOwnerPID as String] as? Int, !own.contains(pid_t(owner)) else { continue }
         if (info[kCGWindowAlpha as String] as? Double ?? 1) > 0 { above.append(rect) }
     }
     return (nil, 1, [])
 }
+// The tracking tick: the cover is refreshed, and a target that died between
+// calls (its process ended or was replaced, its window closed) is reported
+// once as target_gone, since no reply can carry the code to the runner then.
 func refreshTargetRects() {
     guard let bound = withState({ targetBinding }) else { return }
+    let running = NSRunningApplication(processIdentifier: bound.pid).flatMap { $0.isTerminated ? nil : runningIdentity($0) }
+    guard targetLive(bound: bound.identity, running: running, windowOwner: windowInfo(bound.windowID)?.owner) else {
+        if withState({ targetBinding?.token == bound.token }) { targetGone(bound, emitting: true) }
+        return
+    }
     let uncovered = targetCover(bound).uncovered
     withState { if targetBinding?.token == bound.token { targetUncovered = uncovered } }
 }
@@ -2473,13 +2518,14 @@ func startTargetTracking(_ bound: TargetBinding) {
 }
 // Releases the bound target and everything that tracked it.
 func releaseTarget() {
-    let released = withState { () -> (DispatchSourceTimer?, AXObserver?, NSObjectProtocol?) in
-        let held = (targetRectTimer, targetObserver, targetActivationObserver)
+    let released = withState { () -> (DispatchSourceTimer?, AXObserver?, NSObjectProtocol?, DispatchSourceTimer?) in
+        let held = (targetRectTimer, targetObserver, targetActivationObserver, handoffWatch)
         targetBinding = nil; targetUncovered = []; targetHandoff = false; foregroundBeforeTarget = nil
-        targetRectTimer = nil; targetObserver = nil; targetActivationObserver = nil
+        targetRectTimer = nil; targetObserver = nil; targetActivationObserver = nil; handoffWatch = nil
         return held
     }
     released.0?.cancel()
+    released.3?.cancel()
     guard released.1 != nil || released.2 != nil else { return }
     DispatchQueue.main.async {
         if let observer = released.1 { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode) }
@@ -2497,7 +2543,7 @@ func targetActivated(_ notification: Notification) {
     let (bound, handoff) = withState { (targetBinding, targetHandoff) }
     guard let bound else { return }
     guard app.processIdentifier == bound.pid else {
-        if app.processIdentifier != getppid(), app.bundleIdentifier != "ai.coarena.openassist" { withState { foregroundBeforeTarget = app.processIdentifier } }
+        if !butlerOwn(app) { withState { foregroundBeforeTarget = app.processIdentifier } }
         return
     }
     switch targetActivation(lastManualInputAt: lastManualInput(), now: ProcessInfo.processInfo.systemUptime, handoff: handoff) {
@@ -2876,14 +2922,14 @@ func targetContext(_ bound: TargetBinding, state: WindowState, frame: CGRect, fa
         if page.count > text.count { text = String(page.prefix(4200)) }
     }
     result["visibleText"] = text
+    // The field an accessibility write would go to is the surface's
+    // (focusedRole, focusedLabel), as for the frontmost window: the context
+    // carries only the keys the runner's schema knows, or it is dropped whole.
     var focusedRole = ""
     if let focused = state.focused {
         focusedRole = attribute(focused, kAXRoleAttribute) as? String ?? ""
-        // The field an accessibility write would go to: described, never read.
-        if ["AXTextField", "AXTextArea", "AXComboBox"].contains(focusedRole), attribute(focused, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole {
-            result["focusedField"] = ["role": String(focusedRole.dropFirst(2)).lowercased(), "label": fieldLabel(focused)]
-            if let selection = attribute(focused, kAXSelectedTextAttribute) as? String { result["selectedText"] = String(selection.prefix(2000)) }
-        }
+        if ["AXTextField", "AXTextArea", "AXComboBox"].contains(focusedRole), attribute(focused, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole,
+           let selection = attribute(focused, kAXSelectedTextAttribute) as? String { result["selectedText"] = String(selection.prefix(2000)) }
     }
     result["windowCount"] = min(onScreenWindowCount(bound.pid), 99)
     let open = openAppLines(openApplications())
@@ -3191,21 +3237,25 @@ func executeTarget(token: String, action: [String:Any], rungs requested: [Rung])
 }
 /**
  Rung 3 (design §2.8), only after the runner has announced it: the application
- in front is remembered for restoreRemembered, the target is activated and its
- window raised, and the helper waits up to 700 ms for it to be frontmost.
- Activation is intent-driven on macOS 14, so it may not take; the result says.
- The handoff ends with restoreRemembered or restore.
+ in front is remembered for restoreRemembered, the target is unhidden and
+ unminimized, activated and its window raised, and the helper waits up to
+ 700 ms for it to be frontmost. Activation is intent-driven on macOS 14, so it
+ may not take; the result says. The handoff ends with restoreRemembered or
+ restore, or on its own once the helper has sent no input for
+ handoffIdleLimit seconds, giving the remembered application the front back.
  */
 func foregroundTarget(token: String) async throws -> [String:Any] {
     try ensureRunning()
     let bound = try liveTarget(token)
     try guardTarget(bound, typing: false)
     guard let app = NSRunningApplication(processIdentifier: bound.pid) else { throw targetGone(bound) }
-    if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != bound.pid, front.processIdentifier != getppid(), front.bundleIdentifier != "ai.coarena.openassist" {
+    if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != bound.pid, !butlerOwn(front) {
         rememberedPID = front.processIdentifier
     }
-    withState { targetHandoff = true }
+    withState { targetHandoff = true; lastInputTime = ProcessInfo.processInfo.systemUptime }
+    startHandoffWatch()
     if app.isHidden { app.unhide() }
+    if attribute(bound.window, kAXMinimizedAttribute) as? Bool == true { try setTargetAttribute(bound.window, kAXMinimizedAttribute, kCFBooleanFalse, bound: bound) }
     app.activate(options: [])
     try performTargetAction(bound.window, kAXRaiseAction, bound: bound)
     let deadline = ProcessInfo.processInfo.systemUptime + 0.7
@@ -3214,6 +3264,25 @@ func foregroundTarget(token: String) async throws -> [String:Any] {
     }
     withState { lastInputTime = ProcessInfo.processInfo.systemUptime }
     return ["frontmost": NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid]
+}
+// A handoff the runner never closed (it died mid-step, or its restore never
+// arrived) would leave the target in front and the tap treating every input as
+// a takeover of the screen. Once the helper's own input has been quiet for
+// handoffIdleLimit the watch closes it and gives the remembered application the
+// front back, exactly as restoreRemembered would. A step under way keeps
+// posting, so a long typing step is never cut short.
+func startHandoffWatch() {
+    let watch = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+    watch.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(200))
+    watch.setEventHandler {
+        let expired = withState { handoffExpired(handoff: targetHandoff, lastInputAt: lastInputTime, now: ProcessInfo.processInfo.systemUptime) }
+        guard expired else { return }
+        endTargetHandoff()
+        if let app = rememberedApplication(), NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier { app.activate(options: []) }
+    }
+    let previous = withState { () -> DispatchSourceTimer? in let held = handoffWatch; handoffWatch = watch; return held }
+    previous?.cancel()
+    watch.resume()
 }
 // MARK: system index
 struct IndexedApp { let name: String; let bundleId: String; let lastUsed: Date?; let useCount: Int? }
