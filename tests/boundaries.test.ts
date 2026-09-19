@@ -67,6 +67,7 @@ const providerFiles = srcFiles.filter((f) => f.startsWith("src/providers/"));
 const voiceFiles = srcFiles.filter((f) => f.startsWith("src/voice/"));
 const assistantFiles = srcFiles.filter((f) => f.startsWith("src/assistant/"));
 const toolFiles = srcFiles.filter((f) => f.startsWith("src/tools/"));
+const moduleFiles = srcFiles.filter((f) => f.startsWith("src/modules/"));
 
 /** Collect every violation so one run names them all. */
 function offenders(
@@ -90,6 +91,7 @@ describe("module boundaries", () => {
     expect(voiceFiles.length).toBeGreaterThan(2);
     expect(assistantFiles.length).toBeGreaterThan(2);
     expect(toolFiles.length).toBeGreaterThan(3);
+    expect(moduleFiles.length).toBeGreaterThan(1);
     expect(srcFiles.length).toBeGreaterThan(20);
     expect(electronFiles.length).toBeGreaterThan(5);
   });
@@ -189,6 +191,42 @@ describe("module boundaries", () => {
           return `src/tools may import only src/core and src/tools, not ${resolved}`;
         return undefined;
       }),
+    ).toEqual([]);
+  });
+
+  /**
+   * src/modules is the ports-and-adapters layer (.data/design/modules.md):
+   * it types every pluggable stage on the existing shapes in src/voice and
+   * src/providers, calls MCP tools through the src/tools registry's door, and
+   * reads settings from src/core. It is pure like core (no Node builtin, so
+   * the registry runs under any host), knows nothing of the UI or Electron,
+   * and only the app layer consumes it: electron/ wires the registry and
+   * src/ui reads PORTS for the Modules pane; nothing below may import it.
+   */
+  it("keeps src/modules on src/core, src/voice, src/providers and src/tools", () => {
+    expect(
+      offenders(moduleFiles, (specifier, resolved) => {
+        if (specifier.startsWith("node:"))
+          return "src/modules imports no Node builtin";
+        if (!specifier.startsWith("."))
+          return specifier === "zod"
+            ? undefined
+            : `src/modules may import only zod, not ${specifier}`;
+        if (!/^src\/(?:modules|core|voice|providers|tools)\//.test(resolved))
+          return `src/modules may import only src/core, src/voice, src/providers and src/tools, not ${resolved}`;
+        return undefined;
+      }),
+    ).toEqual([]);
+    expect(
+      offenders(
+        srcFiles.filter(
+          (f) => !f.startsWith("src/modules/") && !f.startsWith("src/ui/"),
+        ),
+        (specifier, resolved) =>
+          specifier.startsWith(".") && resolved.startsWith("src/modules/")
+            ? "only electron/ and src/ui consume src/modules; nothing below it imports it"
+            : undefined,
+      ),
     ).toEqual([]);
   });
 

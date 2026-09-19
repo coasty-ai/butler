@@ -16,6 +16,10 @@ import type { DiagnosticSink } from "../src/core/diagnostics";
 
 const fields = new Set([
   "runId",
+  // The module registry: which port, a measurement, a flag (moduleEvents).
+  "port",
+  "ms",
+  "ok",
   "requestId",
   "frameId",
   "provider",
@@ -318,6 +322,7 @@ const countFields = new Set([
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
   "sampleRate",
+  "ms",
   "micLevel",
   "textLength",
   "noteLength",
@@ -352,6 +357,7 @@ const numberFields = new Set([
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
   "interrupted",
+  "ok",
   "merged",
   "speaking",
   "voiceProcessing",
@@ -382,6 +388,7 @@ const flagFields = new Set([
  */
 const codeFields = new Set([
   "plan",
+  "port",
   "mode",
   "openedKind",
   "kind",
@@ -471,6 +478,17 @@ const streamEvents = new Map<string, Set<string>>([
   ["StreamedActionDropped", new Set(["kind", "clauseIndex"])],
   ["StreamedRunStarted", new Set(["streamedSteps", "dropped"])],
 ]);
+/**
+ * The module registry (src/modules/registry.ts): which port, which adapter
+ * kind, a code, a measurement and a flag; never a URL, a server name or a
+ * reply. Each event keeps only its own keys.
+ */
+const moduleEvents = new Map<string, Set<string>>([
+  ["ModuleCall", new Set(["port", "kind", "ms", "ok"])],
+  ["ModuleFallback", new Set(["port", "kind", "code"])],
+  ["ModuleSlow", new Set(["port", "kind", "ms"])],
+]);
+const keyedEvents = new Map([...streamEvents, ...moduleEvents]);
 const memoryEvents = new Set([
   "MemoryRecalled",
   "PlanStepProposed",
@@ -606,10 +624,10 @@ export class LocalDiagnostics {
                       speculationFields.has(key),
                     ),
                   )
-                : streamEvents.has(event) && !this.verbose
+                : keyedEvents.has(event) && !this.verbose
                   ? Object.fromEntries(
                       Object.entries(data).filter(([key]) =>
-                        streamEvents.get(event)!.has(key),
+                        keyedEvents.get(event)!.has(key),
                       ),
                     )
                   : data,

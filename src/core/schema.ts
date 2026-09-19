@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   RESERVED_PROVIDERS,
+  TOOL_DENYLIST,
   TOOL_ID,
   TOOL_LIMITS,
   type ToolSummary,
@@ -416,6 +417,132 @@ export const toolsSettingsSchema = z
   })
   .strict()
   .prefault({}); // NOT .default({}): inner defaults must apply (measured, plan §3.8)
+/**
+ * Modules (.data/design/modules.md §4): which adapter serves each port of the
+ * pipeline. Every port is optional and defaults to the built-in. "mcp" names
+ * a tool on a connected tool server (settings.tools.servers[].id and the
+ * tool's own name; the tool must be ticked on and the server running);
+ * "http" a JSON endpoint: https, or http to this Mac alone, with any secret
+ * in the vault as a header. fallback (default on) means an adapter error, a
+ * timeout or a reply that fails the port's schema falls back to the built-in
+ * for that call; off means the stage answers none.
+ */
+const toolServerId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/);
+const moduleToolName = z
+  .string()
+  .regex(/^[A-Za-z0-9_.-]{1,128}$/)
+  .refine((name) => !TOOL_DENYLIST.test(name), "Never a shell.");
+/** Loopback names: an adapter on this Mac may be plain http. */
+export function loopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host === "localhost" ||
+    host === "::1" ||
+    host === "[::1]" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+  );
+}
+/**
+ * An adapter's endpoint: a web address (webAddress: http or https, a host,
+ * no credentials) without a fragment, https unless the host is loopback.
+ */
+export function moduleEndpoint(value: string): URL | undefined {
+  const url = webAddress(value);
+  if (!url || url.hash) return undefined;
+  if (url.protocol === "http:" && !loopbackHost(url.hostname)) return undefined;
+  return url;
+}
+const moduleEndpointString = z
+  .string()
+  .trim()
+  .max(300)
+  .refine(
+    (value) => moduleEndpoint(value) !== undefined,
+    "Use an https address (http only to this Mac) without credentials.",
+  );
+const withFallback = { fallback: z.boolean().default(true) };
+export const moduleChoiceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("builtin") }).strict(),
+  z
+    .object({
+      kind: z.literal("mcp"),
+      server: toolServerId,
+      tool: moduleToolName,
+      ...withFallback,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("http"),
+      url: moduleEndpointString,
+      ...withFallback,
+    })
+    .strict(),
+]);
+export type ModuleChoice = z.infer<typeof moduleChoiceSchema>;
+/**
+ * The choice model: Jev over OpenRouter (the built-in), another model on
+ * OpenRouter's Decisions endpoint by its id, an http endpoint or an MCP
+ * tool; fallback is to Jev.
+ */
+export const choiceModelChoiceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("jev") }).strict(),
+  z
+    .object({
+      kind: z.literal("openrouter"),
+      model: z
+        .string()
+        .trim()
+        .min(3)
+        .max(100)
+        .regex(/^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9._:-]+$/, "vendor/model"),
+      ...withFallback,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("http"),
+      url: moduleEndpointString,
+      ...withFallback,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("mcp"),
+      server: toolServerId,
+      tool: moduleToolName,
+      ...withFallback,
+    })
+    .strict(),
+]);
+export type ChoiceModelChoice = z.infer<typeof choiceModelChoiceSchema>;
+/** The recognizer: the voice helper, or a command speaking its JSON-lines protocol, by absolute path. */
+export const recognizerChoiceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("builtin") }).strict(),
+  z
+    .object({
+      kind: z.literal("command"),
+      command: z
+        .string()
+        .max(500)
+        .regex(/^\/[^\u0000-\u001f\u007f]+$/, "An absolute path."),
+      args: z.array(z.string().max(500)).max(40).default([]),
+    })
+    .strict(),
+]);
+export type RecognizerChoice = z.infer<typeof recognizerChoiceSchema>;
+export const modulesSettingsSchema = z
+  .object({
+    clauseSegmenter: moduleChoiceSchema.optional(),
+    fastDecider: moduleChoiceSchema.optional(),
+    choiceModel: choiceModelChoiceSchema.optional(),
+    urlOpener: moduleChoiceSchema.optional(),
+    tts: moduleChoiceSchema.optional(),
+    recognizer: recognizerChoiceSchema.optional(),
+  })
+  .strict()
+  .prefault({});
+export type ModulesSettings = z.infer<typeof modulesSettingsSchema>;
 export const settingsSchema = z
   .object({
     privacy: privacySchema,
@@ -650,6 +777,8 @@ export const settingsSchema = z
      */
     setupComplete: z.boolean().default(false),
     tools: toolsSettingsSchema,
+    /** Which adapter serves each port of the pipeline; {} is every built-in. */
+    modules: modulesSettingsSchema,
     /**
      * Work in the window a task names (or the one the user was in) without
      * taking the screen while the user is at the Mac: the run binds that
@@ -738,6 +867,7 @@ export const defaultSettings: Settings = {
     apple: { calendar: false, reminders: false, notes: false, mail: false },
     servers: [],
   },
+  modules: {},
   workInBackground: true,
 };
 /** One phone the remote knows about (settings.remoteDevices). */
