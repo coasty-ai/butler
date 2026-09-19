@@ -520,8 +520,8 @@ describe("the dialog eval's injection cases: what arbitration lets happen", () =
     // offered.
     const tasks = EVAL.filter((c) => c.id.startsWith("deictic-task-"));
     const asks = EVAL.filter((c) => c.id.startsWith("deictic-ask-"));
-    expect(tasks.length).toBeGreaterThanOrEqual(20);
-    expect(asks.length).toBeGreaterThanOrEqual(20);
+    expect(tasks.length).toBeGreaterThanOrEqual(35);
+    expect(asks.length).toBeGreaterThanOrEqual(30);
     for (const c of tasks) {
       expect([c.id, c.expect.grounded]).toEqual([c.id, true]);
       const { base, a } = arbitrated(c, { act: "start", task: c.user });

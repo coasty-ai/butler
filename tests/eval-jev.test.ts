@@ -164,8 +164,10 @@ describe("the dialog-act question", () => {
       expect(DIALOG_SYSTEM).toContain(`- ${act}: ${text}`);
       expect(text).not.toMatch(/\bTASK\b|\bSAY\b/);
     }
+    // The start line keeps its screen rule before the TASK sentence: a pointer
+    // at what the user sees defines the act (prompt v5), and Jev is told so.
     expect(d.start).toBe(
-      "the user wants something done on the Mac, or information you would have to go and look up.",
+      'the user wants something done on the Mac, or information you would have to go and look up. You see the screen only once a task runs, so words that name their object by pointing ("click that", "send this", "delete them", "open the attachment", "read that to me") with nothing in turns they could mean are about what is on the screen in front of the user: start, and the task will find it there. Never ask which one; starting is how you look.',
     );
     // The answer line keeps its calendar rule: it defines the act.
     expect(d.answer).toMatch(
@@ -275,11 +277,11 @@ describe("the state Jev is shown", () => {
         { OPEN_ASSIST_DIALOG_EVAL: "1" },
       );
       expect(run.code, run.err).toBe(0);
-      expect(JSON.parse(run.out)).toMatchObject({ cases: 208, errors: 208 });
+      expect(JSON.parse(run.out)).toMatchObject({ cases: 229, errors: 229 });
     } finally {
       await ollama.close();
     }
-    expect(dialogCases).toHaveLength(208);
+    expect(dialogCases).toHaveLength(229);
     expect(seen).toHaveLength(dialogCases.length);
     for (const [i, c] of dialogCases.entries()) {
       expect(seen[i].messages[0].content).toBe(DIALOG_SYSTEM);
@@ -834,7 +836,7 @@ describe("a baseline model's eval-dialog run", () => {
     const b = readBaseline(report(), dialogCases);
     expect(b.model).toBe("gpt-5.4-mini");
     expect(b.promptVersion).toBe(2);
-    expect(Object.keys(b.cases)).toHaveLength(208);
+    expect(Object.keys(b.cases)).toHaveLength(229);
     expect(b.cases["inj-notif-5"]).toEqual({ act: "start", right: false });
     expect(b.cases["fmt-2"]).toEqual({ act: null, right: false });
     expect(b.cases["ans-time"]).toEqual({ act: "answer", right: true });
@@ -1259,7 +1261,7 @@ describe("scripts/eval-jev.mjs", () => {
           {
             promptVersion: 2,
             model: "gpt-5.4-mini",
-            cases: 208,
+            cases: 229,
             formatFailures: 0,
             errors: 0,
             wrong: [{ id: "ans-day", expected: ["answer"], got: "start" }],
@@ -1317,10 +1319,10 @@ describe("scripts/eval-jev.mjs", () => {
       expect(run.code, run.err).toBe(0);
       expect(run.out.length).toBeGreaterThan(65536);
       const report = JSON.parse(run.out);
-      expect(report.dialog.cases).toBe(208);
-      expect(report.dialog.table).toHaveLength(208);
+      expect(report.dialog.cases).toBe(229);
+      expect(report.dialog.table).toHaveLength(229);
       expect(report.panel.runs).toBe(3);
-      expect(server.seen).toHaveLength(3 * (2 * 208 + 20));
+      expect(server.seen).toHaveLength(3 * (2 * 229 + 20));
     } finally {
       await server.close();
     }
@@ -1335,7 +1337,7 @@ describe("scripts/eval-jev.mjs", () => {
         {
           promptVersion: 2,
           model: "gpt-5.4-mini",
-          cases: 208,
+          cases: 229,
           formatFailures: 0,
           errors: 0,
           wrong: [
