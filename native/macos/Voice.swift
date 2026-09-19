@@ -86,6 +86,20 @@ var spaceSwallowed = false
 var optionReleased = false
 var spaceUpTicks = 0
 var securePaused = false
+// Local trial diagnostics only: BUTLER_TRACE_STANDBY in the helper's environment ("1", or
+// "text" to include the words) reports what ambient listening saw and did, so an unheard
+// wake phrase can be told from a deaf microphone. The packaged app never sets it; without it,
+// background speech never leaves this process.
+let standbyTrace = ProcessInfo.processInfo.environment["BUTLER_TRACE_STANDBY"] ?? ""
+var tapBuffers = 0, lastRms = 0.0, lastStandbyTraceAt = 0.0
+func traceStandby(_ kind: String, _ raw: String? = nil, error: String? = nil, extra: [String: Any] = [:]) {
+    guard !standbyTrace.isEmpty else { return }
+    var event: [String: Any] = ["event": "standby_trace", "kind": kind, "sinceStartMs": Int(((uptime() - startedAt) * 1000).rounded())]
+    if let raw { event["textLength"] = raw.count; if standbyTrace == "text" { event["text"] = raw } }
+    if let error { event["message"] = error }
+    for (key, value) in extra { event[key] = value }
+    output(event)
+}
 var shuttingDown = false
 var parentExit: DispatchSourceProcess?
 var echoGuardUntil: TimeInterval = 0
@@ -320,6 +334,7 @@ func startRecognition() -> Bool {
 // running and continue in a fresh request; late callbacks from the old one are ignored.
 func rotateRequest() {
     guard mode != nil else { return }
+    if mode == .standby || mode == .followUp { traceStandby("rotate") }
     let oldTask = task, oldRequest = request
     guard startRecognition() else {
         if mode == .standby || mode == .followUp { clearSpeech(); scheduleStandby(1) } else { completeTurn(.error) }
@@ -351,6 +366,7 @@ func beginAudio(_ nextMode: ListenMode, muteSeconds: Double = 0, knownAvailable:
     let now = uptime()
     startedAt = now; lastSpeechAt = now; lastTextAt = now; rotatedAt = now
     startRecognition()
+    if ambient { traceStandby("begin", extra: ["mode": nextMode == .standby ? "standby" : "followUp"]) }
     if let failure = startInput(muteSeconds: muteSeconds) {
         audioFailed(failure, code: "mic", ambient: ambient); return false
     }
@@ -368,7 +384,7 @@ func startInput(muteSeconds: Double) -> String? {
     var lastLevelAt: TimeInterval = 0
     input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
         let now = uptime()
-        tapLock.lock(); let live = tapRequest, admitted = tapMute.admits(at: now); tapLock.unlock()
+        tapLock.lock(); let live = tapRequest, admitted = tapMute.admits(at: now); tapBuffers += 1; tapLock.unlock()
         // Pre-roll right after barge-in may still hold the reply's tail: never transcribe it.
         if !admitted { return }
         live?.append(buffer)
@@ -416,6 +432,7 @@ func resumeInput() {
     // What was heard stays in the turn, unconfirmed (it can never approve); capture continues
     // in a fresh request, since the old one was fed buffers in the previous format.
     if !ambient && !trimmed(turn.current).isEmpty { absorbFinalSegment(&turn, text: "", confidence: nil) }
+    if ambient { traceStandby("input_restart") }
     let oldTask = task, oldRequest = request
     let started = startRecognition()
     oldRequest?.endAudio(); oldTask?.cancel()
@@ -446,6 +463,7 @@ func defaultOutputIsBluetooth() -> Bool {
 func observeLevel(_ rms: Double, at now: TimeInterval, session: Int) {
     guard session == generation, let current = mode else { return }
     let isSpeech = noiseFloor.observe(rms: rms)
+    lastRms = rms
     if isSpeech { lastSpeechAt = now }
     if current == .followUp { windowRun.observe(speech: isSpeech, at: now) }
     // Levels only for an activated turn: never in standby or before a window detects speech.
@@ -460,11 +478,13 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
         case .standby:
             guard commandAfterWakePhrase(raw, ended: result.isFinal) != nil else {
                 // Do not emit background speech, partials, or microphone levels.
+                traceStandby(result.isFinal ? "final" : "partial", raw)
                 if !trimmed(raw).isEmpty { lastTextAt = now }
                 pendingWake = !result.isFinal && wakePhraseAwaitingPause(raw)
                 if result.isFinal { clearSpeech(); scheduleStandby() }
                 return
             }
+            traceStandby("wake", raw)
             activateWake(context: .command, window: nil)
         case .followUp:
             if commandAfterWakePhrase(raw, ended: result.isFinal) != nil {
@@ -484,7 +504,10 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
         absorbRecognition(result, raw: raw, now: now)
         return
     }
-    if error != nil { recognitionFailed() }
+    if let error {
+        if current == .standby { traceStandby("error", error: error.localizedDescription) }
+        recognitionFailed()
+    }
 }
 func activateWake(context: TurnContext, window: FollowUpKind?) {
     signalController()
@@ -887,7 +910,12 @@ func handle(_ command: [String: Any]) {
                 if pendingWake && wakePauseElapsed(now: now, lastText: lastTextAt, lastSpeech: lastSpeechAt) {
                     activateWake(context: .command, window: nil); return
                 }
-                if standbyEndpoint(now: now, started: startedAt, lastText: lastTextAt) == .recycle { clearSpeech(); scheduleStandby(0.1) }
+                if !standbyTrace.isEmpty && now - lastStandbyTraceAt >= 5 {
+                    lastStandbyTraceAt = now
+                    tapLock.lock(); let buffers = tapBuffers; tapBuffers = 0; tapLock.unlock()
+                    traceStandby("level", extra: ["buffers": buffers, "rms": Int((lastRms * 1000).rounded()), "engine": engine.isRunning])
+                }
+                if standbyEndpoint(now: now, started: startedAt, lastText: lastTextAt) == .recycle { traceStandby("recycle"); clearSpeech(); scheduleStandby(0.1) }
             case .followUp:
                 if IsSecureEventInputEnabled() { clearSpeech(windowReason: "cancel"); securePaused = true; return }
                 if pendingWake && wakePauseElapsed(now: now, lastText: lastTextAt, lastSpeech: lastSpeechAt) {

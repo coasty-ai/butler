@@ -32,6 +32,11 @@ export interface VoiceEvent {
   /** turn_endpoint (content-free) and followup_closed. */
   endReason?: string;
   stableMs?: number;
+  /** standby_trace (BUTLER_TRACE_STANDBY, local trials only). */
+  sinceStartMs?: number;
+  buffers?: number;
+  rms?: number;
+  engine?: boolean;
   quietMs?: number;
   completeness?: string;
   patience?: string;

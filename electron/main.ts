@@ -1822,6 +1822,10 @@ async function receiveVoice(event: VoiceEvent) {
       patience: event.patience,
       noiseFloor: event.noiseFloor,
       threshold: event.threshold,
+      sinceStartMs: event.sinceStartMs,
+      buffers: event.buffers,
+      rms: event.rms,
+      engine: event.engine,
     });
   try {
     if (event.event === "wake_status") {
