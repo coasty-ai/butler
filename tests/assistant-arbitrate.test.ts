@@ -277,6 +277,40 @@ describe("dialog arbitration", () => {
     ).toEqual({ kind: "nothingRunning" });
   });
 
+  it("a control verb with a thing on the screen for its object is the router's task, never a pause or resume", () => {
+    // Live 2026-09-19: "Pause the current video" with nothing running was
+    // read as pause and answered "Nothing's running".
+    const idle = start("Pause the current video");
+    for (const act of ["pause", "resume"] as const)
+      expect(decide(idle, { act })).toEqual({
+        plan: idle,
+        speakSay: false,
+        code: "media_command",
+      });
+    const hint: TurnPlan = { kind: "revise", text: "stop the music" };
+    expect(decide(hint, { act: "pause" }, { run: run() }).plan).toEqual(hint);
+    const held = run({ status: "paused", held: true });
+    const video: TurnPlan = { kind: "revise", text: "resume the video" };
+    expect(
+      decide(video, { act: "resume" }, { run: held, heldByVoice: true }).plan,
+    ).toEqual(video);
+    // Butler's own controls, with or without a pronoun, are unchanged.
+    expect(
+      decide(
+        { kind: "revise", text: "pause it" },
+        { act: "pause" },
+        { run: run() },
+      ).plan,
+    ).toEqual({ kind: "pause" });
+    expect(
+      decide(
+        { kind: "revise", text: "resume the task" },
+        { act: "resume" },
+        { run: held, heldByVoice: true },
+      ).plan,
+    ).toEqual({ kind: "resume" });
+  });
+
   it("never yields approve, decline or stop for any act", () => {
     const bases: TurnPlan[] = [
       start("go ahead and do it"),
@@ -624,6 +658,14 @@ describe("questions and fast starts", () => {
       "search for cheap flights to Denver",
       "send Dana the report",
       "okay, launch Safari",
+      // A media or device control on a thing of its own, polite frame or
+      // not: the run's model sees the player.
+      "pause the video",
+      "stop the music",
+      "mute it",
+      "skip this ad",
+      "turn the volume down",
+      "can you pause the video",
     ])
       expect([text, fastStart(start(text), text)]).toEqual([text, true]);
     for (const text of [
@@ -648,6 +690,11 @@ describe("questions and fast starts", () => {
       "open the link and sign in",
       "email the link to Dana",
       "text her that I'm on my way",
+      // Butler's own controls that the router leaves to the model, and a
+      // control on the task's own subject.
+      "pause it",
+      "resume the task",
+      "pause the flights search",
     ])
       expect([text, fastStart(start(text), text)]).toEqual([text, false]);
     expect(fastStart(start("call mom"), "call mom")).toBe(true);

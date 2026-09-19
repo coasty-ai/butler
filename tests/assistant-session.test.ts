@@ -420,6 +420,41 @@ describe("assistant session: deciding a turn", () => {
     expect(t2.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("a media control on a thing is a fast start; with a run under way the model's pause for it is refused", async () => {
+    // Live 2026-09-19: "Pause the current video" with nothing running was
+    // read as ACT pause and answered "Nothing's running".
+    const t = setup();
+    const base = start("Pause the current video");
+    expect(await t.decided("Pause the current video", base)).toEqual({
+      plan: base,
+      taskSource: "user_words",
+      acting: true,
+      code: "fast_start",
+    });
+    t.session.preempt("pause the video", "voice");
+    expect(t.fetch).not.toHaveBeenCalled();
+    const running = setup({
+      bodies: [sse(["ACT: pause\nSAY: Holding here."])],
+      view: working,
+    });
+    const hint: TurnPlan = { kind: "revise", text: "pause the video" };
+    const d = await running.decided("pause the video", hint, {
+      run: {
+        id: "run-1",
+        status: "executing",
+        actions: 3,
+        held: false,
+        task: "Find flights to Denver on Friday",
+      },
+    });
+    expect(d.plan).toEqual(hint);
+    expect(d.sentences).toBeUndefined();
+    expect(d.code).toBe("model");
+    expect(
+      running.traces.find((x) => x.data.phase === "decided")?.data.code,
+    ).toBe("media_command");
+  });
+
   it("reuses a matching early request and discards a mismatched one", async () => {
     const t = setup({ bodies: [answer("Sunny and mild.")] });
     t.session.preempt("what's the weather like today", "voice");

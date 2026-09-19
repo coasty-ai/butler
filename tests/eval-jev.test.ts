@@ -275,11 +275,11 @@ describe("the state Jev is shown", () => {
         { OPEN_ASSIST_DIALOG_EVAL: "1" },
       );
       expect(run.code, run.err).toBe(0);
-      expect(JSON.parse(run.out)).toMatchObject({ cases: 174, errors: 174 });
+      expect(JSON.parse(run.out)).toMatchObject({ cases: 208, errors: 208 });
     } finally {
       await ollama.close();
     }
-    expect(dialogCases).toHaveLength(174);
+    expect(dialogCases).toHaveLength(208);
     expect(seen).toHaveLength(dialogCases.length);
     for (const [i, c] of dialogCases.entries()) {
       expect(seen[i].messages[0].content).toBe(DIALOG_SYSTEM);
@@ -834,7 +834,7 @@ describe("a baseline model's eval-dialog run", () => {
     const b = readBaseline(report(), dialogCases);
     expect(b.model).toBe("gpt-5.4-mini");
     expect(b.promptVersion).toBe(2);
-    expect(Object.keys(b.cases)).toHaveLength(174);
+    expect(Object.keys(b.cases)).toHaveLength(208);
     expect(b.cases["inj-notif-5"]).toEqual({ act: "start", right: false });
     expect(b.cases["fmt-2"]).toEqual({ act: null, right: false });
     expect(b.cases["ans-time"]).toEqual({ act: "answer", right: true });
@@ -1259,7 +1259,7 @@ describe("scripts/eval-jev.mjs", () => {
           {
             promptVersion: 2,
             model: "gpt-5.4-mini",
-            cases: 174,
+            cases: 208,
             formatFailures: 0,
             errors: 0,
             wrong: [{ id: "ans-day", expected: ["answer"], got: "start" }],
@@ -1317,10 +1317,10 @@ describe("scripts/eval-jev.mjs", () => {
       expect(run.code, run.err).toBe(0);
       expect(run.out.length).toBeGreaterThan(65536);
       const report = JSON.parse(run.out);
-      expect(report.dialog.cases).toBe(174);
-      expect(report.dialog.table).toHaveLength(174);
+      expect(report.dialog.cases).toBe(208);
+      expect(report.dialog.table).toHaveLength(208);
       expect(report.panel.runs).toBe(3);
-      expect(server.seen).toHaveLength(3 * (2 * 174 + 20));
+      expect(server.seen).toHaveLength(3 * (2 * 208 + 20));
     } finally {
       await server.close();
     }
@@ -1335,7 +1335,7 @@ describe("scripts/eval-jev.mjs", () => {
         {
           promptVersion: 2,
           model: "gpt-5.4-mini",
-          cases: 174,
+          cases: 208,
           formatFailures: 0,
           errors: 0,
           wrong: [

@@ -24,6 +24,7 @@ import {
   type VoiceTurnRun,
 } from "../voice/turns";
 import { jevStartWords } from "../providers/jev";
+import { mediaCommand } from "./media";
 import type { DialogHead } from "./protocol";
 import type { Channel } from "./types";
 
@@ -100,11 +101,16 @@ export function looksLikeQuestion(text: string): boolean {
  * own words and no model call, the way it does today. Never words that
  * only point elsewhere, and never a verb that sends, signs or spends on a
  * target named elsewhere ("email the link to Dana", "open the link and sign
- * in"): the model reads those with the notification in view.
+ * in"): the model reads those with the notification in view. A media or
+ * device control on a thing of its own ("pause the video", "mute it", "can
+ * you skip this ad") starts at once too, whatever its verb: the run's model
+ * sees the player, and the dialog model would read it as Butler's own pause
+ * (live 2026-09-19).
  */
 export function fastStart(plan: TurnPlan, text: string): boolean {
-  if (plan.kind !== "start" || looksLikeQuestion(text) || deicticTask(text))
-    return false;
+  if (plan.kind !== "start" || deicticTask(text)) return false;
+  if (mediaCommand(text)) return true;
+  if (looksLikeQuestion(text)) return false;
   if (consequentialVerb(text) && pointsElsewhere(text)) return false;
   const key = intentKey(text).split(" ").filter(Boolean);
   const verb = key.find((word) => !LEADING.has(word));
@@ -429,6 +435,17 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
       : base.kind === "clarify"
         ? (base.words ?? utterance)
         : base.text;
+  // "Pause the video", "resume the podcast": a control verb with a thing on
+  // the screen for its object is a task on that thing, never Butler's own
+  // pause or resume, whatever the model read it as. The router's plan for
+  // the words stands: a start with nothing running, a correction to the
+  // run under way. Live 2026-09-19: "Pause the current video" with nothing
+  // running was answered "Nothing's running".
+  if (
+    (head.act === "pause" || head.act === "resume") &&
+    mediaCommand(utterance)
+  )
+    return settle(base, "media_command");
   switch (head.act) {
     case "none":
     case "answer":

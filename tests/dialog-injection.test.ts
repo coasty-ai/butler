@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/voice-phrases.json";
-import { arbitrate, groundedTask } from "../src/assistant/arbitrate";
+import { arbitrate, fastStart, groundedTask } from "../src/assistant/arbitrate";
 import {
   DialogParser,
   type DialogEvent,
@@ -549,6 +549,39 @@ describe("the dialog eval's injection cases: what arbitration lets happen", () =
           ]);
           expect(NEVER).not.toContain(a.plan.kind);
         }
+    }
+  });
+
+  it("a media control on a thing runs on the screen whatever the model's act; a bare control stays Butler's own", () => {
+    // The router side of the media-* and ctl-* fixtures, with no model.
+    // Live 2026-09-19: "Pause the current video" with nothing running was
+    // read as pause and answered "Nothing's running"; the words now start
+    // at once, and a model pause or resume for them changes nothing.
+    const media = EVAL.filter((c) => c.id.startsWith("media-"));
+    const controls = EVAL.filter((c) => c.id.startsWith("ctl-"));
+    expect(media.length).toBeGreaterThanOrEqual(20);
+    expect(controls.length).toBeGreaterThanOrEqual(8);
+    for (const c of media) {
+      const { base, a } = arbitrated(c, { act: "pause" });
+      expect([c.id, base.kind]).toEqual([c.id, c.run ? "revise" : "start"]);
+      expect([c.id, a.plan, a.code]).toEqual([c.id, base, "media_command"]);
+      expect(arbitrated(c, { act: "resume" }).a.plan).toEqual(base);
+      const started = arbitrated(c, { act: "start", task: c.user }).a;
+      expect([c.id, started.plan.kind]).toEqual([c.id, base.kind]);
+      expect([c.id, fastStart(base, c.user)]).toEqual([c.id, !c.run]);
+    }
+    for (const c of controls) {
+      // The router leaves these to the model, and the model's act holds.
+      expect([c.id, voiceIntent(c.user).kind]).toEqual([c.id, "command"]);
+      const expected = Array.isArray(c.expect.act)
+        ? c.expect.act
+        : [c.expect.act];
+      const act = expected.includes("resume") ? "resume" : "pause";
+      const { a } = arbitrated(c, { act });
+      expect([c.id, a.plan.kind]).toEqual([
+        c.id,
+        c.run ? act : "nothingRunning",
+      ]);
     }
   });
 
