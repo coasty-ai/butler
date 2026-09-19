@@ -31,6 +31,8 @@ const click = (button: "left" | "right" = "left") =>
   act({ type: "click", x: 0.5, y: 0.5, button });
 const doubleClick = act({ type: "double_click", x: 0.5, y: 0.5 });
 const rightClick = act({ type: "right_click", x: 0.5, y: 0.5 });
+const named = (label: string, extra: Record<string, unknown> = {}) =>
+  act({ type: "click_control", label, ...extra });
 const key = (k: string) => act({ type: "key", key: k });
 const hotkey = (...keys: string[]) => act({ type: "hotkey", keys });
 const type = (text: string) => act({ type: "type_text", text });
@@ -294,6 +296,84 @@ describe("live false alarms (2026-09-17)", () => {
         targetLabel: "Publish",
       }).kind,
     ).toBe("CONFIRM");
+  });
+});
+
+// Cycle 20260919-0226-17c6e7f, ABOUT_NOT_OPEN in 4 of 6 settings attempts:
+// System Settings lists the General pane's rows as AXButtons described by
+// their pane name, so the model named "About" from context.controls, the
+// resolved click asked `Click "About"?`, the bench declined, and three
+// declines paused the run with About never opened.
+describe("System Settings pane rows (cycle 20260919-0226-17c6e7f)", () => {
+  const settingsApp = { appId: "com.apple.systempreferences" };
+  // The About row as the helper resolves and hit-tests it: a button whose
+  // only accessible name is its description.
+  const aboutRow = {
+    ...settingsApp,
+    controlStatus: "resolved" as const,
+    controlLabel: "About",
+    targetRole: "AXButton",
+    targetLabel: "About",
+  };
+  it("opens the About row without asking", () => {
+    expect(decide(named("About", { x: 0.781, y: 0.109 }), aboutRow)).toEqual({
+      kind: "ALLOW",
+      reason: "Activate an identified, non-consequential control.",
+    });
+    // The search route: the sidebar result is a row whose text names it.
+    expect(
+      decide(click(), {
+        ...settingsApp,
+        targetRole: "AXStaticText",
+        targetLabel: "About",
+        targetText: "About",
+      }),
+    ).toEqual({
+      kind: "ALLOW",
+      reason: "Select or open an identified, non-consequential item.",
+    });
+  });
+  it("keeps asking before the pane's other rows and a reset under the pointer", () => {
+    // The same list, one row down: only the anchored name is routine.
+    for (const label of ["Software Update", "Sharing", "About This Mac"])
+      expect(
+        decide(named(label), {
+          ...aboutRow,
+          controlLabel: label,
+          targetLabel: label,
+        }),
+      ).toMatchObject({ kind: "CONFIRM", reason: `Click “${label}”?` });
+    // The consequential floor runs first, whatever the row is called.
+    const reset = decide(named("Transfer or Reset"), {
+      ...aboutRow,
+      controlLabel: "Transfer or Reset",
+      targetLabel: "Transfer or Reset",
+    });
+    expect(reset.kind).toBe("CONFIRM");
+    expect(reset.reason).not.toBe("Click “Transfer or Reset”?");
+    expect(
+      decide(named("About"), {
+        ...aboutRow,
+        targetText: "About · Erase All Content and Settings",
+      }).kind,
+    ).toBe("CONFIRM");
+  });
+  it("still retries a row with no name or another element under the pointer", () => {
+    // What System Events sees of the same button: no title, no description.
+    const unnamed = decide(click(), {
+      ...settingsApp,
+      targetRole: "AXButton",
+      targetLabel: "",
+    });
+    expect(unnamed.kind).toBe("RETRY");
+    expect(unnamed.reason).toContain("no accessible label");
+    const covered = decide(named("About"), {
+      ...aboutRow,
+      targetRole: "AXGroup",
+      targetLabel: "Software Update",
+    });
+    expect(covered.kind).toBe("RETRY");
+    expect(covered.reason).toContain("covered by something else");
   });
 });
 
@@ -1871,8 +1951,6 @@ describe("applications that publish no accessibility", () => {
 // actions long, until the loop detector stopped the run.
 describe("named targets: menus and controls the agent can name", () => {
   const menu = (...path: string[]) => act({ type: "menu_item", path });
-  const named = (label: string, extra: Record<string, unknown> = {}) =>
-    act({ type: "click_control", label, ...extra });
   const spotify = {
     appId: "com.spotify.client",
     accessibility: "none" as const,

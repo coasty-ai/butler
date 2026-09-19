@@ -161,6 +161,9 @@ const benignControlLabels = new Set([
   "info",
   "details",
   "general",
+  // System Settings lists the General pane's rows as buttons described by
+  // their pane name; About only shows information (cycle 20260919-0226).
+  "about",
   "play",
   "pause",
   "play video",

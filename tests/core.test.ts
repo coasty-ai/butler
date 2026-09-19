@@ -654,6 +654,66 @@ describe("run loop", () => {
     runner.stop();
     await running;
   });
+  // Cycle 20260919-0226-17c6e7f, ABOUT_NOT_OPEN: the model named System
+  // Settings' About row from context.controls, the resolved click asked, the
+  // bench declined every approval, and three declines paused the run.
+  it("opens a System Settings pane row the model names without an approval", async () => {
+    const m = memory();
+    const execute = vi.fn();
+    const aboutRow = {
+      ...surface,
+      appId: "com.apple.systempreferences",
+      controlStatus: "resolved" as const,
+      controlLabel: "About",
+      targetRole: "AXButton",
+      targetLabel: "About",
+    };
+    const c: Controller = {
+      kind: "native",
+      surface: async (action) =>
+        action?.type === "click_control"
+          ? aboutRow
+          : { ...surface, appId: aboutRow.appId },
+      capture: async () => ({ ...frame, id: crypto.randomUUID() }),
+      execute,
+      resume: async () => {},
+      stop: () => {},
+    };
+    const runner = new Runner(
+      c,
+      {
+        next: async (o) => ({
+          action: {
+            ...(execute.mock.calls.length === 0
+              ? { type: "click_control", label: "About", x: 0.781, y: 0.109 }
+              : { type: "done", summary: "About is open" }),
+            frame_id: o.frame.id,
+          },
+          usage: { cost: 0, inputTokens: 0, outputTokens: 0 },
+        }),
+      },
+      m.recorder,
+      settings,
+      () => {},
+    );
+    const running = runner.start("Open the About pane of System Settings");
+    while (
+      !["completed", "paused"].includes(runner.snapshot.run?.status ?? "")
+    ) {
+      if (runner.snapshot.run?.status === "confirming") runner.confirm(false);
+      await tick();
+    }
+    expect(m.events.some((e) => e.type === "PolicyConfirmationRequested")).toBe(
+      false,
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0]).toMatchObject({
+      type: "click_control",
+      label: "About",
+    });
+    expect(runner.snapshot.run?.status).toBe("completed");
+    await running;
+  });
   it("retains executed shortcut and text arguments without stale frame IDs", async () => {
     const m = memory(),
       c = new TutorialController();
