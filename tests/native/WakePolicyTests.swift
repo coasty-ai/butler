@@ -106,6 +106,22 @@ func wakePolicyChecks(_ check: (Bool, String) -> Void) {
     check(standbyEndpoint(now: 46, started: 10, lastText: 10) == .none, "rotation measured from the standby session start")
     check(standbyEndpoint(now: 44, started: 0, lastText: 0) == .none, "silence does not constantly restart recognition")
     check(standbyEndpoint(now: 45, started: 0, lastText: 0) == .recycle, "standby recognition rotates before one minute")
+    // Cadence rotation: a long hypothesis without a wake phrase continues in a fresh request
+    // that first hears the ring's last 1.5 s.
+    check(!standbyRotationDue(words: 11, secondsGrowing: 7.9, sinceLastChange: 2), "a short hypothesis keeps its request")
+    check(standbyRotationDue(words: 12, secondsGrowing: 3, sinceLastChange: 0.6), "twelve words without a wake phrase rotate once the text has settled")
+    check(standbyRotationDue(words: 4, secondsGrowing: 8, sinceLastChange: 0.6), "eight seconds of text growth rotate too (a slow talker, or a stalled recognizer)")
+    check(!standbyRotationDue(words: 30, secondsGrowing: 20, sinceLastChange: 0.59), "never while the text changed in the last 0.6 s: a wake phrase could be in flight")
+    check(!standbyRotationDue(words: 0, secondsGrowing: 0, sinceLastChange: 40), "a quiet room never rotates on cadence")
+    var ring = PreRollRing<Int>(seconds: 1.5)
+    for buffer in 1...3 { ring.append(buffer, seconds: 0.5) }
+    check(ring.count == 3 && ring.heldSeconds == 1.5, "the ring fills to its length")
+    ring.append(4, seconds: 0.5)
+    check(ring.count == 3 && ring.heldSeconds == 1.5, "a buffer past the length drops the oldest")
+    check(ring.drain() == [2, 3, 4], "drain hands back the last 1.5 s oldest first")
+    check(ring.count == 0 && ring.heldSeconds == 0 && ring.drain().isEmpty, "a drained ring is empty: no buffer reaches a request twice")
+    for buffer in 1...5 { ring.append(buffer, seconds: 0.4) }
+    check(ring.drain() == [2, 3, 4, 5], "whole buffers are kept while the rest would fall short of the length (1.6 s of 0.4 s buffers)")
     check(shouldSwallowSpace(keyCode: 49, consumed: true, isKeyUp: true, autorepeat: false), "consumed shortcut swallows the trailing Space keyUp")
     check(shouldSwallowSpace(keyCode: 49, consumed: true, isKeyUp: false, autorepeat: true), "consumed shortcut swallows Space autorepeat")
     check(!shouldSwallowSpace(keyCode: 49, consumed: true, isKeyUp: false, autorepeat: false), "fresh Space press after a missed keyUp is not eaten")

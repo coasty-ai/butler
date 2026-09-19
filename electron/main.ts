@@ -1827,6 +1827,7 @@ async function receiveVoice(event: VoiceEvent) {
       rms: event.rms,
       engine: event.engine,
       boundary: event.boundary,
+      preRollMs: event.preRollMs,
     });
   try {
     if (event.event === "wake_status") {

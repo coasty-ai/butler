@@ -188,6 +188,43 @@ func standbyEndpoint(now: TimeInterval, started: TimeInterval, lastText: TimeInt
     now - started >= 45 && !(lastText > started && now - lastText < 1.5) ? .recycle : .none
 }
 
+// Standby also rotates on cadence. The on-device request keeps one hypothesis growing through
+// nearby conversation, and the longer it grows the more a wake phrase inside it depends on the
+// partials' timing (2026-09-19 trace: 21 segments, no activation). Past standbyRotateWords, or
+// standbyRotateGrowthSeconds of text growth, without a wake phrase the request gives way to a
+// fresh one that first hears the last standbyPreRollSeconds of capture (PreRollRing), so the
+// words at the seam are not lost. Never while the text changed within the utterance gap: a wake
+// phrase could be in flight, and words appended after that gap begin a new utterance anyway.
+let standbyRotateWords = 12
+let standbyRotateGrowthSeconds = 8.0
+let standbyPreRollSeconds = 1.5
+func standbyRotationDue(words: Int, secondsGrowing: TimeInterval, sinceLastChange: TimeInterval) -> Bool {
+    sinceLastChange + 1e-6 >= standbyUtteranceGapSeconds && (words >= standbyRotateWords || secondsGrowing + 1e-6 >= standbyRotateGrowthSeconds)
+}
+
+/// The last `seconds` of capture, held in memory only (never written anywhere), so a request
+/// begun mid-conversation can hear the words just spoken. Buffers arrive oldest to newest; once
+/// the rest still covers `seconds`, the oldest is dropped. Draining returns them in arrival order
+/// and empties the ring, so no buffer reaches a request twice.
+struct PreRollRing<Buffer> {
+    let seconds: Double
+    private var buffers: [(buffer: Buffer, seconds: Double)] = []
+    private(set) var heldSeconds = 0.0
+    init(seconds: Double) { self.seconds = seconds }
+    var count: Int { buffers.count }
+    mutating func append(_ buffer: Buffer, seconds length: Double) {
+        buffers.append((buffer, length)); heldSeconds += length
+        while let oldest = buffers.first?.seconds, heldSeconds - oldest + 1e-9 >= seconds {
+            buffers.removeFirst(); heldSeconds -= oldest
+        }
+    }
+    mutating func drain() -> [Buffer] {
+        let drained = buffers.map(\.buffer)
+        buffers.removeAll(keepingCapacity: true); heldSeconds = 0
+        return drained
+    }
+}
+
 func commandLooksIncomplete(_ text: String) -> Bool {
     utteranceCompleteness(text, context: .command) == .incomplete
 }
