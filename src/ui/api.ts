@@ -145,6 +145,11 @@ export interface AppInfo {
     wakeListening: boolean;
     /** A reply is being spoken right now. */
     speaking: boolean;
+    /**
+     * Echo cancellation on the microphone (the helper's voice processing,
+     * BUTLER_FULL_DUPLEX): listening continues while the natural voice speaks.
+     */
+    voiceProcessing: boolean;
     /** Quality of the system voice that replies would use. */
     voiceQuality: VoiceQuality;
     /** Display name of that voice ("" when unknown). */

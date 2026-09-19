@@ -1946,6 +1946,9 @@ async function receiveVoice(event: VoiceEvent) {
       boundary: event.boundary,
       wakeHead: event.wakeHead,
       preRollMs: event.preRollMs,
+      sampleRate: event.sampleRate,
+      channels: event.channels,
+      voiceProcessing: event.voiceProcessing,
     });
   try {
     if (event.event === "wake_status") {
@@ -3161,6 +3164,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         handsFree: false,
         wakeListening: false,
         speaking: false,
+        voiceProcessing: false,
         voiceQuality: "none",
         voiceName: "",
         cloudVoiceAllowed: false,

@@ -41,6 +41,15 @@ export interface VoiceEvent {
   /** standby_trace: the first words of a hypothesis that opened like a wake attempt. */
   wakeHead?: string;
   preRollMs?: number;
+  /**
+   * voice_processing, once per helper run (BUTLER_FULL_DUPLEX): echo cancellation on the
+   * microphone, with the input format it gives the recognizer, or `enabled: false` with
+   * `reason` (off, unsupported, start_failed, format). standby_trace level and begin carry
+   * `voiceProcessing` too, beside the RMS scale it changes.
+   */
+  sampleRate?: number;
+  channels?: number;
+  voiceProcessing?: boolean;
   quietMs?: number;
   completeness?: string;
   patience?: string;

@@ -626,6 +626,63 @@ describe("local diagnostic stream", () => {
         kind: "continuation",
       });
     }));
+  it("keeps the helper's echo-cancellation report and the RMS scale beside it, never text", () =>
+    fixture((log) => {
+      log.write("VoiceEvent", {
+        phase: "voice_processing",
+        enabled: true,
+        sampleRate: 48000,
+        channels: 1,
+        text: "the Zephyr plan",
+      });
+      log.write("VoiceEvent", {
+        phase: "voice_processing",
+        enabled: false,
+        code: "start_failed",
+        error: "The operation couldn’t be completed. (-10875)",
+      });
+      log.write("VoiceEvent", {
+        phase: "standby_trace",
+        kind: "level",
+        noiseFloor: 0.0041,
+        threshold: 0.0123,
+        voiceProcessing: true,
+        speaking: true,
+      });
+      // Text smuggled into the new fields is dropped, not written.
+      log.write("VoiceEvent", {
+        phase: "voice_processing",
+        sampleRate: "the Zephyr plan",
+        channels: "the Zephyr plan",
+        voiceProcessing: "the Zephyr plan",
+      });
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toContain("Zephyr");
+      const [on, off, level, hostile] = raw
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x).data);
+      expect(on).toEqual({
+        phase: "voice_processing",
+        enabled: true,
+        sampleRate: 48000,
+        channels: 1,
+      });
+      expect(off).toMatchObject({
+        phase: "voice_processing",
+        enabled: false,
+        code: "start_failed",
+      });
+      expect(level).toEqual({
+        phase: "standby_trace",
+        kind: "level",
+        noiseFloor: 0.0041,
+        threshold: 0.0123,
+        voiceProcessing: true,
+        speaking: true,
+      });
+      expect(hostile).toEqual({ phase: "voice_processing" });
+    }));
   it("drops text placed in voice code, count, number, flag and id fields", () =>
     fixture((log) => {
       const hostile = "the Zephyr secret plan";

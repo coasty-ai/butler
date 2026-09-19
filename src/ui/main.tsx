@@ -64,6 +64,7 @@ import {
   VoiceSettings,
   followUpWindowHint,
   jevKeyToSave,
+  listenWhileSpeakingHint,
 } from "./settings-voice";
 import { previewBridge } from "./preview";
 import { SettingsRemote } from "./settings-remote";
@@ -1475,6 +1476,8 @@ function SettingsPanel({
               : "The microphone opens only while you hold the shortcut."}
             {s.handsFree &&
               " Background speech and audio are never saved or sent."}
+            {s.handsFree &&
+              ` ${listenWhileSpeakingHint(info.voice.voiceProcessing)}`}
           </p>
           {s.handsFree && (
             <>

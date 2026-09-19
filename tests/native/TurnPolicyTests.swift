@@ -335,6 +335,43 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(!standbyAllowed(speaking: false, now: 10.79, echoGuardUntil: 10.8), "no ambient listening during the echo guard")
     check(standbyAllowed(speaking: false, now: 10.8, echoGuardUntil: 10.8), "ambient listening resumes after the echo guard")
     check(echoGuard(bluetoothOutput: false) == 0.8 && echoGuard(bluetoothOutput: true) == 1.2, "the echo guard is 0.8 s, 1.2 s on Bluetooth output")
+
+    // Full duplex (BUTLER_FULL_DUPLEX): listen while speaking, enabled/disabled x speaking/not.
+    check(standbyAllowed(speaking: true, now: 0, echoGuardUntil: 10, fullDuplex: true), "full duplex listens while the assistant speaks")
+    check(standbyAllowed(speaking: false, now: 0, echoGuardUntil: 10, fullDuplex: true), "full duplex listens through the echo guard")
+    check(standbyAllowed(speaking: false, now: 100, echoGuardUntil: 0, fullDuplex: true), "full duplex listens when nothing is being said")
+    check(!standbyAllowed(speaking: true, now: 100, echoGuardUntil: 0, fullDuplex: false), "half duplex still waits for speech to end")
+    check(!standbyAllowed(speaking: false, now: 0, echoGuardUntil: 10, fullDuplex: false), "half duplex still waits out the guard")
+    check(standbyAllowed(speaking: false, now: 100, echoGuardUntil: 0, fullDuplex: false), "half duplex listens once speech and the guard are over")
+    check(selfEchoRecentSeconds == 1.5, "a reply's words count as its echo for 1.5 s after it ends")
+    // The self-echo filter: the reply's own words, never the owner's.
+    let reply = "The weather in Denver is sunny and warm today, sir."
+    check(isSelfEcho("The weather in Denver is sunny and warm today sir", spoken: reply), "the whole reply heard back is its echo")
+    check(isSelfEcho("The weather in", spoken: reply) && isSelfEcho("sunny and warm", spoken: reply) && isSelfEcho("today, sir.", spoken: reply),
+          "a partial of the reply, at its start or inside it, is its echo")
+    check(isSelfEcho("weather Denver warm", spoken: reply), "words the cancellation let through in order, with gaps, are its echo")
+    check(!isSelfEcho("open Safari", spoken: reply) && !isSelfEcho("is it sunny in Boston", spoken: reply), "the owner's different words are the owner's")
+    check(!isSelfEcho("open the weather app", spoken: reply) && !isSelfEcho("is it warm today in Denver or not", spoken: reply),
+          "the owner repeating the reply's words inside a longer command is the owner")
+    check(!isSelfEcho("Denver the weather", spoken: reply), "the reply's words out of order are not its echo")
+    check(!isSelfEcho("Hey Butler stop", spoken: reply) && !isSelfEcho("Hey Butler", spoken: reply) && !isSelfEcho("Hey Butler open notes", spoken: reply),
+          "the wake phrase said over the reply is the owner")
+    check(!isSelfEcho("Hey Butler", spoken: "Hey, I am Butler, at your service."), "the wake phrase is the owner even when the reply has its words")
+    for (word, sentence) in [("stop", "Stop by the store on the way home."), ("wait", "Wait a moment, the page is loading."), ("hold on", "Hold on to the draft for now."),
+                             ("no", "No meetings today."), ("not now", "Not now, but at three."), ("yes", "Say yes or no."), ("no", "Say yes or no."),
+                             ("continue", "Continue reading the article?"), ("okay", "Okay, sending it.")] {
+        check(!isSelfEcho(word, spoken: sentence), "\"\(word)\" over \"\(sentence)\" is the owner's, not an echo")
+    }
+    check(!isSelfEcho("", spoken: reply) && !isSelfEcho("the weather", spoken: ""), "nothing heard, or nothing spoken, is no echo")
+    check(isSelfEcho("um", spoken: "Um, one moment."), "a filler the reply has is its echo")
+    check(!isSelfEcho("dont send", spoken: "I don't send drafts without asking."), "a bare decline inside the reply's words is still the owner's")
+    // What silences a reply when said over it.
+    for phrase in ["stop", "Stop.", "wait", "hold on", "no", "nope", "not now", "stop it", "please wait", "cancel"] {
+        check(interruptsSpeech(phrase), "\"\(phrase)\" said over a reply silences it")
+    }
+    for phrase in ["no meetings today", "no I don't think so", "open notes", "the weather", "Hey Butler", "stop the music", "yes", ""] {
+        check(!interruptsSpeech(phrase), "\"\(phrase)\" over a reply does not silence it")
+    }
     check(bluetoothTransport(0x626C_7565) && bluetoothTransport(0x626C_6561), "Bluetooth and Bluetooth LE transports are detected")
     check(!bluetoothTransport(0x626C_746E) && !bluetoothTransport(0x7573_6220) && !bluetoothTransport(0), "built-in, USB and unknown transports use the normal guard")
 
@@ -512,8 +549,8 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     let nameWord = try! NSRegularExpression(pattern: #"(?<![a-z])(?:\#(wakeNamePattern)|\#(fusedWakePattern))(?![a-z])"#, options: .caseInsensitive)
     for phrase in phrases("assistantPhrases") {
         let names = nameWord.firstMatch(in: phrase, range: NSRange(phrase.startIndex..., in: phrase))
-        check(commandAfterWakePhrase(phrase) == nil && !isControlPhrase(phrase) && names == nil,
-              "assistant phrase cannot wake, stop or pause: \(phrase)")
+        check(commandAfterWakePhrase(phrase) == nil && !isControlPhrase(phrase) && !interruptsSpeech(phrase) && names == nil,
+              "assistant phrase cannot wake, stop, pause or silence a reply: \(phrase)")
     }
     check(nameWord.firstMatch(in: "Say Butler now", range: NSRange(location: 0, length: 11)) != nil
           && nameWord.firstMatch(in: "Butlers go butlering", range: NSRange(location: 0, length: 20)) == nil,

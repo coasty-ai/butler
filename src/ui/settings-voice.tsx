@@ -68,6 +68,17 @@ export function followUpWindowHint(
     return "Keeps listening for 45 s after each exchange, so you can keep talking without the wake phrase; anything anyone says in the room in that time is taken as addressed to Butler. Say “that’s all”, “stop listening”, “goodbye” or “thanks Butler” to end it. A yes or no is still only heard for 12 s.";
   return "A few seconds after each exchange, without the wake phrase: 3 s to add to a request (“and…”), 8 s to answer a question or say yes or no.";
 }
+/**
+ * What hands-free listening does while Butler itself is speaking. With echo
+ * cancellation on the microphone (the helper's voice processing) it keeps
+ * listening through a natural-voice reply and drops its own words; without
+ * it, listening pauses for the reply and a moment after.
+ */
+export function listenWhileSpeakingHint(voiceProcessing: boolean): string {
+  return voiceProcessing
+    ? "Listening continues while Butler speaks with the natural voice: echo cancellation keeps its own words out, so “stop”, “wait” or “Hey Butler” interrupts it."
+    : "Listening pauses while Butler speaks and for a moment after, so its own voice is not taken as yours.";
+}
 /** What the "Talk naturally" hint says about where the words go. */
 export function conversationHint(s: Settings): string {
   const model = s.dialogModel || s.model;

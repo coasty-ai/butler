@@ -7,7 +7,10 @@ import {
   type Settings,
 } from "../src/core/schema";
 import { previewBridge } from "../src/ui/preview";
-import { followUpWindowHint } from "../src/ui/settings-voice";
+import {
+  followUpWindowHint,
+  listenWhileSpeakingHint,
+} from "../src/ui/settings-voice";
 
 const voiceKeys = [
   "voiceReplies",
@@ -231,6 +234,33 @@ describe("voice settings", () => {
       expect(followUpWindowHint(window, false)).toMatch(
         /^Off: the wake phrase is needed every time/,
       );
+  });
+
+  it("says whether listening continues while Butler speaks, from the helper's echo cancellation", async () => {
+    const on = listenWhileSpeakingHint(true);
+    expect(on).toMatch(/^Listening continues while Butler speaks/);
+    expect(on).toContain("echo cancellation");
+    for (const phrase of ["stop", "wait", "Hey Butler"])
+      expect(on).toContain(`“${phrase}”`);
+    const off = listenWhileSpeakingHint(false);
+    expect(off).toMatch(/^Listening pauses while Butler speaks/);
+    expect(off).not.toContain("echo cancellation");
+    // Under "Talk to Butler", hands-free only, fed by the helper's status.
+    const ui = readFileSync(
+      new URL("../src/ui/main.tsx", import.meta.url),
+      "utf8",
+    );
+    const picker = ui.slice(
+      ui.indexOf("Talk to Butler"),
+      ui.indexOf("Keep listening", ui.indexOf("Talk to Butler")),
+    );
+    expect(picker).toMatch(
+      /s\.handsFree &&\s*` \$\{listenWhileSpeakingHint\(info\.voice\.voiceProcessing\)\}`/,
+    );
+    // The preview, which never runs the helper, reports it off.
+    await expect(previewBridge().info()).resolves.toMatchObject({
+      voice: { voiceProcessing: false },
+    });
   });
 
   it("wires the setting from the picker to the helper and the turn planner", () => {

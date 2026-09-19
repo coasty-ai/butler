@@ -141,6 +141,7 @@ export function previewBridge(): Bridge {
         handsFree: false,
         wakeListening: false,
         speaking: false,
+        voiceProcessing: false,
         voiceQuality: "none",
         voiceName: "",
         cloudVoiceAllowed: false,

@@ -388,16 +388,19 @@ describe("Kokoro on-device speech", () => {
       "playPcmChunk",
       "playPcmEnd",
     ]);
+    // The words travel with the start, so the helper can filter its own voice while listening.
     expect(t.calls[0].data).toEqual({
       utteranceId: "u-1",
       priority: "result",
       listen: { kind: "answer", seconds: 8 },
       sampleRate: 24000,
       format: "s16le",
+      text: TEXT,
     });
     expect(t.calls.at(-1)!.data).toEqual({ utteranceId: "u-1" });
     const chunks = t.chunks();
     expect(chunks.map((chunk) => chunk.seq)).toEqual([0, 1, 2, 3]);
+    for (const chunk of chunks) expect(chunk).not.toHaveProperty("text");
     expect(chunks.every((chunk) => chunk.utteranceId === "u-1")).toBe(true);
     const decoded = chunks.map((chunk) =>
       Buffer.from(chunk.data as string, "base64"),
@@ -810,6 +813,7 @@ describe("OpenAI streamed speech", () => {
       listen: { kind: "approval", seconds: 5 },
       sampleRate: 24000,
       format: "s16le",
+      text: TEXT,
     });
     expect(t.calls[4].data).toEqual({ utteranceId: "u-1" });
     const chunks = t.chunks();
@@ -1318,11 +1322,19 @@ describe("streamed replies: one utterance, sentence by sentence", () => {
       "playPcmChunk",
       "playPcmEnd",
     ]);
+    // The first sentence's words go with the start, each later sentence's with
+    // its first chunk, so the helper knows what it is saying as it says it.
     expect(t.calls[0].data).toMatchObject({
       utteranceId: "u-1",
       priority: "result",
       sampleRate: 24000,
+      text: "First sentence.",
     });
+    expect(t.chunks().map((chunk) => chunk.text)).toEqual([
+      undefined,
+      undefined,
+      "Second sentence.",
+    ]);
     const decoded = t
       .chunks()
       .map((chunk) => Buffer.from(chunk.data as string, "base64"));

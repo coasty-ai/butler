@@ -184,6 +184,11 @@ private func isReplyKey(key: String, base: String) -> Bool {
     return false
 }
 
+// A bare reply (yes, no, continue, okay…), however the assistant's own sentence goes.
+func isReplyPhrase(_ text: String) -> Bool {
+    isReplyKey(key: normalizeVoiceKey(text), base: voiceKeyBase(text).joined(separator: " "))
+}
+
 func utteranceCompleteness(_ text: String, context: TurnContext) -> Completeness {
     if isControlPhrase(text) { return .control }
     // While a page scrolls, "scroll up" and "faster" must land as quickly as "stop"; said
@@ -498,9 +503,35 @@ let bargeInStopWaitSeconds = 0.05
 let pushToTalkTailSeconds = 0.3
 
 // Ambient listening (standby and follow-up windows) never runs while the assistant speaks,
-// nor for the echo guard afterwards.
-func standbyAllowed(speaking: Bool, now: TimeInterval, echoGuardUntil: TimeInterval) -> Bool {
-    !speaking && now >= echoGuardUntil
+// nor for the echo guard afterwards: half duplex. Full duplex (BUTLER_FULL_DUPLEX, the input
+// node's voice processing cancelling the assistant's own playback from the microphone)
+// listens through both.
+func standbyAllowed(speaking: Bool, now: TimeInterval, echoGuardUntil: TimeInterval, fullDuplex: Bool = false) -> Bool {
+    fullDuplex || (!speaking && now >= echoGuardUntil)
+}
+
+// Full duplex: what echo cancellation lets through of the assistant's own reply, the recognizer
+// writes as some of the words being spoken. A hypothesis whose words all occur, in order, in the
+// sentence spoken now or within selfEchoRecentSeconds is that echo and is dropped: the reply can
+// never wake, answer or steer the assistant. Anything else is the owner: the wake phrase, a stop
+// or pause phrase and a bare reply (the assistant may say "no" or "yes" inside a sentence; the
+// owner saying it over the reply is the owner's), and the reply's words inside a longer command.
+let selfEchoRecentSeconds = 1.5
+func isSelfEcho(_ hypothesis: String, spoken: String) -> Bool {
+    let heard = voiceTokens(hypothesis), said = voiceTokens(spoken)
+    guard !heard.isEmpty, !said.isEmpty, !startsWithWakePhrase(hypothesis), !isControlPhrase(hypothesis), !isReplyPhrase(hypothesis) else { return false }
+    var from = said.startIndex
+    for word in heard {
+        guard let index = said[from...].firstIndex(of: word) else { return false }
+        from = index + 1
+    }
+    return true
+}
+
+// Said over a reply, these silence it at once: stop and pause phrases, and a bare decline
+// ("no", "not now"). Nothing longer, so "no, I don't think so" said to someone else does not.
+func interruptsSpeech(_ text: String) -> Bool {
+    isControlPhrase(text) || declineKeys.contains(normalizeVoiceKey(text))
 }
 
 // CoreAudio kAudioDeviceTransportTypeBluetooth ('blue') and ...BluetoothLE ('blea').
@@ -558,6 +589,10 @@ func speakDecision(enabled: Bool, capturing: Bool, suspended: Bool, current: Spe
     guard let current = current else { return .play }
     return incoming.rawValue >= current.rawValue ? .replace : .queue
 }
+
+// The longest text a reply carries: the system voice's sentence, or the words behind a PCM reply
+// (playPcmStart, and each streamed sentence with its first chunk), which the self-echo filter reads.
+let spokenTextLimit = 1000
 
 let queuedAckMaxAge = 1.5
 func queuedUtteranceStale(priority: SpeakPriority, queuedAt: TimeInterval, now: TimeInterval) -> Bool {

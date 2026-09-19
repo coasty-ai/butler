@@ -404,14 +404,20 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
       },
       cancelled,
       fallback,
-      start: (sampleRate: number) =>
+      /**
+       * text: the words behind the audio, so the helper can tell its own voice
+       * from the owner's while it listens through a reply (a streamed reply
+       * sends its first sentence here and each later one with its first chunk).
+       */
+      start: (sampleRate: number, text = request.text) =>
         deps.voiceCall("playPcmStart", {
           ...payload(request),
           sampleRate,
           format: "s16le",
+          text,
         }),
       /** False when the helper dropped the utterance. */
-      async send(bytes: Uint8Array) {
+      async send(bytes: Uint8Array, text?: string) {
         const ack = await deps.voiceCall("playPcmChunk", {
           utteranceId,
           seq: seq++,
@@ -420,6 +426,7 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
             bytes.byteOffset,
             bytes.byteLength,
           ).toString("base64"),
+          ...(text ? { text } : {}),
         });
         // ok:false means the helper dropped this utterance (barge-in or
         // replacement); it already handled playback, so only stop the source.
@@ -963,10 +970,13 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
           log("error", { engine, status });
           break;
         }
+        // This sentence's words travel with its first audio.
+        let words: string | undefined = job.text;
         if (!started) {
           let start: any;
           try {
-            start = await pcm.start(sampleRate);
+            start = await pcm.start(sampleRate, job.text);
+            words = undefined;
           } catch {
             stopJobs(0);
             return result(
@@ -994,6 +1004,11 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
           }
         }
         // Send this sentence's audio as it arrives, in 100 ms pieces.
+        const piece = async (bytes: Uint8Array) => {
+          const ok = await pcm.send(bytes, words);
+          words = undefined;
+          return ok;
+        };
         let sent = 0;
         let pending: Uint8Array = new Uint8Array(0);
         for (;;) {
@@ -1003,7 +1018,7 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
             if (total > maxPcmBytes) throw new SpeechStop("too_long");
             while (pending.byteLength >= openaiSpeech.chunkBytes) {
               if (
-                !(await pcm.send(pending.subarray(0, openaiSpeech.chunkBytes)))
+                !(await piece(pending.subarray(0, openaiSpeech.chunkBytes)))
               ) {
                 stopJobs(index);
                 return result(pcm.dropped());
@@ -1015,7 +1030,7 @@ export function createSpeechOutput(deps: SpeechOutputDeps): SpeechOutput {
           await waitUntil(() => sent < job.pieces.length || job.done, Infinity);
         }
         const even = pending.byteLength - (pending.byteLength % 2);
-        if (even > 0 && !(await pcm.send(pending.subarray(0, even)))) {
+        if (even > 0 && !(await piece(pending.subarray(0, even)))) {
           stopJobs(index);
           return result(pcm.dropped());
         }

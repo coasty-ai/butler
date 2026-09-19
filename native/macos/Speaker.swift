@@ -6,7 +6,9 @@ import AVFoundation
 // or arrives as in-memory PCM relayed by Electron; nothing is ever written to disk.
 // All state belongs to the main thread. Slow work stays off it so the keyboard event tap
 // never stalls: synthesizer creation and the voice list (measured 150-260 ms, and up to
-// 1.5 s for a cold voice list) run on `work`, and the output engine runs on `audio`.
+// 1.5 s for a cold voice list) run on `work`, and the speaker's own output engine runs on
+// `audio`. Under BUTLER_FULL_DUPLEX the PCM plays through the input engine instead
+// (shareEngine), on the main thread with the microphone, so voice processing can cancel it.
 
 struct ListenRequest: Equatable { let kind: FollowUpKind; let seconds: Double }
 enum SpeechStopReason: String { case bargeIn = "barge_in", escape, replaced, cancel, sleep, disabled }
@@ -17,6 +19,9 @@ final class SpokenUtterance {
     let priority: SpeakPriority
     var listen: ListenRequest?
     let source: Source
+    // The words being spoken: the system voice's sentence, or what Electron sent with a PCM
+    // reply (playPcmStart, then each streamed sentence with its first chunk), for isSelfEcho.
+    var text: String
     let createdAt: TimeInterval
     var requestedAt: TimeInterval
     var startedAt: TimeInterval = 0
@@ -34,43 +39,62 @@ final class SpokenUtterance {
     var completed = 0
     var playedUntil: TimeInterval = 0
 
-    init(id: String, priority: SpeakPriority, listen: ListenRequest?, source: Source) {
-        self.id = id; self.priority = priority; self.listen = listen; self.source = source
+    init(id: String, priority: SpeakPriority, listen: ListenRequest?, source: Source, text: String) {
+        self.id = id; self.priority = priority; self.listen = listen; self.source = source; self.text = text
         let now = uptime()
         createdAt = now; requestedAt = now; lastActivity = now
     }
     var sampleRate: Double? { if case .pcm(let rate) = source { return rate }; return nil }
 }
 
-// Output engine used only on the speaker's audio queue. It is separate from the input
-// engine, so stopping the microphone never cuts playback and vice versa.
+// The rate Kokoro and the cloud voice send (electron/speech-output.ts), the shared player's first format.
+private let sharedPcmSampleRate = 24000.0
+
+// Where the PCM plays. The speaker's own engine (the default), used only on its audio queue:
+// separate from the input engine, so stopping the microphone never cuts playback and vice
+// versa. Or, `shared`, the input engine itself (BUTLER_FULL_DUPLEX): the player is a mixer
+// input beside the microphone tap, so the input node's voice processing has the very audio
+// it cancels from the microphone. Graph changes, starts and stops then happen on the main
+// thread as the input's do, the engine runs while either side needs it (stopEngineIfIdle),
+// and Voice.swift's configuration-change observer covers the input and the playback at once.
 private final class PcmOutput {
-    let engine = AVAudioEngine()
+    let engine: AVAudioEngine
+    let shared: Bool
     let player = AVAudioPlayerNode()
     var format: AVAudioFormat?
     private var observer: NSObjectProtocol?
-    // A route or format change stops and uninitializes the engine; the owner discards it.
-    init(onConfigurationChange: @escaping (PcmOutput) -> Void) {
+    // A route or format change stops and uninitializes an owned engine; the owner discards it.
+    init(engine: AVAudioEngine = AVAudioEngine(), shared: Bool = false, onConfigurationChange: ((PcmOutput) -> Void)? = nil) {
+        self.engine = engine; self.shared = shared
         engine.attach(player)
-        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
-            if let self = self { onConfigurationChange(self) }
+        if let onConfigurationChange = onConfigurationChange {
+            observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+                if let self = self { onConfigurationChange(self) }
+            }
         }
     }
     func discard() {
         if let observer = observer { NotificationCenter.default.removeObserver(observer); self.observer = nil }
         stop()
     }
-    func prepare(sampleRate: Double) throws {
-        if format?.sampleRate != sampleRate {
-            if engine.isRunning { player.stop(); engine.stop() }
-            guard let next = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false) else {
-                throw NSError(domain: "voice.speaker", code: 1)
-            }
-            engine.disconnectNodeOutput(player)
-            engine.connect(player, to: engine.mainMixerNode, format: next) // The mixer resamples.
-            format = next
+    // The player's edge to the mixer, in the reply's format (the mixer resamples). A shared engine
+    // keeps running through a change: only the player stops, and the mixer takes the new input live.
+    func connect(sampleRate: Double) throws {
+        guard format?.sampleRate != sampleRate else { return }
+        player.stop()
+        if !shared && engine.isRunning { engine.stop() }
+        guard let next = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false) else {
+            throw NSError(domain: "voice.speaker", code: 1)
         }
-        if !engine.isRunning { engine.prepare(); try engine.start() }
+        engine.disconnectNodeOutput(player)
+        engine.connect(player, to: engine.mainMixerNode, format: next)
+        format = next
+    }
+    func prepare(sampleRate: Double) throws {
+        try connect(sampleRate: sampleRate)
+        if !engine.isRunning {
+            if shared { try startEngine() } else { engine.prepare(); try engine.start() }
+        }
         if !player.isPlaying { player.play() }
     }
     func schedule(_ samples: [Float], completion: @escaping () -> Void) -> Bool {
@@ -86,7 +110,7 @@ private final class PcmOutput {
     }
     func stop() {
         player.stop()
-        if engine.isRunning { engine.stop() }
+        if !shared && engine.isRunning { engine.stop() }
     }
 }
 
@@ -101,6 +125,8 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     private(set) var current: SpokenUtterance?
     private(set) var queued: SpokenUtterance?
     private(set) var lastAudibleAt: TimeInterval = -1000
+    // The reply heard last, for its words (spokenText) and its route (echoCancelled) after it ended.
+    private(set) var lastAudible: SpokenUtterance?
     private var synthesizer: AVSpeechSynthesizer?
     private var voices: [VoiceInfo]?
     private var systemVoices: [String: AVSpeechSynthesisVoice] = [:]
@@ -111,6 +137,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     private let work = DispatchQueue(label: "voice.speaker.work", qos: .userInitiated)
     private let audio = DispatchQueue(label: "voice.speaker.audio", qos: .userInteractive)
     private var pcmOutputEngine: PcmOutput? // Touched only on `audio`.
+    private var sharedOutput: PcmOutput? // BUTLER_FULL_DUPLEX: the input engine, main thread only.
     private var playbackToken = 0
     // playbackToken as the audio queue sees it: work queued before a stop is skipped, so the
     // stop itself is not delayed behind engine starts and buffer scheduling for a reply that ended.
@@ -124,6 +151,36 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     var currentPriority: SpeakPriority? { current?.priority }
     // Speech was audible now or within the barge-in window (the mic would hear its tail).
     var recentlyAudible: Bool { current?.audible == true || uptime() - lastAudibleAt <= bargeInRecentSeconds }
+    // Full duplex: PCM plays through the input engine (shareEngine succeeded).
+    var sharesEngine: Bool { sharedOutput != nil }
+    // Full duplex: a PCM reply is playing through the shared engine, which must keep running.
+    var holdsEngine: Bool { sharesEngine && current?.started == true && current?.sampleRate != nil }
+    // Full duplex: the reply being heard, or just heard, played through the shared engine, so voice
+    // processing had it as its reference. The system voice plays outside the engine: its replies
+    // keep the half-duplex guard.
+    var echoCancelled: Bool { sharesEngine && (current ?? lastAudible)?.sampleRate != nil }
+    // The reply's words, spoken now or within selfEchoRecentSeconds, for isSelfEcho.
+    func spokenText(at now: TimeInterval) -> String? {
+        if let current = current { return current.text }
+        return now - lastAudibleAt <= selfEchoRecentSeconds ? lastAudible?.text : nil
+    }
+
+    // BUTLER_FULL_DUPLEX: PCM plays through the input engine. Called once before that engine
+    // first starts, so its output path exists from the first start on; at the rate Kokoro and the
+    // cloud voice send (another rate reconnects the player live). A format the mixer refuses
+    // leaves the speaker on its own engine, and the helper half duplex.
+    func shareEngine(_ engine: AVAudioEngine) {
+        let output = PcmOutput(engine: engine, shared: true)
+        guard (try? output.connect(sampleRate: sharedPcmSampleRate)) != nil else { return }
+        sharedOutput = output
+    }
+
+    // The shared engine stopped under a reply (a route or format change, or voice processing
+    // turned off): as with its own engine, the reply ends as cancelled and a queued one plays next.
+    func sharedEngineStopped() {
+        guard sharesEngine else { return }
+        outputRouteChanged()
+    }
 
     // MARK: Voices
 
@@ -230,7 +287,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
             current = nil
             halt(old)
             finished(old, interrupted: true, reason: .replaced)
-            if old.audible { lastAudibleAt = uptime() }
+            if old.audible { audibleEnded(old) }
         }
         begin(utterance)
     }
@@ -250,7 +307,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         if let active = active {
             halt(active)
             finished(active, interrupted: true, reason: reason)
-            if active.audible { lastAudibleAt = uptime() }
+            if active.audible { audibleEnded(active) }
         }
         if let waiting = waiting { finished(waiting, interrupted: true, reason: reason) }
         if active != nil { onEnded?(nil) }
@@ -320,6 +377,12 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         output(event)
     }
 
+    // A reply that was heard just ended: the echo guard, and the self-echo filter, count from here.
+    private func audibleEnded(_ utterance: SpokenUtterance) {
+        lastAudibleAt = uptime()
+        lastAudible = utterance
+    }
+
     private func markStarted(_ utterance: SpokenUtterance) {
         guard !utterance.started else { return }
         utterance.started = true
@@ -347,7 +410,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         current = nil
         if utterance.sampleRate != nil { stopPlayer() }
         finished(utterance, interrupted: false, reason: nil)
-        lastAudibleAt = uptime()
+        audibleEnded(utterance)
         advance(listen: utterance.listen)
     }
 
@@ -358,7 +421,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         current = nil
         halt(utterance)
         finished(utterance, interrupted: true, reason: .cancel)
-        if utterance.audible { lastAudibleAt = uptime() }
+        if utterance.audible { audibleEnded(utterance) }
         advance(listen: nil)
     }
 
@@ -410,7 +473,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
             guard let current = self.current, current.system === utterance else { return }
             self.current = nil
             self.finished(current, interrupted: true, reason: .cancel)
-            self.lastAudibleAt = uptime()
+            self.audibleEnded(current)
             self.advance(listen: nil)
         }
     }
@@ -423,12 +486,16 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         return nil
     }
 
-    func pcmChunk(id: String, seq: Int?, base64: String) -> Bool {
+    // text: the words of the sentence this chunk begins (a streamed reply), appended to the reply's.
+    func pcmChunk(id: String, seq: Int?, base64: String, text: String?) -> Bool {
         guard let utterance = matching(id), let rate = utterance.sampleRate, !utterance.ended,
               pcmChunkAccepted(seq: seq, expected: utterance.expectedSeq),
               base64.utf8.count <= 4_000_000, let data = Data(base64Encoded: base64) else { return false }
         utterance.expectedSeq = (seq ?? utterance.expectedSeq) + 1
         utterance.lastActivity = uptime()
+        if let text = text, !text.isEmpty, text.count <= spokenTextLimit {
+            utterance.text += (utterance.text.isEmpty ? "" : " ") + text
+        }
         let samples = pcmSamplesFromS16LE(data, carry: &utterance.carry)
         guard Double(utterance.totalSamples + samples.count) <= rate * pcmMaxSeconds else { fail(utterance, "too_long"); return false }
         utterance.totalSamples += samples.count
@@ -460,7 +527,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         if utterance.started {
             halt(utterance)
             finished(utterance, interrupted: true, reason: .cancel)
-            lastAudibleAt = uptime()
+            audibleEnded(utterance)
             if let waiting = queued { queued = nil; finished(waiting, interrupted: true, reason: .cancel) }
             onEnded?(nil)
             return (true, true)
@@ -483,6 +550,14 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         let token = playbackToken
         utterance.scheduled += 1
         utterance.playedUntil = max(utterance.playedUntil, uptime()) + Double(samples.count) / rate
+        if let shared = sharedOutput {
+            // Full duplex: the input engine's graph is the main thread's (Voice.swift), so this runs
+            // here; a start that fails (the input's own failure path) ends the reply loudly.
+            let ok = (try? shared.prepare(sampleRate: rate)) != nil
+                && shared.schedule(samples) { DispatchQueue.main.async { self.bufferPlayed(utterance, token: token) } }
+            if !ok { fail(utterance, "output_unavailable") }
+            return
+        }
         audio.async {
             // Stopped meanwhile: skip, so the queued stop runs at once.
             guard self.audioTokenIs(token) else { return }
@@ -514,6 +589,13 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         playbackToken += 1 // Completion callbacks of flushed buffers are ignored.
         let token = playbackToken
         tokenLock.lock(); audioToken = token; tokenLock.unlock()
+        if let shared = sharedOutput {
+            // The player stops now (cheap, so it can run inside the event tap); the engine, if no one
+            // else needs it, on the next main-queue turn, after a barge-in has installed its tap.
+            shared.stop()
+            DispatchQueue.main.async { stopEngineIfIdle() }
+            return
+        }
         let done = DispatchSemaphore(value: 0)
         outputStopDone = done
         // Work for a newer reply is always queued behind this block, so stopping here never cuts it.
@@ -540,7 +622,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         current = nil
         stopPlayer()
         finished(utterance, interrupted: true, reason: .cancel)
-        lastAudibleAt = uptime()
+        audibleEnded(utterance)
         advance(listen: nil)
     }
 
@@ -577,17 +659,49 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
 
 // MARK: - Earcons (hands-free only, soft)
 
+private let earconNames = ["Tink", "Pop"]
+private let earconVolume: Float = 0.25
 private var earcons: [String: NSSound] = [:]
+// BUTLER_FULL_DUPLEX: the same system sounds, read into memory once, as mixer inputs of the
+// input engine (a player per sound, in the file's own format), so voice processing cancels
+// them from the microphone too. earconUntil keeps the engine running until the sound has played.
+private var engineEarcons: [String: (player: AVAudioPlayerNode, buffer: AVAudioPCMBuffer)] = [:]
+private var earconUntil: TimeInterval = 0
+func earconSounding(at now: TimeInterval) -> Bool { now < earconUntil }
 func loadEarcons() {
-    for name in ["Tink", "Pop"] where earcons[name] == nil {
-        if let sound = NSSound(named: NSSound.Name(name)) { sound.volume = 0.25; earcons[name] = sound }
+    guard !fullDuplexRequested else { return }
+    for name in earconNames where earcons[name] == nil {
+        if let sound = NSSound(named: NSSound.Name(name)) { sound.volume = earconVolume; earcons[name] = sound }
+    }
+}
+// Before the shared engine first starts, so the mixer has every input from the first start on.
+func loadEngineEarcons(_ engine: AVAudioEngine) {
+    for name in earconNames where engineEarcons[name] == nil {
+        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: "/System/Library/Sounds/\(name).aiff")),
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+              (try? file.read(into: buffer)) != nil else { continue }
+        let player = AVAudioPlayerNode()
+        player.volume = earconVolume
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
+        engineEarcons[name] = (player, buffer)
     }
 }
 func playEarcon(_ name: String) {
     guard soundsEnabled, handsFreeEnabled else { return }
+    if fullDuplexRequested {
+        guard let (player, buffer) = engineEarcons[name], engine.isRunning || (try? startEngine()) != nil else { return }
+        player.stop()
+        player.scheduleBuffer(buffer, completionHandler: nil)
+        player.play()
+        let length = Double(buffer.frameLength) / buffer.format.sampleRate
+        earconUntil = uptime() + length
+        DispatchQueue.main.asyncAfter(deadline: .now() + length + 0.05) { stopEngineIfIdle() }
+        return
+    }
     loadEarcons()
     guard let sound = earcons[name] else { return }
     if sound.isPlaying { sound.stop() }
-    sound.volume = 0.25
+    sound.volume = earconVolume
     sound.play()
 }

@@ -154,7 +154,8 @@ func activatedVoiceCommand(_ text: String) -> String {
 // toward "Butler", a recognizer writes "this is a test" as "this Butler test".
 func recognizerContext(ambient: Bool) -> [String] { ambient ? ["Hey Butler"] : [] }
 
-// Whether a recognizer result opens with the wake phrase, for diagnostics labels only.
+// Whether a recognizer result opens with the wake phrase: diagnostics labels, and the words the
+// self-echo filter never drops (isSelfEcho). Activation itself keeps its gate.
 func startsWithWakePhrase(_ text: String) -> Bool { textAfter(wakePrefix, in: text) != nil }
 
 enum VoiceFinalResult: Equatable {

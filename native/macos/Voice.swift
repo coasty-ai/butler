@@ -131,6 +131,84 @@ let speaker = Speaker()
 let secureInputMessage = "Voice is unavailable in secure input fields."
 func uptime() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
 func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+// BUTLER_FULL_DUPLEX=1 in the helper's environment (local A/B trials on one build): the speaker's
+// PCM and the earcons play through the input engine, whose input node runs voice processing
+// (echo cancellation against that very playback, noise suppression, gain control), so ambient
+// listening continues while Butler speaks (standbyAllowed, isSelfEcho, interruptsSpeech). Unset,
+// the default and the packaged app, the half-duplex path is untouched: listening pauses while
+// Butler speaks and for the echo guard after. Voice processing is asked for once, before the
+// engine first starts; a start that then fails (a microphone and a speaker that are different
+// devices: err -10875) turns it off for good, and the helper is half duplex again.
+let fullDuplexRequested = ProcessInfo.processInfo.environment["BUTLER_FULL_DUPLEX"] == "1"
+var voiceProcessing = false
+var voiceProcessingReported = false
+// Listening continues through a reply only when voice processing has that reply as its reference:
+// PCM through the shared engine. The system voice plays outside it and keeps the half-duplex guard.
+var listenWhileSpeaking: Bool { fullDuplexRequested && voiceProcessing && speaker.echoCancelled }
+func enableFullDuplex() {
+    speaker.shareEngine(engine)
+    loadEngineEarcons(engine)
+    do {
+        try engine.inputNode.setVoiceProcessingEnabled(true)
+        voiceProcessing = true
+        // Voice processing ducks other audio by default: never the owner's music, for Butler's microphone.
+        if #available(macOS 14.0, *) {
+            engine.inputNode.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
+        }
+    } catch { reportVoiceProcessing(reason: "unsupported", error: error) }
+}
+// Starts the engine for whichever side needs it first: the microphone tap, or under full duplex
+// a reply or an earcon. With voice processing on, the start itself is the test: a failure turns
+// it off, reports once, and the engine starts again without it; a start that still fails is the
+// caller's error, as before.
+func startEngine() throws {
+    engine.prepare()
+    do { try engine.start() } catch {
+        guard voiceProcessing else { throw error }
+        disableVoiceProcessing(reason: "start_failed", error: error)
+        engine.prepare(); try engine.start()
+    }
+    reportVoiceProcessing()
+}
+// The engine stops when nothing needs it: the microphone tap, or under full duplex a reply or an
+// earcon still playing.
+func stopEngineIfIdle() {
+    guard engine.isRunning, !audioTapInstalled, !speaker.holdsEngine, !earconSounding(at: uptime()) else { return }
+    engine.stop()
+}
+// Once, at the first outcome: enabled with the input format the tap gets, or not, with why. Without
+// the flag the reason is "off", so a trace says which arm of the A/B it comes from.
+func reportVoiceProcessing(reason: String? = nil, error: Error? = nil) {
+    guard !voiceProcessingReported else { return }
+    voiceProcessingReported = true
+    var event: [String: Any] = ["event": "voice_processing", "enabled": voiceProcessing]
+    if voiceProcessing {
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        event["sampleRate"] = format.sampleRate; event["channels"] = Int(format.channelCount)
+    } else {
+        event["reason"] = reason ?? "off"
+        if let error = error { event["message"] = error.localizedDescription }
+    }
+    output(event)
+}
+// Voice processing can only change while the engine is stopped; a reply playing through it ends
+// as cancelled, as it does when a route change stops the engine, and only after the change, since
+// its queued successor may start the engine again at once.
+func disableVoiceProcessing(reason: String, error: Error? = nil) {
+    voiceProcessing = false
+    let wasRunning = engine.isRunning
+    if wasRunning { engine.stop() }
+    try? engine.inputNode.setVoiceProcessingEnabled(false)
+    reportVoiceProcessing(reason: reason, error: error)
+    if wasRunning { speaker.sharedEngineStopped() }
+}
+// Full duplex only: half duplex never hears the reply, so the same words then are the owner's.
+func selfEcho(_ utterance: String, now: TimeInterval) -> Bool {
+    guard listenWhileSpeaking, let spoken = speaker.spokenText(at: now) else { return false }
+    return isSelfEcho(utterance, spoken: spoken)
+}
+// How long ambient listening still has to wait for the reply's tail (nothing under full duplex).
+func echoGuardWait() -> Double { listenWhileSpeaking ? 0 : max(0, echoGuardUntil - uptime()) }
 // Internal standby restarts take a few hundred ms; only report "not listening" when
 // it lasts, so the tray reflects real enable/disable/error transitions only.
 func setWakeListening(_ value: Bool) {
@@ -183,8 +261,8 @@ func setTapInput(_ live: SFSpeechAudioBufferRecognitionRequest?, muteSeconds: Do
     tapLock.unlock()
 }
 func stopAudio() {
-    if engine.isRunning { engine.stop() }
     if audioTapInstalled { engine.inputNode.removeTap(onBus: 0); audioTapInstalled = false }
+    stopEngineIfIdle()
     setTapInput(nil)
     request?.endAudio()
 }
@@ -213,16 +291,17 @@ func closeWindow(_ reason: String) {
     if mode == .followUp { clearSpeech(windowReason: reason) }
 }
 func ambientListeningAllowed() -> Bool {
-    standbyAllowed(speaking: speaker.isActive, now: uptime(), echoGuardUntil: echoGuardUntil)
+    standbyAllowed(speaking: speaker.isActive, now: uptime(), echoGuardUntil: echoGuardUntil, fullDuplex: listenWhileSpeaking)
 }
 func scheduleStandby(_ delay: Double = 0.35) {
     restart?.cancel()
     guard handsFreeEnabled, !suspended, !keyHeld else { return }
     // Half-duplex: wait out the echo guard; while speaking, the end of speech restarts listening.
-    let wait = max(delay, echoGuardUntil - uptime() + 0.02)
+    // Full duplex listens through both.
+    let wait = max(delay, echoGuardWait() + 0.02)
     let work = DispatchWorkItem {
-        guard handsFreeEnabled, !suspended, !keyHeld, mode == nil, pendingWindow == nil, !speaker.isActive else { return }
-        if uptime() < echoGuardUntil { scheduleStandby(0); return }
+        guard handsFreeEnabled, !suspended, !keyHeld, mode == nil, pendingWindow == nil, listenWhileSpeaking || !speaker.isActive else { return }
+        if !ambientListeningAllowed() { scheduleStandby(0); return }
         beginAudio(.standby)
     }
     restart = work; DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work)
@@ -404,7 +483,7 @@ func beginAudio(_ nextMode: ListenMode, muteSeconds: Double = 0, knownAvailable:
     let now = uptime()
     startedAt = now; lastSpeechAt = now; lastTextAt = now; rotatedAt = now
     startRecognition()
-    if ambient { traceStandby("begin", extra: ["mode": nextMode == .standby ? "standby" : "followUp"]) }
+    if ambient { traceStandby("begin", extra: ["mode": nextMode == .standby ? "standby" : "followUp", "voiceProcessing": voiceProcessing]) }
     if let failure = startInput(muteSeconds: muteSeconds) {
         audioFailed(failure, code: "mic", ambient: ambient); return false
     }
@@ -427,7 +506,12 @@ func copied(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
 func startInput(muteSeconds: Double) -> String? {
     let session = generation
     setTapInput(request, muteSeconds: muteSeconds)
-    let input = engine.inputNode, format = input.outputFormat(forBus: 0)
+    let input = engine.inputNode
+    var format = input.outputFormat(forBus: 0)
+    if voiceProcessing && !(format.sampleRate > 0 && format.channelCount > 0) {
+        // Voice processing left the input without a format the tap can use: half duplex instead.
+        disableVoiceProcessing(reason: "format"); format = input.outputFormat(forBus: 0)
+    }
     guard format.sampleRate > 0, format.channelCount > 0 else { return "Microphone unavailable. Check your input device." }
     var lastLevelAt: TimeInterval = 0
     input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
@@ -449,7 +533,10 @@ func startInput(muteSeconds: Double) -> String? {
         DispatchQueue.main.async { observeLevel(rms, at: now, session: session) }
     }
     audioTapInstalled = true
-    do { engine.prepare(); try engine.start() } catch { return "Microphone could not start. Check your input device." }
+    // Under full duplex a reply may already have the engine running: the tap joins it live.
+    if !engine.isRunning {
+        do { try startEngine() } catch { return "Microphone could not start. Check your input device." }
+    }
     return nil
 }
 // The input device changed format or route (a headset, a Bluetooth profile switch when the
@@ -541,12 +628,17 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
         switch current {
         case .standby:
             let utterance = ambientUtterance(raw, now: now)
-            guard commandAfterWakePhrase(utterance, ended: result.isFinal) != nil else {
+            // Full duplex: Butler's own reply, as far as echo cancellation let it through, is never a wake.
+            let echo = selfEcho(utterance, now: now)
+            guard !echo, commandAfterWakePhrase(utterance, ended: result.isFinal) != nil else {
                 // Do not emit background speech, partials, or microphone levels.
-                traceStandby(result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
+                traceStandby(echo ? "self_echo" : result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
                 if !trimmed(raw).isEmpty { lastTextAt = now }
                 pendingWake = !result.isFinal && wakePhraseAwaitingPause(utterance)
                 if pendingWake { wakeOffset = standbyBoundary }
+                // Full duplex: "stop", "wait" or "no" said over a reply silences it at once; from standby
+                // the words route nowhere, as they never did without the wake phrase.
+                if speaker.isActive && interruptsSpeech(utterance) { speaker.stop(.bargeIn) }
                 if result.isFinal { clearSpeech(); scheduleStandby() }
                 return
             }
@@ -556,14 +648,15 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
         case .followUp:
             // Nearby talk swallows a wake phrase inside a window as it does in standby.
             let utterance = ambientUtterance(raw, now: now)
-            if commandAfterWakePhrase(utterance, ended: result.isFinal) != nil {
+            let echo = selfEcho(utterance, now: now)
+            if !echo, commandAfterWakePhrase(utterance, ended: result.isFinal) != nil {
                 traceStandby("wake", raw, extra: ["boundary": standbyBoundary])
                 wakeOffset = standbyBoundary
                 activateWake(context: turnContext(for: windowKind), window: windowKind)
-            } else if followUpOnset(text: raw, speechRun: windowRun.longest, kind: windowKind, window: followUpWindow) {
+            } else if !echo, followUpOnset(text: raw, speechRun: windowRun.longest, kind: windowKind, window: followUpWindow) {
                 activateFollowUp()
             } else {
-                traceStandby(result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
+                traceStandby(echo ? "self_echo" : result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
                 if !trimmed(raw).isEmpty { lastTextAt = now }
                 pendingWake = !result.isFinal && wakePhraseAwaitingPause(utterance)
                 if pendingWake { wakeOffset = standbyBoundary }
@@ -683,7 +776,7 @@ func openWindow(_ kind: FollowUpKind, seconds: Double, announced: Bool) -> Bool 
         output(["event": "followup_open", "kind": kind.rawValue, "seconds": seconds])
         return true
     }
-    guard mode == nil || mode == .standby, !speaker.isActive else { return refuse() }
+    guard mode == nil || mode == .standby, listenWhileSpeaking || !speaker.isActive else { return refuse() }
     restart?.cancel()
     windowKind = kind
     guard beginAudio(.followUp) else { return refuse() }
@@ -697,11 +790,11 @@ func listenRequest(_ command: [String: Any]) -> [String: Any] {
     guard handsFreeEnabled && followUpEnabled else { return ["opened": false, "reason": "disabled"] }
     if suspended { return ["opened": false, "reason": "suspended"] }
     if keyHeld || mode == .handsFree || mode == .pushToTalk { return ["opened": false, "reason": "capturing"] }
-    if speaker.isActive { return ["opened": false, "reason": "speaking"] }
+    if speaker.isActive && !listenWhileSpeaking { return ["opened": false, "reason": "speaking"] }
     if mode == .followUp { openWindow(kind, seconds: seconds, announced: false); return ["opened": true] }
     if securePaused || IsSecureEventInputEnabled() { return ["opened": false, "reason": "secure_input"] }
     cancelPendingWindow("cancel")
-    let wait = echoGuardUntil - uptime()
+    let wait = echoGuardWait()
     if wait > 0 {
         // Right after speech: open once the echo guard ends.
         pendingWindowKind = kind
@@ -733,7 +826,7 @@ func speechEnded(listen: ListenRequest?) {
         if !openWindow(listen.kind, seconds: listen.seconds, announced: true) && mode == nil { scheduleStandby() }
     }
     pendingWindow = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + max(0, echoGuardUntil - uptime()) + 0.02, execute: work)
+    DispatchQueue.main.asyncAfter(deadline: .now() + echoGuardWait() + 0.02, execute: work)
 }
 func speakRequest(_ command: [String: Any], pcm: Bool) -> [String: Any] {
     func reject(_ reason: String) -> [String: Any] { ["accepted": false, "reason": reason] }
@@ -744,28 +837,35 @@ func speakRequest(_ command: [String: Any], pcm: Bool) -> [String: Any] {
         guard let kind = FollowUpKind(rawValue: window["kind"] as? String ?? "") else { return reject("invalid") }
         listen = ListenRequest(kind: kind, seconds: clampFollowUpSeconds(window["seconds"] as? Double, kind: kind, window: followUpWindow))
     }
-    let source: SpokenUtterance.Source
+    let source: SpokenUtterance.Source, text: String
     if pcm {
         guard command["format"] as? String == "s16le", let rate = command["sampleRate"] as? Double, validPcmSampleRate(rate) else {
             return reject("invalid")
         }
         source = .pcm(rate)
+        // The words behind the audio, for the self-echo filter; an older Electron sends none.
+        let words = command["text"] as? String ?? ""
+        text = words.count <= spokenTextLimit ? trimmed(words) : ""
     } else {
-        guard let text = command["text"] as? String, !trimmed(text).isEmpty, text.count <= 1000 else { return reject("invalid") }
-        source = .system(trimmed(text))
+        guard let sentence = command["text"] as? String, !trimmed(sentence).isEmpty, sentence.count <= spokenTextLimit else { return reject("invalid") }
+        source = .system(trimmed(sentence)); text = trimmed(sentence)
     }
     if handsFreeEnabled { outputBluetooth = defaultOutputIsBluetooth() }
     let decision = speakDecision(enabled: speaker.enabled, capturing: keyHeld || mode == .handsFree || mode == .pushToTalk,
                                  suspended: suspended, current: speaker.currentPriority, incoming: priority)
     if case .reject(let reason) = decision { return reject(reason) }
     if !speechLanguageSupported(locale: speech?.locale.identifier ?? speaker.locale) { return reject("unsupported_language") }
-    let utterance = SpokenUtterance(id: id, priority: priority, listen: listen, source: source)
+    let utterance = SpokenUtterance(id: id, priority: priority, listen: listen, source: source, text: text)
     if decision == .queue { speaker.enqueue(utterance); return ["accepted": true, "queued": true] }
     // Half-duplex: ambient recognition stops before audio starts, so a reply can never
-    // wake the assistant or answer its own question.
-    restart?.cancel()
-    cancelPendingWindow("speaking")
-    if mode == .followUp { clearSpeech(windowReason: "speaking") } else if mode == .standby { clearSpeech() }
+    // wake the assistant or answer its own question. Full duplex keeps it running for a PCM
+    // reply through the shared engine: voice processing cancels the playback, and isSelfEcho
+    // drops what it lets through.
+    if !(fullDuplexRequested && voiceProcessing && pcm && speaker.sharesEngine) {
+        restart?.cancel()
+        cancelPendingWindow("speaking")
+        if mode == .followUp { clearSpeech(windowReason: "speaking") } else if mode == .standby { clearSpeech() }
+    }
     speaker.play(utterance)
     return ["accepted": true]
 }
@@ -894,7 +994,7 @@ func status() -> [String: Any] {
             "locale": speech?.locale.identifier ?? "unknown", "handsFree": handsFreeEnabled, "wakeListening": wakeListening,
             "speaking": speaker.isActive, "voiceQuality": voice?.quality.rawValue ?? VoiceQuality.none.rawValue,
             "voiceName": voice?.name ?? "", "patience": patience.rawValue, "followUp": followUpEnabled,
-            "followUpWindow": followUpWindow.rawValue]
+            "followUpWindow": followUpWindow.rawValue, "voiceProcessing": fullDuplexRequested && voiceProcessing]
 }
 func voicesReply(_ id: Any) {
     speaker.withVoices { list in
@@ -946,7 +1046,8 @@ func handle(_ command: [String: Any]) {
     case "speak": output(["id": id, "result": speakRequest(command, pcm: false)])
     case "playPcmStart": output(["id": id, "result": speakRequest(command, pcm: true)])
     case "playPcmChunk":
-        let ok = speaker.pcmChunk(id: command["utteranceId"] as? String ?? "", seq: command["seq"] as? Int, base64: command["data"] as? String ?? "")
+        let ok = speaker.pcmChunk(id: command["utteranceId"] as? String ?? "", seq: command["seq"] as? Int, base64: command["data"] as? String ?? "",
+                                  text: command["text"] as? String)
         output(["id": id, "result": ["ok": ok]])
     case "playPcmEnd": output(["id": id, "result": ["ok": speaker.pcmEnd(id: command["utteranceId"] as? String ?? "")]])
     case "playPcmAbort":
@@ -972,8 +1073,12 @@ func handle(_ command: [String: Any]) {
         let source = DispatchSource.makeProcessSource(identifier: parent, eventMask: .exit, queue: .main)
         source.setEventHandler { shutdown() }; source.resume(); parentExit = source
         speaker.onEnded = { listen in speechEnded(listen: listen) }
+        if fullDuplexRequested { enableFullDuplex() }
         observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { _ in
+            // The input first (it only schedules its restart), then the reply the stopped engine
+            // was carrying, whose queued successor may start the engine again at once.
             inputConfigurationChanged()
+            speaker.sharedEngineStopped()
         })
         maintenance = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
             if getppid() != parent { shutdown(); return }
@@ -995,7 +1100,11 @@ func handle(_ command: [String: Any]) {
                 if !standbyTrace.isEmpty && now - lastStandbyTraceAt >= 5 {
                     lastStandbyTraceAt = now
                     tapLock.lock(); let buffers = tapBuffers; tapBuffers = 0; tapLock.unlock()
-                    traceStandby("level", extra: ["buffers": buffers, "rms": Int((lastRms * 1000).rounded()), "engine": engine.isRunning])
+                    // The floor and threshold beside the level: voice processing changes the RMS scale, and
+                    // an A/B on the flag must show by how much before anything in NoiseFloor is retuned.
+                    traceStandby("level", extra: ["buffers": buffers, "rms": Int((lastRms * 1000).rounded()), "engine": engine.isRunning,
+                                                  "noiseFloor": (noiseFloor.floor * 10000).rounded() / 10000, "threshold": (noiseFloor.threshold * 10000).rounded() / 10000,
+                                                  "voiceProcessing": voiceProcessing, "speaking": speaker.isActive])
                 }
                 if standbyEndpoint(now: now, started: startedAt, lastText: lastTextAt) == .recycle {
                     traceStandby("recycle"); clearSpeech(); scheduleStandby(0.1)
