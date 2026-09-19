@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   cloudVoices,
   defaultSettings,
@@ -204,6 +205,31 @@ describe("voice settings", () => {
     expect(parses({ voiceSounds: 1 })).toBe(false);
     // Still strict: unknown keys are refused.
     expect(parses({ voiceVolume: 0.5 })).toBe(false);
+  });
+
+  it("opens apps as they are said by default, and keeps a saved choice", async () => {
+    // A config saved before the setting existed turns it on; nothing to keep.
+    const { earlyStart: _e, ...older } = structuredClone(defaultSettings);
+    expect(settingsSchema.parse(older).earlyStart).toBe(true);
+    expect(defaultSettings.earlyStart).toBe(true);
+    // Local only: allowed in private local mode too.
+    expect(
+      settingsSchema.parse({ ...older, privacy: "PRIVATE_LOCAL" }).earlyStart,
+    ).toBe(true);
+    expect(parses({ earlyStart: false })).toBe(true);
+    expect(parses({ earlyStart: "false" })).toBe(false);
+    const bridge = previewBridge();
+    const info = await bridge.info();
+    await bridge.saveSettings({ ...info.settings, earlyStart: false });
+    expect((await bridge.info()).settings.earlyStart).toBe(false);
+    // The Listening group's checkbox writes it.
+    const ui = readFileSync(
+      new URL("../src/ui/main.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(ui).toMatch(
+      /checked=\{s\.earlyStart\}[\s\S]{0,120}onChange=\{\(e\) => set\("earlyStart", e\.target\.checked\)\}[\s\S]{0,80}Open apps as I say them/,
+    );
   });
 
   it("gives the browser preview inert voice stubs", async () => {

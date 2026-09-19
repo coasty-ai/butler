@@ -329,6 +329,14 @@ export const settingsSchema = z
     listeningPatience: z.enum(["quick", "normal", "relaxed"]).default("normal"),
     /** Hands-free only: listen briefly for a reply without the wake phrase. */
     followUpListening: z.boolean().default(true),
+    /**
+     * Open the app a spoken request starts with while the user is still
+     * talking ("open Slack and…" brings Slack forward before "and";
+     * electron/early-start.ts). Only opening or switching to a named,
+     * verified app; nothing is typed, clicked or sent early. Local only, so
+     * allowed in every privacy mode.
+     */
+    earlyStart: z.boolean().default(true),
     voiceSounds: z.boolean().default(true),
     /**
      * Free-form turns ("how's it going?", small talk) go to a text-only call
@@ -492,6 +500,7 @@ export const defaultSettings: Settings = {
   voiceRate: 1,
   listeningPatience: "normal",
   followUpListening: true,
+  earlyStart: true,
   voiceSounds: true,
   conversation: "model",
   dialogModel: "",

@@ -369,6 +369,16 @@ const launcherQualifiers = new Set([
   // "Google Chrome".
   "system",
 ]);
+/**
+ * An application name as native resolution compares it (normalizeAppName in
+ * native/macos/LaunchSafety.swift): trimmed, lowercase, without a trailing
+ * ".app", inner whitespace collapsed. "Chrome" and "Google Chrome" differ.
+ */
+export function normalizeAppName(value: string): string {
+  let name = value.trim().toLowerCase();
+  if (name.endsWith(".app")) name = name.slice(0, -4).trim();
+  return name.split(/\s+/).filter(Boolean).join(" ");
+}
 function launcherTokens(value: string): string[] {
   return value
     .trim()

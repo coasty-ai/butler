@@ -36,12 +36,14 @@ import {
   type TaskSource,
   type WatchContext,
 } from "../src/core/schema";
+import { normalizeAppName } from "../src/core/policy";
 import {
   MANUAL_PAUSE_MESSAGE,
   Runner,
   TARGET_HANDOFF_MESSAGE,
   terminal,
   type ApprovalSource,
+  type RunPrelude,
 } from "../src/core/runner";
 import { shouldAutoResume, type InputIdleReport } from "../src/core/resume";
 import { TutorialController, TutorialProvider } from "../src/core/tutorial";
@@ -83,6 +85,7 @@ import {
   type SetupStatus,
 } from "../src/ui/api";
 import { NativeController, budgetDelay } from "./controller";
+import { EarlyStart, type EarlyClaim } from "./early-start";
 import {
   NativeVoice,
   approvalHint,
@@ -250,6 +253,8 @@ const QUEUE_DRAIN_ATTEMPTS = 15;
 // True while a plan stops one run to start another itself: the stop's end
 // must not drain the queue into the gap, or the plan's own start would fail.
 let queueHeld = false;
+// True while startRun prepares a new Runner: no early step may start then.
+let startingRun = false;
 let presenceTimer: ReturnType<typeof setInterval> | undefined;
 // Renderer crash reloads per window within the last minute, plus at most one
 // deferred reload per window once that budget is exhausted.
@@ -259,6 +264,48 @@ const defaultPause = "Paused. Capture and input are stopped.";
 const helperPause = "Desktop control restarted. Say continue to resume.";
 const debug: DiagnosticSink = (event, data = {}) =>
   trace(diagnostics?.write, event, { runId: snapshot.run?.id, ...data });
+/**
+ * Opens the app a spoken request starts with while the user is still talking
+ * ("open Slack and…" brings Slack forward before "and"), only while nothing
+ * else runs, starts or waits. receiveVoice is its only caller, so typed,
+ * texted and phone turns never get an early step.
+ */
+const early = new EarlyStart({
+  controller: () => {
+    try {
+      return process.platform === "darwin" ? getNative() : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  settings: () => settings,
+  knownApp: (key) => {
+    if (!installedAppNames.size) {
+      refreshAppNames();
+      return false;
+    }
+    return installedAppNames.has(normalizeAppName(key));
+  },
+  blocked: () =>
+    shuttingDown
+      ? "unavailable"
+      : !listening
+        ? "cancelled"
+        : runActive() || (runner && !runner.settled)
+          ? "blocked_run"
+          : snapshot.pending
+            ? "blocked_approval"
+            : taskQueue.list(Date.now()).length
+              ? "blocked_queue"
+              : startingRun
+                ? "blocked_starting"
+                : undefined,
+  onOpened: (name) => {
+    if (listening && pill.phase === "listening")
+      setPill({ label: `Opened ${name.slice(0, 40)} · Listening…` });
+  },
+  trace: debug,
+});
 /** The OpenAI key, used for the optional natural voice only. */
 function openaiKey() {
   return (
@@ -1294,6 +1341,47 @@ function prewarmIndex() {
   indexPrewarmedAt = now;
   void controller
     .request("index")
+    .then(rememberAppNames)
+    .catch(() => undefined)
+    .finally(() => {
+      indexPrewarming = false;
+    });
+}
+/**
+ * The installed applications' names, from whatever the last "index" answer
+ * listed. The early opener uses them to open an app the moment its exact name
+ * is heard ("open Slack and …" opens Slack before the "and"); an empty set
+ * only means the step waits for a boundary or a pause, as it did before.
+ */
+let installedAppNames = new Set<string>();
+function rememberAppNames(result: unknown) {
+  const apps = (result as { apps?: { name?: unknown }[] } | undefined)?.apps;
+  if (!Array.isArray(apps)) return;
+  const names = new Set<string>();
+  for (const app of apps) {
+    const name =
+      typeof app?.name === "string" ? normalizeAppName(app.name) : "";
+    if (name) names.add(name);
+  }
+  if (names.size) installedAppNames = names;
+}
+/** Asks for the app list when the early opener has none yet; never awaited. */
+function refreshAppNames() {
+  if (process.platform !== "darwin" || shuttingDown || indexPrewarming) return;
+  if (runActive() || (runner && !runner.settled)) return;
+  const now = Date.now();
+  if (indexPrewarmedAt !== undefined && now - indexPrewarmedAt < 60_000) return;
+  let controller: NativeController;
+  try {
+    controller = getNative();
+  } catch {
+    return;
+  }
+  indexPrewarming = true;
+  indexPrewarmedAt = now;
+  void controller
+    .request("index")
+    .then(rememberAppNames)
     .catch(() => undefined)
     .finally(() => {
       indexPrewarming = false;
@@ -1494,6 +1582,7 @@ function getVoice() {
           listening = false;
           voiceInvocation += 1;
           abortTurn();
+          early.cancel("cancelled");
           showFailure("Voice restarted. Try again.");
         },
         onRestart: () => {
@@ -1548,6 +1637,7 @@ function cancelVoiceCapture() {
   listening = false;
   voiceInvocation += 1;
   voiceGate = undefined;
+  early.cancel("cancelled");
   void voice?.call("cancel").catch(() => {});
 }
 function interruptForVoice() {
@@ -1766,6 +1856,8 @@ async function receiveVoice(event: VoiceEvent) {
       });
       // Final recognition also waits for context, even if it arrives immediately.
       voiceContext = getNative().request("rememberForeground");
+      // The early step reads the partials of this activation from here on.
+      early.begin(invocation, voiceContext);
       await voiceContext;
       if (!listening || invocation !== voiceInvocation) return;
       prewarmIndex();
@@ -1790,6 +1882,7 @@ async function receiveVoice(event: VoiceEvent) {
       if (listening) {
         lastPartial = event.text ?? "";
         setPill({ transcript: lastPartial, closing: false });
+        early.partial(voiceInvocation, lastPartial);
       }
     } else if (event.event === "audio_level") {
       pill.inputLevel = event.level ?? 0;
@@ -1806,6 +1899,8 @@ async function receiveVoice(event: VoiceEvent) {
     } else if (event.event === "voice_cancelled") {
       listening = false;
       voiceInvocation += 1;
+      // An app the early step already opened stays open.
+      early.cancel("cancelled");
       // A decision still in flight for the cancelled words must not act.
       abortTurn();
       voiceHeld = false;
@@ -1830,11 +1925,16 @@ async function receiveVoice(event: VoiceEvent) {
       if (invocation !== voiceInvocation) return;
       // A wake phrase said again mid-segment starts the request over.
       const heard = transcriptRequest(event);
-      if (!heard.text) throw new Error("Didn’t catch that. Try again.");
+      if (!heard.text) {
+        early.cancel("no_final");
+        throw new Error("Didn’t catch that. Try again.");
+      }
       await command(heard.text, true, voiceCommandConfidence(event), {
         segments: heard.segments,
+        invocation,
       });
     } else if (event.event === "transcript_unconfirmed") {
+      early.cancel("no_final");
       if (!listening) return;
       listening = false;
       const text = transcriptRequest(event).text;
@@ -1861,6 +1961,7 @@ async function receiveVoice(event: VoiceEvent) {
         });
       }
     } else if (event.event === "voice_error" || event.event === "wake_error") {
+      early.cancel("no_final");
       listening = false;
       if (event.code === "empty") {
         if (runHeld()) showFailure("Didn’t hear anything.");
@@ -1878,6 +1979,7 @@ async function receiveVoice(event: VoiceEvent) {
     }
   } catch (error) {
     listening = false;
+    early.cancel("native_error");
     showFailure(
       error instanceof Error ? error.message : "Something went wrong.",
     );
@@ -1908,7 +2010,33 @@ async function command(
   text: string,
   fromVoice = false,
   confidence = 1,
-  extra: { segments?: number } = {},
+  extra: { segments?: number; invocation?: number } = {},
+) {
+  // The final words settle an early step before anything plans them: kept
+  // for the run they start, otherwise left as it is (the app stays open).
+  const turnInvocation = extra.invocation ?? voiceInvocation;
+  const claim = fromVoice ? early.finish(turnInvocation, text) : undefined;
+  try {
+    await planCommand(
+      text,
+      fromVoice,
+      confidence,
+      extra,
+      claim,
+      turnInvocation,
+    );
+  } finally {
+    // A no-op once the run took the step.
+    claim?.release("plan_not_start");
+  }
+}
+async function planCommand(
+  text: string,
+  fromVoice: boolean,
+  confidence: number,
+  extra: { segments?: number },
+  claim: EarlyClaim | undefined,
+  turnInvocation?: number,
 ) {
   text = z.string().trim().min(1).max(2000).parse(text);
   const context = conversation.planContext(fromVoice);
@@ -2007,8 +2135,11 @@ async function command(
         cannedIfEmpty: base.kind === "start" ? "ackStart" : "ackCorrection",
         // A Jev start is dispatched like a fast start: the same fixed line
         // (or the canned acknowledgement) the instant the run is under way.
-        line:
-          decision.code === "fast_start" || decision.code === "jev_start"
+        // An app the early step already opened is never announced as
+        // opening: the canned acknowledgement plays instead.
+        line: claim
+          ? undefined
+          : decision.code === "fast_start" || decision.code === "jev_start"
             ? fastStartLine(text)
             : undefined,
       });
@@ -2031,6 +2162,8 @@ async function command(
     // did not answer itself.
     replyText: plan.kind === "status" ? statusText() : replyText,
     replyPending: !!reply && !!decision?.sentences,
+    early: claim,
+    invocation: fromVoice ? turnInvocation : undefined,
   };
   const outcome = await executePlan(plan, ctx);
   if (!outcome.ok) {
@@ -2068,6 +2201,10 @@ type PlanCtx = {
   replyText?: string;
   /** A spoken reply is on its way and replaces the card once it is known. */
   replyPending?: boolean;
+  /** The step the early start took while the user spoke, for a run to keep. */
+  early?: EarlyClaim;
+  /** The voice activation this plan belongs to; a newer one cancels it. */
+  invocation?: number;
 };
 /**
  * Runs a turn plan. Never throws: callers that show failures (the voice
@@ -2363,10 +2500,21 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       // meanwhile) waits its turn: applied as a correction it would carry
       // words the user never said, in the user's name.
       if (plan.kind === "start" && active) {
+        ctx.early?.release("run_active_at_final");
         await runPlan(
           { kind: "queue", text: plan.text, taskSource: plan.taskSource },
           ctx,
         );
+        return;
+      }
+      // Before the restore: the early step then already made the app it
+      // opened the remembered one, so the restore cannot bring the app from
+      // activation back over it. Waiting for a cold launch can take seconds,
+      // so the turn is checked again afterwards: a stop, a cancel or a new
+      // activation in that gap must not still start the run.
+      const prelude = !active && ctx.early ? await ctx.early.take() : undefined;
+      if (ctx.invocation !== undefined && ctx.invocation !== voiceInvocation) {
+        debug("EarlyStartEnded", { phase: "cancelled", code: "reactivated" });
         return;
       }
       if (!(snapshot.run?.synthetic && active)) {
@@ -2388,7 +2536,7 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       });
       if (active) await runner!.revise(plan.text);
       else
-        await dispatch("start", [
+        await startRun(
           plan.text,
           false,
           // An accepted proposal is the assistant's wording, not the user's.
@@ -2397,7 +2545,8 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
             taskSource:
               (plan.kind === "start" && plan.taskSource) || ctx.taskSource,
           },
-        ]);
+          prelude,
+        );
       return;
     }
   }
@@ -2597,6 +2746,142 @@ async function review(
   const bundle = prepareBundle(run, events, frames, opts);
   reviewCache.set(id, bundle);
   return { run, frames, events, bundle, uploaded: !!uploads[id]?.receipt };
+}
+/** Where a task came from, as internal callers of dispatch("start") say. */
+const startFromSchema = z
+  .object({
+    origin: z
+      .enum(["voice", "typed", "message", "queue", "watch", "remote"])
+      .optional(),
+    taskSource: z
+      .enum(["user_words", "user_words_unsure", "model_rewrite", "proposal"])
+      .optional(),
+    // Why a watch woke the model; only the queue drain passes it.
+    watch: z
+      .object({
+        cause: z.string().max(40),
+        agent: z.string().max(40).optional(),
+        state: z.string().max(40),
+        minutes: z.number().int().min(0),
+        lastChangeMinutes: z.number().int().min(0),
+        steps: z.array(z.string().max(120)).max(5).optional(),
+        panelText: z.string().max(1500).optional(),
+      })
+      .strict()
+      .optional(),
+    // The chain of watches that wake belongs to; only with watch.
+    chain: z
+      .object({
+        startedAt: z.number().finite(),
+        wakes: z.number().int().min(0).max(1000),
+        origin: z
+          .enum(["voice", "typed", "message", "queue", "watch", "remote"])
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .optional();
+/**
+ * Starts a run. It waits for the early step's native sections to close first
+ * (their stop() must never land after this run's resume()), and nothing early
+ * may start meanwhile. Only runPlan passes a prelude: the step a voice turn
+ * took while the user was still speaking, kept by the final words.
+ */
+async function startRun(
+  task: string,
+  tutorial: boolean,
+  source?: unknown,
+  prelude?: RunPrelude,
+) {
+  startingRun = true;
+  try {
+    await early.idle();
+    ensureIdle();
+    task = z.string().trim().min(1).max(8000).parse(task);
+    const from = startFromSchema.parse(source);
+    const origin: RunOrigin = from?.origin ?? "typed";
+    if (scanText(task).some((f) => f.action === "BLOCK_UPLOAD"))
+      throw new Error(
+        "Remove credentials from the task. Enter passwords manually during takeover.",
+      );
+    const controller = tutorial ? new TutorialController() : getNative();
+    if (!tutorial) {
+      await getNative().configure(settings);
+      // Voice is optional for a run; typed commands still work without it.
+      try {
+        await getVoice().call("configure", {
+          controllerPID: getNative().pid,
+        });
+      } catch (error) {
+        debug("VoiceSetupFailed", errorDetails(error));
+      }
+    }
+    const provider = tutorial
+      ? new TutorialProvider()
+      : createDesktopProvider(
+          settings,
+          providerKey(credentials, settings),
+          debug,
+        );
+    const recentTasks = vault
+      .list()
+      .filter((r) => !r.synthetic)
+      .slice(0, 3)
+      .map((r) => ({ task: r.task.slice(0, 500), status: r.status }));
+    runner = new Runner(
+      controller,
+      provider,
+      vault,
+      settings,
+      emit,
+      recentTasks,
+      // The synthetic tutorial never recalls or learns.
+      tutorial ? undefined : runMemory(),
+      // A monitor step hands its window to the detached watch and ends.
+      tutorial
+        ? {}
+        : {
+            onMonitor: (binding, spec, run) =>
+              watchers.start(binding, {
+                ...spec,
+                runId: run.id,
+                task: run.task,
+                taskSource: run.taskSource,
+                origin: run.origin,
+                appName: run.appName,
+                notes: handoffNotes(run.steps),
+                corrections: run.corrections,
+                ...(run.chain ? { chain: run.chain } : {}),
+              }),
+          },
+    );
+    voiceHeld = false;
+    window.hide();
+    void runner
+      .start(task, {
+        origin,
+        taskSource:
+          from?.taskSource ?? (origin === "typed" ? "user_words" : undefined),
+        ...(from?.watch ? { watch: from.watch } : {}),
+        ...(from?.watch && from.chain ? { chain: from.chain } : {}),
+        ...(prelude && !tutorial ? { prelude } : {}),
+      })
+      .catch((error) => {
+        debug("RunStartFailed", errorDetails(error));
+        setPill({
+          phase: "error",
+          label:
+            error instanceof Error && error.message
+              ? error.message
+              : "The local run could not be saved.",
+          transcript: "",
+          canApprove: false,
+        });
+      });
+  } finally {
+    startingRun = false;
+  }
 }
 async function dispatch(method: string, args: unknown[]): Promise<unknown> {
   switch (method) {
@@ -2829,129 +3114,13 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       await getNative().request("requestPermissions");
       return;
     case "start": {
-      ensureIdle();
       const task = z.string().trim().min(1).max(8000).parse(args[0]),
         tutorial = z.boolean().parse(args[1]);
       // Only internal callers say where a task came from; the renderer's
       // starts are always "typed" (the IPC handler drops a third argument).
-      const from = z
-        .object({
-          origin: z
-            .enum(["voice", "typed", "message", "queue", "watch", "remote"])
-            .optional(),
-          taskSource: z
-            .enum([
-              "user_words",
-              "user_words_unsure",
-              "model_rewrite",
-              "proposal",
-            ])
-            .optional(),
-          // Why a watch woke the model; only the queue drain passes it.
-          watch: z
-            .object({
-              cause: z.string().max(40),
-              agent: z.string().max(40).optional(),
-              state: z.string().max(40),
-              minutes: z.number().int().min(0),
-              lastChangeMinutes: z.number().int().min(0),
-              steps: z.array(z.string().max(120)).max(5).optional(),
-              panelText: z.string().max(1500).optional(),
-            })
-            .strict()
-            .optional(),
-          // The chain of watches that wake belongs to; only with watch.
-          chain: z
-            .object({
-              startedAt: z.number().finite(),
-              wakes: z.number().int().min(0).max(1000),
-              origin: z
-                .enum(["voice", "typed", "message", "queue", "watch", "remote"])
-                .optional(),
-            })
-            .strict()
-            .optional(),
-        })
-        .optional()
-        .parse(args[2]);
-      const origin: RunOrigin = from?.origin ?? "typed";
-      if (scanText(task).some((f) => f.action === "BLOCK_UPLOAD"))
-        throw new Error(
-          "Remove credentials from the task. Enter passwords manually during takeover.",
-        );
-      const controller = tutorial ? new TutorialController() : getNative();
-      if (!tutorial) {
-        await getNative().configure(settings);
-        // Voice is optional for a run; typed commands still work without it.
-        try {
-          await getVoice().call("configure", {
-            controllerPID: getNative().pid,
-          });
-        } catch (error) {
-          debug("VoiceSetupFailed", errorDetails(error));
-        }
-      }
-      const provider = tutorial
-        ? new TutorialProvider()
-        : createDesktopProvider(
-            settings,
-            providerKey(credentials, settings),
-            debug,
-          );
-      const recentTasks = vault
-        .list()
-        .filter((r) => !r.synthetic)
-        .slice(0, 3)
-        .map((r) => ({ task: r.task.slice(0, 500), status: r.status }));
-      runner = new Runner(
-        controller,
-        provider,
-        vault,
-        settings,
-        emit,
-        recentTasks,
-        // The synthetic tutorial never recalls or learns.
-        tutorial ? undefined : runMemory(),
-        // A monitor step hands its window to the detached watch and ends.
-        tutorial
-          ? {}
-          : {
-              onMonitor: (binding, spec, run) =>
-                watchers.start(binding, {
-                  ...spec,
-                  runId: run.id,
-                  task: run.task,
-                  taskSource: run.taskSource,
-                  origin: run.origin,
-                  appName: run.appName,
-                  notes: handoffNotes(run.steps),
-                  corrections: run.corrections,
-                  ...(run.chain ? { chain: run.chain } : {}),
-                }),
-            },
-      );
-      voiceHeld = false;
-      window.hide();
-      void runner
-        .start(task, {
-          origin,
-          taskSource:
-            from?.taskSource ?? (origin === "typed" ? "user_words" : undefined),
-          ...(from?.watch ? { watch: from.watch } : {}),
-          ...(from?.watch && from.chain ? { chain: from.chain } : {}),
-        })
-        .catch((error) => {
-          debug("RunStartFailed", errorDetails(error));
-          setPill({
-            phase: "error",
-            label:
-              error instanceof Error && error.message
-                ? error.message
-                : "The local run could not be saved.",
-            transcript: "",
-            canApprove: false,
-          });
-        });
+      // A prelude never comes this way: only a voice turn's own early step
+      // is one (runPlan).
+      await startRun(task, tutorial, args[2]);
       return;
     }
     case "pause":

@@ -968,4 +968,106 @@ describe("dialog and streamed-speech fields", () => {
       const lines = readFileSync(log.file, "utf8").trim().split("\n");
       expect(JSON.parse(lines[1]).data).toEqual({});
     }));
+
+  it("keeps the early step's codes and timings, never the app or the words", () =>
+    fixture((log) => {
+      log.write("EarlyStartExecuted", {
+        code: "ok",
+        settle: "boundary",
+        earlyMs: 412,
+        durationMs: 388,
+        // Smuggled extras: allow-listed elsewhere, never here.
+        name: "Slack",
+        appId: "com.tinyspeck.slackmacgap",
+        launchedAppId: "com.tinyspeck.slackmacgap",
+        runId: "dda590c3-1234-4567-8cd6-c0e751c0cd36",
+        text: "open Slack and message Dana",
+      });
+      log.write("EarlyStartEnded", {
+        phase: "kept",
+        code: "ok",
+        leadMs: -120,
+        textLength: 27,
+        reason: "Open Slack",
+      });
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toMatch(/slack|dana|tinyspeck|dda590c3/i);
+      const [executed, ended] = raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).data);
+      expect(executed).toEqual({
+        code: "ok",
+        settle: "boundary",
+        earlyMs: 412,
+        durationMs: 388,
+      });
+      expect(ended).toEqual({ phase: "kept", code: "ok", leadMs: -120 });
+      // Only a code or a number passes through each field.
+      log.write("EarlyStartExecuted", {
+        settle: "when the user said slack",
+        earlyMs: "fast",
+        leadMs: "soon",
+      });
+      const lines = readFileSync(log.file, "utf8").trim().split("\n");
+      expect(JSON.parse(lines[2]).data).toEqual({});
+    }));
+
+  it("marks a journaled step the user's words took early", () =>
+    fixture((log) => {
+      const id = crypto.randomUUID();
+      const action = { type: "open_app", frame_id: "f", name: "Slack" };
+      const snapshot: Snapshot = {
+        run: {
+          id,
+          task: "open Slack and message Dana",
+          createdAt: new Date().toISOString(),
+          status: "capturing",
+          privacy: "PRIVATE_LOCAL",
+          provider: "openai",
+          model: "fixture",
+          synthetic: false,
+          actions: 1,
+          frames: 1,
+          usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          summary: "",
+        },
+        frame: null,
+        message: "",
+        events: [
+          {
+            event_id: crypto.randomUUID(),
+            run_id: id,
+            sequence_number: 1,
+            monotonic_timestamp: 0,
+            wall_clock_timestamp: new Date().toISOString(),
+            schema_version: 1,
+            type: "ActionExecuted",
+            data: {
+              action,
+              frame_id: "f",
+              early: true,
+              launched: {
+                appId: "com.tinyspeck.slackmacgap",
+                frontmost: true,
+                wasRunning: true,
+              },
+            },
+          },
+        ],
+      };
+      log.snapshot(snapshot);
+      const executed = JSON.parse(
+        readFileSync(log.file, "utf8").trim().split("\n")[0],
+      );
+      expect(executed.event).toBe("ActionExecuted");
+      expect(executed.data).toMatchObject({
+        early: true,
+        actionType: "open_app",
+        launchedAppId: "com.tinyspeck.slackmacgap",
+      });
+      log.write("Fixture", { early: "yes" });
+      const lines = readFileSync(log.file, "utf8").trim().split("\n");
+      expect(JSON.parse(lines.at(-1)!).data).toEqual({});
+    }));
 });

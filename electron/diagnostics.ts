@@ -160,6 +160,12 @@ const fields = new Set([
   "jevP",
   "jevUsed",
   "jevCode",
+  // The early step taken while the user speaks: how it settled, its timings
+  // and whether a journaled step was one. Never the app or the words.
+  "settle",
+  "earlyMs",
+  "leadMs",
+  "early",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -193,6 +199,8 @@ const numberFields = new Set([
   "firstAudioMs",
   "jevMs",
   "jevP",
+  "earlyMs",
+  "leadMs",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
@@ -204,6 +212,7 @@ const flagFields = new Set([
   "stream",
   "restoredWindow",
   "jevUsed",
+  "early",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -235,6 +244,20 @@ const codeFields = new Set([
   "via",
   "jevAct",
   "jevCode",
+  "settle",
+]);
+/**
+ * The early step's own events keep only these keys, whatever else a caller
+ * passes: a code, how the clause settled and timings, never a name.
+ */
+const earlyEvents = new Set(["EarlyStartExecuted", "EarlyStartEnded"]);
+const earlyFields = new Set([
+  "phase",
+  "code",
+  "settle",
+  "earlyMs",
+  "leadMs",
+  "durationMs",
 ]);
 const memoryEvents = new Set([
   "MemoryRecalled",
@@ -352,7 +375,13 @@ export class LocalDiagnostics {
           pid: process.pid,
           sequence: ++this.sequence,
           event,
-          data: this.clean(data),
+          data: this.clean(
+            earlyEvents.has(event) && !this.verbose
+              ? Object.fromEntries(
+                  Object.entries(data).filter(([key]) => earlyFields.has(key)),
+                )
+              : data,
+          ),
         }) + "\n";
       if (this.bytes + Buffer.byteLength(line) > this.maxBytes) {
         rmSync(this.file + ".3", { force: true });
@@ -430,6 +459,8 @@ export class LocalDiagnostics {
         change: e.data.change,
         // ActionExecuted for a hotkey: pressed as its menu item or as keys.
         via: e.data.via,
+        // A step taken before the run existed, while the user was speaking.
+        early: e.data.early,
         reason: e.data.reason,
         usage: e.data.usage,
         frameId: e.data.frame_id,

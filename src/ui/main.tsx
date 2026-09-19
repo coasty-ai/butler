@@ -1920,6 +1920,21 @@ function SettingsPanel({
                 </p>
               </>
             )}
+            <label className="consent">
+              <input
+                type="checkbox"
+                checked={s.earlyStart}
+                aria-describedby={`${ids}-early`}
+                onChange={(e) => set("earlyStart", e.target.checked)}
+              />
+              <span>Open apps as I say them</span>
+            </label>
+            <p id={`${ids}-early`}>
+              When you start with “open Slack and…”, Slack comes forward while
+              you’re still talking. Only opening or switching to an app you
+              name; nothing is typed, clicked or sent before you finish. Takes
+              one screenshot early, kept only with the task it belongs to.
+            </p>
           </div>
         </details>
         <details className="setting-group">

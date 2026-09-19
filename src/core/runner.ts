@@ -39,6 +39,7 @@ import {
 } from "./labels";
 import {
   evaluate,
+  normalizeAppName,
   surfacePolicy,
   PASTE_ALLOWED,
   type Decision,
@@ -635,6 +636,25 @@ export interface MonitorHandoff {
   /** Set when a watch woke this run: a new watch continues that chain. */
   chain?: WatchChain;
 }
+/**
+ * A step executed before this run existed, while the user was still speaking
+ * ("open Slack and…" brings Slack forward before "and"): electron/early-start.ts
+ * took it through the same native verification and policy as a run step, and
+ * the run journals it as its own first frame and step.
+ */
+export interface RunPrelude {
+  /** The frame the step was verified against, captured before the run. */
+  frame: Frame;
+  /** surface(action) at execute time: the launcher resolution policy saw. */
+  surface: Surface;
+  /** frame_id is frame.id. */
+  action: Extract<Action, { type: "open_app" }>;
+  /** The ALLOW decision's reason. */
+  reason: string;
+  outcome?: ExecutionResult;
+  /** The final words were exactly this step ("Open Slack."). */
+  completes: boolean;
+}
 /** Executed actions kept for a monitor handoff. */
 const HANDOFF_STEPS = 12;
 /** Hooks outside the run loop (increment 5A: the detached watch). */
@@ -721,6 +741,17 @@ export class Runner {
   private watchChain?: WatchChain;
   /** The last few actions executed, for a monitor handoff. */
   private executed: Action[] = [];
+  /**
+   * The app a prelude opened: a recalled plan that starts by opening it
+   * continues at its next step, and with completes the run ends once the app
+   * is in front (checked once, on the first observation).
+   */
+  private prelude?: {
+    appId?: string;
+    names: Set<string>;
+    display: string;
+    completes: boolean;
+  };
   constructor(
     private controller: Controller,
     private provider: Provider,
@@ -1316,6 +1347,7 @@ export class Runner {
     this.attempted = 0;
     this.trajectory = [];
     this.appsSeen = new Set();
+    this.prelude = undefined;
   }
   /**
    * Recall task-relevant memory once, capped at two seconds and cancelled with
@@ -1374,6 +1406,12 @@ export class Runner {
         completedSteps: 0,
         abandoned: false,
       };
+      // Its first step already ran as the prelude: never open the app twice
+      // (the frontmost refusal would abandon the plan).
+      if (this.preludeOpens(this.plan)) {
+        this.planIndex = 1;
+        this.planResult.completedSteps = 1;
+      }
     }
     const count = (v: unknown) => (Array.isArray(v) ? v.length : 0);
     this.event("MemoryRecalled", {
@@ -1386,6 +1424,26 @@ export class Runner {
     });
     // The task was amended while recall ran; its plan matched the old wording.
     if (this.amendments !== amendments) this.dropAmendedPlan();
+  }
+  /** A plan's first step opens the app the prelude already opened. */
+  private preludeOpens(plan: ReplayPlan): boolean {
+    const opened = this.prelude;
+    const first = plan.steps[0]?.action;
+    if (!opened || !first || first.type !== "open_app") return false;
+    if (
+      typeof first.name === "string" &&
+      opened.names.has(normalizeAppName(first.name))
+    )
+      return true;
+    // The built-in "open X" intent names the app as the index lists it and
+    // completes on the bundle being frontmost.
+    const done = plan.completeWhen?.appId;
+    return (
+      plan.steps.length === 1 &&
+      !!opened.appId &&
+      typeof done === "string" &&
+      done.toLowerCase() === opened.appId
+    );
   }
   /** Turn the next plan step into a proposal for this frame, or explain why not. */
   private planProposal(
@@ -1640,6 +1698,174 @@ export class Runner {
     });
     return frame;
   }
+  /**
+   * Journals a step taken before this run existed as the run's first frame
+   * and step, exactly as the loop records an executed open_app: the model's
+   * history starts with its result, so it is never taken again.
+   */
+  private applyPrelude(p: RunPrelude) {
+    const frame = this.recordFrame(p.frame);
+    if (!frame) return;
+    this.event("ActionProposed", { action: p.action, early: true });
+    this.event("PolicyAllowed", { reason: p.reason });
+    this.attempted++;
+    this.recordExecuted(p.action, frame, frame, p.surface, p.outcome, {
+      early: true,
+    });
+    const launched = p.outcome?.launched;
+    const names = new Set([normalizeAppName(p.action.name)]);
+    if (typeof launched?.name === "string" && launched.name)
+      names.add(normalizeAppName(launched.name));
+    this.prelude = {
+      appId:
+        typeof launched?.appId === "string" && launched.appId
+          ? launched.appId.toLowerCase()
+          : undefined,
+      names,
+      display: bound(String(launched?.name || p.action.name), 100),
+      completes: p.completes,
+    };
+  }
+  /**
+   * The bookkeeping after an executed step, shared by the loop and by a step
+   * taken before the run existed (a prelude): counters, the plan position,
+   * what memory learns, the journal entry and the history line the model
+   * reads next.
+   */
+  private recordExecuted(
+    action: Action,
+    frame: Frame,
+    executionFrame: Frame,
+    actionSurface: Surface,
+    outcome: void | ExecutionResult,
+    o: { early?: boolean; reaimed?: boolean } = {},
+  ) {
+    const run = this.snapshot.run!;
+    const { frame_id: _frameId, ...executedAction } = action;
+    this.resetCounters();
+    run.actions++;
+    this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
+    const launched =
+      action.type === "open_app" &&
+      outcome &&
+      outcome.launched &&
+      typeof outcome.launched.appId === "string"
+        ? {
+            appId: bound(outcome.launched.appId, 200),
+            name: bound(String(outcome.launched.name || action.name), 120),
+            frontmost: outcome.launched.frontmost === true,
+            wasRunning: outcome.launched.wasRunning === true,
+            ...(typeof outcome.launched.windows === "number" && {
+              windows: outcome.launched.windows,
+              restoredWindow: outcome.launched.restoredWindow === true,
+            }),
+          }
+        : undefined;
+    // Set by an open_app that left its app windowless, cleared by any
+    // other executed step.
+    this.windowlessApp =
+      launched?.frontmost && launched.windows === 0 && !launched.restoredWindow
+        ? { appId: launched.appId.toLowerCase(), name: launched.name }
+        : undefined;
+    const opened =
+      action.type === "open_file" &&
+      outcome &&
+      outcome.opened &&
+      typeof outcome.opened.path === "string"
+        ? {
+            path: bound(outcome.opened.path, 500),
+            kind:
+              outcome.opened.kind === "folder"
+                ? ("folder" as const)
+                : ("document" as const),
+            ...(typeof outcome.opened.appId === "string" && outcome.opened.appId
+              ? { appId: bound(outcome.opened.appId, 200) }
+              : {}),
+          }
+        : undefined;
+    if (action.type === "open_file") this.lastOpened = !!opened;
+    const via =
+      action.type === "hotkey" &&
+      outcome &&
+      (outcome.via === "menu" || outcome.via === "keys")
+        ? outcome.via
+        : undefined;
+    // Read before planPending is cleared: this step came from the plan.
+    const fromPlan =
+      this.planPending !== undefined ? this.plan?.source : undefined;
+    if (this.planPending !== undefined) {
+      this.planPending = undefined;
+      this.planIndex++;
+      if (this.planResult) this.planResult.completedSteps++;
+    }
+    if (this.memoryRun && this.trajectory.length < 200) {
+      const target = surfaceTarget(action, actionSurface);
+      this.trajectory.push({
+        action: executedAction,
+        ...(frame.appId ? { appId: frame.appId } : {}),
+        ...(target ? { target } : {}),
+        ...(launched ? { launchedAppId: launched.appId } : {}),
+        ...(opened ? { openedPath: opened.path } : {}),
+        ...(fromPlan ? { fromPlan } : {}),
+      });
+    }
+    if (launched && this.appsSeen.size < 50) this.appsSeen.add(launched.appId);
+    this.event("ActionExecuted", {
+      action,
+      frame_id: executionFrame.id,
+      // Taken before this run existed, while the user was still speaking.
+      ...(o.early ? { early: true } : {}),
+      // Whether a hotkey was pressed as its menu item or posted as keys.
+      ...(via ? { via } : {}),
+      ...(opened ? { opened: { kind: opened.kind } } : {}),
+      ...(launched
+        ? {
+            launched: {
+              appId: launched.appId,
+              frontmost: launched.frontmost,
+              wasRunning: launched.wasRunning,
+              ...(launched.windows !== undefined && {
+                windows: launched.windows,
+                restoredWindow: launched.restoredWindow,
+              }),
+            },
+          }
+        : {}),
+    });
+    const loop = this.trackLoop(action, {
+      role: actionSurface.targetRole,
+      label: actionSurface.targetLabel,
+    });
+    const thrashing = this.trackAppSwitch(action, launched?.appId);
+    // Compared against the next capture; no extra native call is made.
+    this.progress = {
+      type: action.type,
+      probe: progressProbe(executionFrame, this.lastSurface),
+    };
+    this.history.push({
+      type: action.type,
+      action: executedAction,
+      result:
+        (launched
+          ? launched.frontmost
+            ? launched.windows === 0 && !launched.restoredWindow
+              ? windowlessResult(launched.name)
+              : `Opened ${launched.name} (${launched.appId}); frontmost=true. Verify appId on the next screenshot; if no window is visible use the app's New shortcut.`
+            : `Launch requested for ${launched.appId}; not frontmost yet. Wait briefly before retrying.`
+          : opened
+            ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`
+            : ["type_text", "key", "hotkey"].includes(action.type)
+              ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
+              : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
+        (o.reaimed ? reaimNote : "") +
+        (loop === "warn" ? loopWarning : "") +
+        (thrashing ? appSwitchWarning : ""),
+    });
+    if (loop === "stuck")
+      this.pause(
+        "I seem to be stuck repeating the same steps. Say continue with a hint.",
+      );
+  }
   async start(
     task: string,
     options: {
@@ -1649,6 +1875,8 @@ export class Runner {
       watch?: WatchContext;
       /** The chain that watch belongs to, for a watch this run starts. */
       chain?: WatchChain;
+      /** A step taken while the user was still speaking (electron/early-start.ts). */
+      prelude?: RunPrelude;
     } = {},
   ) {
     if (this.active()) throw new Error("A run is already active.");
@@ -1723,6 +1951,7 @@ export class Runner {
     // A search route to take on the next step instead of asking the model.
     let routed: string[] | undefined;
     try {
+      if (options.prelude && !run.synthetic) this.applyPrelude(options.prelude);
       if (this.memoryRun) await this.recall(task);
       if (!this.active()) return;
       await this.controller.resume();
@@ -1773,6 +2002,23 @@ export class Runner {
           }
           this.plan = undefined;
           this.planHint(plan, planVerifyNote);
+        }
+        // The user's words were only the step the prelude took ("Open
+        // Slack."): with that app in front the run is done without a model
+        // call, as the built-in intent would be. Checked once.
+        const opened = this.prelude;
+        if (opened?.completes && !reaim) {
+          opened.completes = false;
+          if (
+            !this.plan &&
+            !!opened.appId &&
+            frame.appId?.toLowerCase() === opened.appId
+          ) {
+            run.summary = redactSecrets(`Opened ${opened.display}.`);
+            this.event("RunCompleted");
+            this.status("completed", run.summary);
+            break;
+          }
         }
         let result: ProviderResult | undefined;
         if (reaim) {
@@ -2220,131 +2466,14 @@ export class Runner {
           interrupted();
           continue;
         }
-        this.resetCounters();
-        run.actions++;
-        this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
-        const launched =
-          action.type === "open_app" &&
-          outcome &&
-          outcome.launched &&
-          typeof outcome.launched.appId === "string"
-            ? {
-                appId: bound(outcome.launched.appId, 200),
-                name: bound(String(outcome.launched.name || action.name), 120),
-                frontmost: outcome.launched.frontmost === true,
-                wasRunning: outcome.launched.wasRunning === true,
-                ...(typeof outcome.launched.windows === "number" && {
-                  windows: outcome.launched.windows,
-                  restoredWindow: outcome.launched.restoredWindow === true,
-                }),
-              }
-            : undefined;
-        // Set by an open_app that left its app windowless, cleared by any
-        // other executed step.
-        this.windowlessApp =
-          launched?.frontmost &&
-          launched.windows === 0 &&
-          !launched.restoredWindow
-            ? { appId: launched.appId.toLowerCase(), name: launched.name }
-            : undefined;
-        const opened =
-          action.type === "open_file" &&
-          outcome &&
-          outcome.opened &&
-          typeof outcome.opened.path === "string"
-            ? {
-                path: bound(outcome.opened.path, 500),
-                kind:
-                  outcome.opened.kind === "folder"
-                    ? ("folder" as const)
-                    : ("document" as const),
-                ...(typeof outcome.opened.appId === "string" &&
-                outcome.opened.appId
-                  ? { appId: bound(outcome.opened.appId, 200) }
-                  : {}),
-              }
-            : undefined;
-        if (action.type === "open_file") this.lastOpened = !!opened;
-        const via =
-          action.type === "hotkey" &&
-          outcome &&
-          (outcome.via === "menu" || outcome.via === "keys")
-            ? outcome.via
-            : undefined;
-        // Read before planPending is cleared: this step came from the plan.
-        const fromPlan =
-          this.planPending !== undefined ? this.plan?.source : undefined;
-        if (this.planPending !== undefined) {
-          this.planPending = undefined;
-          this.planIndex++;
-          if (this.planResult) this.planResult.completedSteps++;
-        }
-        if (this.memoryRun && this.trajectory.length < 200) {
-          const target = surfaceTarget(action, actionSurface);
-          this.trajectory.push({
-            action: executedAction,
-            ...(frame.appId ? { appId: frame.appId } : {}),
-            ...(target ? { target } : {}),
-            ...(launched ? { launchedAppId: launched.appId } : {}),
-            ...(opened ? { openedPath: opened.path } : {}),
-            ...(fromPlan ? { fromPlan } : {}),
-          });
-        }
-        if (launched && this.appsSeen.size < 50)
-          this.appsSeen.add(launched.appId);
-        this.event("ActionExecuted", {
+        this.recordExecuted(
           action,
-          frame_id: executionFrame.id,
-          // Whether a hotkey was pressed as its menu item or posted as keys.
-          ...(via ? { via } : {}),
-          ...(opened ? { opened: { kind: opened.kind } } : {}),
-          ...(launched
-            ? {
-                launched: {
-                  appId: launched.appId,
-                  frontmost: launched.frontmost,
-                  wasRunning: launched.wasRunning,
-                  ...(launched.windows !== undefined && {
-                    windows: launched.windows,
-                    restoredWindow: launched.restoredWindow,
-                  }),
-                },
-              }
-            : {}),
-        });
-        const loop = this.trackLoop(action, {
-          role: actionSurface.targetRole,
-          label: actionSurface.targetLabel,
-        });
-        const thrashing = this.trackAppSwitch(action, launched?.appId);
-        // Compared against the next capture; no extra native call is made.
-        this.progress = {
-          type: action.type,
-          probe: progressProbe(executionFrame, this.lastSurface),
-        };
-        history.push({
-          type: action.type,
-          action: executedAction,
-          result:
-            (launched
-              ? launched.frontmost
-                ? launched.windows === 0 && !launched.restoredWindow
-                  ? windowlessResult(launched.name)
-                  : `Opened ${launched.name} (${launched.appId}); frontmost=true. Verify appId on the next screenshot; if no window is visible use the app's New shortcut.`
-                : `Launch requested for ${launched.appId}; not frontmost yet. Wait briefly before retrying.`
-              : opened
-                ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`
-                : ["type_text", "key", "hotkey"].includes(action.type)
-                  ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
-                  : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
-            (reaimed ? reaimNote : "") +
-            (loop === "warn" ? loopWarning : "") +
-            (thrashing ? appSwitchWarning : ""),
-        });
-        if (loop === "stuck")
-          this.pause(
-            "I seem to be stuck repeating the same steps. Say continue with a hint.",
-          );
+          frame,
+          executionFrame,
+          actionSurface,
+          outcome,
+          { reaimed },
+        );
       }
     } catch (e) {
       if (this.active()) {
