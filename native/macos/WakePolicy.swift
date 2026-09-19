@@ -98,15 +98,24 @@ func wakePauseElapsed(now: TimeInterval, lastText: TimeInterval, lastSpeech: Tim
 // the wake phrase may start it, where it could never start the hypothesis.
 let standbyUtteranceGapSeconds = 0.6
 /// The offset in `current` at which the latest utterance begins. It moves to the end of
-/// `previous` when new words were appended after a pause, unless the words since the last
-/// boundary are the wake phrase itself (the speaker paused after "Hey Butler"). A revision of
-/// earlier text keeps the boundary while it still fits: a misplaced boundary can only miss.
+/// `previous` when whole new words were appended after a pause, unless the words since the
+/// last boundary are "Hey" or the wake phrase itself (the speaker, or the recognizer, paused
+/// there: live 2026-09-19, "Hey" arrived, the rest 0.8 s later). A first word still being
+/// spelled out ("He" then "Hey Butler") is the recognizer catching up, not a pause. A revision
+/// of earlier text keeps the boundary while it still fits: a misplaced boundary can only miss.
 func utteranceBoundary(previous: String, current: String, boundary: Int, gapSeconds: Double) -> Int {
     let kept = min(boundary, current.count)
     guard current.count > previous.count, current.hasPrefix(previous), !previous.isEmpty,
-          gapSeconds >= standbyUtteranceGapSeconds else { return kept }
-    if wakePhraseAwaitingPause(String(previous.dropFirst(min(boundary, previous.count)))) { return kept }
+          gapSeconds >= standbyUtteranceGapSeconds,
+          current[current.index(current.startIndex, offsetBy: previous.count)].isWhitespace else { return kept }
+    let since = String(previous.dropFirst(min(boundary, previous.count)))
+    if wakePhraseAwaitingPause(since) || wakeOpenerAlone(since) { return kept }
     return previous.count
+}
+private let openerAlone = wakeRegex(#"^\s*\#(wakeHeyPattern)[,.!?]*\s*$"#)
+/// "Hey" and nothing else yet: the wake phrase may be on its way.
+func wakeOpenerAlone(_ text: String) -> Bool {
+    openerAlone.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
 }
 
 // Inside a turn that is already listening, a later segment that opens by addressing

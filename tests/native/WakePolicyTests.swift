@@ -34,6 +34,14 @@ func wakePolicyChecks(_ check: (Bool, String) -> Void) {
     check(utteranceBoundary(previous: "the meeting moved Hey Butler", current: "the meeting moved Hey Butler open Notes", boundary: 18, gapSeconds: 0.9) == 18,
           "a pause after a lone wake phrase keeps the utterance at the wake phrase")
     check(utteranceBoundary(previous: "", current: "Hey Butler", boundary: 0, gapSeconds: 5) == 0, "the first words start at the start")
+    check(utteranceBoundary(previous: "Hey", current: "Hey Butler what time is it", boundary: 0, gapSeconds: 0.8) == 0,
+          "a stall after \"Hey\" keeps the utterance whole (live 2026-09-19)")
+    check(utteranceBoundary(previous: "He", current: "Hey Butler", boundary: 0, gapSeconds: 0.8) == 0,
+          "a first word still being spelled out is the recognizer catching up, not a pause")
+    check(utteranceBoundary(previous: "So", current: "So Hey Butler open Notes", boundary: 0, gapSeconds: 0.8) == 2,
+          "a whole word, a pause, then the wake phrase begins a new utterance")
+    check(utteranceBoundary(previous: "the meeting moved Hey", current: "the meeting moved Hey Butler open", boundary: 18, gapSeconds: 0.9) == 18,
+          "a pause after \"Hey\" inside a conversation keeps the utterance at the \"Hey\"")
     check(utteranceBoundary(previous: "the meeting moved to Thursday Hey Butler", current: "the meeting moved to Tuesday Hey Butler open", boundary: 29, gapSeconds: 0.1) == 29,
           "a revision of earlier words keeps the boundary while it fits")
     check(commandAfterWakePhrase(String("the meeting moved to Thursday Hey Butler open Notes".dropFirst(29)), ended: false) == "open Notes",
