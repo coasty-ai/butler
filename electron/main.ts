@@ -1932,6 +1932,7 @@ async function receiveVoice(event: VoiceEvent) {
       await command(heard.text, true, voiceCommandConfidence(event), {
         segments: heard.segments,
         invocation,
+        recovered: event.event === "transcript_recovered",
       });
     } else if (event.event === "transcript_unconfirmed") {
       early.cancel("no_final");
@@ -2010,7 +2011,7 @@ async function command(
   text: string,
   fromVoice = false,
   confidence = 1,
-  extra: { segments?: number; invocation?: number } = {},
+  extra: { segments?: number; invocation?: number; recovered?: boolean } = {},
 ) {
   // The final words settle an early step before anything plans them: kept
   // for the run they start, otherwise left as it is (the app stays open).
@@ -2034,7 +2035,7 @@ async function planCommand(
   text: string,
   fromVoice: boolean,
   confidence: number,
-  extra: { segments?: number },
+  extra: { segments?: number; recovered?: boolean },
   claim: EarlyClaim | undefined,
   turnInvocation?: number,
 ) {
@@ -2048,6 +2049,7 @@ async function planCommand(
     text,
     confidence,
     segments: extra.segments,
+    recovered: extra.recovered,
     gateMatches: fromVoice ? !!voiceGate && voiceGate === gate : !!gate,
     now: Date.now(),
     run: planRun(),

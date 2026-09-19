@@ -765,6 +765,11 @@ export interface VoiceTurnInput {
   window?: FollowUpKind;
   /** Recognizer segments merged into this turn; more than one never approves. */
   segments?: number;
+  /**
+   * The recognizer never finalized this text; it is its last hypothesis
+   * (transcript_recovered). It may start or steer a task, never approve one.
+   */
+  recovered?: boolean;
   /** Milliseconds from follow-up detection to this final. */
   turnMs?: number;
   /** The approval captured when listening started still matches. */
@@ -986,6 +991,7 @@ export function queueRequest(text: string): string | undefined {
  * follow-up window, where ambient speech is more likely).
  */
 function heardClearly(input: VoiceTurnInput): boolean {
+  if (input.recovered) return false;
   const confidence = (input.segments ?? 1) > 1 ? 0 : input.confidence;
   const minimum =
     input.source === "followup"

@@ -1,19 +1,40 @@
 import type { Action } from "../core/schema";
 
+/**
+ * A hypothesis the recognizer left standing this long before the endpoint,
+ * then failed to finalize (Apple's empty final: 17 of 24 turns on
+ * 2026-09-18), is what the user said as surely as any final. It counts as
+ * clearly heard for starting a task; VoiceTurnInput.recovered still keeps
+ * it from ever approving one.
+ */
+export const STABLE_HYPOTHESIS_MS = 1500;
+export const STABLE_HYPOTHESIS_CONFIDENCE = 0.7;
+
 export function voiceCommandConfidence(event: {
   event: string;
   confidence?: number;
+  source?: string;
+  stableMs?: number;
 }): number {
   const value = event.confidence;
-  // Recovered hypotheses may start/steer a task, but can never authorize an
-  // approval. Do not trust even a high confidence attached to that event.
-  return event.event === "transcript_final" &&
+  if (
+    event.event === "transcript_final" &&
     typeof value === "number" &&
     Number.isFinite(value) &&
     value >= 0 &&
     value <= 1
-    ? value
-    : 0;
+  )
+    return value;
+  // A recovered hypothesis starts or steers a task when it stood still long
+  // enough; it never authorizes an approval, whatever confidence it carries.
+  if (
+    event.event === "transcript_recovered" &&
+    event.source === "empty_final_after_endpoint" &&
+    typeof event.stableMs === "number" &&
+    event.stableMs >= STABLE_HYPOTHESIS_MS
+  )
+    return STABLE_HYPOTHESIS_CONFIDENCE;
+  return 0;
 }
 
 export function describeAction(action: Action): string {

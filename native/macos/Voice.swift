@@ -214,8 +214,12 @@ func completeTurn(_ how: TurnCompletion) {
     } else if how == .emptyFinal {
         // Apple's empty terminal marker after an endpoint: the latest hypothesis, not a
         // confident final. It can never approve a pending action.
+        // stableMs: how long the hypothesis had stood unchanged when the endpoint came.
+        // Electron treats a long-stable hypothesis as the user's words for starting a
+        // task (never for approving one).
         output(["event": "transcript_recovered", "text": text, "confidence": 0,
-                "source": "empty_final_after_endpoint", "segments": segments]); accepted = true
+                "source": "empty_final_after_endpoint", "segments": segments,
+                "stableMs": Int(((uptime() - lastTextAt) * 1000).rounded())]); accepted = true
     } else {
         // Never routes by itself: Electron asks the user to confirm it.
         output(["event": "transcript_unconfirmed", "text": text, "source": "deadline_hypothesis", "segments": segments])
@@ -232,6 +236,22 @@ func acceptHandsFreeTurn() {
         if !openWindow(.continuation, seconds: followUpSeconds(.continuation), announced: false) && mode == nil { scheduleStandby() }
     }
     pendingWindow = work; DispatchQueue.main.asyncAfter(deadline: .now() + continuationWindowDelay, execute: work)
+}
+/// A fresh install, or a rebuilt bundle macOS no longer recognizes, has never been asked
+/// for the microphone or speech: ask once, then resume ambient listening, instead of
+/// reporting a denial the user never made.
+var permissionAsked = false
+func permissionUndetermined() -> Bool {
+    AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined ||
+        SFSpeechRecognizer.authorizationStatus() == .notDetermined
+}
+func askPermissionsThenResume() {
+    permissionAsked = true
+    AVCaptureDevice.requestAccess(for: .audio) { _ in
+        SFSpeechRecognizer.requestAuthorization { _ in DispatchQueue.main.async {
+            if availabilityError() == nil { _ = installShortcut(); scheduleStandby() }
+        } }
+    }
 }
 func availabilityError() -> (message: String, code: String)? {
     guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
@@ -320,7 +340,11 @@ func beginAudio(_ nextMode: ListenMode, muteSeconds: Double = 0, knownAvailable:
     // Only ambient listening pauses for secure input; the maintenance timer resumes it.
     // Explicit commands are unrelated to keystroke privacy.
     if ambient && IsSecureEventInputEnabled() { clearSpeech(); securePaused = true; return false }
-    if !knownAvailable, let failure = availabilityError() { audioFailed(failure.message, code: failure.code, ambient: ambient); return false }
+    if !knownAvailable, let failure = availabilityError() {
+        // Asking is the answer to "never asked"; the system dialog is on screen, not an error.
+        if failure.code == "permission" && !permissionAsked && permissionUndetermined() { askPermissionsThenResume(); return false }
+        audioFailed(failure.message, code: failure.code, ambient: ambient); return false
+    }
     clearSpeech()
     mode = nextMode; released = false; shortcutUpSent = false; turn = TurnTranscript(); turnContext = .command
     containsWakePhrase = false; wakeSegment = -1; errorRotations = 0; endpointNearSent = false; windowRun = SpeechRun()

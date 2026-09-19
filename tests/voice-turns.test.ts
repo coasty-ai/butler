@@ -754,6 +754,11 @@ describe("turn planning", () => {
     expect(plan({ text: "Yeah", run: approval(), confidence: 0.7 })).toEqual({
       kind: "approve",
     });
+    // The recognizer's last hypothesis, never finalized: it may start a task
+    // (router gives it 0.7) but never approves one.
+    expect(
+      plan({ text: "Yeah", run: approval(), confidence: 0.7, recovered: true }),
+    ).toEqual({ kind: "needClick", reason: "confidence" });
     expect(
       plan({
         text: "Yeah",

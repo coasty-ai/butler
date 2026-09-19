@@ -61,6 +61,19 @@ describe("voice intent boundary", () => {
         }),
       ).toBe(0);
     }
+    // Apple's empty final: the hypothesis that stood still through the endpoint is
+    // the user's words for starting a task (never for approving one: see turns).
+    const stable = {
+      event: "transcript_recovered",
+      confidence: 0,
+      source: "empty_final_after_endpoint",
+    };
+    expect(voiceCommandConfidence({ ...stable, stableMs: 1500 })).toBe(0.7);
+    expect(voiceCommandConfidence({ ...stable, stableMs: 1499 })).toBe(0);
+    expect(voiceCommandConfidence(stable)).toBe(0);
+    expect(
+      voiceCommandConfidence({ ...stable, source: "other", stableMs: 5000 }),
+    ).toBe(0);
     expect(
       voiceCommandConfidence({ event: "transcript_final", confidence: 0.9 }),
     ).toBe(0.9);
