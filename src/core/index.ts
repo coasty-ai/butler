@@ -73,6 +73,7 @@ export {
   NativeStoppedError,
   NativeActionError,
   HelperUnavailableError,
+  HelperSlowError,
   SurfaceBlockedError,
   TargetError,
   screenChanges,

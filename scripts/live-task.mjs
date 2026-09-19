@@ -213,6 +213,7 @@ const controller = new NativeController(
       [
         "NativeUserTakeover",
         "NativeEmergencyStop",
+        "NativeSlow",
         "NativeUnavailable",
         "NativeRestarted",
       ].includes(event)

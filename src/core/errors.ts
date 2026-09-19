@@ -133,6 +133,22 @@ export class HelperUnavailableError extends Error {
 }
 
 /**
+ * The native helper was alive (it answered its liveness check) but a request
+ * ran past every extension of its deadline, so the helper was not restarted
+ * and the request was given up. The run should pause with this message and
+ * ask again when the user continues.
+ */
+export class HelperSlowError extends Error {
+  readonly code = "HELPER_SLOW";
+  constructor(
+    message = "Desktop control is taking too long. Say continue to try again.",
+  ) {
+    super(message);
+    this.name = "HelperSlowError";
+  }
+}
+
+/**
  * The native helper refused to capture or send input because a protected
  * application or domain, secure input or an uninstaller is active. The run
  * should hand control to the user (takeover) instead of failing.

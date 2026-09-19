@@ -179,6 +179,10 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       return ["EMERGENCY_STOP"];
     case "NativeUnavailable":
       return ["HELPER_UNAVAILABLE"];
+    // The helper answered its liveness probe while a request ran past its
+    // deadline: alive and busy, the wait extended, nothing restarted.
+    case "NativeSlow":
+      return ["HELPER_SLOW"];
     case "RunPaused":
       return ["RUN_PAUSED"];
     case "PlanAbandoned":
@@ -189,6 +193,8 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       if (failure === "STATE_CHANGED") return ["SCREEN_CHANGED_NATIVE"];
       if (failure === "STOPPED") return ["NATIVE_STOPPED"];
       if (name === "HelperUnavailableError") return ["HELPER_UNAVAILABLE"];
+      // The extended wait ran out with the helper still alive; the run paused.
+      if (name === "HelperSlowError") return ["HELPER_SLOW"];
       return ["NATIVE_ERROR"];
     }
     case "ProviderTransportError":
@@ -367,6 +373,7 @@ export const OWNER: Record<string, string> = {
   APPROVAL_DECLINED: "user",
   ACTION_REAIMED: "none",
   HELPER_UNAVAILABLE: "environment",
+  HELPER_SLOW: "environment",
   NATIVE_ERROR: "environment",
   PROVIDER_FAILED: "environment",
   PROVIDER_TIMEOUT: "environment",
@@ -424,6 +431,8 @@ const NOTE: Record<string, string> = {
   RUN_ERROR: "The run threw an error with no more specific code.",
   EMERGENCY_STOP: "The native emergency stop was triggered.",
   HELPER_UNAVAILABLE: "The native helper exited or stopped responding.",
+  HELPER_SLOW:
+    "The native helper was alive (it answered its liveness probe) while a request, normally a capture on a loaded Mac, ran past its deadline, so the wait was extended instead of restarting the helper. A NativeError named HelperSlowError in the same run is the bounded wait running out too, and the run pausing with the helper kept.",
   PROVIDER_FAILED: "The model call failed after its retries.",
   SCREEN_CHANGED:
     "The screen changed between the screenshot and the input, so the step was rejected.",

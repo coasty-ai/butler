@@ -176,7 +176,8 @@ test("an unexpected helper exit rejects pending work, respawns in place and serv
 
 test("a hung request times out, kills the helper and restarts it", async () => {
   const { binary, cleanup } = fakeHelper(`
-  // Like the Swift helper's serial queue: nothing after a hung request is served.
+  // A wedged helper: nothing after a hung request is served, not even the
+  // presence its reader thread answers when it is merely busy.
   if (request.method === 'hang') { globalThis.hung = true; return; }
   if (globalThis.hung) return;
   reply({id: request.id, result: {method: request.method}});`);
@@ -189,7 +190,9 @@ test("a hung request times out, kills the helper and restarts it", async () => {
     (event) => events.push(event),
     {
       onRestart: () => restarted++,
-      timeout: (method) => (method === "hang" ? 200 : 5000),
+      // The liveness probe has presence's deadline (tests/controller-liveness).
+      timeout: (method) =>
+        method === "hang" ? 200 : method === "presence" ? 100 : 5000,
     },
   );
   try {
@@ -214,14 +217,17 @@ test("a hung native helper gets a grace period after the stop signal before SIGK
   const binary = join(root, "helper.cjs"),
     released = join(root, "released");
   // Like a latched drag: the stop signal lets the in-flight request post its
-  // button release shortly afterwards.
+  // button release shortly afterwards. The helper is wedged, so its presence
+  // goes unanswered too; a merely slow one is kept (tests/controller-liveness).
   writeFileSync(
     binary,
     `#!${process.execPath}
 process.on('SIGUSR1', () => setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(released)}, 'up'), 80));
+let hung = false;
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
   const request = JSON.parse(line);
-  if (request.method === 'hang') return;
+  if (request.method === 'hang') { hung = true; return; }
+  if (hung) return;
   process.stdout.write(JSON.stringify({id: request.id, result: {}}) + '\\n');
 });
 `,
@@ -235,7 +241,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     undefined,
     {
       onRestart: () => restarted++,
-      timeout: (method) => (method === "hang" ? 150 : 5000),
+      timeout: (method) =>
+        method === "hang" ? 150 : method === "presence" ? 100 : 5000,
     },
   );
   try {

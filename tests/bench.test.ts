@@ -1925,6 +1925,40 @@ describe("run analyzer", () => {
     expect(ownerOf("DONE_CHALLENGED")).toBe("agent");
     expect(noteFor("DONE_CHALLENGED")).toContain("fresh screenshot");
     expect(noteFor("DONE_CHALLENGED")).toContain("MODEL_FAILED");
+    // A helper alive but slow (cycle 20260919-0816-a839d34, twelve captures
+    // past 25 s on a loaded Mac) is the environment's, and a class of its
+    // own beside the helper dead: the extension while it answers presence,
+    // and the bounded wait running out with the helper kept.
+    expect(
+      frictionCodes({
+        event: "NativeSlow",
+        data: { method: "capture", waitedMs: 25004 },
+      }),
+    ).toEqual(["HELPER_SLOW"]);
+    expect(
+      frictionCodes({
+        event: "NativeError",
+        data: {
+          method: "capture",
+          name: "HelperSlowError",
+          code: "HELPER_SLOW",
+        },
+      }),
+    ).toEqual(["HELPER_SLOW"]);
+    expect(
+      frictionCodes({
+        event: "NativeError",
+        data: { method: "capture", name: "HelperUnavailableError" },
+      }),
+    ).toEqual(["HELPER_UNAVAILABLE"]);
+    expect(frictionCodes({ event: "NativeUnavailable", data: {} })).toEqual([
+      "HELPER_UNAVAILABLE",
+    ]);
+    expect(ownerOf("HELPER_SLOW")).toBe("environment");
+    expect(ownerOf("HELPER_UNAVAILABLE")).toBe("environment");
+    expect(noteFor("HELPER_SLOW")).toContain("liveness probe");
+    expect(noteFor("HELPER_SLOW")).toContain("instead of restarting");
+    expect(noteFor("HELPER_SLOW")).toContain("HelperSlowError");
     // The default allow-list drops this event's source, so a bare hand-off is
     // reported as ambiguous rather than blamed on the agent.
     expect(frictionCodes({ event: "UserTakeoverStarted", data: {} })).toEqual([

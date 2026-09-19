@@ -28,6 +28,7 @@ import {
 import { PASTE_ALLOWED } from "../src/core/policy";
 import type { MemoryAccess } from "../src/core/memory";
 import {
+  HelperSlowError,
   HelperUnavailableError,
   NativeActionError,
   NativeStoppedError,
@@ -935,6 +936,42 @@ describe("runner recovery from native errors", () => {
     await runner.resume();
     await running;
     expect(runner.snapshot.run?.status).toBe("completed");
+  });
+  // Cycle 20260919-0816-a839d34: twelve captures passed 25 s on a loaded Mac
+  // and each restarted the helper. Now a helper that answers its liveness
+  // probe is kept, and a capture past its whole extended wait pauses the run
+  // with the helper's own sentence, never the restart's.
+  it("pauses with the helper's own sentence when it is slow past its bound, and resumes on continue", async () => {
+    const m = memory();
+    let failed = false;
+    const base = controller();
+    const c = controller({
+      capture: async () => {
+        if (!failed) {
+          failed = true;
+          throw new HelperSlowError(
+            "Reading the screen is taking too long. Say continue to try again.",
+          );
+        }
+        return base.capture();
+      },
+    });
+    const p = scripted([]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(runner.snapshot.message).toBe(
+      "Reading the screen is taking too long. Say continue to try again.",
+    );
+    expect(m.of("RunPaused")).toHaveLength(1);
+    expect(m.of("RunFailed")).toHaveLength(0);
+    // The pause latches the helper, which frees its queue at the request's
+    // next stop check.
+    expect(c.stop).toHaveBeenCalled();
+    await runner.resume();
+    await running;
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(p.next).toHaveBeenCalledTimes(1);
   });
   it("tells the model that an interrupted action may have happened", async () => {
     allowAll();

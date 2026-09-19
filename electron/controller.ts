@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { cleanScreenContext } from "../src/core/context";
 import {
+  HelperSlowError,
   HelperUnavailableError,
   NativeActionError,
   NativeStoppedError,
@@ -41,7 +42,15 @@ export interface HelperHooks {
   onUnavailable?: () => void;
   /** A replacement helper is running and needs its process-local setup again. */
   onRestart?: (pid: number | undefined) => void;
+  /**
+   * A request passed its deadline but the helper answered its liveness
+   * probe, so the request waits on (waitedMs so far) instead of the helper
+   * being restarted. Alive and busy, not dead.
+   */
+  onSlow?: (method: string, waitedMs: number) => void;
 }
+/** The liveness probe's own timeout message; never a helper's reply. */
+const LIVENESS_UNANSWERED = "The liveness probe went unanswered.";
 interface HelperOptions {
   /** Diagnostic event prefix: <name>Unavailable, <name>Closed, <name>Restarted. */
   name: string;
@@ -60,6 +69,16 @@ interface HelperOptions {
    * latched in-flight request can release buttons or keys it pressed.
    */
   stopGraceMs?: number;
+  /**
+   * A cheap request the helper answers off its serial work queue (the native
+   * helper's presence, read on its reader thread). With one, a request past
+   * its deadline is not taken for a dead helper at once: the probe is sent,
+   * and an answer within timeoutMs means the helper is alive and busy, so
+   * the request waits on (send's limitMs bounds the whole wait) and
+   * `<name>Slow` is traced; a probe that goes unanswered restarts the helper
+   * as before. Without one, a deadline restarts the helper at once.
+   */
+  liveness?: { method: string; timeoutMs: number };
 }
 const backoff = [500, 1000, 2000];
 const restartLimit = 5;
@@ -91,6 +110,8 @@ export class HelperProcess {
       resolve: (x: any) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
+      /** Whether its deadline may kill the helper: a request of the work queue. */
+      kill: boolean;
     }
   >();
   private down = false;
@@ -98,6 +119,14 @@ export class HelperProcess {
   private exhausted = false;
   private restarts: number[] = [];
   private respawnTimer?: ReturnType<typeof setTimeout>;
+  /** The liveness probe in flight, shared by every request waiting on it. */
+  private probing?: Promise<boolean>;
+  /**
+   * A request was given up at its bound with the helper alive, and no
+   * request of the work queue has been answered since: a second such request
+   * means a reader alive over a wedged queue, which is dead for work.
+   */
+  private stalled = false;
   constructor(
     private binary: string,
     private options: HelperOptions,
@@ -115,6 +144,7 @@ export class HelperProcess {
     this.child = child;
     this.down = false;
     this.exhausted = false;
+    this.stalled = false;
     child.stderr.resume();
     // A write racing the helper's death reports EPIPE here; exit handles it.
     child.stdin.on("error", () => {});
@@ -128,6 +158,8 @@ export class HelperProcess {
         if (!p) return;
         clearTimeout(p.timer);
         this.pending.delete(obj.id);
+        // The work queue answered (a result or its own error alike).
+        if (p.kill) this.stalled = false;
         obj.error ? p.reject(this.options.error(obj)) : p.resolve(obj.result);
       } catch {
         /* No untrusted helper output enters logs */
@@ -237,11 +269,44 @@ export class HelperProcess {
         process.kill(child.pid, signal);
       } catch {}
   }
+  /**
+   * Whether the helper answers its liveness probe: true on a reply of any
+   * kind (its reader thread is alive, whatever holds its work queue), false
+   * when the probe itself goes unanswered. One probe serves every request
+   * waiting on it.
+   */
+  private checkAlive(): Promise<boolean> {
+    const probe = this.options.liveness!;
+    this.probing ??= this.send(probe.method, {}, probe.timeoutMs, {
+      message: LIVENESS_UNANSWERED,
+      kill: false,
+    })
+      .then(
+        () => true,
+        (error: Error) => error.message !== LIVENESS_UNANSWERED,
+      )
+      .finally(() => {
+        this.probing = undefined;
+      });
+    return this.probing;
+  }
   send(
     method: string,
     data: Record<string, unknown>,
     timeoutMs: number,
-    timeout: { message: string; kill: boolean },
+    timeout: {
+      message: string;
+      kill: boolean;
+      /**
+       * With a liveness probe configured and kill set: the most this request
+       * may wait in all while the helper keeps answering the probe. Each
+       * extension is another timeoutMs, cut to what is left of this bound.
+       * Unset, the request has its one deadline as before.
+       */
+      limitMs?: number;
+      /** What a request past limitMs fails with while the helper is alive. */
+      slow?: string;
+    },
   ): Promise<any> {
     if (this.closing) return Promise.reject(new Error(this.options.closed));
     if (this.down) {
@@ -263,18 +328,62 @@ export class HelperProcess {
       );
     }
     const id = crypto.randomUUID();
+    const started = Date.now();
+    const limitMs = Math.max(timeoutMs, timeout.limitMs ?? timeoutMs);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (!this.pending.delete(id)) return;
-        if (timeout.kill) {
+      const expire = () => {
+        const entry = this.pending.get(id);
+        if (!entry) return;
+        if (!timeout.kill) {
+          this.pending.delete(id);
+          reject(new Error(timeout.message));
+          return;
+        }
+        // A helper that stopped answering, or one that never was asked to
+        // prove otherwise: kill it, and exit drives the restart.
+        const dead = () => {
+          if (!this.pending.delete(id)) return;
           trace(this.options.diagnostics, `${this.options.name}TimedOut`, {
             method,
+            waitedMs: Date.now() - started,
           });
           reject(new HelperUnavailableError(timeout.message));
           this.hang(timeout.message);
-        } else reject(new Error(timeout.message));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+        };
+        if (!this.options.liveness) return dead();
+        void this.checkAlive().then((alive) => {
+          // Answered, or rejected by an exit, while the probe was out.
+          if (!this.pending.has(id)) return;
+          if (!alive) return dead();
+          const waitedMs = Date.now() - started;
+          const remaining = limitMs - waitedMs;
+          if (remaining <= 0) {
+            // Alive at the bound: the request is given up, not the helper,
+            // unless the queue has answered nothing since the last request
+            // given up this way; then the reader is alive over a wedged
+            // queue and the helper is dead for work.
+            if (this.stalled) return dead();
+            this.stalled = true;
+            this.pending.delete(id);
+            reject(new HelperSlowError(timeout.slow));
+            return;
+          }
+          trace(this.options.diagnostics, `${this.options.name}Slow`, {
+            method,
+            waitedMs,
+          });
+          try {
+            this.options.hooks.onSlow?.(method, waitedMs);
+          } catch {}
+          entry.timer = setTimeout(expire, Math.min(timeoutMs, remaining));
+        });
+      };
+      this.pending.set(id, {
+        resolve,
+        reject,
+        timer: setTimeout(expire, timeoutMs),
+        kill: timeout.kill,
+      });
       this.child.stdin.write(JSON.stringify({ id, method, ...data }) + "\n");
     });
   }
@@ -672,18 +781,24 @@ export function scrollEndReport(value: unknown): ScrollEndReport | undefined {
       : {}),
   };
 }
+/**
+ * The requests that read the screen or a bound window into a frame: a
+ * screenshot, accessibility walks, Vision text and the encoding, each of
+ * which waits on a busy Mac or a busy application.
+ */
+const screenReads = new Set([
+  "capture",
+  "revalidate",
+  "captureTarget",
+  "revalidateTarget",
+]);
 /** Per-request deadlines. Typing is paced natively, so it scales with length. */
 export function nativeTimeout(
   method: string,
   data: Record<string, unknown> = {},
 ): number {
   // A bound window is captured and checked like the screen.
-  if (
-    ["capture", "revalidate", "captureTarget", "revalidateTarget"].includes(
-      method,
-    )
-  )
-    return 25000;
+  if (screenReads.has(method)) return 25000;
   // Spotlight metadata lookups are fast; memory recall never waits long.
   if (method === "index") return 3000;
   // A probe is one window capture and its OCR; binding and focusing list the
@@ -710,11 +825,43 @@ export function nativeTimeout(
   }
   return 15000;
 }
+/**
+ * The most a request may wait in all while the helper keeps answering its
+ * liveness probe; nativeTimeout is its first deadline and each extension
+ * another such deadline, cut to this bound. Cycle 20260919-0816-a839d34: 12
+ * captures of 2451 requests passed 25 s on a loaded Mac while the helper
+ * was idle when sampled, and each restart cost the run a pause and a frame.
+ * A capture may wait a minute; everything else gets one more deadline, and
+ * a request with no liveness probe (kill: false) is never extended.
+ */
+export function nativeSlowLimit(
+  method: string,
+  data: Record<string, unknown> = {},
+): number {
+  const deadline = nativeTimeout(method, data);
+  return screenReads.has(method) ? Math.max(deadline, 60000) : deadline * 2;
+}
+/** Whether a request reads the screen or the front window rather than acting on it. */
+const readsScreen = (method: string) =>
+  screenReads.has(method) || method === "surface" || method === "surfaceTarget";
+/** What a request past its bound fails with while the helper is alive; the run pauses with it. */
+export function slowMessage(method: string): string {
+  return readsScreen(method)
+    ? "Reading the screen is taking too long. Say continue to try again."
+    : "Desktop control is taking too long. Say continue to try again.";
+}
+/** The pill's line while a slow request waits on; nothing speaks it. */
+export function slowNotice(method: string): string {
+  return readsScreen(method)
+    ? "Reading the screen is slow…"
+    : "Desktop control is slow…";
+}
 
 export class NativeController implements Controller {
   kind = "native" as const;
   private helper: HelperProcess;
   private timeout: typeof nativeTimeout;
+  private slowLimit: typeof nativeSlowLimit;
   constructor(
     binary: string,
     emergency: () => void,
@@ -727,6 +874,8 @@ export class NativeController implements Controller {
     private diagnostics?: DiagnosticSink,
     hooks: HelperHooks & {
       timeout?: typeof nativeTimeout;
+      /** The whole wait a request may have while the helper answers presence. */
+      slowLimit?: typeof nativeSlowLimit;
       /**
        * Manual input went idle (after 1 s, then 3 s) with the kinds seen and,
        * for a bound run, whether the target is in front and the user's hands
@@ -743,11 +892,16 @@ export class NativeController implements Controller {
     } = {},
   ) {
     this.timeout = hooks.timeout ?? nativeTimeout;
+    this.slowLimit = hooks.slowLimit ?? nativeSlowLimit;
     this.helper = new HelperProcess(binary, {
       name: "Native",
       diagnostics,
       hooks,
       stopSignal: "SIGUSR1",
+      // Presence is answered on the helper's reader thread, ahead of its
+      // serial command queue, and touches no window: it says the helper is
+      // alive while a capture or a step still holds the queue.
+      liveness: { method: "presence", timeoutMs: this.timeout("presence") },
       restarting: "Desktop control restarted. Say continue to resume.",
       exhausted: "Native controller unavailable. Run npm run build:native.",
       closed: "Native controller is not running.",
@@ -864,6 +1018,12 @@ export class NativeController implements Controller {
                     message:
                       "Desktop control stopped responding and is restarting.",
                     kill: true,
+                    // Alive and busy is not dead: while the helper answers
+                    // presence the wait is extended up to this bound, then
+                    // the request fails with its own sentence and the
+                    // helper, its bindings and its tap are kept.
+                    limitMs: this.slowLimit(method, data),
+                    slow: slowMessage(method),
                   },
       )
       .then(

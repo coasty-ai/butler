@@ -112,6 +112,7 @@ import {
 import {
   NativeController,
   budgetDelay,
+  slowNotice,
   type ScrollDirection,
   type ScrollEndReport,
 } from "./controller";
@@ -1893,6 +1894,15 @@ function getNative() {
         scrollEnded,
         targetSelfActivated: () => runner?.targetSelfActivated(),
         targetGone: (_token, code) => runner?.targetGone(code),
+        onSlow: (method) => {
+          // Alive and busy under load: the request waits on and nothing is
+          // restarted, so the working pill says so for a moment instead of
+          // "Working…" hiding the wait. Nothing speaks it; a restart is
+          // onUnavailable's own sentence.
+          if (shuttingDown || !runActive()) return;
+          notice = { text: slowNotice(method), until: Date.now() + NOTICE_MS };
+          if (!listening) renderPill(snapshot);
+        },
         onUnavailable: () => {
           if (shuttingDown) return;
           const run = snapshot.run;

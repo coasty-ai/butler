@@ -251,6 +251,10 @@ const fields = new Set([
   // much of it was done when the run started and how old its frame was.
   "savedMs",
   "frameAgeMs",
+  // NativeSlow and NativeTimedOut: how long a helper request had waited when
+  // its deadline passed and the helper was found alive (the wait extended)
+  // or not (the helper killed). A measurement beside the method's name.
+  "waitedMs",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -325,6 +329,7 @@ const numberFields = new Set([
   "stderrBytes",
   "savedMs",
   "frameAgeMs",
+  "waitedMs",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([

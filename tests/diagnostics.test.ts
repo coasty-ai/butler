@@ -234,6 +234,28 @@ describe("local diagnostic stream", () => {
       });
       expect(JSON.parse(lines.at(-1)!).data).toEqual({ pid: 42, restarts: 1 });
     }));
+  it("logs a slow helper by the request's method and how long it had waited", () =>
+    fixture((log) => {
+      // A request past its deadline while the helper answered its liveness
+      // probe: the method's name and a measurement; a hang, the same plus
+      // the kill. Nothing about the screen the capture was reading, and a
+      // wait that is not a number is no measurement.
+      log.write("NativeSlow", {
+        method: "capture",
+        waitedMs: 25004,
+        text: "private screen text",
+        context: { visibleText: "private screen text" },
+      });
+      log.write("NativeSlow", { method: "capture", waitedMs: "soon" });
+      log.write("NativeTimedOut", { method: "execute", waitedMs: 30012 });
+      const lines = readFileSync(log.file, "utf8")
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(lines[0].data).toEqual({ method: "capture", waitedMs: 25004 });
+      expect(lines[1].data).toEqual({ method: "capture" });
+      expect(lines[2].data).toEqual({ method: "execute", waitedMs: 30012 });
+    }));
   it("logs refusals and action loops by code and shape only", () =>
     fixture((log) => {
       const id = crypto.randomUUID();

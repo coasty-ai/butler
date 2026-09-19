@@ -96,6 +96,7 @@ import { entityTokens } from "./entities";
 import { actionConfirmed, contextDigest, screenshotUse } from "./vision";
 import { redactSecrets, scanText } from "./sanitize";
 import {
+  HelperSlowError,
   HelperUnavailableError,
   NativeActionError,
   NativeStoppedError,
@@ -1866,6 +1867,14 @@ export class Runner {
     }
     if (error instanceof HelperUnavailableError) {
       this.pause("Desktop control restarted. Say continue to resume.");
+      return true;
+    }
+    if (error instanceof HelperSlowError) {
+      // The helper answered its liveness probe while the request ran past
+      // its whole extended wait: alive and busy, so it was kept and the run
+      // hears the truth. The pause latches the helper, which frees its queue
+      // at the request's next stop check; continue asks afresh.
+      this.pause(error.message);
       return true;
     }
     return false;
