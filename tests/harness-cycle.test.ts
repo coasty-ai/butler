@@ -16,6 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   defaultSettings,
+  settingsSchema,
   type Action,
   type Observation,
   type ProviderResult,
@@ -23,6 +24,8 @@ import {
   type Snapshot,
   type Surface,
 } from "../src/core/schema";
+import { withoutAsking } from "../src/core/policy";
+import { autonomyChange } from "../src/ui/settings-voice";
 import {
   createHarnessState,
   needsBenchDir,
@@ -57,7 +60,11 @@ import {
   type PresenceSource,
 } from "../src/gym/bench/presence";
 import {
+  AUTONOMY_MODES,
+  DEFAULT_AUTONOMY,
   attemptCap,
+  autonomyOf,
+  autonomySettings,
   buildPlan,
   ceiling,
   cellPrices,
@@ -68,6 +75,7 @@ import {
   fitsTimeBox,
   gateWaitsOf,
   ledgerResults,
+  parseAutonomy,
   parseDuration,
   parseLedger,
   parseMatrix,
@@ -102,6 +110,7 @@ import {
 } from "../src/gym/bench/compare";
 import {
   HARNESS_VERSION,
+  autonomyLine,
   buildCycleResults,
   catalogueHash,
   classRates,
@@ -1958,6 +1967,64 @@ describe("plan and interleaving", () => {
       outputPrice: 50,
     });
   });
+  it("carries --autonomy into a cell's settings, acknowledged for all as the Settings pane does", () => {
+    expect(AUTONOMY_MODES).toEqual(["ask", "task", "flow", "all"]);
+    // The bare command measures what every cycle before the flag did.
+    expect(DEFAULT_AUTONOMY).toBe(defaultSettings.autonomy);
+    expect(parseAutonomy("flow")).toBe("flow");
+    expect(parseAutonomy("everything")).toBeUndefined();
+    expect(parseAutonomy(undefined)).toBeUndefined();
+    // The same two fields the pane sets when the owner ticks the
+    // acknowledgement; every other mode drops it, as the pane does.
+    for (const mode of AUTONOMY_MODES)
+      expect(autonomySettings(mode)).toEqual(autonomyChange(mode, true));
+    expect(autonomySettings("all")).toEqual({
+      autonomy: "all",
+      autonomyAllAcknowledged: true,
+    });
+    expect(autonomySettings("task")).toEqual({
+      autonomy: "task",
+      autonomyAllAcknowledged: false,
+    });
+    // Through cellSettings and the schema, as the script builds a cell.
+    const fable = { provider: "anthropic" as const, model: "claude-fable-5-1" };
+    const settings = settingsSchema.parse(
+      cellSettings(
+        {
+          ...structuredClone(defaultSettings),
+          memory: false,
+          ...autonomySettings("all"),
+        },
+        fable,
+        { inputPrice: 10, outputPrice: 50 },
+      ),
+    );
+    expect(settings).toMatchObject({
+      model: "claude-fable-5-1",
+      autonomy: "all",
+      autonomyAllAcknowledged: true,
+    });
+    // What the policy makes of the pair: a fixture Checkout's question is
+    // answered without asking under "all", asked (and so declined by the
+    // harness) under "flow" and under an "all" nobody acknowledged.
+    const order = { kind: "CONFIRM" as const, reason: "Place this order?" };
+    const under = (mode: (typeof AUTONOMY_MODES)[number]) =>
+      settingsSchema.parse({ ...defaultSettings, ...autonomySettings(mode) });
+    expect(withoutAsking(order, under("all")).kind).toBe("ALLOW");
+    expect(withoutAsking(order, under("flow")).kind).toBe("CONFIRM");
+    expect(withoutAsking(order, under("task")).kind).toBe("CONFIRM");
+    expect(
+      withoutAsking(
+        order,
+        settingsSchema.parse({ ...defaultSettings, autonomy: "all" }),
+      ).kind,
+    ).toBe("CONFIRM");
+    // A cycle from before the flag recorded no regime and ran the default.
+    expect(autonomyOf(undefined)).toBe("task");
+    expect(autonomyOf({})).toBe("task");
+    expect(autonomyOf({ autonomy: "all" })).toBe("all");
+    expect(autonomyOf({ autonomy: "everything" })).toBe("task");
+  });
   it("parses the matrix, durations and a probe's scope", () => {
     const defaults = {
       openai: "gpt-5.4-mini",
@@ -3104,6 +3171,42 @@ describe("results.json and report.md", () => {
     expect(text).toContain("| BUDGET_EXHAUSTED | 1 |");
   });
 
+  it("names the regime in the header, task for a cycle from before the flag", () => {
+    const strict = renderCycleReport(
+      buildCycleResults({ cycle: info(), results, analysis }),
+    );
+    expect(strict).toContain(
+      "gate waits 5 min · autonomy task (every prompt declined)",
+    );
+    expect(strict).toContain("same git revision, catalogue hash and autonomy");
+    const routine = renderCycleReport(
+      buildCycleResults({
+        cycle: info({ flags: { ...info().flags, approveRoutine: true } }),
+        results,
+        analysis,
+      }),
+    );
+    expect(routine).toContain(
+      "· autonomy task (routine prompts approved, the rest declined)",
+    );
+    // results.json carries the regime where the header reads it from.
+    const owner = buildCycleResults({
+      cycle: info({ flags: { ...info().flags, autonomy: "all" } }),
+      results,
+      analysis,
+    });
+    expect(owner.cycle.flags.autonomy).toBe("all");
+    expect(renderCycleReport(owner)).toContain(
+      "· autonomy all (never asks; only protected sites refused)",
+    );
+    expect(autonomyLine({ autonomy: "ask", approveRoutine: false })).toBe(
+      "ask (every prompt declined)",
+    );
+    expect(autonomyLine({ autonomy: "all", approveRoutine: true })).toBe(
+      "all (never asks; only protected sites refused)",
+    );
+  });
+
   it("never carries screen text, even from rows and logs that hold it", () => {
     const leaky = [
       ...results,
@@ -3473,6 +3576,191 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
       'spawn("caffeinate", ["-d", "-w", String(process.pid)]',
     );
     expect(source).not.toMatch(/caffeinate[^\n]*-[a-z]*u/);
+  });
+
+  it("--autonomy names the regime, refuses anything else and rides in every cell's settings", () => {
+    const home = mkdtempSync(join(scratch, "autonomy-home-"));
+    const run = (...args: string[]) =>
+      spawnSync(
+        process.execPath,
+        [
+          "scripts/harness-cycle.mjs",
+          "--dry-run",
+          "--tasks",
+          "calculator",
+          ...args,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 60000,
+          env: { ...process.env, HOME: home },
+        },
+      );
+    // The bare command is the strict measurement every earlier cycle made.
+    const bare = run();
+    expect(bare.status, bare.stderr).toBe(0);
+    expect(bare.stdout).toContain("\nautonomy task (every prompt declined)\n");
+    expect(run("--approve-routine").stdout).toContain(
+      "\nautonomy task (routine prompts approved, the rest declined)\n",
+    );
+    const owner = run("--autonomy", "all");
+    expect(owner.status, owner.stderr).toBe(0);
+    expect(owner.stdout).toContain(
+      "\nautonomy all (never asks; only protected sites refused)\n",
+    );
+    const bad = run("--autonomy", "everything");
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toContain("--autonomy takes ask, task, flow or all.");
+    const help = spawnSync(
+      process.execPath,
+      ["scripts/harness-cycle.mjs", "--help"],
+      { cwd: root, encoding: "utf8", timeout: 60000 },
+    );
+    expect(help.stdout).toContain("--autonomy <ask|task|flow|all>");
+    // The regime rides in the settings every cell is built from, with the
+    // acknowledgement autonomySettings adds for "all"; a new plan records
+    // it in the flags plan.json and results.json carry; a resume keeps the
+    // stored regime and refuses a flag asking for another, since the flag
+    // has no default to hide behind.
+    const source = readFileSync(
+      join(root, "scripts/harness-cycle.mjs"),
+      "utf8",
+    );
+    const cell = source.indexOf("const settings = settingsSchema.parse(");
+    expect(cell).toBeGreaterThan(0);
+    const spread = source.indexOf("...autonomySettings(autonomy),", cell);
+    expect(spread).toBeGreaterThan(cell);
+    expect(spread).toBeLessThan(
+      source.indexOf("cellPrices(cell, catalog),", cell),
+    );
+    expect(source).toContain("  autonomy: autonomyFlag,\n};");
+    expect(source).toContain("const autonomy = autonomyOf(flags);");
+    expect(source).toContain('    autonomy: { type: "string" },');
+    expect(source).toContain(
+      "if (stored && values.autonomy !== undefined && autonomyFlag !== autonomy)",
+    );
+    expect(source).toContain(
+      "parseAutonomy(values.autonomy ?? DEFAULT_AUTONOMY)",
+    );
+    // `auto` picks a baseline among cycles of this regime only (the timing
+    // medians still come from any: pinned with the suites below).
+    expect(source).toContain("pool = cycles.filter(sameRegime),");
+  });
+
+  it("--probe compares like with like: a baseline of another regime is refused", () => {
+    const home = mkdtempSync(join(scratch, "probe-home-"));
+    const out = mkdtempSync(join(scratch, "probe-out-"));
+    // A finished cycle as results.json stores it, at another revision (a
+    // probe compares across revisions by design), with the class in one
+    // cell and one category; `autonomy` absent is a cycle from before the flag.
+    const finished = (id: string, autonomy?: string) => {
+      mkdirSync(join(out, id), { recursive: true });
+      writeFileSync(
+        join(out, id, "results.json"),
+        JSON.stringify({
+          schema_version: 2,
+          harnessVersion: HARNESS_VERSION,
+          cycle: info({
+            id,
+            gitRev: "old1234",
+            matrix: [info().matrix[0]],
+            flags: {
+              ...info().flags,
+              ...(autonomy ? { autonomy } : {}),
+            } as CycleInfo["flags"],
+          }),
+          results: [],
+          failureClasses: [
+            {
+              code: "NOT_ENTERED",
+              byModel: { "openai:gpt-5.4-mini": { attempts: 2 } },
+              byCategory: { calculator: { attempts: 2 } },
+            },
+          ],
+        }),
+      );
+    };
+    finished("20260901-0100-old1234");
+    finished("20260902-0100-old1234", "all");
+    const run = (...args: string[]) =>
+      spawnSync(
+        process.execPath,
+        [
+          "scripts/harness-cycle.mjs",
+          "--dry-run",
+          "--out-dir",
+          out,
+          "--probe",
+          "NOT_ENTERED",
+          ...args,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 60000,
+          env: { ...process.env, HOME: home },
+        },
+      );
+    const strict = run("--baseline", "20260901-0100-old1234");
+    expect(strict.status, strict.stderr).toBe(0);
+    expect(strict.stdout).toContain(
+      "Probe NOT_ENTERED against cycle 20260901-0100-old1234",
+    );
+    expect(strict.stdout).toContain("baseline: 20260901-0100-old1234");
+    expect(strict.stdout).toContain("autonomy task (every prompt declined)");
+    const mixed = run(
+      "--baseline",
+      "20260901-0100-old1234",
+      "--autonomy",
+      "all",
+    );
+    expect(mixed.status).toBe(2);
+    expect(mixed.stderr).toContain(
+      "Cycle 20260901-0100-old1234 ran under --autonomy task, and this probe would run under all.",
+    );
+    expect(mixed.stderr).toContain("pass --autonomy task");
+    const owner = run(
+      "--baseline",
+      "20260902-0100-old1234",
+      "--autonomy",
+      "all",
+    );
+    expect(owner.status, owner.stderr).toBe(0);
+    expect(owner.stdout).toContain("baseline: 20260902-0100-old1234");
+    expect(owner.stdout).toContain("autonomy all (");
+    const reversed = run("--baseline", "20260902-0100-old1234");
+    expect(reversed.status).toBe(2);
+    expect(reversed.stderr).toContain(
+      "ran under --autonomy all, and this probe would run under task.",
+    );
+    // A plain cycle naming a baseline of the other regime is refused the
+    // same way; none of it wrote anything.
+    const plain = spawnSync(
+      process.execPath,
+      [
+        "scripts/harness-cycle.mjs",
+        "--dry-run",
+        "--out-dir",
+        out,
+        "--tasks",
+        "calculator",
+        "--baseline",
+        "20260902-0100-old1234",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 60000,
+        env: { ...process.env, HOME: home },
+      },
+    );
+    expect(plain.status).toBe(2);
+    expect(plain.stderr).toContain("this cycle would run under task");
+    expect(readdirSync(out).sort()).toEqual([
+      "20260901-0100-old1234",
+      "20260902-0100-old1234",
+    ]);
   });
 
   it("is wired as npm run cycle", () => {
@@ -5649,9 +5937,11 @@ describe("harness-cycle.mjs with the suites", () => {
     expect(cycle).toMatch(
       /reason === "APPS_OPEN" \? skipDetail\(entry\.taskId, reason\)\.apps/,
     );
-    // Durations from any slice; the baseline the dry run names is the
-    // slice-aware one the end of the cycle picks.
-    expect(cycle).toContain("const timing = baselineFor(draft, timingCycles);");
+    // Durations from any slice under any regime; the baseline the dry run
+    // names is the slice-aware, same-regime one the end of the cycle picks.
+    expect(cycle).toContain(
+      "const timing = baselineFor(draft, timingCycles, cycles);",
+    );
     expect(cycle).toMatch(
       /const baseline = baselineFor\(\{\s+\.\.\.draft,\s+designHash: design,\s+\.\.\.\(shardText \? \{ shard: shardText \} : \{\}\),\s+\}\);/,
     );

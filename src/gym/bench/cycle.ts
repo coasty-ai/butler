@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ProviderKind } from "../../core/schema";
+import type { ProviderKind, Settings } from "../../core/schema";
 import type { GateWaits } from "./cycle-report";
 import {
   gateDecision,
@@ -103,6 +103,40 @@ export function cellSettings<S extends Prices & { model: string }>(
     inputPrice: prices.inputPrice,
     outputPrice: prices.outputPrice,
   };
+}
+
+/** The Settings pane's Autonomy choices, as `--autonomy` takes them. */
+export const AUTONOMY_MODES = ["ask", "task", "flow", "all"] as const;
+export type Autonomy = Settings["autonomy"];
+/** What every cycle ran under before the flag existed: the schema's default. */
+export const DEFAULT_AUTONOMY: Autonomy = "task";
+
+/** `--autonomy <mode>`: the mode, or undefined for anything else. */
+export function parseAutonomy(text: string | undefined): Autonomy | undefined {
+  return (AUTONOMY_MODES as readonly string[]).includes(text ?? "")
+    ? (text as Autonomy)
+    : undefined;
+}
+
+/**
+ * The two settings fields one `--autonomy` value sets, as the Settings pane
+ * sets them (settings-voice.tsx autonomyChange): "all" carries the
+ * acknowledgement the owner ticks beside "allow everything", without which
+ * the policy treats "all" as "flow"; every other mode drops it.
+ */
+export function autonomySettings(
+  autonomy: Autonomy,
+): Pick<Settings, "autonomy" | "autonomyAllAcknowledged"> {
+  return { autonomy, autonomyAllAcknowledged: autonomy === "all" };
+}
+
+/**
+ * The regime a cycle's stored flags (plan.json, results.json `cycle.flags`)
+ * say it ran under. A cycle from before the flag recorded none and ran the
+ * default, so it reads as "task"; so does a value this build does not know.
+ */
+export function autonomyOf(flags: { autonomy?: string } | undefined): Autonomy {
+  return parseAutonomy(flags?.autonomy) ?? DEFAULT_AUTONOMY;
 }
 
 export interface PlanEntry {

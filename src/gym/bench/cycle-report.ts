@@ -23,6 +23,7 @@ import {
 } from "./report";
 import { wilson } from "./stats";
 import type { BenchTask } from "./types";
+import { autonomyOf, type Autonomy } from "./cycle";
 
 /**
  * results.json (schema 2) and report.md for one cycle. Every string in
@@ -93,6 +94,11 @@ export interface CycleInfo {
     stopOnHandoff: boolean;
     memory: boolean;
     requeue: number;
+    /**
+     * The Settings pane's Autonomy the attempts ran under (`--autonomy`);
+     * absent on cycles from before the flag, which ran the default, "task".
+     */
+    autonomy?: Autonomy;
   };
   stoppedBecause?: string;
   gateWaits: GateWaits;
@@ -602,6 +608,24 @@ const money = (value: number | null) =>
 const pValue = (p: number) =>
   Number.isNaN(p) ? "" : p < 0.001 ? "<0.001" : p.toFixed(3);
 
+/**
+ * The regime a cycle's numbers were measured under, for its header, the dry
+ * run and the start banner: the autonomy mode and what became of the
+ * policy's questions. Under "task" (the default), "ask" and "flow" the
+ * unattended harness answers every question itself, declining all of them
+ * unless `--approve-routine` approves the ones a task lists; under "all"
+ * (the owner's regime, acknowledged) the policy asks none but the
+ * protected-website question and its floors, which are still declined.
+ */
+export function autonomyLine(flags: {
+  autonomy?: string;
+  approveRoutine: boolean;
+}): string {
+  const mode = autonomyOf(flags);
+  if (mode === "all") return "all (never asks; only protected sites refused)";
+  return `${mode} (${flags.approveRoutine ? "routine prompts approved, the rest declined" : "every prompt declined"})`;
+}
+
 /** `67% [35, 88] n=9`, bold at n >= 30 and italic below 12 (descriptive only). */
 function rateCell(totals: CellTotals | undefined): string {
   if (!totals || !totals.ran) return "-";
@@ -674,7 +698,7 @@ export function renderCycleReport(cycle: CycleResults): string {
     `rev ${info.gitRev} on ${info.gitBranch}${info.dirty ? " (dirty)" : ""} · macOS ${info.host.macos} ${info.host.arch} · harness ${cycle.harnessVersion}`,
   );
   out.push(
-    `${info.startedAt} to ${info.finishedAt ?? "(running)"} · time box ${Math.round(info.caps.timeBoxSeconds / 60)} min, attempts ${Math.round(totals.totalSeconds / 60)} min, gate waits ${Math.round(info.gateWaits.totalSeconds / 60)} min`,
+    `${info.startedAt} to ${info.finishedAt ?? "(running)"} · time box ${Math.round(info.caps.timeBoxSeconds / 60)} min, attempts ${Math.round(totals.totalSeconds / 60)} min, gate waits ${Math.round(info.gateWaits.totalSeconds / 60)} min · autonomy ${autonomyLine(info.flags)}`,
   );
   out.push(
     `spent ${money(totals.totalCost)} of ${money(info.caps.cycle)} (run cap ${money(info.caps.run)}, model cap ${money(info.caps.model)})` +
@@ -813,7 +837,7 @@ export function renderCycleReport(cycle: CycleResults): string {
   if (!cycle.comparison || !cycle.comparison.comparable) {
     const reason = cycle.comparison?.reason ?? "NO_BASELINE";
     out.push(
-      `Not compared: ${reason}. Cycles are compared only at the same git revision and catalogue hash; a fix is judged by its class rate against the stopping rule, and the Honesty Report groups by revision.`,
+      `Not compared: ${reason}. Cycles are compared only at the same git revision, catalogue hash and autonomy; a fix is judged by its class rate against the stopping rule, and the Honesty Report groups by revision.`,
     );
   } else {
     out.push(

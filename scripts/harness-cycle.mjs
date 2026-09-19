@@ -61,6 +61,9 @@ const { catalogueFor, categoriesFor, longHorizon, selectSuite, suiteOf } =
 const { FIXTURE_PORT } = await import("../src/gym/bench/graders.ts");
 const {
   CYCLE_ID,
+  DEFAULT_AUTONOMY,
+  autonomyOf,
+  autonomySettings,
   buildPlan,
   ceiling,
   cellPrices,
@@ -71,6 +74,7 @@ const {
   fitsTimeBox,
   gateWaitsOf,
   ledgerResults,
+  parseAutonomy,
   parseDuration,
   parseLedger,
   parseMatrix,
@@ -132,6 +136,7 @@ const {
   withWindowFields,
 } = await import("../src/gym/bench/windows.ts");
 const {
+  autonomyLine,
   buildCycleResults,
   catalogueHash,
   classRates,
@@ -173,6 +178,9 @@ const { values } = parseArgs({
     "stop-on-handoff": { type: "boolean", default: false },
     requeue: { type: "string", default: "1" },
     "approve-routine": { type: "boolean", default: false },
+    // No default here: a resume must be able to tell the flag given from the
+    // flag left out (the stored plan's regime is kept either way).
+    autonomy: { type: "string" },
     memory: { type: "boolean", default: false },
     "memory-dir": { type: "string" },
     cycle: { type: "string" },
@@ -220,6 +228,13 @@ Behaviour
   --stop-on-handoff                End the cycle at the first agent hand-off.
   --requeue <n>                    Re-run an attempt real input cut short, at most n times (0-1). Default 1.
   --approve-routine                Approve only the prompts a task lists as routine.
+  --autonomy <ask|task|flow|all>   The Settings pane's Autonomy the attempts run under. Default task:
+                                   the strict measurement, every question the policy asks declined
+                                   (or approved under --approve-routine). all is the owner's regime
+                                   (never ask, allow everything, acknowledged): a fixture Checkout or
+                                   Confirm is pressed, in the fixture only, and the graders mark it.
+                                   A baseline and a probe compare only within one regime; a resume
+                                   keeps the cycle's.
   --memory, --memory-dir <dir>     As bench.
 Cycle
   --cycle <id>                     Name. Default <YYYYMMDD-HHMM>-<rev>.
@@ -269,6 +284,11 @@ const idleSeconds = number("idle", 300, 7200);
 const gatePollSeconds = number("gate-poll", 1, 600);
 // At most once: every re-run of an attempt input cut short is paid again.
 const requeueFlag = number("requeue", 0, 1, true);
+// The regime the attempts run under. "task" is what every cycle before the
+// flag ran, so a bare command measures what it always did; "all" is what the
+// owner runs the product under, acknowledgement included (autonomySettings).
+const autonomyFlag = parseAutonomy(values.autonomy ?? DEFAULT_AUTONOMY);
+if (!autonomyFlag) fail("--autonomy takes ask, task, flow or all.");
 const timeBoxSeconds = parseDuration(values["time-box"]);
 if (!timeBoxSeconds || timeBoxSeconds < 60)
   fail("--time-box must be a duration such as 4h, 90m or 3600.");
@@ -440,9 +460,18 @@ const flags = stored?.flags ?? {
   stopOnHandoff: values["stop-on-handoff"],
   memory: values.memory,
   requeue: requeueFlag,
+  autonomy: autonomyFlag,
 };
 const runCap = stored?.caps?.run ?? runCapFlag;
 const requeue = flags.requeue;
+/** The regime this cycle's attempts run under; a plan from before the flag ran "task". */
+const autonomy = autonomyOf(flags);
+// The other flags are silently kept on a resume; this one changes what every
+// attempt does, so asking for another regime is refused rather than ignored.
+if (stored && values.autonomy !== undefined && autonomyFlag !== autonomy)
+  fail(
+    `Cycle ${resuming} runs under --autonomy ${autonomy}, and a resume keeps it: attempts under ${autonomyFlag} would pool into the same numbers. Drop the flag, or start a new cycle.`,
+  );
 
 const defaults = Object.fromEntries(
   Object.entries(providerDefaults).map(([key, value]) => [key, value.model]),
@@ -486,6 +515,19 @@ if (stored) {
 }
 
 const cycles = knownCycles();
+/** Whether a finished cycle ran under this cycle's regime (one from before the flag ran "task"). */
+const sameRegime = (cycle) => autonomyOf(cycle.data.cycle.flags) === autonomy;
+if (!["auto", "none"].includes(values.baseline)) {
+  // Like with like: a cycle that declined every question and one that never
+  // asked measure different things, whatever the revision. A named baseline
+  // of the other regime is refused here, for a probe and a plain cycle
+  // alike; `auto` picks among cycles of this regime only (baselineFor).
+  const named = cycles.find((cycle) => cycle.data.cycle.id === values.baseline);
+  if (named && !sameRegime(named))
+    fail(
+      `Cycle ${values.baseline} ran under --autonomy ${autonomyOf(named.data.cycle.flags)}, and this ${values.probe ? "probe" : "cycle"} would run under ${autonomy}. Numbers are compared like with like: pass --autonomy ${autonomyOf(named.data.cycle.flags)}, or name a baseline of this regime.`,
+    );
+}
 let probe = stored?.probe;
 if (values.probe && !stored) {
   // A probe replays only where a class showed up in one named baseline: the
@@ -578,7 +620,14 @@ const catalogue = catalogueHash(tasks, graderSources);
 // Twice the baseline's median per task when there is one, the measured pace
 // of about three seconds a step otherwise.
 const medians = {};
-const baselineFor = (cycle, select = selectBaseline) => {
+// The pool `auto` chooses from: cycles of this regime, since the numbers are
+// judged against the baseline; the timing medians take any (below), a
+// duration being an estimate whatever the regime.
+const baselineFor = (
+  cycle,
+  select = selectBaseline,
+  pool = cycles.filter(sameRegime),
+) => {
   if (values.baseline === "none") return [];
   if (values.baseline !== "auto") {
     const named = cycles.find((c) => c.data.cycle.id === values.baseline);
@@ -586,7 +635,7 @@ const baselineFor = (cycle, select = selectBaseline) => {
   }
   return select(
     cycle,
-    cycles.map((c) => c.comparable),
+    pool.map((c) => c.comparable),
   );
 };
 // What a baseline is chosen by: revision, catalogue, tasks, cells, and
@@ -602,9 +651,9 @@ const draft = {
   cells: cellIds,
   results: [],
 };
-// Any slice of any plan times a task: tonight's slice is not known yet,
-// and it is chosen by these very medians.
-const timing = baselineFor(draft, timingCycles);
+// Any slice of any plan under any regime times a task: tonight's slice is
+// not known yet, and it is chosen by these very medians.
+const timing = baselineFor(draft, timingCycles, cycles);
 for (const id of taskIds) {
   const seconds = timing
     .flatMap((cycle) => cycle.results)
@@ -862,6 +911,7 @@ if (values["dry-run"]) {
     console.log(
       `Probe ${probe.code} against cycle ${probe.baseline}: the models and categories the class touched there.`,
     );
+  console.log(`autonomy ${autonomyLine(flags)}`);
   console.log(
     "No provider call, no desktop input and no file written in a dry run.\n",
   );
@@ -889,7 +939,7 @@ if (values["dry-run"]) {
       `${runnable().length} of ${tasks.length} task(s) can run tonight; the estimate and ceiling still count every task.`,
     );
   console.log(
-    `baseline: ${values.baseline === "none" ? "none" : baseline.length ? baseline.map((c) => c.id).join(", ") : "none found at this revision and catalogue"}`,
+    `baseline: ${values.baseline === "none" ? "none" : baseline.length ? baseline.map((c) => c.id).join(", ") : "none found at this revision, catalogue and autonomy"}`,
   );
   console.log(
     `catalogue ${catalogue.slice(0, 12)}, plan ${hash.slice(0, 12)}\n`,
@@ -1027,12 +1077,15 @@ const clients = {};
 for (const cell of cells) {
   // The cell's own model at its own rates (cellPrices refused the start
   // above for a model it cannot price). selectProvider takes the model too
-  // where the catalog prices per model.
+  // where the catalog prices per model. The regime rides in the settings,
+  // as it does in the product: the policy reads autonomy and, for "all",
+  // the acknowledgement from the same object the runner is given.
   const settings = settingsSchema.parse(
     cellSettings(
       {
         ...selectProvider(defaultSettings, cell.provider, cell.model),
         memory: flags.memory,
+        ...autonomySettings(autonomy),
       },
       cell,
       cellPrices(cell, catalog),
@@ -1172,7 +1225,7 @@ function writeReports(results, extra = {}, analysis, comparison, verdict) {
 }
 
 console.warn(
-  `\nButler cycle ${cycleId}: ${queue.length} attempt(s) left of ${plan.length}, ${cells.map((c) => c.cell).join(", ")}, ${suite} suite.\n` +
+  `\nButler cycle ${cycleId}: ${queue.length} attempt(s) left of ${plan.length}, ${cells.map((c) => c.cell).join(", ")}, ${suite} suite, autonomy ${autonomyLine(flags)}.\n` +
     (autoShards
       ? `The whole plan needs ${autoShards} nights: this is shard 1/${autoShards}; the others run ${shardNights.join(", then ")}.\n`
       : "") +
