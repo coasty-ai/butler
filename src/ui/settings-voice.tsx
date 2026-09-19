@@ -29,18 +29,80 @@ export function conversationHint(s: Settings): string {
   return `Replies are written by ${model} · ${s.provider}. What you say is sent there, like a task.`;
 }
 
+/**
+ * What the form sends for the OpenRouter key: nothing until the field was
+ * touched (the vault keeps what it has), then the trimmed field, so an
+ * emptied field reaches withJevKey as "" and clears the slot. Mirrors the
+ * provider key's `touched` flag.
+ */
+export function jevKeyToSave(touched: boolean, typed: string): string | undefined {
+  return touched ? typed.trim() : undefined;
+}
+
+/**
+ * The key field's state: whether a key will be there after a save (the
+ * toggle may be on only then), whether a stored key is being removed, and
+ * the placeholder that says so. A stored key counts until the field is
+ * changed; an emptied field over a stored key means removal on save.
+ */
+export function jevKeyField(o: {
+  stored: boolean;
+  touched: boolean;
+  typed: string;
+}): { ready: boolean; removing: boolean; placeholder: string } {
+  const typed = o.typed.trim().length > 0;
+  const removing = o.stored && o.touched && !typed;
+  const ready = o.touched ? typed : o.stored;
+  return {
+    ready,
+    removing,
+    placeholder: removing
+      ? "Removed when you save"
+      : o.stored
+        ? "Stored securely"
+        : "Your OpenRouter key",
+  };
+}
+
+/** The one-line privacy note under the "Decide with Jev" toggle. */
+export function jevHint(s: Settings, keyReady: boolean): string {
+  if (s.privacy === "PRIVATE_LOCAL")
+    return "Not available in local mode: the conversation would leave this Mac.";
+  if (!keyReady) return "Add an OpenRouter API key below to turn this on.";
+  return "Sends what you said, the recent conversation, your agenda and open app names to OpenRouter and TypeSafe with zero data retention requested; never screen text. A confident “start” runs your words at once; anything else changes nothing.";
+}
+
 export function VoiceSettings({
   s,
   set,
   ids,
   engine,
+  jevKey = "",
+  jevTouched = false,
+  onJevKey,
+  storedJevKey = false,
 }: {
   s: Settings;
   set: <K extends keyof Settings>(k: K, v: Settings[K]) => void;
   ids: string;
   engine: Settings["voiceEngine"];
+  /** The OpenRouter key being typed; saved with the form, never shown back. */
+  jevKey?: string;
+  /** The key field was changed: what it holds, even nothing, is what saves. */
+  jevTouched?: boolean;
+  onJevKey?: (key: string) => void;
+  /** An OpenRouter key is already in the vault. */
+  storedJevKey?: boolean;
 }) {
   const talking = s.conversation === "model";
+  const local = s.privacy === "PRIVATE_LOCAL";
+  const keyField = jevKeyField({
+    stored: storedJevKey,
+    touched: jevTouched,
+    typed: jevKey,
+  });
+  const jevKeyReady = keyField.ready;
+  const deciding = s.decisions === "jev" && !local;
   return (
     <div className="voice-conversation">
       <label className="consent">
@@ -117,6 +179,53 @@ export function VoiceSettings({
             />
             <span>Spoken progress on long tasks</span>
           </label>
+          <label className="consent">
+            <input
+              type="checkbox"
+              checked={deciding}
+              disabled={local || (!deciding && !jevKeyReady)}
+              aria-describedby={`${ids}-jev`}
+              onChange={(e) =>
+                set(
+                  "decisions",
+                  e.target.checked && jevKeyReady ? "jev" : "off",
+                )
+              }
+            />
+            <span>Decide with Jev (TypeSafe via OpenRouter)</span>
+          </label>
+          <p id={`${ids}-jev`} className="field-hint">
+            {jevHint(s, jevKeyReady)}
+          </p>
+          {!local && (
+            <>
+              <label>
+                OpenRouter API key
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={jevKey}
+                  maxLength={1000}
+                  placeholder={keyField.placeholder}
+                  onChange={(e) => onJevKey?.(e.target.value)}
+                />
+              </label>
+              {storedJevKey && !keyField.removing && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    // Empties the field: the save then clears the vault
+                    // slot, and the decider cannot stay on over it.
+                    onJevKey?.("");
+                    if (s.decisions === "jev") set("decisions", "off");
+                  }}
+                >
+                  Remove key
+                </button>
+              )}
+            </>
+          )}
         </>
       )}
       {engine === "kokoro" && (

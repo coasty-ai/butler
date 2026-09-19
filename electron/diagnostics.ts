@@ -153,6 +153,13 @@ const fields = new Set([
   // keys): fixed codes from the native helper, never its sentence.
   "change",
   "via",
+  // The opt-in Jev decider on a dialog turn: its time, the act it chose and
+  // that act's probability, whether it was used, and its failure code.
+  "jevMs",
+  "jevAct",
+  "jevP",
+  "jevUsed",
+  "jevCode",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -184,6 +191,8 @@ const numberFields = new Set([
   "rate",
   "actMs",
   "firstAudioMs",
+  "jevMs",
+  "jevP",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
@@ -194,6 +203,7 @@ const flagFields = new Set([
   "preempt",
   "stream",
   "restoredWindow",
+  "jevUsed",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -223,6 +233,8 @@ const codeFields = new Set([
   "channel",
   "change",
   "via",
+  "jevAct",
+  "jevCode",
 ]);
 const memoryEvents = new Set([
   "MemoryRecalled",

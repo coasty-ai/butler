@@ -11,7 +11,14 @@ import {
 } from "../electron/assistant";
 import { speakableSentence } from "../src/voice/speakable";
 import { forgetUnsupportedOptions } from "../src/providers/text";
+import {
+  DECISIONS_ENDPOINT,
+  JEV_MODEL,
+  JEV_SERVED_MODEL,
+  JEV_TIMEOUT_MS,
+} from "../src/providers/jev";
 import { DIALOG_SYSTEM } from "../src/assistant/prompt";
+import { DIALOG_ACTS } from "../src/assistant/protocol";
 import type {
   DecideInput,
   RunView,
@@ -83,6 +90,81 @@ const working: RunView = {
   watches: [],
 };
 
+/** What the fake Decisions endpoint answers: one reply for every call. */
+interface JevReply {
+  act?: string;
+  p?: number;
+  status?: number;
+  /** The whole body instead of a built one; a string is served as is. */
+  body?: unknown;
+  /** The body's provider (null omits it). */
+  provider?: string | null;
+  /** The x-provider-name header (null omits it). */
+  header?: string | null;
+  model?: string | null;
+  /** null omits usage, so the cost is the pessimistic estimate. */
+  usage?: Record<string, number> | null;
+  delayMs?: number;
+  never?: boolean;
+  throws?: boolean;
+  /** Runs just before the response is handed back: the moment it lands. */
+  onReply?: () => void;
+}
+const JEV_KEY = "sk-or-v1-SESSION-TEST-KEY-9f8e7d6c";
+function jevBody(r: JevReply) {
+  const act = r.act ?? "start";
+  const p = r.p ?? 0.97;
+  const probabilities = Object.fromEntries(DIALOG_ACTS.map((a) => [a, 0]));
+  if (act in probabilities) probabilities[act] = p;
+  return {
+    ...(r.model === null ? {} : { model: r.model ?? JEV_SERVED_MODEL }),
+    ...(r.provider === null ? {} : { provider: r.provider ?? "TypeSafe" }),
+    answers: {
+      act: { type: "choice", choice: act, probabilities, confidence: p },
+    },
+    ...(r.usage === null
+      ? {}
+      : {
+          usage: r.usage ?? {
+            input_tokens: 900,
+            output_tokens: 32,
+            cost: 0.00004,
+          },
+        }),
+  };
+}
+async function jevResponse(
+  r: JevReply,
+  signal: AbortSignal,
+): Promise<Response> {
+  if (r.throws) throw new TypeError("fetch failed");
+  const aborted = () =>
+    new DOMException("The operation was aborted.", "AbortError");
+  if (r.never)
+    return new Promise((_, reject) =>
+      signal.addEventListener("abort", () => reject(aborted()), { once: true }),
+    );
+  if (r.delayMs)
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, r.delayMs);
+      signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          reject(aborted());
+        },
+        { once: true },
+      );
+    });
+  const body = r.body ?? jevBody(r);
+  r.onReply?.();
+  return new Response(typeof body === "string" ? body : JSON.stringify(body), {
+    status: r.status ?? 200,
+    headers:
+      r.header === null ? {} : { "x-provider-name": r.header ?? "TypeSafe" },
+  });
+}
+
 function setup(
   o: {
     settings?: Partial<Settings>;
@@ -93,7 +175,12 @@ function setup(
       notifications?: string[];
       openApps?: string[];
     };
-    heldByVoice?: boolean;
+    /** A function stands in for the presence read, so a test can make it fail. */
+    heldByVoice?: boolean | (() => boolean);
+    /** Serves the Decisions endpoint; without it that endpoint never answers. */
+    jev?: JevReply;
+    /** A function stands in for the vault read, so a test can make it fail. */
+    jevKey?: string | (() => string);
   } = {},
 ) {
   const settings: Settings = {
@@ -108,12 +195,28 @@ function setup(
     ...o.settings,
   };
   const requests: { url: string; body: any; signal: AbortSignal }[] = [];
+  /** Calls to the Decisions endpoint, kept apart from the text model's. */
+  const jevRequests: {
+    url: string;
+    body: any;
+    headers: Record<string, string>;
+    signal: AbortSignal;
+  }[] = [];
   const streams: { state: { cancelled: boolean } }[] = [];
   const traces: { event: string; data: Record<string, unknown> }[] = [];
   const usages: unknown[] = [];
   let now = 1_000_000;
   const bodies = o.bodies ?? [];
   const fetch = vi.fn(async (url: string, init: RequestInit) => {
+    if (url === DECISIONS_ENDPOINT) {
+      jevRequests.push({
+        url,
+        body: JSON.parse(init.body as string),
+        headers: init.headers as Record<string, string>,
+        signal: init.signal!,
+      });
+      return jevResponse(o.jev ?? { never: true }, init.signal!);
+    }
     requests.push({
       url,
       body: JSON.parse(init.body as string),
@@ -127,10 +230,15 @@ function setup(
   const session = new AssistantSession({
     settings: () => settings,
     providerKey: () => "SECRET-KEY",
+    jevKey: () =>
+      typeof o.jevKey === "function" ? o.jevKey() : (o.jevKey ?? ""),
     fetch: fetch as unknown as typeof globalThis.fetch,
     view: () => o.view ?? idle,
     context: () => o.context ?? {},
-    heldByVoice: () => o.heldByVoice ?? false,
+    heldByVoice: () =>
+      typeof o.heldByVoice === "function"
+        ? o.heldByVoice()
+        : (o.heldByVoice ?? false),
     addUsage: (usage) => usages.push(usage),
     trace: (event, data) => traces.push({ event, data: data ?? {} }),
     now: () => now,
@@ -178,6 +286,7 @@ function setup(
     session,
     settings,
     requests,
+    jevRequests,
     streams,
     traces,
     usages,
@@ -191,6 +300,9 @@ function setup(
     },
   };
 }
+/** A stream piece that arrives after `ms` on the fake clock. */
+const after = (ms: number, text: string) => () =>
+  new Promise<string>((resolve) => setTimeout(() => resolve(text), ms));
 const start = (text: string): TurnPlan => ({
   kind: "start",
   text,
@@ -1163,5 +1275,499 @@ describe("assistant session: words that point elsewhere", () => {
       ),
     );
     expect(own.session.proposal()?.text).toBe("anything on my calendar");
+  });
+});
+
+describe("assistant session: deciding early with Jev (opt-in)", () => {
+  // A verb outside the fast-start list: the turn reaches the model today.
+  const text = "print the boarding pass for the denver flight";
+  const jevSetup = (o: Parameters<typeof setup>[0] = {}) =>
+    setup({
+      ...o,
+      settings: { decisions: "jev", ...o.settings },
+      jevKey: o.jevKey ?? JEV_KEY,
+    });
+  /** The text model's start for the user's own words, after `ms`. */
+  const modelStart = (ms: number) => [
+    after(ms, sse([`ACT: start\nTASK: ${text}\nSAY: Adding it now.`]).join("")),
+  ];
+  const decidedTraces = (t: ReturnType<typeof setup>) =>
+    t.traces.filter(
+      (x) => x.event === "DialogTurn" && x.data.phase === "decided",
+    );
+
+  it("starts the user's own words on a confident start, beside the stream, and cuts the stream off", async () => {
+    const t = jevSetup({
+      bodies: [[never]],
+      jev: { act: "start", p: 0.97, delayMs: 120 },
+    });
+    const base = start(text);
+    const pending = t.decide(text, base);
+    await vi.advanceTimersByTimeAsync(0);
+    // Both calls are on the wire at once: never one after the other.
+    expect(t.requests).toHaveLength(1);
+    expect(t.jevRequests).toHaveLength(1);
+    let settled: TurnDecision | undefined;
+    void pending.then((d) => (settled = d));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(settled).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(30);
+    expect(settled).toEqual({
+      plan: base,
+      taskSource: "user_words",
+      acting: true,
+      code: "jev_start",
+    });
+    expect(t.requests[0].signal.aborted).toBe(true);
+    // The request: the pinned model, ZDR with no fallback, one act question
+    // over the very state the text model was sent, and the key in the header only.
+    const r = t.jevRequests[0];
+    expect(r.body).toMatchObject({
+      model: JEV_MODEL,
+      provider: { zdr: true, data_collection: "deny", allow_fallbacks: false },
+    });
+    expect(Object.keys(r.body.questions)).toEqual(["act"]);
+    expect(r.body.questions.act.type).toBe("choice");
+    expect(Object.keys(r.body.questions.act.criteria).sort()).toEqual(
+      [...DIALOG_ACTS].sort(),
+    );
+    expect(r.body.state).toEqual(t.stateOf(0));
+    expect(r.headers.Authorization).toBe(`Bearer ${JEV_KEY}`);
+    expect(JSON.stringify(r.body)).not.toContain(JEV_KEY);
+    const decided = decidedTraces(t);
+    expect(decided).toHaveLength(1);
+    expect(decided[0].data).toMatchObject({
+      code: "jev_start",
+      channel: "voice",
+      preempt: false,
+      jevUsed: true,
+      jevAct: "start",
+      jevP: 0.97,
+      jevMs: expect.any(Number),
+    });
+    // Typed words count as the user's own too.
+    const t2 = jevSetup({
+      bodies: [[never]],
+      jev: { act: "start", p: 0.9, delayMs: 10 },
+    });
+    const typed = await t2.decided(text, start(text), {
+      channel: "app",
+      confidence: 1,
+    });
+    expect(typed.code).toBe("jev_start");
+  });
+
+  it("changes nothing on any other act, a low probability, a slow answer, an error or a mismatch", async () => {
+    const replies: JevReply[] = [
+      { act: "answer" },
+      { act: "none" },
+      { act: "status" },
+      { act: "revise" },
+      { act: "replace" },
+      { act: "queue" },
+      { act: "resume" },
+      { act: "pause" },
+      { act: "start", p: 0.84 },
+      { never: true },
+      { throws: true },
+      { status: 500, body: "boom" },
+      { status: 429, body: { error: { message: "slow down", code: 429 } } },
+      { header: "OpenAI" },
+      { header: null },
+      { provider: null },
+      { provider: "Other" },
+      { model: "typesafe/jev-1.14-20261001" },
+      { body: "not json" },
+    ];
+    for (const reply of replies) {
+      const label = JSON.stringify(reply);
+      const t = jevSetup({
+        bodies: [[after(200, answer("Sure, the calendar is empty.").join(""))]],
+        jev: { delayMs: 20, ...reply },
+      });
+      const pending = t.decide(text, start(text));
+      let settled: TurnDecision | undefined;
+      void pending.then((d) => (settled = d));
+      // No delay added: the verdict is in (or failed) long before the head.
+      await vi.advanceTimersByTimeAsync(190);
+      expect(settled, label).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(settled, label).toMatchObject({
+        plan: { kind: "reply", act: "answer" },
+        acting: false,
+        code: "model",
+      });
+      expect(t.jevRequests, label).toHaveLength(1);
+      expect(t.requests[0].signal.aborted, label).toBe(false);
+      expect(decidedTraces(t)[0].data.jevUsed, label).toBe(false);
+      await vi.advanceTimersByTimeAsync(JEV_TIMEOUT_MS);
+      const verdict = t.traces.find((x) => x.data.phase === "jev");
+      expect(verdict?.data.jevUsed, label).toBe(false);
+      if ("act" in reply && !("p" in reply))
+        expect(verdict?.data.jevAct, label).toBe(reply.act);
+    }
+    // With nothing answering, the base plan runs at the ACT deadline, as
+    // today, and the verdict was a timeout at Jev's own ceiling.
+    const t = jevSetup({ bodies: [[never]], jev: { never: true } });
+    const pending = t.decide(text, start(text));
+    await vi.advanceTimersByTimeAsync(DIALOG_LIMITS.actDeadlineMs + 1);
+    expect(await pending).toEqual({
+      plan: start(text),
+      acting: true,
+      code: "timeout",
+    });
+    expect(t.jevRequests[0].signal.aborted).toBe(true);
+    expect(t.traces.find((x) => x.data.phase === "jev")?.data).toMatchObject({
+      jevCode: "timeout",
+      jevMs: expect.any(Number),
+      jevUsed: false,
+    });
+    expect(decidedTraces(t)[0].data).toMatchObject({
+      code: "timeout",
+      jevCode: "timeout",
+    });
+  });
+
+  it("never asks in local mode, without a key, with the setting off, or on words that fail a guard", async () => {
+    const local = jevSetup({
+      settings: {
+        privacy: "PRIVATE_LOCAL",
+        provider: "ollama",
+        endpoint: "http://127.0.0.1:11434",
+        model: "qwen3-vl:8b",
+        dialogModel: "qwen3:8b",
+      },
+      bodies: [answer("Sure."), answer("Sure.")],
+      jev: { act: "start" },
+    });
+    expect(local.session.available("voice")).toBe(true);
+    local.session.preempt(text, "voice");
+    await local.decided(text, start(text), {}, 100);
+    expect(local.jevRequests).toHaveLength(0);
+    expect(local.requests.length).toBeGreaterThan(0);
+    const noKey = jevSetup({
+      bodies: [answer("Sure.")],
+      jev: { act: "start" },
+      jevKey: "",
+    });
+    await noKey.decided(text, start(text), {}, 100);
+    expect(noKey.jevRequests).toHaveLength(0);
+    const off = jevSetup({
+      settings: { decisions: "off" },
+      bodies: [answer("Sure.")],
+      jev: { act: "start" },
+    });
+    await off.decided(text, start(text), {}, 100);
+    expect(off.jevRequests).toHaveLength(0);
+    // Deictic or back-referring words, questions, and words too few to name a task.
+    for (const words of [
+      "print that for dana please",
+      "print it again for dana",
+      "print the same for dana",
+      "print this one for me",
+      "print it for her now",
+      "is spotify open right now",
+      "what's on my calendar tomorrow",
+      "can you tell me the weather",
+      "tell me a joke",
+      // Report frames: an imperative that asks for an answer in words. Live
+      // Jev (2026-09-18) called both a confident start.
+      "tell me whether the invoice from acme was paid",
+      "tell me whether the denver deck is finished",
+      "let me know if dana replied about the deck",
+      `print the notes about ${"the plan ".repeat(30)}`,
+    ]) {
+      const t = jevSetup({ bodies: [answer("Sure.")], jev: { act: "start" } });
+      t.session.preempt(words, "voice");
+      await t.decided(words, start(words), {}, 100);
+      expect(t.jevRequests, words).toHaveLength(0);
+    }
+  });
+
+  it("never asks while a run is active or when the words were not heard clearly", async () => {
+    const running = jevSetup({
+      view: working,
+      bodies: [answer("Still on the flights.")],
+      jev: { act: "start" },
+    });
+    running.session.preempt(text, "voice");
+    await running.decided(
+      text,
+      { kind: "revise", text },
+      { view: working },
+      100,
+    );
+    expect(running.jevRequests).toHaveLength(0);
+    const stalled = jevSetup({
+      bodies: [answer("Sure.")],
+      jev: { act: "start" },
+    });
+    await stalled.decided(
+      text,
+      start(text),
+      {
+        run: {
+          id: "r1",
+          status: "paused",
+          actions: 2,
+          held: true,
+          task: "Find flights",
+          stalled: true,
+        },
+      },
+      100,
+    );
+    expect(stalled.jevRequests).toHaveLength(0);
+    const unsure = jevSetup({
+      bodies: [answer("Sure."), answer("Sure.")],
+      jev: { act: "start" },
+    });
+    await unsure.decided(
+      text,
+      { kind: "start", text, taskSource: "user_words_unsure" },
+      { confidence: 0.5 },
+      100,
+    );
+    await unsure.decided(text, start(text), { confidence: 0.5 }, 100);
+    expect(unsure.jevRequests).toHaveLength(0);
+    // Any other provenance on the plan (a rewrite, an offer) is not the user's words.
+    const rewrite = jevSetup({
+      bodies: [answer("Sure.")],
+      jev: { act: "start" },
+    });
+    await rewrite.decided(
+      text,
+      { kind: "start", text, taskSource: "model_rewrite" },
+      {},
+      100,
+    );
+    expect(rewrite.jevRequests).toHaveLength(0);
+  });
+
+  it("takes today's path when its own path throws, and traces only a code", async () => {
+    // The vault read fails on every turn: preempt shrugs it off, decide
+    // waits for the model as it would with the decider off, and nothing
+    // starts unheard. The failure's words never reach the trace.
+    let reads = 0;
+    const t = jevSetup({
+      bodies: [[after(200, answer("Sure, it is printed.").join(""))]],
+      jev: { act: "start" },
+      jevKey: () => {
+        reads++;
+        throw new Error("vault locked: keychain unavailable");
+      },
+    });
+    expect(() => t.session.preempt(text, "voice")).not.toThrow();
+    const pending = t.decide(text, start(text));
+    await vi.advanceTimersByTimeAsync(250);
+    expect(await pending).toMatchObject({
+      plan: { kind: "reply", act: "answer" },
+      acting: false,
+      code: "model",
+    });
+    expect(reads).toBeGreaterThan(0);
+    expect(t.jevRequests).toHaveLength(0);
+    expect(t.requests.length).toBeGreaterThan(0);
+    expect(t.requests.at(-1)!.signal.aborted).toBe(false);
+    expect(t.traces.some((x) => x.data.phase === "failed")).toBe(false);
+    const jev = t.traces.filter((x) => x.data.phase === "jev");
+    expect(jev.length).toBeGreaterThan(0);
+    for (const x of jev)
+      expect(x.data).toMatchObject({ jevCode: "error", jevUsed: false });
+    expect(JSON.stringify(t.traces)).not.toContain("keychain");
+  });
+
+  it("aborts what the turn launched when the turn itself fails after launching it", async () => {
+    // Both calls are on the wire when the presence read starts failing: the
+    // turn ends in error, and neither the stream nor the ask is left running.
+    let broken = false;
+    const t = jevSetup({
+      // The reply's head arrives at 100 ms and the stream stays open, so it
+      // is still on the wire when the turn fails.
+      bodies: [[after(100, answer("Sure.").join("")), never]],
+      jev: { act: "answer", delayMs: 300 },
+      heldByVoice: () => {
+        if (broken) throw new Error("presence lost");
+        return false;
+      },
+    });
+    const pending = t.decide(text, start(text));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.requests).toHaveLength(1);
+    expect(t.jevRequests).toHaveLength(1);
+    broken = true;
+    await vi.advanceTimersByTimeAsync(150);
+    expect(await pending).toMatchObject({ code: "error" });
+    expect(t.requests[0].signal.aborted).toBe(true);
+    expect(t.jevRequests[0].signal.aborted).toBe(true);
+    expect(t.traces.some((x) => x.data.phase === "failed")).toBe(true);
+    expect(JSON.stringify(t.traces)).not.toContain("presence lost");
+  });
+
+  it("starts once when both say start: whichever answers first decides, and the other changes nothing", async () => {
+    // Jev first: the stream's later start is discarded with the stream.
+    const t = jevSetup({
+      bodies: [modelStart(300)],
+      jev: { act: "start", p: 0.95, delayMs: 50 },
+    });
+    const decision = await t.decided(text, start(text), {}, 80);
+    expect(decision.code).toBe("jev_start");
+    expect(t.requests[0].signal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(decidedTraces(t)).toHaveLength(1);
+    // The model first: its plan stands, and Jev's verdict later is only traced.
+    const t2 = jevSetup({
+      bodies: [modelStart(0)],
+      jev: { act: "start", p: 0.95, delayMs: 300 },
+    });
+    const d2 = await t2.decided(text, start(text), {}, 50);
+    expect(d2.code).toBe("model");
+    expect(d2.plan.kind).toBe("start");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(decidedTraces(t2)).toHaveLength(1);
+    expect(t2.traces.find((x) => x.data.phase === "jev")?.data).toMatchObject({
+      jevAct: "start",
+      jevUsed: false,
+    });
+  });
+
+  it("charges every Jev call to the hourly budget, at the billed cost or the estimate", async () => {
+    // The model call alone is $0.00044 (412 in at $1/M, 14 out at $2/M).
+    const without = setup({
+      settings: { dialogHourlyCost: 0.00047, inputPrice: 1, outputPrice: 2 },
+      bodies: [answer("Three.")],
+    });
+    await without.collect(await without.decided(text, start(text), {}, 100));
+    expect(without.session.available("voice")).toBe(true);
+    const billed = jevSetup({
+      settings: { dialogHourlyCost: 0.00047, inputPrice: 1, outputPrice: 2 },
+      bodies: [answer("Three.")],
+      jev: {
+        act: "answer",
+        delayMs: 10,
+        usage: { input_tokens: 900, output_tokens: 32, cost: 0.00004 },
+      },
+    });
+    await billed.collect(await billed.decided(text, start(text), {}, 100));
+    expect(billed.jevRequests).toHaveLength(1);
+    expect(billed.session.available("voice")).toBe(false);
+    // An answer that does not say what it cost is charged the estimate.
+    const unpriced = jevSetup({
+      settings: { dialogHourlyCost: 0.00045, inputPrice: 1, outputPrice: 2 },
+      bodies: [answer("Three.")],
+      jev: { act: "answer", delayMs: 10, usage: null },
+    });
+    await unpriced.collect(await unpriced.decided(text, start(text), {}, 100));
+    expect(unpriced.session.available("voice")).toBe(false);
+    // So is a call that never answered, once it has timed out.
+    const timedOut = jevSetup({
+      settings: { dialogHourlyCost: 0.00045, inputPrice: 1, outputPrice: 2 },
+      bodies: [answer("Three.")],
+      jev: { never: true },
+    });
+    await timedOut.collect(await timedOut.decided(text, start(text), {}, 100));
+    expect(timedOut.session.available("voice")).toBe(true);
+    await vi.advanceTimersByTimeAsync(JEV_TIMEOUT_MS);
+    expect(timedOut.session.available("voice")).toBe(false);
+    timedOut.advance(3_600_001);
+    expect(timedOut.session.available("voice")).toBe(true);
+  });
+
+  it("keeps the key out of every trace and out of the request body", async () => {
+    for (const reply of [
+      { act: "start", p: 0.97, delayMs: 10 },
+      {
+        status: 401,
+        body: { error: { message: `bad key ${JEV_KEY}`, code: 401 } },
+      },
+    ] satisfies JevReply[]) {
+      const t = jevSetup({
+        bodies: [[after(100, answer("Sure.").join(""))]],
+        jev: reply,
+      });
+      await t.decided(text, start(text), {}, 150);
+      await vi.advanceTimersByTimeAsync(JEV_TIMEOUT_MS);
+      const flat = JSON.stringify(t.traces);
+      expect(flat).not.toContain(JEV_KEY);
+      expect(flat).not.toMatch(/boarding|denver/);
+      expect(JSON.stringify(t.jevRequests.map((r) => r.body))).not.toContain(
+        JEV_KEY,
+      );
+      for (const trace of t.traces) {
+        expect(Object.keys(trace.data)).not.toContain("text");
+        expect(Object.keys(trace.data)).not.toContain("key");
+      }
+    }
+  });
+
+  it("asks on the partial with the early request, reuses a matching ask, and drops a mismatched one", async () => {
+    const t = jevSetup({
+      bodies: [[never]],
+      jev: { act: "start", p: 0.95, delayMs: 100 },
+    });
+    t.session.preempt(text, "voice");
+    expect(t.requests).toHaveLength(1);
+    expect(t.jevRequests).toHaveLength(1);
+    expect(t.jevRequests[0].body.state).toEqual(t.stateOf(0));
+    // The same ask twice on the same partial is one call.
+    t.session.preempt(text, "voice");
+    expect(t.jevRequests).toHaveLength(1);
+    const decision = await t.decided(
+      `${text[0].toUpperCase()}${text.slice(1)}.`,
+      start(text),
+      {},
+      150,
+    );
+    expect(decision.code).toBe("jev_start");
+    expect(t.jevRequests).toHaveLength(1);
+    expect(decidedTraces(t)[0].data.preempt).toBe(true);
+    // Different final words: the early ask is aborted and a new one made.
+    const t2 = jevSetup({
+      bodies: [[never], [never]],
+      jev: { act: "start", p: 0.95, delayMs: 100 },
+    });
+    t2.session.preempt(
+      "print the boarding pass for the london flight",
+      "voice",
+    );
+    const other = "download the q3 deck from the shared drive";
+    const d2 = await t2.decided(other, start(other), {}, 150);
+    expect(d2.code).toBe("jev_start");
+    expect(t2.jevRequests).toHaveLength(2);
+    expect(t2.jevRequests[0].signal.aborted).toBe(true);
+    expect(t2.jevRequests[1].body.state).toEqual(t2.stateOf(1));
+    // A partial that is a fast start, or not a candidate, fires nothing.
+    const t3 = jevSetup({ jev: { act: "start" } });
+    t3.session.preempt("open Spotify", "voice");
+    t3.session.preempt("tell me a joke", "voice");
+    expect(t3.jevRequests).toHaveLength(0);
+    expect(t3.requests).toHaveLength(1);
+    // An interruption ends the ask on the wire too.
+    const t4 = jevSetup({ bodies: [[never]], jev: { never: true } });
+    t4.session.preempt(text, "voice");
+    t4.session.interrupt();
+    expect(t4.jevRequests[0].signal.aborted).toBe(true);
+    const t5 = jevSetup({
+      bodies: [[never]],
+      jev: { act: "start", p: 0.97, delayMs: 100 },
+    });
+    const pending = t5.decide(text, start(text));
+    await vi.advanceTimersByTimeAsync(10);
+    t5.session.interrupt();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await pending).toMatchObject({ code: "interrupted", acting: false });
+    expect(t5.jevRequests[0].signal.aborted).toBe(true);
+  });
+
+  it("never starts on a verdict that lands as the user takes the floor", async () => {
+    // The reply arrives in the same instant the user interrupts: the stream
+    // is gone, and a start now would run behind the user's back.
+    const reply: JevReply = { act: "start", p: 0.99, delayMs: 20 };
+    const t = jevSetup({ bodies: [[never]], jev: reply });
+    reply.onReply = () => t.session.interrupt();
+    const pending = t.decide(text, start(text));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(await pending).toMatchObject({ code: "interrupted", acting: false });
+    expect(decidedTraces(t)[0].data.code).toBe("interrupted");
   });
 });

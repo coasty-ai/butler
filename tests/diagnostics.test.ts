@@ -932,4 +932,40 @@ describe("dialog and streamed-speech fields", () => {
       const lines = readFileSync(log.file, "utf8").trim().split("\n");
       expect(JSON.parse(lines[1]).data).toEqual({});
     }));
+
+  it("keeps the Jev decider's timing, act, probability, use and failure code, nothing else", () =>
+    fixture((log) => {
+      log.write("DialogTurn", {
+        phase: "decided",
+        code: "jev_start",
+        jevMs: 212,
+        jevAct: "start",
+        jevP: 0.97,
+        jevUsed: true,
+        jevCode: "wrong_provider",
+        jevState: { user: "print the boarding pass" },
+        jevKey: "sk-or-v1-secret",
+        state: "print the boarding pass",
+      });
+      const event = JSON.parse(readFileSync(log.file, "utf8"));
+      expect(event.data).toEqual({
+        phase: "decided",
+        code: "jev_start",
+        jevMs: 212,
+        jevAct: "start",
+        jevP: 0.97,
+        jevUsed: true,
+        jevCode: "wrong_provider",
+      });
+      // Only a code, a number or a flag ever passes through each field.
+      log.write("DialogTurn", {
+        jevMs: "two hundred",
+        jevAct: "start the boarding pass print",
+        jevP: "high",
+        jevUsed: "yes",
+        jevCode: "the key sk-or-v1-secret was rejected",
+      });
+      const lines = readFileSync(log.file, "utf8").trim().split("\n");
+      expect(JSON.parse(lines[1]).data).toEqual({});
+    }));
 });

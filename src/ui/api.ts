@@ -387,7 +387,15 @@ export function providerKeyMessage(result: {
 }
 export interface Bridge {
   info(): Promise<AppInfo>;
-  saveSettings(settings: Settings, key?: string): Promise<void>;
+  /**
+   * `key` is the provider key; `jevKey` the OpenRouter key for the opt-in
+   * Jev decider. Either given as "" clears its slot; undefined leaves it.
+   */
+  saveSettings(
+    settings: Settings,
+    key?: string,
+    jevKey?: string,
+  ): Promise<void>;
   start(task: string, tutorial: boolean): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;

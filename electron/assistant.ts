@@ -24,14 +24,30 @@ import {
   arbitrate,
   dialogEligible,
   fastStart,
+  jevStartCandidate,
   looksLikeQuestion,
 } from "../src/assistant/arbitrate";
 import { DIALOG_SYSTEM } from "../src/assistant/prompt";
 import {
+  DIALOG_ACTS,
   DialogParser,
   type DialogEvent,
   type DialogHead,
 } from "../src/assistant/protocol";
+import {
+  APP_DIALOG_VARIANT,
+  JEV_START_MIN_P,
+  dialogActQuestion,
+  jevState,
+  type JevChoiceQuestion,
+} from "../src/providers/jev";
+import {
+  JEV_ACT_QUESTION,
+  askJevAct,
+  jevEnabled,
+  type JevFailure,
+  type JevVerdict,
+} from "./jev";
 import {
   buildDialogState,
   dialogStateJson,
@@ -84,6 +100,11 @@ export interface AssistantOptions {
   settings: () => Settings;
   /** The run provider's key: the dialog shares its credential scope. */
   providerKey: () => string;
+  /**
+   * The OpenRouter key for the opt-in Jev decider (electron/jev.ts); "" or
+   * absent keeps it off whatever the setting says.
+   */
+  jevKey?: () => string;
   fetch: typeof fetch;
   view: () => RunView;
   /** Optional context, already gated by settings; never a helper call. */
@@ -171,10 +192,50 @@ interface Flight {
   wake: () => void;
 }
 
+/**
+ * One Jev call for one set of words (the opt-in early decider), fired on
+ * the partial like an early request or at decide(); matched to the final
+ * words by the same intent key and freshness rule as an early request.
+ */
+interface JevAsk {
+  intent: string;
+  at: number;
+  channel: Channel;
+  controller: AbortController;
+  verdict: Promise<JevVerdict>;
+  /** Set the moment the verdict is in, for the turn's trace. */
+  settled?: JevVerdict;
+}
+
+const TERMINAL_RUN = new Set(["completed", "cancelled", "failed"]);
+/** What one turn launched, so a failure in the turn can end all of it. */
+interface TurnLaunch {
+  flight?: Flight;
+  jev?: JevAsk;
+}
+/** The verdict's content-free trace fields, once it is in. */
+function jevTrace(
+  ask: JevAsk | undefined,
+  used: boolean,
+): Record<string, unknown> {
+  if (!ask) return {};
+  const v = ask.settled;
+  if (!v) return { jevUsed: used };
+  return v.ok
+    ? { jevMs: Math.round(v.ms), jevAct: v.act, jevP: v.p, jevUsed: used }
+    : { jevMs: Math.round(v.ms), jevCode: v.code, jevUsed: used };
+}
+
 export class AssistantSession implements AssistantSessionApi {
   private readonly now: () => number;
   private turns: TurnRecord[] = [];
   private calls: { at: number; cost: number }[] = [];
+  /** Jev calls: their cost counts against the same hourly budget. */
+  private jevCalls: { at: number; cost: number }[] = [];
+  /** The ask fired on the partial, waiting for the final words. */
+  private jevAsk?: JevAsk;
+  /** Every ask still on the wire, so an interruption can end them all. */
+  private jevLive = new Set<JevAsk>();
   private flights = new Set<Flight>();
   private early?: { key: string; at: number; channel: Channel; flight: Flight };
   private live?: { id: string; text: string; until: number };
@@ -243,20 +304,29 @@ export class AssistantSession implements AssistantSessionApi {
       fastStart({ kind: "start", text }, text)
     )
       return;
-    const flight = this.launch(this.stateFor(text, channel), "preempt");
+    const state = this.stateFor(text, channel);
+    const flight = this.launch(state, "preempt");
     this.early = { key, at: now, channel, flight };
+    this.jevPreempt(state, text, key, channel);
   }
 
   async decide(i: DecideInput): Promise<TurnDecision> {
+    const launched: TurnLaunch = {};
     try {
-      return await this.decideInner(i);
+      return await this.decideInner(i, launched);
     } catch (error) {
+      // Nothing this turn launched may speak, act or bill after it failed.
+      if (launched.flight) this.abort(launched.flight);
+      if (launched.jev) this.abortJev(launched.jev);
       this.log("failed", codeOf(error));
       return { plan: i.base, acting: actingPlan(i.base), code: "error" };
     }
   }
 
-  private async decideInner(i: DecideInput): Promise<TurnDecision> {
+  private async decideInner(
+    i: DecideInput,
+    launched: TurnLaunch = {},
+  ): Promise<TurnDecision> {
     const base = i.base;
     /** The base plan as decided without the model; `traced` names why. */
     const settled = (
@@ -331,10 +401,35 @@ export class AssistantSession implements AssistantSessionApi {
     const reused = this.takeEarly(i.text, i.channel);
     const flight =
       reused ?? this.launch(this.stateFor(i.text, i.channel), "turn");
+    launched.flight = flight;
+    // The opt-in decider runs beside the stream, never before it; its one
+    // use is an early start, and only for words that pass every guard.
+    const jev = this.jevFor(i, base);
+    launched.jev = jev;
     const started = this.now();
     this.noteUser(i.text, i.channel);
-    const outcome = await this.awaitHead(flight, deadlineMs, i.signal);
+    const outcome = jev
+      ? await this.raceJev(flight, deadlineMs, i.signal, jev)
+      : await this.awaitHead(flight, deadlineMs, i.signal);
     const actMs = this.now() - started;
+    if ("jev" in outcome) {
+      // Jev said start, confidently, before the ACT line: the user's own
+      // words run now, exactly as a fast start, and the stream is cut off.
+      this.abort(flight);
+      this.log("decided", {
+        code: "jev_start",
+        channel: i.channel,
+        actMs,
+        preempt: !!reused,
+        ...jevTrace(jev, true),
+      });
+      return {
+        plan: base,
+        taskSource: "user_words",
+        acting: true,
+        code: "jev_start",
+      };
+    }
     if (!("head" in outcome)) {
       this.abort(flight);
       this.log("decided", {
@@ -342,6 +437,7 @@ export class AssistantSession implements AssistantSessionApi {
         channel: i.channel,
         actMs,
         preempt: !!reused,
+        ...jevTrace(jev, false),
       });
       // The user took the floor meanwhile: a stale plan never runs.
       const interrupted = outcome.code === "interrupted";
@@ -375,6 +471,7 @@ export class AssistantSession implements AssistantSessionApi {
       channel: i.channel,
       actMs,
       preempt: !!reused,
+      ...jevTrace(jev, false),
     });
     const decision: TurnDecision = {
       plan: a.plan,
@@ -497,6 +594,8 @@ export class AssistantSession implements AssistantSessionApi {
   interrupt(): void {
     this.early = undefined;
     for (const flight of [...this.flights]) this.abort(flight);
+    this.dropJev();
+    for (const ask of [...this.jevLive]) this.abortJev(ask);
   }
 
   /** Provider, privacy or model changed: the thread starts over. */
@@ -584,10 +683,202 @@ export class AssistantSession implements AssistantSessionApi {
   private underBudget(): boolean {
     const cutoff = this.now() - 3_600_000;
     this.calls = this.calls.filter((c) => c.at > cutoff);
+    this.jevCalls = this.jevCalls.filter((c) => c.at > cutoff);
     if (this.calls.length >= DIALOG_LIMITS.hourlyCalls) return false;
     const cap = this.options.settings().dialogHourlyCost;
-    const spent = this.calls.reduce((sum, c) => sum + c.cost, 0);
+    const spent = [...this.calls, ...this.jevCalls].reduce(
+      (sum, c) => sum + c.cost,
+      0,
+    );
     return !(typeof cap === "number" && Number.isFinite(cap) && spent >= cap);
+  }
+
+  // The opt-in Jev decider ---------------------------------------------------
+
+  /**
+   * Fires the act question on the partial transcript, beside the early
+   * request, when the decider is on and these words could start on its
+   * verdict alone. Nothing about the turn changes if it never answers.
+   */
+  private jevPreempt(
+    state: DialogState,
+    text: string,
+    intent: string,
+    channel: Channel,
+  ): void {
+    try {
+      const key = this.options.jevKey?.() ?? "";
+      if (!jevEnabled(this.options.settings(), key)) return;
+      if (this.options.view().running) return;
+      if (!jevStartCandidate({ kind: "start", text }, text)) return;
+      if (!JEV_ACT_QUESTION) return this.jevFailed(channel, "no_question");
+      this.jevAsk = this.askJev(state, key, intent, channel);
+    } catch {
+      // The decider's own path failed (a vault read, the state): the early
+      // request stands on its own, as it does with the decider off.
+      this.jevFailed(channel, "error");
+    }
+  }
+
+  /**
+   * The decider could not ask: today's path, untouched, with the code (never
+   * the error's words) on a "jev" trace line so the failure is visible.
+   */
+  private jevFailed(channel: Channel, code: JevFailure): void {
+    this.log("jev", { channel, jevCode: code, jevUsed: false });
+  }
+
+  /**
+   * The ask for this turn, when every condition for an early start holds:
+   * the decider is on, the router's own plan is start with the user's own
+   * words (typed, or heard at least as clearly as an approval), nothing is
+   * running, the words pass the fast-start guards minus the verb list, and
+   * the budget allows. A fresh ask fired on the partial for the same intent
+   * is reused; otherwise one is fired now, beside the stream.
+   */
+  private jevFor(i: DecideInput, base: TurnPlan): JevAsk | undefined {
+    const ask = this.jevAsk;
+    this.jevAsk = undefined;
+    try {
+      const key = this.options.jevKey?.() ?? "";
+      const eligible =
+        jevEnabled(this.options.settings(), key) &&
+        base.kind === "start" &&
+        base.taskSource === "user_words" &&
+        (i.channel !== "voice" || i.confidence >= APPROVAL_MIN_CONFIDENCE) &&
+        !i.view.running &&
+        !(i.run && !TERMINAL_RUN.has(i.run.status)) &&
+        jevStartCandidate(base, i.text) &&
+        this.underBudget();
+      if (!eligible) {
+        if (ask) this.abortJev(ask);
+        return undefined;
+      }
+      if (!JEV_ACT_QUESTION) {
+        if (ask) this.abortJev(ask);
+        this.jevFailed(i.channel, "no_question");
+        return undefined;
+      }
+      const intent = intentKey(i.text);
+      if (
+        ask &&
+        ask.channel === i.channel &&
+        ask.intent === intent &&
+        this.now() - ask.at <= DIALOG_LIMITS.preemptTtlMs &&
+        !ask.controller.signal.aborted
+      )
+        return ask;
+      if (ask) this.abortJev(ask);
+      return this.askJev(
+        this.stateFor(i.text, i.channel),
+        key,
+        intent,
+        i.channel,
+      );
+    } catch {
+      // Whatever the decider's own path threw, the turn goes on as it would
+      // with the decider off: the stream decides, nothing starts unheard.
+      if (ask) this.abortJev(ask);
+      this.jevFailed(i.channel, "error");
+      return undefined;
+    }
+  }
+
+  /** One call, with the same bounded state string the stream was sent. */
+  private askJev(
+    state: DialogState,
+    key: string,
+    intent: string,
+    channel: Channel,
+  ): JevAsk {
+    const question = JEV_ACT_QUESTION;
+    if (!question) throw new Error("jev: no act question");
+    const s = textSettings(this.options.settings());
+    const record = { at: this.now(), cost: 0 };
+    this.jevCalls.push(record);
+    const controller = new AbortController();
+    this.log("jev_ask", { channel });
+    const ask: JevAsk = {
+      intent,
+      at: record.at,
+      channel,
+      controller,
+      verdict: Promise.resolve({
+        ok: false,
+        code: "cancelled",
+        ms: 0,
+        cost: 0,
+      }),
+    };
+    ask.verdict = askJevAct({
+      fetch: this.options.fetch,
+      key,
+      state: jevState(
+        dialogStateJson(
+          state,
+          s.provider === "ollama"
+            ? DIALOG_LIMITS.localStateChars
+            : DIALOG_LIMITS.stateChars,
+        ),
+      ),
+      question,
+      signal: controller.signal,
+      now: this.now,
+    })
+      .catch((): JevVerdict => ({ ok: false, code: "network", ms: 0, cost: 0 }))
+      .then((verdict) => {
+        ask.settled = verdict;
+        this.jevLive.delete(ask);
+        record.cost = Number.isFinite(verdict.cost) ? verdict.cost : 0;
+        this.log("jev", { channel, ...jevTrace(ask, false) });
+        return verdict;
+      });
+    this.jevLive.add(ask);
+    return ask;
+  }
+
+  /**
+   * Waits for the head as awaitHead does, unless Jev answers first with a
+   * confident start: then that is the outcome, and the head is left to the
+   * caller to abort. Any other verdict (another act, a low probability, an
+   * error, a timeout) changes nothing: the head is awaited as before.
+   */
+  private async raceJev(
+    flight: Flight,
+    deadlineMs: number,
+    signal: AbortSignal,
+    ask: JevAsk,
+  ): Promise<
+    { head: DialogHead } | { code: HeadFailure } | { jev: JevVerdict }
+  > {
+    const head = this.awaitHead(flight, deadlineMs, signal);
+    const verdict = await Promise.race([
+      head.then((): undefined => undefined),
+      ask.verdict,
+    ]);
+    if (
+      verdict?.ok &&
+      verdict.act === "start" &&
+      verdict.p >= JEV_START_MIN_P &&
+      !signal.aborted &&
+      // The user took the floor (interrupt) or the head is already in: the
+      // stream's own outcome decides, as it would without Jev.
+      !flight.controller.signal.aborted &&
+      !flight.ended &&
+      !flight.head
+    )
+      return { jev: verdict };
+    return head;
+  }
+
+  private abortJev(ask: JevAsk) {
+    if (!ask.controller.signal.aborted) ask.controller.abort();
+  }
+
+  private dropJev() {
+    const ask = this.jevAsk;
+    this.jevAsk = undefined;
+    if (ask) this.abortJev(ask);
   }
 
   private launch(state: DialogState, phase: "preempt" | "turn"): Flight {
@@ -689,6 +980,7 @@ export class AssistantSession implements AssistantSessionApi {
     const early = this.early;
     this.early = undefined;
     if (early) this.abort(early.flight);
+    this.dropJev();
   }
 
   /** The early request for these exact words, if it is still fresh. */

@@ -9,6 +9,7 @@ import {
   providerKeyEnv,
   selectProvider,
 } from "../src/providers/catalog";
+import { JEV_CREDENTIAL_SCOPE, JEV_KEY_ENV } from "../src/providers/jev";
 
 export type Credentials = Record<string, string>;
 const keySchema = z.string().trim().max(1000);
@@ -38,6 +39,22 @@ export function withProviderKey(
   return next;
 }
 
+/**
+ * The OpenRouter key the opt-in Jev decider sends, from its own vault slot
+ * (JEV_CREDENTIAL_SCOPE). It is never a provider key and never read as one.
+ */
+export function jevKey(keys: Credentials): string {
+  return keys[JEV_CREDENTIAL_SCOPE] ?? "";
+}
+
+export function withJevKey(keys: Credentials, value: unknown): Credentials {
+  const next = { ...keys };
+  const key = keySchema.parse(value);
+  if (key) next[JEV_CREDENTIAL_SCOPE] = key;
+  else delete next[JEV_CREDENTIAL_SCOPE];
+  return next;
+}
+
 export function importEnvCredentials(
   file: string,
   keys: Credentials,
@@ -62,6 +79,13 @@ export function importEnvCredentials(
         { provider, endpoint: providerDefaults[provider].endpoint },
         value,
       );
+      imported++;
+    }
+    // The OpenRouter key for the Jev decider, into its own slot: like a
+    // provider key it is imported, never printed, and never auto-enables.
+    const jev = JEV_KEY_ENV.map((name) => env[name]?.trim()).find(Boolean);
+    if (jev) {
+      next = withJevKey(next, jev);
       imported++;
     }
     if (!imported) throw new Error();

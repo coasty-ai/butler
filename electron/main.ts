@@ -167,11 +167,14 @@ import { PHRASES, allAssistantPhrases } from "../src/voice/phrases";
 import { speakableSummary } from "../src/voice/speakable";
 import {
   importLaunchCredentials,
+  jevKey,
   providerKey,
   readCredentials,
+  withJevKey,
   withProviderKey,
   type Credentials,
 } from "./credentials";
+import { jevSettingsToSave } from "./jev";
 import {
   idlePill,
   voiceIntent,
@@ -591,6 +594,8 @@ function abortTurn() {
 const assistant = new AssistantSession({
   settings: () => settings,
   providerKey: () => providerKey(credentials, textSettings(settings)),
+  // The opt-in Jev decider's own key; the setting alone never turns it on.
+  jevKey: () => jevKey(credentials),
   fetch: desktopTransport(debug),
   view: currentRunView,
   context: dialogContext,
@@ -1996,7 +2001,12 @@ async function command(
       reply.attach(decision.sentences, {
         acting: decision.acting,
         cannedIfEmpty: base.kind === "start" ? "ackStart" : "ackCorrection",
-        line: decision.code === "fast_start" ? fastStartLine(text) : undefined,
+        // A Jev start is dispatched like a fast start: the same fixed line
+        // (or the canned acknowledgement) the instant the run is under way.
+        line:
+          decision.code === "fast_start" || decision.code === "jev_start"
+            ? fastStartLine(text)
+            : undefined,
       });
     // Typed turns read the reply on the pill instead.
     else if (decision.sentences)
@@ -2652,10 +2662,16 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       validateAddressAs(next.addressAs);
       validateMessageSettings(next);
       validateRemoteSettings(next);
-      const nextCredentials =
+      let nextCredentials =
         args[1] !== undefined
           ? withProviderKey(credentials, next, args[1])
           : credentials;
+      // The OpenRouter key for the Jev decider, saved into its own slot;
+      // the decider itself is refused without one and forced off locally.
+      if (args[2] !== undefined)
+        nextCredentials = withJevKey(nextCredentials, args[2]);
+      const checked = jevSettingsToSave(next, nextCredentials);
+      next.decisions = checked.decisions;
       // The active Runner keeps its own provider and privacy; only changes to
       // those require stopping it.
       if (

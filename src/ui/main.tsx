@@ -58,8 +58,9 @@ import {
   providerDefaults,
   selectProvider,
 } from "../providers/catalog";
+import { JEV_CREDENTIAL_SCOPE } from "../providers/jev";
 import { idlePill, type PillState } from "../voice/router";
-import { VoiceSettings } from "./settings-voice";
+import { VoiceSettings, jevKeyToSave } from "./settings-voice";
 import { previewBridge } from "./preview";
 import { SettingsRemote } from "./settings-remote";
 import "@fontsource-variable/space-grotesk";
@@ -683,8 +684,8 @@ function App() {
               <SettingsPanel
                 info={info}
                 busy={busy}
-                onSave={(settings, key) =>
-                  act(() => api.saveSettings(settings, key))
+                onSave={(settings, key, jevKey) =>
+                  act(() => api.saveSettings(settings, key, jevKey))
                 }
                 onPermissions={() => void act(() => api.permissions())}
                 onVoice={() => void act(() => api.voicePermissions())}
@@ -1090,7 +1091,8 @@ function SettingsPanel({
 }: {
   info: AppInfo;
   busy: boolean;
-  onSave: (s: Settings, k?: string) => Promise<boolean>;
+  /** `k` is the provider key, `jevKey` the OpenRouter key; undefined keeps each. */
+  onSave: (s: Settings, k?: string, jevKey?: string) => Promise<boolean>;
   onPermissions: () => void;
   onVoice: () => void;
   onRefresh: () => void;
@@ -1108,6 +1110,10 @@ function SettingsPanel({
   const [s, setS] = useState<Settings>(info.settings),
     [key, setKey] = useState(""),
     [touched, setTouched] = useState(false),
+    // The OpenRouter key for the Jev decider: sent once the field was
+    // touched, so an emptied field clears the stored key (jevKeyToSave).
+    [jevKey, setJevKey] = useState(""),
+    [jevTouched, setJevTouched] = useState(false),
     [saved, setSaved] = useState(false),
     [learned, setLearned] = useState<MemorySummary | null>(null),
     [agendaAccess, setAgendaAccess] = useState<AgendaAccessInfo | null>(null),
@@ -1430,9 +1436,18 @@ function SettingsPanel({
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (!(await onSave(s, touched ? key : undefined))) return;
+          if (
+            !(await onSave(
+              s,
+              touched ? key : undefined,
+              jevKeyToSave(jevTouched, jevKey),
+            ))
+          )
+            return;
           setKey("");
+          setJevKey("");
           setTouched(false);
+          setJevTouched(false);
           setSaved(true);
         }}
       >
@@ -1813,7 +1828,21 @@ function SettingsPanel({
                 )}
               </>
             )}
-            <VoiceSettings s={s} set={set} ids={ids} engine={engine} />
+            <VoiceSettings
+              s={s}
+              set={set}
+              ids={ids}
+              engine={engine}
+              jevKey={jevKey}
+              jevTouched={jevTouched}
+              onJevKey={(value) => {
+                setJevKey(value);
+                setJevTouched(true);
+              }}
+              storedJevKey={
+                info.credentialScopes?.includes(JEV_CREDENTIAL_SCOPE) ?? false
+              }
+            />
             <label className="consent">
               <input
                 type="checkbox"

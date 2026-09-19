@@ -152,10 +152,15 @@ export interface TurnDecision {
   /** Already filtered: speakableSentence for voice, textable for texts. */
   sentences?: AsyncIterable<string>;
   proposal?: { id: string; text: string; until: number };
-  /** "interrupted": the user took the floor meanwhile; nothing runs. */
+  /**
+   * "interrupted": the user took the floor meanwhile; nothing runs.
+   * "jev_start": the opt-in decider said start early; the user's own words
+   * run exactly as a fast start would, and the text model was cut off.
+   */
   code:
     | "model"
     | "fast_start"
+    | "jev_start"
     | "timeout"
     | "invalid"
     | "error"

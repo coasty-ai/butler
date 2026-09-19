@@ -23,6 +23,7 @@ import {
   type TurnPlan,
   type VoiceTurnRun,
 } from "../voice/turns";
+import { jevStartWords } from "../providers/jev";
 import type { DialogHead } from "./protocol";
 import type { Channel } from "./types";
 
@@ -112,6 +113,51 @@ export function fastStart(plan: TurnPlan, text: string): boolean {
     FAST_START_VERBS.has(verb) &&
     !key.some((word) => REFERS_BACK.has(word))
   );
+}
+
+/**
+ * Verbs that ask for an answer in words. "tell me whether the invoice was
+ * paid" reads as an imperative (looksLikeQuestion is about the first word)
+ * but wants a report, and live Jev calls it a confident start. Only the
+ * Jev candidate guard needs these: fastStart never allowed them as verbs.
+ */
+const REPORT_VERBS = new Set(["tell", "say", "know", "let", "report"]);
+const REPORT_CLAUSE = new Set(["whether", "if"]);
+
+/**
+ * "tell me whether …", "let me know if …", "say what …", "tell me how …":
+ * a report verb first (after the polite lead-in) with "whether", "if" or a
+ * WH word anywhere after it. "tell dana the meeting moved" names a task
+ * and is not a report frame.
+ */
+function reportFrame(words: string[]): boolean {
+  const at = words.findIndex((word) => !LEADING.has(word));
+  if (at < 0 || !REPORT_VERBS.has(words[at])) return false;
+  return words
+    .slice(at + 1)
+    .some((word) => REPORT_CLAUSE.has(word) || WH_WORDS.has(word));
+}
+
+/**
+ * Whether a plain start may run on an early decider's say-so (the opt-in
+ * Jev path in electron/assistant.ts): every guard a fast start passes
+ * except the verb allow-list, so no question (nor a report frame that asks
+ * one in an imperative's clothes), no word that points back at the
+ * conversation, and words that name what to do on their own
+ * (jevStartWords: no deictic word, at least three content words, under the
+ * length cap). Anything that fails here waits for the text model, as today.
+ */
+export function jevStartCandidate(plan: TurnPlan, text: string): boolean {
+  // Words that only point at something else are the router's question, never
+  // an early start, whatever the plan says.
+  if (plan.kind !== "start" || looksLikeQuestion(text) || deicticTask(text))
+    return false;
+  const key = intentKey(text);
+  const words = key.split(" ").filter(Boolean);
+  if (!words.length || words.some((word) => REFERS_BACK.has(word)))
+    return false;
+  if (reportFrame(words)) return false;
+  return jevStartWords(key, text.trim());
 }
 
 const OPENERS = /^(?:open|launch|start)$/;
