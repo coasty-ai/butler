@@ -110,4 +110,52 @@ const agenda = spawnSync(
   ],
   { stdio: "inherit" },
 );
-process.exit(agenda.status ?? 1);
+if (agenda.status !== 0) process.exit(agenda.status ?? 1);
+// The Apple bridge: an MCP stdio server over EventKit and Apple events, with
+// its own embedded Info.plist and bundle id, so its Calendars, Reminders and
+// Automation grants are its own, separate from the agenda helper's read-only
+// grant and from the controller's (docs/TOOLS.md).
+const apple = spawnSync(
+  "swiftc",
+  [
+    "-O",
+    "-parse-as-library",
+    "-module-cache-path",
+    "tmp/swift-cache",
+    "-o",
+    "native/bin/coarena-apple",
+    "native/macos/Apple.swift",
+    "native/macos/AppleProtocol.swift",
+    "native/macos/AppleRules.swift",
+    "-framework",
+    "EventKit",
+    "-framework",
+    "AppKit",
+    "-Xlinker",
+    "-sectcreate",
+    "-Xlinker",
+    "__TEXT",
+    "-Xlinker",
+    "__info_plist",
+    "-Xlinker",
+    "native/macos/Apple-Info.plist",
+  ],
+  { stdio: "inherit" },
+);
+if (apple.status !== 0) process.exit(apple.status ?? 1);
+// The launcher shim: starts a user-added MCP server with TCC responsibility
+// disclaimed and, when asked, without network access.
+const launch = spawnSync(
+  "swiftc",
+  [
+    "-O",
+    "-parse-as-library",
+    "-module-cache-path",
+    "tmp/swift-cache",
+    "-o",
+    "native/bin/coarena-launch",
+    "native/macos/Launch.swift",
+  ],
+  { stdio: "inherit" },
+);
+process.exit(launch.status ?? 1);

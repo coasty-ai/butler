@@ -1,0 +1,333 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "calendar": "Home",
+            "start": "2026-09-19T18:00",
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "DUPLICATE: An event titled Dentist at that time is already in Home.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "attendees": ["dana@example.com"],
+            "start": "2026-09-19T18:00",
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Unknown argument attendees. Allowed: allDay, calendar, end, start, title.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "start": "2026-09-10T10:00",
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: start is in the past.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "end": "2026-09-22T10:00",
+            "start": "2026-09-20T10:00",
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: end must be 1 minute to 24 hours after start.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "calendar": "Gym",
+            "start": "2026-09-20T10:00",
+            "title": "Gym"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NO_CALENDAR: The calendar Gym does not exist. Calendars: Home, Work.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "calendar": "Holidays",
+            "start": "2026-09-20T10:00",
+            "title": "Labor Day"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NO_CALENDAR: The calendar Holidays cannot be changed. Calendars: Home, Work.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "start": "2026-09-20T10:00",
+            "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: title must be at most 100 characters.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "start": "tomorrow at 6",
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: start must be a date like 2026-09-19 or a local date-time like 2026-09-19T18:00.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "allDay": true,
+            "calendar": "Work",
+            "start": "2026-09-21",
+            "title": "Offsite"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Added event Offsite to Work: Mon 21 Sep, all day.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "created": {
+              "allDay": true,
+              "calendar": "Work",
+              "end": "2026-09-22T00:00:00-07:00",
+              "kind": "event",
+              "start": "2026-09-21T00:00:00-07:00",
+              "title": "Offsite"
+            },
+            "undoToken": "undo-1",
+            "verified": true
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Missing argument start.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "granted",
+      "mail": "granted",
+      "notes": "granted",
+      "reminders": "granted"
+    },
+    "calendars": [
+      {
+        "default": true,
+        "title": "Home",
+        "writable": true
+      },
+      {
+        "title": "Work",
+        "writable": true
+      },
+      {
+        "birthdays": true,
+        "title": "Birthdays",
+        "writable": false
+      },
+      {
+        "subscribed": true,
+        "title": "Holidays",
+        "writable": true
+      }
+    ],
+    "events": [
+      {
+        "calendar": "Home",
+        "end": "2026-09-19T19:00",
+        "id": "e-1",
+        "start": "2026-09-19T18:00",
+        "title": "Dentist"
+      }
+    ],
+    "now": "2026-09-18T10:00:00",
+    "tokens": ["undo-1"],
+    "zone": "America/Los_Angeles"
+  }
+}

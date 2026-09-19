@@ -1,0 +1,98 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "start": "2026-09-19T18:00",
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "READBACK_MISMATCH: Calendar did not store the event as asked; check it in Calendar.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "title": "Buy milk"
+          },
+          "name": "reminders_create"
+        }
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "READBACK_MISMATCH: Reminders did not store the reminder as asked; check it in Reminders.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "granted",
+      "mail": "granted",
+      "notes": "granted",
+      "reminders": "granted"
+    },
+    "calendars": [
+      {
+        "default": true,
+        "title": "Home",
+        "writable": true
+      },
+      {
+        "title": "Work",
+        "writable": true
+      },
+      {
+        "birthdays": true,
+        "title": "Birthdays",
+        "writable": false
+      },
+      {
+        "subscribed": true,
+        "title": "Holidays",
+        "writable": true
+      }
+    ],
+    "drift": true,
+    "events": [],
+    "lists": [
+      {
+        "default": true,
+        "title": "Reminders",
+        "writable": true
+      }
+    ],
+    "now": "2026-09-18T10:00:00",
+    "tokens": ["undo-1"],
+    "zone": "America/Los_Angeles"
+  }
+}

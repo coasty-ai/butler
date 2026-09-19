@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>ai.coarena.openassist.apple</string>
+<key>CFBundleName</key><string>Butler Apple</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Butler adds the events and reminders you ask for, after you approve each one, and reads titles and times.</string>
+<key>NSCalendarsUsageDescription</key><string>Butler adds the events and reminders you ask for, after you approve each one, and reads titles and times.</string>
+<key>NSRemindersFullAccessUsageDescription</key><string>Butler adds the events and reminders you ask for, after you approve each one, and reads titles and times.</string>
+<key>NSRemindersUsageDescription</key><string>Butler adds the events and reminders you ask for, after you approve each one, and reads titles and times.</string>
+<key>NSAppleEventsUsageDescription</key><string>Butler adds the notes and mail drafts you ask for, after you approve each one, and reads titles, senders and subjects. It never sends mail.</string>
+</dict></plist>

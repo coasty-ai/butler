@@ -1,0 +1,545 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/list"
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "tools": [
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "Events between two local days, inclusive: when, title and calendar per line. At most 20 lines and 31 days.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "description": "First day, YYYY-MM-DD, local.",
+                    "format": "date",
+                    "type": "string"
+                  },
+                  "to": {
+                    "description": "Last day, inclusive; at most 31 days after from.",
+                    "format": "date",
+                    "type": "string"
+                  }
+                },
+                "required": ["from", "to"],
+                "type": "object"
+              },
+              "name": "calendar_list_events",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "lines": {
+                    "items": {
+                      "maxLength": 200,
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "type": "array"
+                  },
+                  "more": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["lines", "more"],
+                "type": "object"
+              },
+              "title": "Calendar"
+            },
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": false
+              },
+              "description": "Adds one event. Local times; end defaults to an hour after start; allDay takes days. An event with the same title and start in that calendar is refused as a duplicate.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "allDay": {
+                    "description": "An all-day event; start and end are days.",
+                    "type": "boolean"
+                  },
+                  "calendar": {
+                    "description": "An existing calendar's exact name; the default calendar when omitted.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "end": {
+                    "description": "Local date-time; 1 minute to 24 hours after start. With allDay, the last day.",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "start": {
+                    "description": "Local date-time like 2026-09-19T18:00; a day alone with allDay.",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "title": {
+                    "description": "One line, at most 100 characters.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": ["title", "start"],
+                "type": "object"
+              },
+              "name": "calendar_create_event",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "created": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "allDay": {
+                        "type": "boolean"
+                      },
+                      "calendar": {
+                        "type": "string"
+                      },
+                      "end": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "start": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "title",
+                      "start",
+                      "end",
+                      "allDay",
+                      "calendar"
+                    ],
+                    "type": "object"
+                  },
+                  "undoToken": {
+                    "type": "string"
+                  },
+                  "verified": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["created", "verified", "undoToken"],
+                "type": "object"
+              },
+              "title": "Calendar"
+            },
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "Open reminders, in one list or all, optionally only those due before a date: title, due date and list per line, at most 20.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dueBefore": {
+                    "description": "Only reminders due before this local date or date-time.",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "list": {
+                    "description": "An existing list's exact name.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "reminders_list",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "lines": {
+                    "items": {
+                      "maxLength": 200,
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "type": "array"
+                  },
+                  "more": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["lines", "more"],
+                "type": "object"
+              },
+              "title": "Reminders"
+            },
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": false
+              },
+              "description": "Adds one reminder, with an optional due date or date-time, to a list or the default list. The same title and due date in that list is refused as a duplicate.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "due": {
+                    "description": "Local date (2026-09-25) or date-time (2026-09-25T09:00).",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "list": {
+                    "description": "An existing list's exact name; the default list when omitted.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "title": {
+                    "description": "One line, at most 100 characters.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": ["title"],
+                "type": "object"
+              },
+              "name": "reminders_create",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "created": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "due": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "list": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["kind", "title", "list"],
+                    "type": "object"
+                  },
+                  "undoToken": {
+                    "type": "string"
+                  },
+                  "verified": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["created", "verified", "undoToken"],
+                "type": "object"
+              },
+              "title": "Reminders"
+            },
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "Notes whose title contains the query: title and folder per line, at most 20. Bodies are never read.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "description": "Words of the title.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": ["query"],
+                "type": "object"
+              },
+              "name": "notes_search",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "lines": {
+                    "items": {
+                      "maxLength": 200,
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "type": "array"
+                  },
+                  "more": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["lines", "more"],
+                "type": "object"
+              },
+              "title": "Notes"
+            },
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": false,
+                "readOnlyHint": false
+              },
+              "description": "Adds one note with a title and an optional plain-text body to a folder or the default folder.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "description": "Plain text, at most 4000 characters.",
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "folder": {
+                    "description": "An existing folder's exact name; the default folder when omitted.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "title": {
+                    "description": "One line, at most 100 characters.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": ["title"],
+                "type": "object"
+              },
+              "name": "notes_create",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "created": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "folder": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["kind", "title", "folder"],
+                    "type": "object"
+                  },
+                  "undoToken": {
+                    "type": "string"
+                  },
+                  "verified": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["created", "verified", "undoToken"],
+                "type": "object"
+              },
+              "title": "Notes"
+            },
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "The newest unread inbox messages: sender name, subject and age per line, at most 20. Bodies are never read.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "description": "How many, 1 to 20; 10 when omitted.",
+                    "maximum": 20,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "mail_unread",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "lines": {
+                    "items": {
+                      "maxLength": 200,
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "type": "array"
+                  },
+                  "more": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["lines", "more"],
+                "type": "object"
+              },
+              "title": "Mail"
+            },
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "Inbox messages by sender, subject or date received (at least one): sender name, subject and age per line, at most 20. Bodies are never read.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "description": "Part of the sender's name or address.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "since": {
+                    "description": "Only messages received at or after this local date or date-time.",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "subject": {
+                    "description": "Part of the subject.",
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "mail_search",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "lines": {
+                    "items": {
+                      "maxLength": 200,
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "type": "array"
+                  },
+                  "more": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["lines", "more"],
+                "type": "object"
+              },
+              "title": "Mail"
+            },
+            {
+              "annotations": {
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": false,
+                "readOnlyHint": false
+              },
+              "description": "Creates a draft in Mail to the given addresses with a subject and an optional body. Nothing is sent; the user sends it from Mail.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "description": "Plain text, at most 4000 characters.",
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "subject": {
+                    "description": "One line, at most 200 characters.",
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "to": {
+                    "description": "Recipient addresses.",
+                    "items": {
+                      "format": "email",
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": ["to", "subject"],
+                "type": "object"
+              },
+              "name": "mail_draft",
+              "outputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "created": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "type": "string"
+                      },
+                      "recipients": {
+                        "type": "integer"
+                      },
+                      "subject": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["kind", "subject", "recipients"],
+                    "type": "object"
+                  },
+                  "undoToken": {
+                    "type": "string"
+                  },
+                  "verified": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["created", "verified", "undoToken"],
+                "type": "object"
+              },
+              "title": "Mail"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -71,6 +71,14 @@
       {
         "from": "native/bin/coarena-agenda",
         "to": "coarena-agenda"
+      },
+      {
+        "from": "native/bin/coarena-apple",
+        "to": "coarena-apple"
+      },
+      {
+        "from": "native/bin/coarena-launch",
+        "to": "coarena-launch"
       }
     ],
     "mac": {

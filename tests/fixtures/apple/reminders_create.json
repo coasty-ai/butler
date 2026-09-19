@@ -1,0 +1,284 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "due": "2026-09-25",
+            "list": "Groceries",
+            "title": "Buy milk"
+          },
+          "name": "reminders_create"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Added reminder Buy milk to Groceries, due Fri 25 Sep.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "created": {
+              "due": "2026-09-25T00:00:00-07:00",
+              "kind": "reminder",
+              "list": "Groceries",
+              "title": "Buy milk"
+            },
+            "undoToken": "undo-1",
+            "verified": true
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "due": "2026-09-25T09:00",
+            "title": "Call Dana"
+          },
+          "name": "reminders_create"
+        }
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Added reminder Call Dana to Reminders, due Fri 25 Sep 9 AM.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "created": {
+              "due": "2026-09-25T09:00:00-07:00",
+              "kind": "reminder",
+              "list": "Reminders",
+              "title": "Call Dana"
+            },
+            "undoToken": "undo-2",
+            "verified": true
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "title": "Someday"
+          },
+          "name": "reminders_create"
+        }
+      },
+      "out": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Added reminder Someday to Reminders.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "created": {
+              "kind": "reminder",
+              "list": "Reminders",
+              "title": "Someday"
+            },
+            "undoToken": "undo-3",
+            "verified": true
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "due": "2026-09-25",
+            "list": "Groceries",
+            "title": "Buy milk"
+          },
+          "name": "reminders_create"
+        }
+      },
+      "out": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "DUPLICATE: A reminder titled Buy milk with that due date is already in Groceries.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "list": "Shared",
+            "title": "Buy milk"
+          },
+          "name": "reminders_create"
+        }
+      },
+      "out": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NO_LIST: The list Shared cannot be changed. Lists: Groceries, Reminders.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "priority": 1,
+            "title": "Buy milk"
+          },
+          "name": "reminders_create"
+        }
+      },
+      "out": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Unknown argument priority. Allowed: due, list, title.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "token": "undo-2"
+          },
+          "name": "undo"
+        }
+      },
+      "out": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Removed the reminder.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "removed": {
+              "kind": "reminder"
+            }
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "list": "Reminders"
+          },
+          "name": "reminders_list"
+        }
+      },
+      "out": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Someday (Reminders)",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": ["Someday (Reminders)"],
+            "more": 0
+          }
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "granted",
+      "mail": "granted",
+      "notes": "granted",
+      "reminders": "granted"
+    },
+    "lists": [
+      {
+        "default": true,
+        "title": "Reminders",
+        "writable": true
+      },
+      {
+        "title": "Groceries",
+        "writable": true
+      },
+      {
+        "title": "Shared",
+        "writable": false
+      }
+    ],
+    "now": "2026-09-18T10:00:00",
+    "reminders": [],
+    "tokens": ["undo-1", "undo-2", "undo-3"],
+    "zone": "America/Los_Angeles"
+  }
+}

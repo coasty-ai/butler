@@ -59,4 +59,58 @@ if (messages.status !== 0) process.exit(messages.status ?? 1);
 const messageTest = spawnSync("tmp/message-safety-tests", [], {
   stdio: "inherit",
 });
-process.exit(messageTest.status ?? 1);
+if (messageTest.status !== 0) process.exit(messageTest.status ?? 1);
+// The Apple bridge's rules and MCP framing against tests/fixtures/apple, and
+// the launcher shim as a process. Their own entry point too, so coarena-apple
+// stays free of test code and of the fixture store. The shim is built twice:
+// as shipped, and told at compile time that sandbox-exec is missing, so the
+// 69 path can be seen on a Mac that has it.
+const shim = (output, flags) =>
+  spawnSync(
+    "swiftc",
+    [
+      "-O",
+      "-parse-as-library",
+      "-module-cache-path",
+      "tmp/swift-cache",
+      ...flags,
+      "native/macos/Launch.swift",
+      "-o",
+      output,
+    ],
+    { stdio: "inherit" },
+  );
+const launch = shim("tmp/coarena-launch-test", []);
+if (launch.status !== 0) process.exit(launch.status ?? 1);
+const launchNoSandbox = shim("tmp/coarena-launch-no-sandbox", [
+  "-D",
+  "LAUNCH_TEST_NO_SANDBOX_EXEC",
+]);
+if (launchNoSandbox.status !== 0) process.exit(launchNoSandbox.status ?? 1);
+const apple = spawnSync(
+  "swiftc",
+  [
+    "-O",
+    "-parse-as-library",
+    "-module-cache-path",
+    "tmp/swift-cache",
+    "native/macos/AppleRules.swift",
+    "native/macos/AppleProtocol.swift",
+    "tests/native/AppleRulesTests.swift",
+    "tests/native/AppleProtocolTests.swift",
+    "tests/native/LaunchTests.swift",
+    "-o",
+    "tmp/apple-tests",
+  ],
+  { stdio: "inherit" },
+);
+if (apple.status !== 0) process.exit(apple.status ?? 1);
+const appleTest = spawnSync("tmp/apple-tests", [], {
+  stdio: "inherit",
+  env: {
+    ...process.env,
+    COARENA_LAUNCH: "tmp/coarena-launch-test",
+    COARENA_LAUNCH_NO_SANDBOX: "tmp/coarena-launch-no-sandbox",
+  },
+});
+process.exit(appleTest.status ?? 1);

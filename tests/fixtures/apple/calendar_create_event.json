@@ -1,0 +1,191 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "start": "2026-09-19T18:00",
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Added event Dentist to Home: Sat 19 Sep, 6 PM to 7 PM.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "created": {
+              "allDay": false,
+              "calendar": "Home",
+              "end": "2026-09-19T19:00:00-07:00",
+              "kind": "event",
+              "start": "2026-09-19T18:00:00-07:00",
+              "title": "Dentist"
+            },
+            "undoToken": "undo-1",
+            "verified": true
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "start": "2026-09-19T18:00",
+            "title": "Dentist"
+          },
+          "name": "calendar_create_event"
+        }
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "DUPLICATE: An event titled Dentist at that time is already in Home.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "token": "undo-1"
+          },
+          "name": "undo"
+        }
+      },
+      "out": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Removed the event.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "removed": {
+              "kind": "event"
+            }
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "token": "undo-1"
+          },
+          "name": "undo"
+        }
+      },
+      "out": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NOT_CREATED_HERE: Nothing this session added carries that token.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-19",
+            "to": "2026-09-19"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "No events in that range.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": [],
+            "more": 0
+          }
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "granted",
+      "mail": "granted",
+      "notes": "granted",
+      "reminders": "granted"
+    },
+    "calendars": [
+      {
+        "default": true,
+        "title": "Home",
+        "writable": true
+      },
+      {
+        "title": "Work",
+        "writable": true
+      },
+      {
+        "birthdays": true,
+        "title": "Birthdays",
+        "writable": false
+      },
+      {
+        "subscribed": true,
+        "title": "Holidays",
+        "writable": true
+      }
+    ],
+    "events": [],
+    "now": "2026-09-18T10:00:00",
+    "tokens": ["undo-1"],
+    "zone": "America/Los_Angeles"
+  }
+}

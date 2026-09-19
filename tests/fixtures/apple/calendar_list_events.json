@@ -1,0 +1,262 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-18",
+            "to": "2026-09-21"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Fri 18 Sep, 9:45 AM to 10:15 AM: Standup (Work)\nSat 19 Sep, 3 PM to 4 PM: Review (Work)\nMon 21 Sep, all day: Offsite (Home)",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": [
+              "Fri 18 Sep, 9:45 AM to 10:15 AM: Standup (Work)",
+              "Sat 19 Sep, 3 PM to 4 PM: Review (Work)",
+              "Mon 21 Sep, all day: Offsite (Home)"
+            ],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-19",
+            "to": "2026-09-19"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Sat 19 Sep, 3 PM to 4 PM: Review (Work)",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": ["Sat 19 Sep, 3 PM to 4 PM: Review (Work)"],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-01",
+            "to": "2026-10-15"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: from and to may span at most 31 days.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-19",
+            "to": "2026-09-18"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: to must be the same day as from or later.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-18T10:00",
+            "to": "2026-09-18"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: from and to are days (YYYY-MM-DD), not times.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-18"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Missing argument to.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Missing argument from.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "granted",
+      "mail": "granted",
+      "notes": "granted",
+      "reminders": "granted"
+    },
+    "calendars": [
+      {
+        "default": true,
+        "title": "Home",
+        "writable": true
+      },
+      {
+        "title": "Work",
+        "writable": true
+      },
+      {
+        "birthdays": true,
+        "title": "Birthdays",
+        "writable": false
+      },
+      {
+        "subscribed": true,
+        "title": "Holidays",
+        "writable": true
+      }
+    ],
+    "events": [
+      {
+        "calendar": "Work",
+        "end": "2026-09-19T16:00",
+        "id": "e-1",
+        "start": "2026-09-19T15:00",
+        "title": "Review"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-18T10:15",
+        "id": "e-2",
+        "start": "2026-09-18T09:45",
+        "title": "Standup"
+      },
+      {
+        "allDay": true,
+        "calendar": "Home",
+        "end": "2026-09-21T23:59:59",
+        "id": "e-3",
+        "start": "2026-09-21T00:00",
+        "title": "Offsite"
+      },
+      {
+        "calendar": "Home",
+        "end": "2026-09-17T10:00",
+        "id": "e-4",
+        "start": "2026-09-17T09:00",
+        "title": "Old"
+      }
+    ],
+    "now": "2026-09-18T10:00:00",
+    "zone": "America/Los_Angeles"
+  }
+}

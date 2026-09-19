@@ -1,0 +1,137 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-18",
+            "to": "2026-09-18"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NO_ACCESS: macOS has not allowed Butler to use Calendar.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "title": "Buy milk"
+          },
+          "name": "reminders_create"
+        }
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NO_ACCESS: macOS has not allowed Butler to use Reminders.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "query": "x"
+          },
+          "name": "notes_search"
+        }
+      },
+      "out": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NO_ACCESS: macOS has not allowed Butler to use Notes.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "mail_unread"
+        }
+      },
+      "out": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NO_ACCESS: macOS has not allowed Butler to use Mail.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "denied",
+      "mail": "unknown",
+      "notes": "denied",
+      "reminders": "notDetermined"
+    },
+    "calendars": [
+      {
+        "default": true,
+        "title": "Home",
+        "writable": true
+      },
+      {
+        "title": "Work",
+        "writable": true
+      },
+      {
+        "birthdays": true,
+        "title": "Birthdays",
+        "writable": false
+      },
+      {
+        "subscribed": true,
+        "title": "Holidays",
+        "writable": true
+      }
+    ],
+    "now": "2026-09-18T10:00:00",
+    "zone": "America/Los_Angeles"
+  }
+}

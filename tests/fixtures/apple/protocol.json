@@ -1,0 +1,234 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "capabilities": {},
+          "clientInfo": {
+            "name": "butler",
+            "version": "0.1.0"
+          },
+          "protocolVersion": "2025-06-18"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "capabilities": {
+            "tools": {}
+          },
+          "protocolVersion": "2025-06-18",
+          "serverInfo": {
+            "name": "coarena-apple",
+            "version": "0.1.0"
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+      },
+      "out": null
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "ping"
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "in": {
+        "id": "abc",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      },
+      "out": {
+        "id": "abc",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "resources/list"
+      },
+      "out": {
+        "error": {
+          "code": -32601,
+          "message": "Method not found"
+        },
+        "id": 3,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "prompts/list"
+      },
+      "out": {
+        "error": {
+          "code": -32601,
+          "message": "Method not found"
+        },
+        "id": 4,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": "{not json",
+      "out": {
+        "error": {
+          "code": -32700,
+          "message": "Parse error"
+        },
+        "id": null,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": "",
+      "out": null
+    },
+    {
+      "in": "[1,2]",
+      "out": {
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        },
+        "id": null,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": {
+        "id": 5,
+        "method": "ping"
+      },
+      "out": {
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        },
+        "id": 5,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": {
+        "id": 6,
+        "jsonrpc": "2.0"
+      },
+      "out": {
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        },
+        "id": 6,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {
+          "requestId": 1
+        }
+      },
+      "out": null
+    },
+    {
+      "in": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {}
+        }
+      },
+      "out": {
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        },
+        "id": 7,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": "from",
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        },
+        "id": 8,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "notes_delete_all"
+        }
+      },
+      "out": {
+        "error": {
+          "code": -32602,
+          "message": "Unknown tool"
+        },
+        "id": 9,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "x"
+          },
+          "name": "osascript"
+        }
+      },
+      "out": {
+        "error": {
+          "code": -32602,
+          "message": "Unknown tool"
+        },
+        "id": 10,
+        "jsonrpc": "2.0"
+      }
+    }
+  ]
+}

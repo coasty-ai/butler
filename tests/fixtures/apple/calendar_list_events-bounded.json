@@ -1,0 +1,264 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "2026-09-20",
+            "to": "2026-09-22"
+          },
+          "name": "calendar_list_events"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Sun 20 Sep, 8 AM to 9 AM: Slot 00 (Work)\nSun 20 Sep, 9 AM to 10 AM: Slot 01 (Work)\nSun 20 Sep, 10 AM to 11 AM: Slot 02 (Work)\nSun 20 Sep, 11 AM to 12 PM: Slot 03 (Work)\nSun 20 Sep, 12 PM to 1 PM: Slot 04 (Work)\nSun 20 Sep, 1 PM to 2 PM: Slot 05 (Work)\nSun 20 Sep, 2 PM to 3 PM: Slot 06 (Work)\nSun 20 Sep, 3 PM to 4 PM: Slot 07 (Work)\nSun 20 Sep, 4 PM to 5 PM: Slot 08 (Work)\nSun 20 Sep, 5 PM to 6 PM: Slot 09 (Work)\nMon 21 Sep, 8 AM to 9 AM: Slot 10 (Work)\nMon 21 Sep, 9 AM to 10 AM: Slot 11 (Work)\nMon 21 Sep, 10 AM to 11 AM: Slot 12 (Work)\nMon 21 Sep, 11 AM to 12 PM: Slot 13 (Work)\nMon 21 Sep, 12 PM to 1 PM: Slot 14 (Work)\nMon 21 Sep, 1 PM to 2 PM: Slot 15 (Work)\nMon 21 Sep, 2 PM to 3 PM: Slot 16 (Work)\nMon 21 Sep, 3 PM to 4 PM: Slot 17 (Work)\nMon 21 Sep, 4 PM to 5 PM: Slot 18 (Work)\nMon 21 Sep, 5 PM to 6 PM: Slot 19 (Work)\n+5 more",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": [
+              "Sun 20 Sep, 8 AM to 9 AM: Slot 00 (Work)",
+              "Sun 20 Sep, 9 AM to 10 AM: Slot 01 (Work)",
+              "Sun 20 Sep, 10 AM to 11 AM: Slot 02 (Work)",
+              "Sun 20 Sep, 11 AM to 12 PM: Slot 03 (Work)",
+              "Sun 20 Sep, 12 PM to 1 PM: Slot 04 (Work)",
+              "Sun 20 Sep, 1 PM to 2 PM: Slot 05 (Work)",
+              "Sun 20 Sep, 2 PM to 3 PM: Slot 06 (Work)",
+              "Sun 20 Sep, 3 PM to 4 PM: Slot 07 (Work)",
+              "Sun 20 Sep, 4 PM to 5 PM: Slot 08 (Work)",
+              "Sun 20 Sep, 5 PM to 6 PM: Slot 09 (Work)",
+              "Mon 21 Sep, 8 AM to 9 AM: Slot 10 (Work)",
+              "Mon 21 Sep, 9 AM to 10 AM: Slot 11 (Work)",
+              "Mon 21 Sep, 10 AM to 11 AM: Slot 12 (Work)",
+              "Mon 21 Sep, 11 AM to 12 PM: Slot 13 (Work)",
+              "Mon 21 Sep, 12 PM to 1 PM: Slot 14 (Work)",
+              "Mon 21 Sep, 1 PM to 2 PM: Slot 15 (Work)",
+              "Mon 21 Sep, 2 PM to 3 PM: Slot 16 (Work)",
+              "Mon 21 Sep, 3 PM to 4 PM: Slot 17 (Work)",
+              "Mon 21 Sep, 4 PM to 5 PM: Slot 18 (Work)",
+              "Mon 21 Sep, 5 PM to 6 PM: Slot 19 (Work)"
+            ],
+            "more": 5
+          }
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "granted",
+      "mail": "granted",
+      "notes": "granted",
+      "reminders": "granted"
+    },
+    "calendars": [
+      {
+        "default": true,
+        "title": "Home",
+        "writable": true
+      },
+      {
+        "title": "Work",
+        "writable": true
+      },
+      {
+        "birthdays": true,
+        "title": "Birthdays",
+        "writable": false
+      },
+      {
+        "subscribed": true,
+        "title": "Holidays",
+        "writable": true
+      }
+    ],
+    "events": [
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T09:00",
+        "id": "e-0",
+        "start": "2026-09-20T08:00",
+        "title": "Slot 00"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T10:00",
+        "id": "e-1",
+        "start": "2026-09-20T09:00",
+        "title": "Slot 01"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T11:00",
+        "id": "e-2",
+        "start": "2026-09-20T10:00",
+        "title": "Slot 02"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T12:00",
+        "id": "e-3",
+        "start": "2026-09-20T11:00",
+        "title": "Slot 03"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T13:00",
+        "id": "e-4",
+        "start": "2026-09-20T12:00",
+        "title": "Slot 04"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T14:00",
+        "id": "e-5",
+        "start": "2026-09-20T13:00",
+        "title": "Slot 05"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T15:00",
+        "id": "e-6",
+        "start": "2026-09-20T14:00",
+        "title": "Slot 06"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T16:00",
+        "id": "e-7",
+        "start": "2026-09-20T15:00",
+        "title": "Slot 07"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T17:00",
+        "id": "e-8",
+        "start": "2026-09-20T16:00",
+        "title": "Slot 08"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-20T18:00",
+        "id": "e-9",
+        "start": "2026-09-20T17:00",
+        "title": "Slot 09"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T09:00",
+        "id": "e-10",
+        "start": "2026-09-21T08:00",
+        "title": "Slot 10"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T10:00",
+        "id": "e-11",
+        "start": "2026-09-21T09:00",
+        "title": "Slot 11"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T11:00",
+        "id": "e-12",
+        "start": "2026-09-21T10:00",
+        "title": "Slot 12"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T12:00",
+        "id": "e-13",
+        "start": "2026-09-21T11:00",
+        "title": "Slot 13"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T13:00",
+        "id": "e-14",
+        "start": "2026-09-21T12:00",
+        "title": "Slot 14"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T14:00",
+        "id": "e-15",
+        "start": "2026-09-21T13:00",
+        "title": "Slot 15"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T15:00",
+        "id": "e-16",
+        "start": "2026-09-21T14:00",
+        "title": "Slot 16"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T16:00",
+        "id": "e-17",
+        "start": "2026-09-21T15:00",
+        "title": "Slot 17"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T17:00",
+        "id": "e-18",
+        "start": "2026-09-21T16:00",
+        "title": "Slot 18"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-21T18:00",
+        "id": "e-19",
+        "start": "2026-09-21T17:00",
+        "title": "Slot 19"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-22T09:00",
+        "id": "e-20",
+        "start": "2026-09-22T08:00",
+        "title": "Slot 20"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-22T10:00",
+        "id": "e-21",
+        "start": "2026-09-22T09:00",
+        "title": "Slot 21"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-22T11:00",
+        "id": "e-22",
+        "start": "2026-09-22T10:00",
+        "title": "Slot 22"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-22T12:00",
+        "id": "e-23",
+        "start": "2026-09-22T11:00",
+        "title": "Slot 23"
+      },
+      {
+        "calendar": "Work",
+        "end": "2026-09-22T13:00",
+        "id": "e-24",
+        "start": "2026-09-22T12:00",
+        "title": "Slot 24"
+      }
+    ],
+    "now": "2026-09-18T10:00:00",
+    "zone": "America/Los_Angeles"
+  }
+}

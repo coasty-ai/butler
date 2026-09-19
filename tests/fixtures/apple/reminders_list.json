@@ -1,0 +1,222 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "reminders_list"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Pay rent, due Wed 16 Sep 9 AM (Home)\nSend deck, due Sat 19 Sep (Work)\nSomeday (Ideas)",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": [
+              "Pay rent, due Wed 16 Sep 9 AM (Home)",
+              "Send deck, due Sat 19 Sep (Work)",
+              "Someday (Ideas)"
+            ],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "list": "Work"
+          },
+          "name": "reminders_list"
+        }
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Send deck, due Sat 19 Sep (Work)",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": ["Send deck, due Sat 19 Sep (Work)"],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "dueBefore": "2026-09-18"
+          },
+          "name": "reminders_list"
+        }
+      },
+      "out": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Pay rent, due Wed 16 Sep 9 AM (Home)",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": ["Pay rent, due Wed 16 Sep 9 AM (Home)"],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "dueBefore": "2026-09-20",
+            "list": "Ideas"
+          },
+          "name": "reminders_list"
+        }
+      },
+      "out": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "No open reminders.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": [],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "list": "Nope"
+          },
+          "name": "reminders_list"
+        }
+      },
+      "out": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "NO_LIST: The list Nope does not exist. Lists: Home, Ideas, Work.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "completed": true
+          },
+          "name": "reminders_list"
+        }
+      },
+      "out": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Unknown argument completed. Allowed: dueBefore, list.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "granted",
+      "mail": "granted",
+      "notes": "granted",
+      "reminders": "granted"
+    },
+    "lists": [
+      {
+        "default": true,
+        "title": "Home",
+        "writable": true
+      },
+      {
+        "title": "Work",
+        "writable": true
+      },
+      {
+        "title": "Ideas",
+        "writable": true
+      }
+    ],
+    "now": "2026-09-18T10:00:00",
+    "reminders": [
+      {
+        "id": "r-1",
+        "list": "Ideas",
+        "title": "Someday"
+      },
+      {
+        "due": "2026-09-19",
+        "id": "r-2",
+        "list": "Work",
+        "title": "Send deck"
+      },
+      {
+        "due": "2026-09-16T09:00",
+        "id": "r-3",
+        "list": "Home",
+        "title": "Pay rent"
+      }
+    ],
+    "zone": "America/Los_Angeles"
+  }
+}

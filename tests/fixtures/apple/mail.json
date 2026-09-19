@@ -1,0 +1,376 @@
+{
+  "exchange": [
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "mail_unread"
+        }
+      },
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "noreply@example.com: Your receipt, 2 min ago\nDana Li: Quarterly plan, 2 h ago",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": [
+              "noreply@example.com: Your receipt, 2 min ago",
+              "Dana Li: Quarterly plan, 2 h ago"
+            ],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 1
+          },
+          "name": "mail_unread"
+        }
+      },
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "noreply@example.com: Your receipt, 2 min ago",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": ["noreply@example.com: Your receipt, 2 min ago"],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 50
+          },
+          "name": "mail_unread"
+        }
+      },
+      "out": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: limit must be a whole number from 1 to 20.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "from": "bob"
+          },
+          "name": "mail_search"
+        }
+      },
+      "out": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Bob: Re: lunch, yesterday",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": ["Bob: Re: lunch, yesterday"],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "since": "2026-09-18",
+            "subject": "plan"
+          },
+          "name": "mail_search"
+        }
+      },
+      "out": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Dana Li: Quarterly plan, 2 h ago",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "lines": ["Dana Li: Quarterly plan, 2 h ago"],
+            "more": 0
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "mail_search"
+        }
+      },
+      "out": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Give at least one of from, subject or since.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "body": "invoice"
+          },
+          "name": "mail_search"
+        }
+      },
+      "out": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Unknown argument body. Allowed: from, since, subject.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "body": "Draft body",
+            "subject": "Quarterly plan",
+            "to": ["dana@example.com", "bob@example.com"]
+          },
+          "name": "mail_draft"
+        }
+      },
+      "out": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Created a Mail draft to 2 recipients: Quarterly plan. Nothing was sent.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "created": {
+              "kind": "draft",
+              "recipients": 2,
+              "subject": "Quarterly plan"
+            },
+            "undoToken": "undo-1",
+            "verified": true
+          }
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "subject": "Hi",
+            "to": ["dana"]
+          },
+          "name": "mail_draft"
+        }
+      },
+      "out": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Every recipient must be an address like name@example.com.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "send": true,
+            "subject": "Hi",
+            "to": ["dana@example.com"]
+          },
+          "name": "mail_draft"
+        }
+      },
+      "out": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "BAD_ARGS: Unknown argument send. Allowed: body, subject, to.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 11,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "subject": "Hi",
+            "to": ["dana@example.com"]
+          },
+          "name": "mail_send"
+        }
+      },
+      "out": {
+        "error": {
+          "code": -32602,
+          "message": "Unknown tool"
+        },
+        "id": 11,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "in": {
+        "id": 12,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "token": "undo-1"
+          },
+          "name": "undo"
+        }
+      },
+      "out": {
+        "id": 12,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "Removed the draft.",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "removed": {
+              "kind": "draft"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "store": {
+    "access": {
+      "calendar": "granted",
+      "mail": "granted",
+      "notes": "granted",
+      "reminders": "granted"
+    },
+    "mail": [
+      {
+        "read": false,
+        "received": "2026-09-18T08:00",
+        "sender": "Dana Li <dana@example.com>",
+        "subject": "Quarterly plan"
+      },
+      {
+        "read": true,
+        "received": "2026-09-17T09:00",
+        "sender": "\"Bob\" <bob@example.com>",
+        "subject": "Re: lunch"
+      },
+      {
+        "read": false,
+        "received": "2026-09-18T09:58",
+        "sender": "noreply@example.com",
+        "subject": "Your receipt"
+      }
+    ],
+    "now": "2026-09-18T10:00:00",
+    "tokens": ["undo-1"],
+    "zone": "America/Los_Angeles"
+  }
+}
