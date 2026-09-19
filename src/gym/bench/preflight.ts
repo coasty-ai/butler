@@ -16,6 +16,7 @@ import {
 import type { PreflightCode } from "./presence";
 import { agendaKinds, parseAgendaFind, type AgendaKind } from "./readers";
 import type { AttemptResult, TaskSkip } from "./report";
+import { longHorizon } from "./suites";
 import type { BenchTask } from "./types";
 
 /**
@@ -265,9 +266,9 @@ const STORE: Record<AgendaKind, "calendar" | "reminders"> = {
 
 /* ----------------------------------------------------------- task-level */
 
-/** Tasks that need a bench folder: the long suite, and anything with a reader. */
+/** Tasks that need a bench folder: the long and market suites, and anything with a reader. */
 export function needsBenchDir(task: Pick<BenchTask, "suite" | "evidence">) {
-  return task.suite === "long" || (task.evidence?.length ?? 0) > 0;
+  return longHorizon(task) || (task.evidence?.length ?? 0) > 0;
 }
 
 /** What the harness found before the first attempt. */
@@ -308,10 +309,10 @@ export function startSkip(
     )
   )
     return "APP_NOT_INSTALLED";
-  // Long tasks edit documents, calendars and settings: one already open may
-  // hold the person's unsaved work, which the model could type into, and
-  // the harness never quits an application to find out.
-  if (task.suite === "long" && task.apps.some((id) => facts.running?.has(id)))
+  // Long and market tasks edit documents, calendars and settings: one
+  // already open may hold the person's unsaved work, which the model could
+  // type into, and the harness never quits an application to find out.
+  if (longHorizon(task) && task.apps.some((id) => facts.running?.has(id)))
     return "APPS_OPEN";
   if (facts.benchRootDirty && needsBenchDir(task)) return "BENCH_ROOT_DIRTY";
   const kinds = agendaKinds(task);

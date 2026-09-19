@@ -1,6 +1,6 @@
 # Harness cycles and the fix loop
 
-A **cycle** is an unattended, repeatable measurement of Butler on your own Mac: every selected task, on every model in a matrix, several times, interleaved, while nobody is at the Mac. It runs the 12-task smoke suite by default, the 28-task long-horizon suite with `--suite long`, or both with `--suite all` (docs/BENCHMARK.md describes both catalogues). It writes a content-free `results.json` and `report.md`. The **fix loop** reads that report, turns its top failure classes into fix lanes, and uses the next cycle to decide whether a fix worked.
+A **cycle** is an unattended, repeatable measurement of Butler on your own Mac: every selected task, on every model in a matrix, several times, interleaved, while nobody is at the Mac. It runs the 12-task smoke suite by default, the 28-task long-horizon suite with `--suite long`, the 35-task market suite with `--suite market`, or every suite with `--suite all` (docs/BENCHMARK.md describes the three catalogues). It writes a content-free `results.json` and `report.md`. The **fix loop** reads that report, turns its top failure classes into fix lanes, and uses the next cycle to decide whether a fix worked.
 
 ```
 cycle -> report.md (failure classes, owners, example run ids)
@@ -89,6 +89,7 @@ Apple Silicon, macOS 14 or later, Node 22. `npm run build:native`, and Accessibi
 ```
 npm run cycle -- --dry-run                                  # plan, ceilings, estimate, gate, skips, baseline
 npm run cycle -- --dry-run --suite long                     # the long suite, sharded over nights
+npm run cycle -- --dry-run --suite market                   # the market suite (docs/BENCHMARK.md 1c)
 npm run cycle -- --preflight --time-box 4h                  # is this Mac ready for the night?
 npm run cycle -- --matrix openai,google --tasks calculator --repeat 2 \
   --time-box 90m --i-know-this-drives-my-mac                # a short first cycle
@@ -109,9 +110,9 @@ Its dry run (the same command with `--dry-run` in place of `--i-know-this-drives
 
 ### Suites
 
-`--suite smoke` (the default: a bare cycle and `npm run bench` are unchanged), `--suite long` or `--suite all`. `--tasks` then picks ids or categories within the suite, and a suite name in it selects that whole suite (`--tasks long`); `--tasks all` means every task of the chosen suite, as before. Long tasks each get a bench folder under `~/OpenAssistBench/<token>`, their declared end-state readers (files, agenda, music, the fixture log), and the suite's cleanup after every attempt, whatever happened. The Music reader stays off unless `OPEN_ASSIST_BENCH_MUSIC=1` (its first Apple Event shows an Automation prompt). For a plan with fixture tasks the harness runs `scripts/bench-fixtures.mjs` as a child process on `127.0.0.1:47831` for the cycle; it ends with the cycle however the cycle ends (a finished loop, an error, Ctrl-C, even `kill -9`, when its channel to the harness closes). The agenda helper's `setup` runs once at the real start and again before every agenda attempt, which gets an agenda only when its own stores are ready at that moment.
+`--suite smoke` (the default: a bare cycle and `npm run bench` are unchanged), `--suite long`, `--suite market` or `--suite all`. `--tasks` then picks ids or categories within the suite, and a suite name in it selects that whole suite (`--tasks long`, `--tasks market`); `--tasks all` means every task of the chosen suite, as before. Long and market tasks each get a bench folder under `~/OpenAssistBench/<token>`, their declared end-state readers (files, agenda, music, the fixture log), and the suite's cleanup after every attempt, whatever happened; both are sharded over nights when they do not fit one, and both skip a task whose application is already open (`APPS_OPEN`). The market suite's categories (messaging, routines, email, calendar, reminders, memory, research, shopping, files, coding, smart-home, business-ops, dictation) follow the use cases in `.data/design/market-usecases.md`, so a red cell in the report names the lane that fixes it. The Music reader stays off unless `OPEN_ASSIST_BENCH_MUSIC=1` (its first Apple Event shows an Automation prompt). For a plan with fixture tasks the harness runs `scripts/bench-fixtures.mjs` as a child process on `127.0.0.1:47831` for the cycle; it ends with the cycle however the cycle ends (a finished loop, an error, Ctrl-C, even `kill -9`, when its channel to the harness closes). The agenda helper's `setup` runs once at the real start and again before every agenda attempt, which gets an agenda only when its own stores are ready at that moment.
 
-The catalogue hash covers exactly the selected tasks and the source their grades depend on (the graders; the smoke catalogue for smoke tasks; the long catalogue, its fixture pages and its readers for long tasks), so a smoke, a long and a mixed cycle never share a hash and are never each other's baseline.
+The catalogue hash covers exactly the selected tasks and the source their grades depend on (the graders; the smoke catalogue for smoke tasks; the long catalogue for long tasks; the market catalogue and its own page families for market tasks; the shared fixture store and readers for both), so a smoke, a long, a market and a mixed cycle never share a hash and are never each other's baseline.
 
 ### Cleanup and `--cleanup-only`
 
@@ -139,6 +140,7 @@ A resume refuses a changed plan, a changed catalogue hash and (unless `--allow-r
 | One model, smoke suite x 3                   | 36                 | about 45 min                   | $4.86                                | $2-5          |
 | Long suite, 28 tasks x 2 models x 1 repeat   | 56                 | fits one 4 h night             | per-model caps                       | about $10-20  |
 | Long suite, 28 tasks x 3 models x 3 repeats  | 252, over 4 nights | about 2.7 h a night (dry run)  | $6.70 per model a night at $0.50/run | $40-60 in all |
+| Market suite, 35 tasks x 1 model x 3 repeats | 105, over 2 nights | about 2.8 h a night (dry run)  | $15.70 per pass at the task caps     | not yet run   |
 
 Per attempt the cap is `min(task cap, --max-cost-run)`; per model `--max-cost-model` (default: the cycle cap split evenly), so an expensive model cannot eat a cheap one's share; per cycle `--max-cost` (default: the plan's ceiling). A model out of money has its remaining attempts skipped as `BUDGET_EXHAUSTED` while the others continue.
 
@@ -190,7 +192,7 @@ A task is a `BenchTask` (`src/gym/bench/types.ts`). The rules:
 - Record a human's step count and set `steps` and `maxActions` (about twice the competent maximum).
 - Approvals the task may need go in `approve`, word for word, and only routine ones.
 - `expectsHandoff` for a task whose right outcome is a hand-off or an honest `fail`.
-- The catalogue invariants in `tests/bench.test.ts` (cost caps, forbidden apps and words) apply. A new category is a two-line change to the closed `BenchCategory` union and `CATEGORIES`, plus the docs table.
+- The catalogue invariants in `tests/bench.test.ts` (cost caps, forbidden apps and words) apply, and for a long or market task those of `tests/bench-long.test.ts` or `tests/bench-market.test.ts` (a pass and a false-done scenario per task, page labels against the policy's pattern, side-effect class). A new category is a two-line change to the closed `BenchCategory` union and the suite's categories list, plus the docs table.
 
 A change to a task template or a grader changes the catalogue hash: the next cycle has no baseline until it has run once.
 

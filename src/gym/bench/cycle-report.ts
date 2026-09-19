@@ -153,21 +153,24 @@ export interface CycleResults {
 /**
  * The source files a task set's grades depend on, relative to the checkout:
  * the grader primitives for any task, each suite's catalogue for its own
- * tasks, and for the long suite the readers that produce its evidence and
- * the fixture pages it reads. A smoke cycle's hash then moves with smoke
- * code only, and a smoke, a long and a mixed cycle never share a hash, so a
- * baseline never crosses suites.
+ * tasks, and for the long and market suites the readers that produce their
+ * evidence and the fixture pages they read (the market suite's own pages
+ * build on the long suite's). A smoke cycle's hash then moves with smoke
+ * code only, and a smoke, a long, a market and a mixed cycle never share a
+ * hash, so a baseline never crosses suites.
  */
 export function graderFiles(tasks: Pick<BenchTask, "suite">[]): string[] {
   const files = ["src/gym/bench/graders.ts"];
-  if (tasks.some((task) => (task.suite ?? "smoke") === "smoke"))
-    files.push("src/gym/bench/catalogue.ts");
-  if (tasks.some((task) => task.suite === "long"))
+  const suites = new Set(tasks.map((task) => task.suite ?? "smoke"));
+  if (suites.has("smoke")) files.push("src/gym/bench/catalogue.ts");
+  if (suites.has("long")) files.push("src/gym/bench/catalogue-long.ts");
+  if (suites.has("market"))
     files.push(
-      "src/gym/bench/catalogue-long.ts",
-      "src/gym/bench/fixtures.ts",
-      "src/gym/bench/readers.ts",
+      "src/gym/bench/catalogue-market.ts",
+      "src/gym/bench/fixtures-market.ts",
     );
+  if (suites.has("long") || suites.has("market"))
+    files.push("src/gym/bench/fixtures.ts", "src/gym/bench/readers.ts");
   return files;
 }
 

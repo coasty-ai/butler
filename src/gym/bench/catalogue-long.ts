@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { CATALOGUE, CATEGORIES, selectTasks } from "./catalogue";
 import {
   drawAbout,
   drawOrders,
@@ -49,7 +48,6 @@ import {
 import type {
   AgendaEvidence,
   BenchCategory,
-  BenchSuite,
   BenchTask,
   Evidence,
   Grade,
@@ -132,7 +130,7 @@ export const NOTES_HEADER = (token: string) => `Research notes for ${token}\n`;
  */
 export const marked = (token: string, name: string) => `${token}-${name}`;
 
-const sha256 = (text: string) =>
+export const sha256 = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 
 /**
@@ -144,13 +142,13 @@ export function withoutMarker(text: string, marker: string): string {
   return needle ? text.split(needle).join(" ") : text;
 }
 
-const marker = (evidence: Evidence): string | undefined => {
+export const marker = (evidence: Evidence): string | undefined => {
   const token = evidence.parameters.token ?? "";
   return TOKEN_RE.test(token) ? token : undefined;
 };
 
 /** Steps in a browser, then steps in TextEdit: the page was read before the note was written. */
-const browserThenTextEdit = (evidence: Evidence) =>
+export const browserThenTextEdit = (evidence: Evidence) =>
   inOrder(evidence.journal, inApp(BROWSER_APPS), inApp([TEXTEDIT]));
 
 /**
@@ -172,11 +170,11 @@ function browserView(evidence: Evidence): BrowserView | Grade {
   if (!address) return unverifiable("NO_BROWSER_ADDRESS");
   return { shown: true, address };
 }
-const isGrade = (value: unknown): value is Grade =>
+export const isGrade = (value: unknown): value is Grade =>
   !!value && typeof value === "object" && "status" in value;
 
 /** The agenda reader ran and the store the task needs was readable. */
-function agendaState(
+export function agendaState(
   evidence: Evidence,
   kind: "event" | "reminder",
 ): AgendaEvidence | Grade {
@@ -188,13 +186,13 @@ function agendaState(
     return unverifiable("NO_REMINDERS_ACCESS");
   return agenda;
 }
-const dayOf = (evidence: Evidence, name: string): Date | undefined => {
+export const dayOf = (evidence: Evidence, name: string): Date | undefined => {
   const day = new Date(evidence.parameters[name] ?? "");
   return Number.isNaN(day.getTime()) ? undefined : day;
 };
 /** The calendar and reminders list the agenda helper creates in the local source. */
 export const BENCH_CONTAINER = "OpenAssistBench";
-const inBenchContainer = (item?: { calendar?: string }) =>
+export const inBenchContainer = (item?: { calendar?: string }) =>
   item?.calendar === BENCH_CONTAINER;
 
 /* ---------------------------------------------------------- research */
@@ -360,10 +358,10 @@ export const researchListNote = research({
 
 /* ------------------------------------------------------------ agenda */
 
-const AGENDA_SAFETY =
+export const AGENDA_SAFETY =
   "Creates or edits items titled with the attempt's marker in the OpenAssistBench calendar or list, which the agenda helper made in the local (non-syncing) source. The harness removes every item titled with the marker afterwards; the helper refuses to remove anything else.";
 
-const agendaPrepare =
+export const agendaPrepare =
   (
     build: (
       context: PrepareContext,
@@ -655,7 +653,7 @@ export const agendaRemTwo: BenchTask = {
 
 /* ------------------------------------------------------------- files */
 
-const FILES_SAFETY =
+export const FILES_SAFETY =
   "Works only inside a folder the benchmark created under ~/OpenAssistBench, on files the benchmark wrote, and that folder is already open in the Finder when the run starts. The instruction never asks to delete anything (the Finder's Move to Trash would be declined anyway); the harness removes the folder afterwards, whatever happened. A rename outside that folder cannot be detected, which is why the folder is opened for the model and named in the instruction.";
 
 /**
@@ -663,7 +661,7 @@ const FILES_SAFETY =
  * in the right window has no reason to browse the user's own folders, where a
  * rename could not be detected or undone.
  */
-const openBenchFolder = (context: PrepareContext) =>
+export const openBenchFolder = (context: PrepareContext) =>
   context.openWithLaunchServices(context.benchDir);
 
 export const DRAFTS = ["a", "b", "c"] as const;
@@ -932,7 +930,7 @@ export const filesCompress: BenchTask = {
 
 /* ------------------------------------------------------ text-editing */
 
-const TEXT_SAFETY =
+export const TEXT_SAFETY =
   "TextEdit on a file the benchmark wrote in the attempt's own folder under ~/OpenAssistBench, named with the attempt's marker so no search or recent-documents list can match a file of the user's. Save these changes? is the only prompt the harness may approve (text-find-replace also Replace the existing item?, for the Find bar); the harness removes the folder afterwards.";
 
 export const DRAFT_LINES = [
@@ -1108,7 +1106,7 @@ export const textFindReplace: BenchTask = {
 
 /* ----------------------------------------------------------- browser */
 
-const BROWSER_SAFETY =
+export const BROWSER_SAFETY =
   "Loopback only: the pages are served by the benchmark for this attempt's token, carry no external link or resource, and a Content-Security-Policy keeps the browser on them. No real site, no sign-in.";
 
 export const browserNavChain: BenchTask = {
@@ -1982,49 +1980,3 @@ export const LONG_CATEGORIES: BenchCategory[] = [
   "multi-app",
   "recovery",
 ];
-
-export type SuiteSelector = BenchSuite | "all";
-const SUITES: SuiteSelector[] = ["smoke", "long", "all"];
-
-/** The tasks of one suite, or of both. */
-export function catalogueFor(suite: SuiteSelector = "smoke"): BenchTask[] {
-  if (suite === "smoke") return [...CATALOGUE];
-  if (suite === "long") return [...LONG_CATALOGUE];
-  return [...CATALOGUE, ...LONG_CATALOGUE];
-}
-export function categoriesFor(suite: SuiteSelector = "smoke"): BenchCategory[] {
-  if (suite === "smoke") return [...CATEGORIES];
-  if (suite === "long") return [...LONG_CATEGORIES];
-  return [...new Set([...CATEGORIES, ...LONG_CATEGORIES])];
-}
-
-/**
- * selectTasks over a suite, where a suite name in the selector ("long",
- * "all") selects that whole suite; ids and categories resolve against the
- * suite chosen. The smoke default keeps `npm run bench` unchanged.
- */
-export function selectSuite(
-  selector: string | undefined,
-  suite: SuiteSelector = "smoke",
-): { tasks: BenchTask[]; unknown: string[] } {
-  const parts = (selector ?? "")
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const suites = parts.filter((part): part is SuiteSelector =>
-    SUITES.includes(part as SuiteSelector),
-  );
-  const rest = parts.filter((part) => !SUITES.includes(part as SuiteSelector));
-  const tasks: BenchTask[] = [];
-  const add = (found: BenchTask[]) => {
-    for (const task of found) if (!tasks.includes(task)) tasks.push(task);
-  };
-  for (const name of suites) add(catalogueFor(name));
-  if (!rest.length && suites.length) return { tasks, unknown: [] };
-  const picked = selectTasks(
-    rest.length ? rest.join(",") : undefined,
-    catalogueFor(suite),
-  );
-  add(picked.tasks);
-  return { tasks, unknown: picked.unknown };
-}

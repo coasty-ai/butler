@@ -18,9 +18,22 @@ export type BenchCategory =
   | "text-editing"
   | "ide"
   | "settings"
-  | "recovery";
+  | "recovery"
+  // The market suite (files is shared with the suites above).
+  | "messaging"
+  | "routines"
+  | "email"
+  | "calendar"
+  | "reminders"
+  | "memory"
+  | "research"
+  | "shopping"
+  | "coding"
+  | "smart-home"
+  | "business-ops"
+  | "dictation";
 export type BenchDifficulty = "easy" | "medium" | "hard";
-export type BenchSuite = "smoke" | "long";
+export type BenchSuite = "smoke" | "long" | "market";
 /**
  * "unknown" is a first-class outcome: a grader that cannot read the end state
  * says so instead of guessing. Only verified end state is ever "passed".
@@ -113,6 +126,8 @@ export interface AgendaItem {
   completed?: boolean;
   /** The calendar or list holding the item, so a stray write is detectable. */
   calendar?: string;
+  /** The item repeats; `start` or `due` is then the first occurrence. */
+  recurring?: boolean;
 }
 export interface AgendaEvidence {
   access: { calendar: string; reminders: string };

@@ -159,11 +159,9 @@ import {
   sweepTokens,
   tokenLedgerDir,
 } from "../src/gym/bench/sweep";
-import {
-  catalogueFor,
-  LONG_CATALOGUE,
-  selectSuite,
-} from "../src/gym/bench/catalogue-long";
+import { LONG_CATALOGUE } from "../src/gym/bench/catalogue-long";
+import { MARKET_CATALOGUE } from "../src/gym/bench/catalogue-market";
+import { catalogueFor, selectSuite } from "../src/gym/bench/suites";
 import { CATALOGUE } from "../src/gym/bench/catalogue";
 import {
   APPROVAL_APPS,
@@ -1231,6 +1229,7 @@ describe("one attempt through the real runner", () => {
       expect(safeRelative(bad), bad).toBe(false);
     expect(needsBenchDir(testTask())).toBe(false);
     expect(needsBenchDir(testTask({ suite: "long" }))).toBe(true);
+    expect(needsBenchDir(testTask({ suite: "market" }))).toBe(true);
   });
 
   it("stops the active run from the manual-input callback, never a takeover", () => {
@@ -3981,7 +3980,7 @@ describe("approval in context", () => {
   });
 
   it("gives every routine reason a task lists a scope one of its apps is in", () => {
-    for (const task of [...CATALOGUE, ...LONG_CATALOGUE])
+    for (const task of [...CATALOGUE, ...LONG_CATALOGUE, ...MARKET_CATALOGUE])
       for (const reason of task.approve ?? []) {
         const scope = APPROVAL_APPS[reason];
         expect(scope, `${task.id}: ${reason}`).toBeDefined();
@@ -4138,6 +4137,7 @@ describe("suites in the cycle", () => {
   it("hashes exactly the selected suites' tasks and sources", () => {
     const smoke = selectSuite(undefined, "smoke").tasks;
     const long = selectSuite(undefined, "long").tasks;
+    const market = selectSuite(undefined, "market").tasks;
     const all = selectSuite(undefined, "all").tasks;
     expect(smoke).toEqual(CATALOGUE);
     expect(graderFiles(smoke)).toEqual([
@@ -4150,10 +4150,19 @@ describe("suites in the cycle", () => {
       "src/gym/bench/fixtures.ts",
       "src/gym/bench/readers.ts",
     ]);
+    expect(graderFiles(market)).toEqual([
+      "src/gym/bench/graders.ts",
+      "src/gym/bench/catalogue-market.ts",
+      "src/gym/bench/fixtures-market.ts",
+      "src/gym/bench/fixtures.ts",
+      "src/gym/bench/readers.ts",
+    ]);
     expect(graderFiles(all)).toEqual([
       "src/gym/bench/graders.ts",
       "src/gym/bench/catalogue.ts",
       "src/gym/bench/catalogue-long.ts",
+      "src/gym/bench/catalogue-market.ts",
+      "src/gym/bench/fixtures-market.ts",
       "src/gym/bench/fixtures.ts",
       "src/gym/bench/readers.ts",
     ]);
@@ -4166,7 +4175,9 @@ describe("suites in the cycle", () => {
             (file === edit ? "\n// edited\n" : ""),
         ),
       );
-    expect(new Set([hash(smoke), hash(long), hash(all)]).size).toBe(3);
+    expect(
+      new Set([hash(smoke), hash(long), hash(market), hash(all)]).size,
+    ).toBe(4);
     // A long-suite edit leaves the smoke metric alone and moves the long one.
     expect(hash(smoke, "src/gym/bench/catalogue-long.ts")).toBe(hash(smoke));
     expect(hash(smoke, "src/gym/bench/readers.ts")).toBe(hash(smoke));
@@ -4826,10 +4837,13 @@ describe("harness-cycle.mjs with the suites", () => {
       `long suite: ${LONG_CATALOGUE.length} task(s)`,
     );
     const files = run("--suite", "all", "--tasks", "files");
-    expect(files.stdout).toContain("all suite: 5 task(s)");
+    expect(files.stdout).toContain("all suite: 8 task(s)");
+    expect(run("--tasks", "market").stdout).toContain(
+      `market suite: ${MARKET_CATALOGUE.length} task(s)`,
+    );
     const bad = run("--suite", "huge");
     expect(bad.status).toBe(2);
-    expect(bad.stderr).toContain("--suite takes smoke, long or all");
+    expect(bad.stderr).toContain("--suite takes smoke, long, market or all");
     const unknown = run("--suite", "long", "--tasks", "calculator-open");
     expect(unknown.status).toBe(2);
     expect(unknown.stderr).toContain("Unknown task or category");
@@ -4998,9 +5012,7 @@ describe("harness-cycle.mjs with the suites", () => {
     expect(preflightAt).toBeGreaterThan(exit);
     expect(preflightAt).toBeGreaterThan(lockAt);
     expect(preflightAt).toBeGreaterThan(fixtureAt);
-    expect(bench).toContain(
-      'if (tasks.some((task) => task.suite === "long")) {',
-    );
+    expect(bench).toContain("if (tasks.some(longHorizon)) {");
     expect(bench).toContain("skips = startSkips(tasks, facts);");
     expect(bench).not.toMatch(/\["setup"\]/);
     // Every attempt asks the gate first; a skip is a row, not a run.

@@ -37,14 +37,16 @@ import {
   SUBMIT_APPROVALS,
   TODO_TEXT,
   budgets,
-  catalogueFor,
-  categoriesFor,
   dayBoundary,
   marked,
   onAbout,
-  selectSuite,
   withoutMarker,
 } from "../src/gym/bench/catalogue-long";
+import {
+  catalogueFor,
+  categoriesFor,
+  selectSuite,
+} from "../src/gym/bench/suites";
 import {
   CUSTOMER_POOL,
   FIXTURE_HEADERS,
@@ -3089,16 +3091,20 @@ describe("suite selection", () => {
     expect(selectSuite(undefined).tasks).toEqual(CATALOGUE);
   });
 
-  it("selects a whole suite by name, or both", () => {
+  it("selects a whole suite by name, or every suite", () => {
     expect(selectSuite("long").tasks).toEqual(LONG_CATALOGUE);
     expect(selectSuite(undefined, "long").tasks).toEqual(LONG_CATALOGUE);
-    expect(selectSuite("all").tasks).toEqual([...CATALOGUE, ...LONG_CATALOGUE]);
-    expect(catalogueFor("all")).toHaveLength(
+    expect(selectSuite("smoke,long").tasks).toEqual([
+      ...CATALOGUE,
+      ...LONG_CATALOGUE,
+    ]);
+    // "all" holds the market suite too; tests/bench-market.test.ts pins it.
+    expect(selectSuite("all").tasks).toEqual(catalogueFor("all"));
+    expect(catalogueFor("all").length).toBeGreaterThan(
       CATALOGUE.length + LONG_CATALOGUE.length,
     );
-    expect(new Set(categoriesFor("all"))).toEqual(
-      new Set([...CATEGORIES, ...LONG_CATEGORIES]),
-    );
+    for (const category of [...CATEGORIES, ...LONG_CATEGORIES])
+      expect(categoriesFor("all")).toContain(category);
   });
 
   it("resolves ids and categories against the chosen suite", () => {

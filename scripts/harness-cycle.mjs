@@ -10,6 +10,7 @@
 //
 //   node scripts/harness-cycle.mjs --dry-run
 //   node scripts/harness-cycle.mjs --dry-run --suite long
+//   node scripts/harness-cycle.mjs --dry-run --suite market
 //   node scripts/harness-cycle.mjs --preflight --time-box 4h
 //   node scripts/harness-cycle.mjs --matrix openai,google --tasks calculator \
 //        --repeat 2 --i-know-this-drives-my-mac
@@ -52,8 +53,8 @@ const root = resolve(here, "..");
 const { register } = await import("tsx/esm/api");
 register();
 const { selectTasks } = await import("../src/gym/bench/catalogue.ts");
-const { catalogueFor, categoriesFor, selectSuite } =
-  await import("../src/gym/bench/catalogue-long.ts");
+const { catalogueFor, categoriesFor, longHorizon, selectSuite, suiteOf } =
+  await import("../src/gym/bench/suites.ts");
 const { FIXTURE_PORT } = await import("../src/gym/bench/graders.ts");
 const {
   CYCLE_ID,
@@ -175,10 +176,12 @@ const usage = `Usage: node scripts/harness-cycle.mjs [options]     (npm run cycl
 
 Plan
   --matrix <provider[:model],...>  Cells. Default openai. A bare provider uses its default model.
-  --suite <smoke|long|all>         The catalogue: the 12-task smoke suite (default), the long
-                                   suite, or both. A plan holding long tasks that does not fit
-                                   the time box is sharded over nights on its own.
-  --tasks <ids|categories|all>     Within the suite; "long" or "smoke" there names a whole suite.
+  --suite <smoke|long|market|all>  The catalogue: the 12-task smoke suite (default), the long
+                                   suite, the market suite, or all three. A plan holding long
+                                   or market tasks that does not fit the time box is sharded
+                                   over nights on its own.
+  --tasks <ids|categories|all>     Within the suite; "long", "market" or "smoke" there names a
+                                   whole suite.
                                    Categories: ${categoriesFor("all").join(", ")}. Default all.
   --repeat <n>                     Attempts per task per model, 1-20. Default 3.
   --seed <n>                       Interleaving seed. Default: a hash of the cycle id.
@@ -407,8 +410,8 @@ const requeue = flags.requeue;
 const defaults = Object.fromEntries(
   Object.entries(providerDefaults).map(([key, value]) => [key, value.model]),
 );
-if (!["smoke", "long", "all"].includes(values.suite))
-  fail("--suite takes smoke, long or all.");
+if (!["smoke", "long", "market", "all"].includes(values.suite))
+  fail("--suite takes smoke, long, market or all.");
 let cells;
 let tasks;
 if (stored) {
@@ -419,7 +422,7 @@ if (stored) {
     defaults,
   );
   cells = matrix.cells;
-  // Ids are unique across both suites, so a stored plan resolves whatever
+  // Ids are unique across the suites, so a stored plan resolves whatever
   // suite it was drawn from.
   const selection = selectTasks(stored.taskIds.join(","), catalogueFor("all"));
   if (selection.unknown.length || !stored.taskIds.length)
@@ -435,12 +438,12 @@ if (stored) {
     );
   cells = matrix.cells;
   // `--tasks all` keeps its old meaning, every task of the chosen suite;
-  // both suites are `--suite all` (or `--tasks smoke,long`).
+  // every suite is `--suite all` (or `--tasks smoke,long,market`).
   const selector = values.tasks?.trim() === "all" ? undefined : values.tasks;
   const selection = selectSuite(selector, values.suite);
   if (selection.unknown.length)
     fail(
-      `Unknown task or category: ${selection.unknown.join(", ")}. Known categories: ${categoriesFor(values.suite).join(", ")}; a suite name (smoke, long, all) selects a whole suite.`,
+      `Unknown task or category: ${selection.unknown.join(", ")}. Known categories: ${categoriesFor(values.suite).join(", ")}; a suite name (smoke, long, market, all) selects a whole suite.`,
     );
   tasks = selection.tasks;
 }
@@ -475,13 +478,7 @@ if (values.probe && !stored) {
 if (!cells.length) fail("No matrix cells selected.");
 if (!tasks.length) fail("No tasks selected.");
 /** What the selection holds, for plan.json and the report. */
-const suite =
-  stored?.suite ??
-  (tasks.every((task) => task.suite === "long")
-    ? "long"
-    : tasks.some((task) => task.suite === "long")
-      ? "all"
-      : "smoke");
+const suite = stored?.suite ?? suiteOf(tasks);
 // Every cost cap (the run's own budget, --max-cost-run, --max-cost-model,
 // --max-cost) is checked against the cell's estimated spend. A model charged
 // at its provider default's rates can spend several times each cap, so a
@@ -532,8 +529,8 @@ const byId = new Map(tasks.map((task) => [task.id, task]));
 
 /**
  * Task templates and the grader source of exactly the suites selected: a
- * change there changes the metric, and a smoke and a long cycle never share
- * a hash, so neither is ever the other's baseline.
+ * change there changes the metric, and a smoke, a long and a market cycle
+ * never share a hash, so none is ever another's baseline.
  */
 const graderSources = graderFiles(tasks)
   .map((file) => join(root, file))
@@ -579,15 +576,15 @@ for (const id of taskIds) {
   if (seconds.length) medians[id] = median(seconds);
 }
 
-// The long suite does not fit one night on three models. A plan holding
-// long tasks that does not fit is cut into the fewest shards that each do,
-// and this night runs the first; the others need the same --seed, or they
-// would slice a differently ordered plan. A smoke plan is refused instead,
-// as before: it is short enough that --repeat is the knob.
+// The long and market suites do not fit one night on three models. A plan
+// holding their tasks that does not fit is cut into the fewest shards that
+// each do, and this night runs the first; the others need the same --seed,
+// or they would slice a differently ordered plan. A smoke plan is refused
+// instead, as before: it is short enough that --repeat is the knob.
 let autoShards;
 if (
   !shardText &&
-  tasks.some((task) => task.suite === "long") &&
+  tasks.some(longHorizon) &&
   !fitsTimeBox(
     estimateSeconds(fullPlan, byId, cooldownSeconds, medians),
     timeBoxSeconds,
@@ -1184,7 +1181,7 @@ if (!values["no-keep-awake"]) {
   });
 }
 
-// The long suite's end-state readers and cleanup. Music stays off unless
+// The long and market suites' end-state readers and cleanup. Music stays off unless
 // OPEN_ASSIST_BENCH_MUSIC=1: its first Apple Event shows an Automation
 // prompt, which must never sit on screen during an unattended night.
 const readers = createReaders({ music: process.env[MUSIC_READER_ENV] === "1" });

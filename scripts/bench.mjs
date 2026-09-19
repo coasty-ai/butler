@@ -7,6 +7,7 @@
 //
 //   node scripts/bench.mjs --dry-run
 //   node scripts/bench.mjs --dry-run --suite long
+//   node scripts/bench.mjs --dry-run --suite market
 //   node scripts/bench.mjs --provider openai --tasks calculator \
 //        --i-know-this-drives-my-mac
 //
@@ -29,8 +30,8 @@ const root = resolve(here, "..");
 // `node scripts/bench.mjs` works on its own.
 const { register } = await import("tsx/esm/api");
 register();
-const { catalogueFor, categoriesFor, selectSuite } =
-  await import("../src/gym/bench/catalogue-long.ts");
+const { catalogueFor, categoriesFor, longHorizon, selectSuite } =
+  await import("../src/gym/bench/suites.ts");
 const { aggregate, renderSummary, renderTable } =
   await import("../src/gym/bench/report.ts");
 
@@ -62,9 +63,9 @@ const usage = `Usage: node scripts/bench.mjs [options]
   --i-know-this-drives-my-mac  Required to actually run. PAID and REAL.
   --provider openai|anthropic|google
   --model <id>
-  --suite smoke|long|all       The catalogue (default smoke, the 12 short tasks).
-  --tasks <ids|categories>     Comma separated, within the suite; "long" or "smoke"
-                               names a whole suite. Categories: ${categoriesFor("all").join(", ")}
+  --suite smoke|long|market|all  The catalogue (default smoke, the 12 short tasks).
+  --tasks <ids|categories>     Comma separated, within the suite; "long", "market" or
+                               "smoke" names a whole suite. Categories: ${categoriesFor("all").join(", ")}
   --repeat <n>                 Attempts per task (default 1).
   --max-cost <dollars>         Total budget for the whole benchmark.
   --memory                     Use the learned-memory path (recall and skills).
@@ -84,8 +85,8 @@ if (!Number.isSafeInteger(repeat) || repeat < 1 || repeat > 20) {
   console.error("--repeat must be a whole number between 1 and 20.");
   process.exit(2);
 }
-if (!["smoke", "long", "all"].includes(values.suite)) {
-  console.error("--suite must be smoke, long or all.");
+if (!["smoke", "long", "market", "all"].includes(values.suite)) {
+  console.error("--suite must be smoke, long, market or all.");
   process.exit(2);
 }
 // `--tasks all` keeps its old meaning, every task of the chosen suite.
@@ -237,7 +238,7 @@ if (!lock.ok) {
 }
 process.on("exit", () => releaseDesktopLock(lockFile, process.pid));
 
-// The long suite's readers and cleanup (they run nothing on import either,
+// The long and market suites' readers and cleanup (they run nothing on import either,
 // but a dry run has no use for them). Music stays off unless
 // OPEN_ASSIST_BENCH_MUSIC=1: its first Apple Event shows an Automation prompt.
 const { AGENDA_BINARY, MUSIC_READER_ENV, createReaders } =
@@ -271,7 +272,7 @@ if (tasks.some((task) => task.evidence?.includes("fixture"))) {
   }
 }
 
-// The long suite gets the cycle's task-level preflight (preflight.ts), from
+// The long and market suites get the cycle's task-level preflight (preflight.ts), from
 // the same read-only reads: a document application already open (it may
 // hold the person's unsaved work, which a long task could type into and
 // save), an earlier attempt's leftovers, a missing application, no agenda
@@ -287,7 +288,7 @@ const run = (command, args) =>
     ),
   );
 let skips = new Map();
-if (tasks.some((task) => task.suite === "long")) {
+if (tasks.some(longHorizon)) {
   const facts = await readStartFacts(tasks, {
     run,
     home,

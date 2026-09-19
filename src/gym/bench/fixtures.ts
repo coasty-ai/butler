@@ -18,7 +18,7 @@ import type { FixtureEvidence, FixtureHandle } from "./types";
 // Defined beside the port in graders.ts, which the approval rule reads too.
 export { FIXTURE_HOST };
 
-const escape = (text: string) =>
+export const escape = (text: string) =>
   text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -64,7 +64,7 @@ ${body}
 `;
 }
 
-const link = (token: string, path: string, label: string) =>
+export const link = (token: string, path: string, label: string) =>
   `<a href="/${token}/${path}">${escape(label)}</a>`;
 
 const nav = (token: string) =>
@@ -363,6 +363,13 @@ export const FIXTURE_HEADERS: Record<string, string> = {
   "Referrer-Policy": "no-referrer",
 };
 
+/**
+ * A registered body that is a PDF rather than a page (the market suite's
+ * mail attachment). It is served as a download under the key's last segment,
+ * so the browser saves it instead of showing it; every other body is HTML.
+ */
+export const isPdf = (body: string) => body.startsWith("%PDF-");
+
 const header = (
   headers: FixtureRequest["headers"],
   name: string,
@@ -458,6 +465,15 @@ export function createFixtureStore(port: number = FIXTURE_PORT): FixtureStore {
   });
   const notFound = () =>
     html(404, page("Not found", "benchmark", "<p>No such page.</p>"));
+  const download = (key: string, body: string): FixtureResponse => ({
+    status: 200,
+    headers: {
+      ...FIXTURE_HEADERS,
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${key.split("/").pop()}"`,
+    },
+    body,
+  });
   return {
     register(token, pages) {
       if (!TOKEN_RE.test(token)) throw new Error("Not a bench token.");
@@ -520,7 +536,8 @@ export function createFixtureStore(port: number = FIXTURE_PORT): FixtureStore {
       // A HEAD is a check, not a page someone opened.
       if (method === "GET" && entry.log.visits.length < 500)
         entry.log.visits.push(route.path);
-      return html(200, method === "HEAD" ? "" : body);
+      if (method === "HEAD") return html(200, "");
+      return isPdf(body) ? download(route.key, body) : html(200, body);
     },
   };
 }

@@ -233,6 +233,7 @@ export function parseAgendaFind(stdout: string): AgendaEvidence | undefined {
     const item: AgendaItem = { kind, title };
     const calendar = text(row.calendar, 100);
     if (calendar !== undefined) item.calendar = calendar;
+    if (typeof row.recurring === "boolean") item.recurring = row.recurring;
     if (kind === "event") {
       item.start = text(row.start, 40);
       item.end = text(row.end, 40);
