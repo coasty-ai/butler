@@ -34,19 +34,24 @@ function walk(dir: string, out: string[] = []): string[] {
  * specifier is reported rather than ignored, because a false alarm is cheap and
  * a missed dependency is not.
  */
-function specifiers(file: string): string[] {
-  const source = readFileSync(join(root, file), "utf8")
+function specifiersOf(text: string): string[] {
+  const source = text
     .split("\n")
     .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
     .join("\n");
   const found: string[] = [];
   for (const re of [
-    /\bfrom\s*["']([^"']+)["']/g,
+    // `from` needs whitespace before the quote: the string literal "from" in
+    // a list such as ["from", "to"] (a date-key table) is not an import.
+    /\bfrom\s+["']([^"']+)["']/g,
     /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
     /\bimport\s+["']([^"']+)["']/g,
   ])
     for (const m of source.matchAll(re)) found.push(m[1]);
   return found;
+}
+function specifiers(file: string): string[] {
+  return specifiersOf(readFileSync(join(root, file), "utf8"));
 }
 
 /** Where a relative specifier lands, as a repo-relative path; bare ones stay. */
@@ -87,6 +92,29 @@ describe("module boundaries", () => {
     expect(toolFiles.length).toBeGreaterThan(3);
     expect(srcFiles.length).toBeGreaterThan(20);
     expect(electronFiles.length).toBeGreaterThan(5);
+  });
+
+  it("reads every import form and no string literal that happens to say from", () => {
+    expect(
+      specifiersOf(
+        [
+          'import { a } from "./a";',
+          "import type { B } from '../b';",
+          'export * from "./c";',
+          'import "./d";',
+          'const e = await import("./e");',
+          '// import { f } from "./f";',
+          'const dateKeys = ["from", "to"];',
+          'const range = { from: "2026-09-18", to: "2026-09-19" };',
+          'read("Calendar", "calendar_list_events", ["from", "to"]);',
+        ].join("\n"),
+      ).sort(),
+    ).toEqual(["../b", "./a", "./c", "./d", "./e"]);
+    // The table that tripped the scanner once: src/tools/providers/apple.ts
+    // names its date keys ["from", "to"] and imports only the contract.
+    expect(specifiers("src/tools/providers/apple.ts")).toEqual([
+      "../../core/tools",
+    ]);
   });
 
   it("keeps src/core free of the layers above it", () => {

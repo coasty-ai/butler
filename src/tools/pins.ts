@@ -44,3 +44,22 @@ export function commandHash(o: {
 }): string {
   return sha256(JSON.stringify([o.argv, o.cwd, [...o.envNames].sort(), o.url]));
 }
+/**
+ * A content-free digest of a server's vault secrets, folded into the running
+ * provider's signature so a rotated token restarts the process (a child reads
+ * its environment once; a request header is set at connect). The values
+ * never leave this function: 16 hex characters of a sha256 over the sorted
+ * name=value pairs.
+ */
+export function secretsDigest(secrets: {
+  env: Record<string, string>;
+  headers: Record<string, string>;
+}): string {
+  const pairs = (o: Record<string, string>) =>
+    Object.keys(o)
+      .sort()
+      .map((name) => `${name}=${o[name]}`);
+  return sha256(
+    JSON.stringify([pairs(secrets.env), pairs(secrets.headers)]),
+  ).slice(0, 16);
+}

@@ -10,11 +10,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toolServerSchema, type ToolServer } from "../src/core/schema";
-import { TOOL_LIMITS, type ToolSpec } from "../src/core/tools";
+import {
+  TOOL_LIMITS,
+  type AppleConsent,
+  type BuiltinServer,
+  type ToolSpec,
+} from "../src/core/tools";
 import { SdkError, SdkErrorCode } from "@modelcontextprotocol/client";
 import {
   createMcpProvider,
   failureCode,
+  refusalCode,
   type McpProvider,
 } from "../src/tools/mcp";
 
@@ -522,5 +528,139 @@ describe("MCP client: lifecycle", () => {
     });
     expect(JSON.stringify(traced)).not.toContain("fixture");
     expect(JSON.stringify(traced)).not.toContain(process.execPath);
+  });
+});
+
+describe("MCP client: the Apple bridge as a builtin source", () => {
+  it("reads the code a refusal leads with, as the bridge writes every refusal", () => {
+    // The bridge's own refusal texts (tests/fixtures/apple/*.json): the code,
+    // a colon, a sentence. Only the code is read; the sentence is data.
+    const directory = fileURLToPath(
+      new URL("./fixtures/apple/", import.meta.url),
+    );
+    const texts = readdirSync(directory)
+      .filter((name) => name.endsWith(".json"))
+      .flatMap((name) => {
+        const fixture = JSON.parse(
+          readFileSync(join(directory, name), "utf8"),
+        ) as {
+          exchange: {
+            out: {
+              result?: { isError?: boolean; content?: { text: string }[] };
+            } | null;
+          }[];
+        };
+        return fixture.exchange.flatMap((step) =>
+          step.out?.result?.isError
+            ? step.out.result.content!.map((block) => block.text)
+            : [],
+        );
+      });
+    expect(texts.length).toBeGreaterThan(30);
+    // Every recorded refusal leads with its code; these are all of them.
+    const codes = new Set(texts.map((text) => refusalCode({}, text)));
+    expect([...codes].sort()).toEqual([
+      "BAD_ARGS",
+      "DUPLICATE",
+      "NOT_CREATED_HERE",
+      "NO_ACCESS",
+      "NO_CALENDAR",
+      "NO_FOLDER",
+      "NO_LIST",
+      "READBACK_MISMATCH",
+    ]);
+    expect(
+      refusalCode(
+        {},
+        "DUPLICATE: An event titled Dentist at that time is already in Home.",
+      ),
+    ).toBe("DUPLICATE");
+    expect(
+      refusalCode({}, "NO_ACCESS: macOS has not allowed Butler to use Mail."),
+    ).toBe("NO_ACCESS");
+    // A structured code wins; a sentence without a code, a lowercase word, a
+    // code buried in the text or a hostile "code" of another shape is none.
+    expect(refusalCode({ structuredContent: { code: "NO_ACCESS" } }, "x")).toBe(
+      "NO_ACCESS",
+    );
+    expect(refusalCode({}, "boom")).toBeUndefined();
+    expect(refusalCode({}, "duplicate: no")).toBeUndefined();
+    expect(refusalCode({}, "The reply was DUPLICATE: no")).toBeUndefined();
+    expect(refusalCode({}, "X: no")).toBeUndefined();
+    expect(refusalCode({}, `${"A".repeat(41)}: no`)).toBeUndefined();
+  });
+
+  it("enforces a per-app consent at call time, not only at listing", async () => {
+    // The fixture server stands in for coarena-apple; its read_note is the
+    // table's one Calendar tool.
+    const server: BuiltinServer = {
+      id: "apple",
+      helper: process.execPath,
+      args: [fixture],
+      tools: {
+        read_note: {
+          title: "Calendar",
+          does: "Reads one note.",
+          tier: "read",
+          undoable: false,
+          consent: "calendar",
+          question: () => ({
+            kind: "mcp_read",
+            server: "Calendar",
+            tool: "read_note",
+          }),
+        },
+      },
+    };
+    const consents = new Set<AppleConsent>(["calendar"]);
+    const provider = createMcpProvider(
+      { kind: "builtin", server, helper: process.execPath },
+      { home, version: "0.1.0-test", consents: () => consents },
+    );
+    providers.push(provider);
+    await provider.start();
+    expect(provider.state()).toMatchObject({ state: "on" });
+    const specs = await provider.tools(signal.signal);
+    expect(specs.map((s) => s.id)).toEqual(["apple__read_note"]);
+    const read = named(specs, "read_note");
+    expect(read).toMatchObject({
+      transport: "builtin",
+      trusted: true,
+      local: true,
+      title: "Calendar",
+    });
+    expect(
+      await provider.call(
+        read,
+        { name: "todo" },
+        { ...signal, timeoutMs: 2000 },
+      ),
+    ).toEqual({
+      code: "ok",
+      raw: "note todo: hello",
+      items: 1,
+      lines: undefined,
+      facts: undefined,
+      verified: false,
+      undoToken: undefined,
+    });
+    // The user switches Calendar off while a run holds the frozen spec.
+    consents.delete("calendar");
+    expect(await provider.tools(signal.signal)).toEqual([]);
+    expect(
+      await provider.call(
+        read,
+        { name: "todo" },
+        { ...signal, timeoutMs: 2000 },
+      ),
+    ).toEqual({ code: "unavailable", raw: "", items: 0 });
+    // A tool the table never named is never called either.
+    expect(
+      await provider.call(
+        { ...read, name: "save_note", id: "apple__save_note" },
+        { name: "x" },
+        { ...signal, timeoutMs: 2000 },
+      ),
+    ).toEqual({ code: "unavailable", raw: "", items: 0 });
   });
 });

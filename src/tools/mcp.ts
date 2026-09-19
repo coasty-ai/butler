@@ -227,14 +227,22 @@ function rawText(result: CallToolResult): { raw: string; items: number } {
     items: blocks.length,
   };
 }
-const structuredCode = (result: CallToolResult, raw: string) => {
+/** The code a refusal leads with: "DUPLICATE: An event titled … is already in Home." → DUPLICATE. */
+const REFUSAL_CODE = /^([A-Z_]{2,40}):/;
+/**
+ * The code of an isError result: structuredContent.code when the server sets
+ * one, else the leading code token of its text, as the Apple bridge writes
+ * every refusal ("CODE: sentence", docs/TOOLS.md). Undefined when neither.
+ */
+export function refusalCode(
+  result: Pick<CallToolResult, "structuredContent">,
+  raw: string,
+): string | undefined {
   const structured = result.structuredContent;
-  const code =
-    isObject(structured) && typeof structured.code === "string"
-      ? structured.code
-      : raw.trim();
-  return code;
-};
+  if (isObject(structured) && typeof structured.code === "string")
+    return structured.code;
+  return REFUSAL_CODE.exec(raw.trimStart())?.[1];
+}
 /**
  * What a thrown call means to the run; the message is data for the body. An
  * input request (a 2026-era server asking the user something mid-call) is
@@ -572,7 +580,7 @@ export function createMcpProvider(
   ): ProviderResult => {
     const { raw, items } = rawText(result);
     if (result.isError) {
-      const failure = structuredCode(result, raw);
+      const failure = refusalCode(result, raw);
       const code: ToolCode =
         source.kind === "builtin" && failure === "DUPLICATE"
           ? "duplicate"
@@ -701,6 +709,13 @@ export function createMcpProvider(
       };
     },
     async call(spec, args, options) {
+      // A per-app consent switched off since the run's list was frozen is
+      // enforced here too, not only at listing: the bridge is never asked.
+      if (source.kind === "builtin") {
+        const entry = source.server.tools[spec.name];
+        if (!entry || !o.consents?.().has(entry.consent))
+          return { code: "unavailable", raw: "", items: 0 };
+      }
       try {
         return fromResult(spec, await callTool(spec.name, args, options));
       } catch (error) {

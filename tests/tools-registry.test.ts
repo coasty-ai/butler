@@ -216,13 +216,17 @@ function registry(o: {
   access?: Record<string, string>;
   onTicks?: (id: string, tools: ToolServer["tools"]) => void;
   recipes?: ServerRecipe[];
+  credentials?: (id: string) => {
+    env: Record<string, string>;
+    headers: Record<string, string>;
+  };
 }) {
   const fake = fakeProviders(o.tables);
   const traced: { event: string; data: Record<string, unknown> }[] = [];
   const state = { settings: o.settings };
   const reg = createToolRegistry({
     settings: () => state.settings,
-    credentials: () => ({ env: {}, headers: {} }),
+    credentials: o.credentials ?? (() => ({ env: {}, headers: {} })),
     helper: (name) => `/fake/bin/${name}`,
     launch: () => o.launch,
     home: "/fake/home",
@@ -942,5 +946,94 @@ describe("tool registry: lifecycle and status", () => {
     expect(await fixture.reg.requestApple("reminders")).toMatchObject({
       reminders: "denied",
     });
+  });
+
+  it("restarts a server when one of its secrets is rotated, and never writes the value anywhere", async () => {
+    const secrets = { env: { GITHUB_TOKEN: "ghp_first" }, headers: {} };
+    const fixture = registry({
+      settings: byom({
+        servers: [
+          row({
+            id: "gh",
+            name: "GitHub",
+            secretEnv: ["GITHUB_TOKEN"],
+            network: "internet",
+          }),
+        ],
+      }),
+      launch: LAUNCH,
+      tables: { apple: { specs: [] }, gh: { specs: [] } },
+      credentials: () => secrets,
+    });
+    await fixture.reg.configure();
+    await fixture.reg.configure();
+    expect(fixture.fake.log).toEqual(["start apple", "start gh"]);
+    // A child reads its environment once: the same name with a new value is
+    // a new process, and nothing else changed about the row.
+    secrets.env.GITHUB_TOKEN = "ghp_second";
+    await fixture.reg.configure();
+    expect(fixture.fake.log).toEqual([
+      "start apple",
+      "start gh",
+      "close gh",
+      "start gh",
+    ]);
+    await fixture.reg.configure();
+    expect(fixture.fake.log).toHaveLength(4);
+    expect(JSON.stringify(fixture.traced)).not.toContain("ghp_");
+    expect(JSON.stringify(fixture.reg.status())).not.toContain("ghp_");
+  });
+
+  it("keeps the connection preview behind the privacy gate that keeps a server from starting", async () => {
+    const servers = [
+      row({ id: "net", name: "Net", network: "internet", consented: false }),
+      row({
+        id: "web",
+        name: "Web",
+        transport: "http",
+        url: "https://x.example/mcp",
+        consented: false,
+      }),
+      row({ id: "local", name: "Local", network: "none", consented: false }),
+    ];
+    const tables = {
+      apple: { specs: [] },
+      net: { specs: [] },
+      web: { specs: [] },
+      local: { specs: [] },
+    };
+    const local = registry({
+      settings: { ...byom({ servers }), privacy: "PRIVATE_LOCAL" },
+      launch: LAUNCH,
+      tables,
+    });
+    for (const id of ["net", "web"]) {
+      expect(await local.reg.test(id)).toMatchObject({
+        ok: false,
+        toolCount: 0,
+        tools: [],
+        code: "blocked_local",
+      });
+    }
+    expect(await local.reg.test("local")).toMatchObject({
+      ok: true,
+      code: undefined,
+    });
+    expect(local.fake.log).toEqual(["start local", "close local"]);
+    // Without the launcher nothing is sandboxed, so Private local probes
+    // nothing; in BYOM the same rows are previewed.
+    const bare = registry({
+      settings: { ...byom({ servers }), privacy: "PRIVATE_LOCAL" },
+      tables,
+    });
+    expect((await bare.reg.test("local")).code).toBe("blocked_local");
+    expect(bare.fake.log).toEqual([]);
+    const open = registry({
+      settings: byom({ servers }),
+      launch: LAUNCH,
+      tables,
+    });
+    expect((await open.reg.test("net")).ok).toBe(true);
+    expect((await open.reg.test("web")).ok).toBe(true);
   });
 });

@@ -28,7 +28,7 @@ import {
   type ProviderSource,
   type ServerSource,
 } from "./mcp";
-import { commandHash } from "./pins";
+import { commandHash, secretsDigest } from "./pins";
 import { BUILTIN_SERVERS, RECIPES } from "./providers";
 import { resolveCommand, type ResolveFs } from "./resolve";
 import { resultLines, resultText, sanitizeResult } from "./result";
@@ -229,13 +229,20 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     launch: r.transport === "stdio" ? o.launch() : undefined,
     secrets: o.credentials(r.id),
   });
+  /**
+   * The privacy gate (contract §2.4) for one row: in Private local only a
+   * stdio server declared network "none" and started under the sandbox may
+   * run, or even be connected to for a preview.
+   */
+  const blockedLocal = (r: ToolServer, s: Settings) =>
+    s.privacy === "PRIVATE_LOCAL" &&
+    (r.transport === "http" || r.network !== "none" || !o.launch());
   const startable = (r: ToolServer, s: Settings): Startable => {
     if (!s.tools.enabled || !r.enabled) return { ok: false, state: "off" };
     if (!r.consented || r.approvedCommand !== approval(r))
       return { ok: false, state: "needs_approval" };
     if (r.transport === "http") {
-      if (s.privacy === "PRIVATE_LOCAL")
-        return { ok: false, state: "blocked_local" };
+      if (blockedLocal(r, s)) return { ok: false, state: "blocked_local" };
       const headers = o.credentials(r.id).headers;
       if (r.secretHeaders.some((name) => !headers[name]))
         return { ok: false, state: "needs_sign_in" };
@@ -244,8 +251,7 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     const found = resolved(r);
     if (!found.path)
       return { ok: false, state: "needs_install", code: found.code };
-    if (s.privacy === "PRIVATE_LOCAL" && (r.network !== "none" || !o.launch()))
-      return { ok: false, state: "blocked_local" };
+    if (blockedLocal(r, s)) return { ok: false, state: "blocked_local" };
     return { ok: true, source: source(r) };
   };
   /** The consents that are on and granted: what the Apple bridge may list. */
@@ -272,7 +278,11 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
         : { consents }),
       ...extra,
     });
-  /** What a running provider was built from; a change restarts it. */
+  /**
+   * What a running provider was built from; a change restarts it. Secrets
+   * enter as a content-free digest, so a rotated token reaches a server that
+   * read its environment once or set its headers at connect.
+   */
   const signatureOf = (src: ProviderSource) =>
     src.kind === "builtin"
       ? JSON.stringify([src.helper, src.server.args])
@@ -282,8 +292,7 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
           src.row.network,
           src.command,
           src.launch,
-          Object.keys(src.secrets.env).sort(),
-          Object.keys(src.secrets.headers).sort(),
+          secretsDigest(src.secrets),
         ]);
   const stop = async (id: string) => {
     const running = providers.get(id);
@@ -602,6 +611,16 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
       const current = row(id);
       if (!current) throw new Error("That server is no longer configured.");
       const list = argv(current);
+      // The preview is a connection like any other: the privacy gate that
+      // keeps a server from starting keeps it from being probed.
+      if (blockedLocal(current, o.settings()))
+        return {
+          ok: false,
+          toolCount: 0,
+          argv: list,
+          tools: [],
+          code: "blocked_local",
+        };
       if (current.transport === "stdio" && !resolved(current).path)
         return {
           ok: false,
