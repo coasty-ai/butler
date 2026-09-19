@@ -133,6 +133,77 @@ const knownType = (input: unknown) => {
   const type = (input as { type?: unknown } | null)?.type;
   return typeof type === "string" && actionTypes.has(type) ? type : "unknown";
 };
+/** History entries the model sees whole; the steps before them become one line. */
+export const MODEL_HISTORY_FULL = 6;
+/**
+ * The model's copy of the history: the last MODEL_HISTORY_FULL entries whole
+ * (rejections with their echoed actions, refusals, the loop and no-progress
+ * notes), behind one line naming every earlier step and how it ended. Twelve
+ * whole entries were 1.1-1.5k input tokens a step on the 2026-09-19 runs (a
+ * 24-step run grew from 7.5k to 9.7k). Typed text never enters the line.
+ */
+export function modelHistory(history: History): History {
+  if (history.length <= MODEL_HISTORY_FULL) return history;
+  return [
+    {
+      type: "earlier_steps",
+      result: summarizeSteps(history.slice(0, -MODEL_HISTORY_FULL)),
+    },
+    ...history.slice(-MODEL_HISTORY_FULL),
+  ];
+}
+function summarizeSteps(entries: History): string {
+  // Newest first, so a long run drops its oldest steps behind an ellipsis.
+  const parts: string[] = [];
+  let length = 0;
+  for (const entry of entries.slice().reverse()) {
+    const part = describeStep(entry);
+    if (length + part.length > 400) {
+      parts.push("…");
+      break;
+    }
+    parts.push(part);
+    length += part.length + 2;
+  }
+  return `${entries.length} earlier steps, oldest first: ${parts.reverse().join("; ")}.`;
+}
+/** One step as "type detail (outcome)": names the model chose, never text it typed. */
+function describeStep(entry: History[number]): string {
+  const a = entry.action ?? {};
+  const type =
+    typeof a.type === "string"
+      ? a.type
+      : entry.type === "rejected"
+        ? "reply"
+        : entry.type;
+  const detail =
+    type === "open_app" && typeof a.name === "string"
+      ? ` ${bound(a.name, 40)}`
+      : type === "open_file" && typeof a.path === "string"
+        ? ` ${bound(a.path.split("/").pop() ?? "", 40)}`
+        : type === "menu_item" && Array.isArray(a.path)
+          ? ` ${bound(a.path.map(String).join(" > "), 60)}`
+          : type === "click_control" && typeof a.label === "string"
+            ? ` “${bound(a.label, 40)}”`
+            : type === "hotkey" && Array.isArray(a.keys)
+              ? ` ${a.keys.map(String).join("+")}`
+              : type === "key" && typeof a.key === "string"
+                ? ` ${a.key}`
+                : "";
+  const outcome =
+    entry.type === "rejected"
+      ? "rejected"
+      : entry.type === "request_user"
+        ? "asked the user"
+        : /^No input was/.test(entry.result)
+          ? "no input"
+          : /^Interrupted/.test(entry.result)
+            ? "interrupted"
+            : entry.result.includes("no visible change")
+              ? "no visible change"
+              : "done";
+  return `${type}${detail} (${outcome})`;
+}
 /** Explain a validateAction failure by cause without echoing model text. */
 function invalidReason(
   error: unknown,
@@ -2177,9 +2248,9 @@ export class Runner {
                       run.corrections.map((c) => c.text).join("\n")
                     : ""),
                 // Why a watch woke this run stays visible on every step, since
-                // the model only sees one screenshot and twelve history
-                // entries. Only the model's copy carries it: the panel text
-                // in it never enters a Snapshot, a trace or a saved frame.
+                // the model only sees one screenshot and the last few history
+                // entries whole. Only the model's copy carries it: the panel
+                // text in it never enters a Snapshot, a trace or a saved frame.
                 frame:
                   this.watchContext && frame.context
                     ? {
@@ -2187,7 +2258,7 @@ export class Runner {
                         context: { ...frame.context, watch: this.watchContext },
                       }
                     : frame,
-                history: history.slice(-12),
+                history: modelHistory(history),
                 ...(this.memoryContext ? { memory: this.memoryContext } : {}),
               },
               this.abort.signal,

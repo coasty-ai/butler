@@ -351,3 +351,43 @@ describe("runner no-progress advice", () => {
     expect(m.of("NoProgressDetected")).toHaveLength(0);
   });
 });
+
+describe("history the model sees", () => {
+  it("sends the last six entries whole and sums up the steps before them", async () => {
+    allowAll();
+    const m = memory();
+    const screen: Screen = { sha: "s0", title: "Spotify", controls: 0 };
+    let step = 0;
+    const c = controller(screen);
+    vi.mocked(c.execute).mockImplementation(async () => {
+      screen.sha = `s${++step}`;
+    });
+    // Nine different targets: the same click four times is a loop.
+    const p = scripted(
+      Array.from({ length: 9 }, (_, i) =>
+        act({ type: "click", x: (i + 1) / 10, y: 0.5 }),
+      ),
+    );
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("click around");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    // Six executed steps still arrive whole; the seventh call sums up.
+    expect(p.observations[6].history).toHaveLength(6);
+    expect(p.observations[6].history.map((h) => h.type)).not.toContain(
+      "earlier_steps",
+    );
+    const history = p.observations[9].history;
+    expect(history).toHaveLength(7);
+    expect(history[0]).toEqual({
+      type: "earlier_steps",
+      result:
+        "3 earlier steps, oldest first: click (done); click (done); click (done).",
+    });
+    for (const entry of history.slice(1))
+      expect(entry).toMatchObject({
+        type: "click",
+        action: { type: "click", y: 0.5 },
+        result: "Executed. Verify the next screenshot.",
+      });
+  });
+});

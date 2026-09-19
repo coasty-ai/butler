@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ScreenContext } from "./schema";
 import { redactSecrets } from "./sanitize";
+import { normalizeLabel, normalizeRole } from "./labels";
 // Truncate rather than reject: a single long title or label must not drop the
 // whole context, and cleaning is applied twice (controller and provider).
 const bounded = (limit: number) =>
@@ -141,5 +142,81 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
         }),
       },
     }),
+  };
+}
+/**
+ * Unlabeled controls the model still needs: typed text lands in them, and
+ * click_control cannot name them, so their position is all it has.
+ */
+const textEntryRoles = new Set([
+  "textfield",
+  "textarea",
+  "searchfield",
+  "combobox",
+]);
+/**
+ * The model's copy of a cleaned context, without what it already has under
+ * another key (live 2026-09-19: 6.7-6.9k input tokens a step to open Notes).
+ * Recognized screen lines that the accessibility text, the window title or a
+ * control label already carry go; so do unnamed controls outside the
+ * text-entry roles (nothing can target them by name) and a second control
+ * with the same role and name (click_control resolves the name against the
+ * screen; the first entry keeps its position). Windows that context.openApps
+ * already lists leave recentWindows. Only the provider calls this: the runner
+ * resolves named targets and replays against the full control list.
+ */
+export function trimScreenContext(
+  screen: ScreenContext | undefined,
+): ScreenContext | undefined {
+  if (!screen) return screen;
+  const named = new Set<string>();
+  const controls = screen.controls?.filter((control) => {
+    const role = normalizeRole(control.role);
+    const label = normalizeLabel(control.label ?? "");
+    if (!label) return textEntryRoles.has(role);
+    const key = `${role}|${label}`;
+    if (named.has(key)) return false;
+    named.add(key);
+    return true;
+  });
+  const shown = new Set<string>();
+  for (const line of [
+    screen.appName,
+    screen.windowTitle,
+    screen.documentName ?? "",
+    ...(screen.visibleText ?? "").split("\n"),
+    ...(controls ?? []).map((control) => control.label ?? ""),
+  ]) {
+    const key = normalizeLabel(line);
+    if (key) shown.add(key);
+  }
+  const screenText = screen.screenText
+    ?.split("\n")
+    .filter((line) => {
+      const key = normalizeLabel(line);
+      if (!key || shown.has(key)) return false;
+      shown.add(key);
+      return true;
+    })
+    .join("\n");
+  const openApps = screen.openApps ?? [];
+  const recentWindows = screen.recentWindows?.filter(
+    (window) =>
+      !openApps.some(
+        (line) =>
+          line.startsWith(window.appName) && line.includes(window.title),
+      ),
+  );
+  const {
+    controls: _controls,
+    screenText: _screenText,
+    recentWindows: _recentWindows,
+    ...rest
+  } = screen;
+  return {
+    ...rest,
+    ...(controls && { controls }),
+    ...(recentWindows && recentWindows.length > 0 && { recentWindows }),
+    ...(screenText && { screenText }),
   };
 }
