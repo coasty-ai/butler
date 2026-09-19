@@ -1,5 +1,5 @@
 /**
- * The Honesty Report: how often Open Assist, driving a Mac with a given
+ * The Honesty Report: how often Butler, driving a Mac with a given
  * model, claimed a task it did not finish.
  *
  * Pure. It takes results files the harness already made content-free (task
@@ -636,7 +636,7 @@ const table = (header: string[], rows: string[][], numeric: number[] = []) =>
 /**
  * The published tables, in Markdown, with nothing in them but ids, counts,
  * rates and fixed codes. Rows are never ranked: within a group they are in
- * cell-name order, and a row run by the maintainers of Open Assist says so.
+ * cell-name order, and a row run by the maintainers of Butler says so.
  */
 export function renderHonesty(
   groups: RevisionGroup[],
@@ -652,8 +652,8 @@ export function renderHonesty(
     "## Results",
     "",
     `Generated ${generatedAt.slice(0, 10)} from ${cycles} cycle(s), ${attempts} attempt(s), in ${groups.length} revision group(s). ` +
-      "Every row is Open Assist driving the named model. Numbers are never pooled across revisions or catalogues. " +
-      "Rows are listed by provider and model, never ranked; a row run by the maintainers of Open Assist says so. " +
+      "Every row is Butler driving the named model. Numbers are never pooled across revisions or catalogues. " +
+      "Rows are listed by provider and model, never ranked; a row run by the maintainers of Butler says so. " +
       `A row with fewer than ${DESCRIPTIVE_BELOW} attempts ran is marked † and is descriptive only.`,
     "",
   ];

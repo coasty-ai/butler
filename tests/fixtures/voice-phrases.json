@@ -108,16 +108,207 @@
     "open Safari",
     "search for cats"
   ],
-  "wakeEcho": [
-    {
-      "in": "Hey sis can you open notes",
-      "out": "can you open notes"
-    },
-    {
-      "in": "Hey assistant, open Safari",
-      "out": "open Safari"
-    }
-  ],
+  "wake": {
+    "_note": "Hey Butler: the spellings whisper wrote for \"Butler\" across six voices (.data/names/butler-speech.log, .data/names/asr/out-*.results.tsv for Butler), plus the gate and the everyday phrases that must never wake it. Read by tests/native/TurnPolicyTests.swift and tests/voice-turns.test.ts.",
+    "names": [
+      "Butler",
+      "butler",
+      "BUTLER",
+      "Buttler",
+      "Butlar",
+      "Budler",
+      "Butla",
+      "Batala"
+    ],
+    "fused": [],
+    "activate": [
+      {
+        "in": "Hey Butler, open Notes.",
+        "out": "open Notes."
+      },
+      {
+        "in": "HEY BUTLER! Stop.",
+        "out": "Stop."
+      },
+      {
+        "in": "Hey Butler",
+        "out": ""
+      },
+      {
+        "in": "Hey Butler.",
+        "out": ""
+      },
+      {
+        "in": "hey butler open Safari",
+        "out": "open Safari"
+      },
+      {
+        "in": "Hay Buttler, can you open Notes",
+        "out": "can you open Notes"
+      },
+      {
+        "in": "Hi Budler, I need the weather in Denver",
+        "out": "I need the weather in Denver"
+      },
+      {
+        "in": "Hei Batala please open Safari",
+        "out": "please open Safari"
+      },
+      {
+        "in": "Hey Butler what's the weather",
+        "out": "what's the weather"
+      },
+      {
+        "in": "Hey Butler let's go home",
+        "out": "let's go home"
+      },
+      {
+        "in": "Hey Butler tell me the time",
+        "out": "tell me the time"
+      },
+      {
+        "in": "Hey Butler um open Notes",
+        "out": "um open Notes"
+      },
+      {
+        "in": "Hey Butlar, stop",
+        "out": "stop"
+      },
+      {
+        "in": "Hey Butler stop",
+        "out": "stop"
+      },
+      {
+        "in": "Hey Butler cancel that",
+        "out": "cancel that"
+      },
+      {
+        "in": "hey butler never mind",
+        "out": "never mind"
+      },
+      {
+        "in": "Hey Butler hey Butler open Safari",
+        "out": "hey Butler open Safari"
+      }
+    ],
+    "activateFused": [],
+    "neverActivate": [
+      "Hey, but a lot of people came.",
+      "Hey but Allah open Safari",
+      "Hey, butter the toast.",
+      "Hey, bottle it up.",
+      "Hey, the butler did it.",
+      "Hey Butler's on the phone",
+      "Hey Butlers are rare these days",
+      "Hey, but let me finish.",
+      "Hey partner, open Safari",
+      "Hey Buckler, come here",
+      "Hey, but the meeting moved.",
+      "The butler brought the tea.",
+      "Say Hey Butler to wake it.",
+      "Hey Bella, open Notes",
+      "Hey Butt, stop that",
+      "Hey, but I saw your message.",
+      "Hey sir, can I help you with that?",
+      "his assistant will send it",
+      "assist the customer with the move"
+    ],
+    "restart": [
+      {
+        "in": "Butler open calendar and put an event",
+        "out": "open calendar and put an event"
+      },
+      {
+        "in": "Butler, open Notes.",
+        "out": "open Notes."
+      },
+      {
+        "in": "Butler.",
+        "out": ""
+      },
+      {
+        "in": "Butler",
+        "out": ""
+      },
+      {
+        "in": "Buttler. Open Safari",
+        "out": "Open Safari"
+      },
+      {
+        "in": "Batala — open, then close",
+        "out": "open, then close"
+      },
+      {
+        "in": "Hey Butler, open Safari",
+        "out": "open Safari"
+      }
+    ],
+    "neverRestart": [
+      "Butler's number is 555",
+      "The butler brought the tea",
+      "Butlers are rare these days",
+      "But a lot of people came",
+      "But let me finish",
+      "Butter the toast first",
+      "Bottle it up",
+      "Buckler, come here",
+      "Partner, open Safari",
+      "This is a good idea, let's do it.",
+      "Hey sir, can I help you with that?",
+      "his assistant will send it",
+      "assist the customer with the move"
+    ],
+    "echo": [
+      {
+        "in": "Hey but a lot, open Safari",
+        "out": "open Safari"
+      },
+      {
+        "in": "Hey but Allah, open Notes",
+        "out": "open Notes"
+      },
+      {
+        "in": "Hey, Budger. Open Notes",
+        "out": "Open Notes"
+      },
+      {
+        "in": "Hey, but a lot. Open Notes",
+        "out": "Open Notes"
+      },
+      {
+        "in": "Hey butter, open Notes",
+        "out": "Hey butter, open Notes"
+      },
+      {
+        "in": "Hey Bella, open Notes",
+        "out": "Hey Bella, open Notes"
+      },
+      {
+        "in": "A sister told me",
+        "out": "A sister told me"
+      }
+    ],
+    "liveWaits": ["Hey Butler", "hey butler", "Hey, Buttler", "Hey Batala"],
+    "liveActivates": [
+      {
+        "in": "Hey Butler open",
+        "out": "open"
+      },
+      {
+        "in": "Hey Butler,",
+        "out": ""
+      },
+      {
+        "in": "Hey Butler what",
+        "out": "what"
+      },
+      {
+        "in": "Hey Butler um",
+        "out": "um"
+      }
+    ],
+    "liveNever": ["Hey Butler's", "Hey Butlers", "Hey", "Butler", "Hey but a"]
+  },
   "assistantPhrases": [
     "On it.",
     "Right away.",

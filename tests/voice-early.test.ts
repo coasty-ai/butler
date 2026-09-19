@@ -73,7 +73,7 @@ describe("leadingClause", () => {
     ["please open Slack and", open("Slack", "boundary")],
     ["and open Slack and", open("Slack", "boundary")],
     ["Okay, so open Slack and", open("Slack", "boundary")],
-    ["Hey Assist open Slack and", open("Slack", "boundary")],
+    ["Hey Butler open Slack and", open("Slack", "boundary")],
     ["um open uh Slack and", open("Slack", "boundary")],
     // Every early verb.
     ["open up Slack and", open("Slack", "boundary")],
@@ -110,7 +110,7 @@ describe("leadingClause", () => {
     ["Open", undefined],
     ["Open the", undefined],
     ["open up", undefined],
-    ["Hey Assist", undefined],
+    ["Hey Butler", undefined],
     ["stop", undefined],
     ["", undefined],
   ];
@@ -182,7 +182,7 @@ describe("finalKeeps", () => {
     ["Open Slack no Discord and message Dana", false, false],
     ["Open Slack in Chrome", false, false],
     ["Open Slack's settings", false, false],
-    ["open Slack and hey assist open Discord and message Dana", false, false],
+    ["open Slack and hey butler open Discord and message Dana", false, false],
     ["Switch to Slack and message Dana", false, false],
     ["message Dana", false, false],
     ["never mind", false, false],
@@ -192,7 +192,7 @@ describe("finalKeeps", () => {
   });
   it("applies the wake-phrase restart to the final too", () => {
     expect(
-      finalKeeps(slack, "open Notes hey assist open Slack and message Dana"),
+      finalKeeps(slack, "open Notes hey butler open Slack and message Dana"),
     ).toEqual({ keeps: true, exact: false });
   });
 });
@@ -409,8 +409,8 @@ describe("ClauseTracker", () => {
     const r = play([
       ["open Slack and", 0],
       [null, 300],
-      ["open Slack and hey assist open Discord and", 900],
-      ["open Slack and hey assist open Discord and go", 1200],
+      ["open Slack and hey butler open Discord and", 900],
+      ["open Slack and hey butler open Discord and go", 1200],
     ]);
     // One settle only; the restart asks for another app, so the step is
     // called off (it runs only if it already reached the point of no return).
@@ -420,8 +420,8 @@ describe("ClauseTracker", () => {
   });
   it("applies the wake-phrase restart before reading a partial", () => {
     const r = play([
-      ["open Notes hey assist open Slack and", 0],
-      ["open Notes hey assist open Slack and ask", 200],
+      ["open Notes hey butler open Slack and", 0],
+      ["open Notes hey butler open Slack and ask", 200],
     ]);
     expect(settled(r)!.settle.clause.name).toBe("Slack");
   });
@@ -452,7 +452,7 @@ describe("ClauseTracker", () => {
       "Go to YouTube and",
       "Start a timer and",
       "Type hello and",
-      "Hey Assist",
+      "Hey Butler",
     ])
       expect(
         play([

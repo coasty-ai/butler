@@ -1,6 +1,6 @@
 /**
  * Opt-in measurement of TypeSafe's Jev (a "System One" decision model, typed
- * answers with probabilities, no text) on Open Assist's own decisions,
+ * answers with probabilities, no text) on Butler's own decisions,
  * through OpenRouter's alpha Decisions endpoint. It never runs under npm
  * test, and nothing in the app imports it or src/gym/jev.ts
  * (tests/boundaries.test.ts); this only measures whether Jev could.

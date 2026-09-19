@@ -132,7 +132,7 @@ const SAFARI = "com.apple.Safari";
 
 const temps: string[] = [];
 function tempHome(): string {
-  const dir = mkdtempSync(join(tmpdir(), "open-assist-bench-long-"));
+  const dir = mkdtempSync(join(tmpdir(), "butler-bench-long-"));
   temps.push(dir);
   return dir;
 }

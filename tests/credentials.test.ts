@@ -13,7 +13,7 @@ import {
 
 const roots: string[] = [];
 function fixture(content: string) {
-  const root = mkdtempSync(join(tmpdir(), "open-assist-credentials-"));
+  const root = mkdtempSync(join(tmpdir(), "butler-credentials-"));
   roots.push(root);
   const file = join(root, ".env");
   writeFileSync(file, content, { mode: 0o600 });

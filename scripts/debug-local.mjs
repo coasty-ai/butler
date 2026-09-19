@@ -2,14 +2,15 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { localApp, staleBuild } from "./local-app.mjs";
 
 const project = fileURLToPath(new URL("../", import.meta.url));
-const binary = join(
-  project,
-  "release/mac-arm64/Open Assist.app/Contents/MacOS/Open Assist",
-);
-if (process.platform !== "darwin" || !existsSync(binary)) {
-  console.error("Build the local Mac app with npm run package:mac first.");
+const local = localApp(project);
+if (process.platform !== "darwin" || !existsSync(local.binary)) {
+  console.error(
+    staleBuild(local) ??
+      "Build the local Mac app with npm run package:mac first.",
+  );
   process.exit(1);
 }
 const directory = join(project, ".data/diagnostics");
@@ -20,9 +21,9 @@ if (commandIndex >= 0 && !process.argv[commandIndex + 1]) {
   console.error("--command requires a task.");
   process.exit(1);
 }
-console.log("Starting Open Assist with live local diagnostics.");
+console.log("Starting Butler with live local diagnostics.");
 console.log(
-  "If Open Assist is already running, quit it first. This command does not interrupt an active task.",
+  "If Butler is already running, quit it first. This command does not interrupt an active task.",
 );
 console.log("Logs: " + join(directory, "current.jsonl"));
 const file = join(directory, "current.jsonl");
@@ -50,7 +51,7 @@ const child = spawn(
     "/dev/null",
     "--stderr",
     "/dev/null",
-    join(project, "release/mac-arm64/Open Assist.app"),
+    local.app,
     "--args",
     ...(process.argv.includes("--import-env") && existsSync(envFile)
       ? ["--import-env", envFile]
@@ -82,7 +83,7 @@ const stop = () => {
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 child.on("error", () => {
-  console.error("Open Assist could not launch.");
+  console.error("Butler could not launch.");
   process.exitCode = 1;
 });
 child.on("exit", (code) => {

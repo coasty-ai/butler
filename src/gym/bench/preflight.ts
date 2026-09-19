@@ -36,7 +36,7 @@ export type RemedyCode =
 /** One line each: what to do before leaving the Mac for the night. */
 export const REMEDY: Record<RemedyCode, string> = {
   APP_RUNNING:
-    "Quit the Open Assist app (a texted task would start a second agent on this desktop), or pass --allow-app-running.",
+    "Quit the Butler app (a texted task would start a second agent on this desktop), or pass --allow-app-running.",
   HARNESS_RUNNING:
     "Another cycle or bench is driving this desktop (from this or another checkout); let it finish or stop it first.",
   SCREENSAVER_TOO_SOON:

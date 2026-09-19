@@ -791,34 +791,78 @@ const TERMINAL = new Set(["completed", "cancelled", "failed"]);
  * Decides what a finished turn does. Pure: main.ts executes the plan and then
  * calls Conversation.acknowledge(plan).
  */
-/** A turn that is only the wake phrase, or a misheard echo of it ("Hey sis"). */
+/**
+ * The wake name as a recognizer writes it, for all three readings of Butler
+ * (BUT-ler, EYE-sah and the letters Butler), exactly as native wakeNamePattern
+ * (WakePolicy.swift): the speech test's accept list
+ * (.data/names/butler-speech.log §6). tests/fixtures/voice-phrases.json "wake"
+ * pins both sides. Never "but a lot", "butter", "bottle", "Butlers" or "Butler's".
+ * The spelled form keeps its own final dot: a(?:\.|(?!\.)) cannot hand it
+ * back to the gate as a pause.
+ */
+export const WAKE_NAME = String.raw`(?:butt?l[ae]r|budler|butla|batala)`;
+/** No spelling runs "Hey" into "Butler": mirrors native fusedWakePattern. */
+// No spelling runs "Hey" into "Butler": the fused branch never matches.
+export const FUSED_WAKE = String.raw`(?!)`;
+/** The words that may lead the name. */
+export const WAKE_HEY = "(?:hey|hay|hi|hei)";
+const WAKE_FOLLOWERS = [
+  ...ACTION_VERBS,
+  // Control words (native wakeControlWords): "Hey Butler stop" never waits.
+  ..."stop cancel pause wait hold continue resume yes no never".split(" "),
+  // Question openers (native wakeOpeners).
+  ..."what whats when where who why how can could would will please tell give i im let lets".split(
+    " ",
+  ),
+];
+/**
+ * The gate: "Butler" has the shape of "is a", so a biased recognizer writes
+ * "Hey, is a table free?" as "Hey Butler table free?". The name counts only when
+ * a pause (punctuation, or a hesitation such as "um"), the end, a task or
+ * control verb, a question opener or the wake phrase again follows it
+ * (native wakeGate).
+ */
+const WAKE_GATE = String.raw`(?=\s*(?:[,.:;!?—-]|(?:um|uh|uhm|umm|er|erm|hmm|hm|mm)\b|$)|\s+(?:${WAKE_FOLLOWERS.join("|")})\b|\s+${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z]))`;
+
+/**
+ * A turn that is only the wake phrase, in any accepted spelling ("Hey Butler",
+ * "Hey Butler"), matched on intentKey, which has already dropped a
+ * leading "hey" and spelled "Butler" out as "i s a".
+ */
+const WAKE_ONLY =
+  /^(?:(?:hay|hi|hei|his|a)\s+)?(?:butler|buttler|butlar|budler|butla|batala)$/;
 export function isWakePhraseOnly(text: string): boolean {
-  return /^(?:(?:hey|hay|hi|his|a)\s+)?(?:open\s+)?(?:assist(?:ant|s)?|a\s?sis|sis|cyst)$/.test(
-    intentKey(text),
-  );
+  return WAKE_ONLY.test(intentKey(text));
 }
 
 /**
- * The activation phrase anywhere in spoken text, as native
- * commandAfterWakePhrase (WakePolicy.swift) matches it at the start.
+ * The activation phrase anywhere in spoken text, gated as native
+ * commandAfterWakePhrase (WakePolicy.swift) gates it at the start. "Hey"
+ * run into the name counts only at the very start, which native handles.
  */
-const WAKE_PHRASE = /\bhey[\s,]+(?:open\s+)?assist\b[\s,.:;!?—-]*/iu;
+const WAKE_PHRASE = new RegExp(
+  String.raw`\b${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z])${WAKE_GATE}[\s,.:;!?—-]*`,
+  "iu",
+);
 /** The name alone inside a sentence: a restart only when the request repeats after it. */
-const BARE_NAME = /\bassist\b[\s,.:;!?—-]*/giu;
+const BARE_NAME = new RegExp(
+  String.raw`\b(?:${WAKE_NAME}|${FUSED_WAKE})(?![a-z])[\s,.:;!?—-]*`,
+  "giu",
+);
 const spokenWords = (text: string) =>
   tokenize(text).filter((w) => !FILLERS.has(w));
 /**
  * A spoken turn in which the user started over by saying the wake phrase
  * again. Native keeps only the restart when it opens a new recognizer segment
  * (requestSegments in TurnPolicy.swift); said without a pause it arrives
- * inside one segment ("…at 6 PM hey assist open calendar and…"), so here too
+ * inside one segment ("…at 6 PM hey butler open calendar and…"), so here too
  * only the words after the last wake phrase are the request, and a wake
  * phrase with nothing after it leaves the words before it. The bare name
  * counts inside a sentence only when the words after it repeat the request's
- * own opening words (live: "open calendar and put an event … at 6 PM Assist
- * open calendar and put an event…"); otherwise "assist" is a word ("ask it to
- * assist me"). A turn changed this way counts as more than one segment, so it
- * can never approve.
+ * own opening words (live, with the old name: "open calendar and put an event
+ * … at 6 PM Assist open calendar and put an event…"); otherwise the name is a
+ * word ("tell Butler I'm late"). A turn changed this way counts as more than one
+ * segment, so it can never approve.
  */
 export function restartedTurn(
   text: string,
@@ -961,7 +1005,7 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
   const typed =
     source === "text" || source === "message" || source === "remote";
   const remote = isRemoteSource(source);
-  // "Hey Assist" alone never becomes a task, correction or answer.
+  // "Hey Butler" alone never becomes a task, correction or answer.
   if (!typed && isWakePhraseOnly(text)) return { kind: "acknowledge" };
   const intent = voiceIntent(text);
   const run =

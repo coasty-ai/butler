@@ -92,7 +92,7 @@ export function agendaAccessNote(access: AgendaAccessInfo): string {
     return "Reading your calendar. Allow Reminders in System Settings › Privacy & Security to include them.";
   if (granted(access.reminders))
     return "Reading your reminders. Allow Calendars in System Settings › Privacy & Security to include events.";
-  return "No access yet. Allow Open Assist in System Settings › Privacy & Security › Calendars and Reminders.";
+  return "No access yet. Allow Butler in System Settings › Privacy & Security › Calendars and Reminders.";
 }
 function Core({
   phase = "idle",
@@ -286,7 +286,7 @@ function App() {
           <header className="preview-header">
             <div className="wordmark">
               <Mark />
-              open assist<span>for Mac</span>
+              Butler<span>for Mac</span>
             </div>
             <div className="header-right">
               <span>INTERACTIVE PREVIEW</span>
@@ -407,8 +407,8 @@ function App() {
               view === "review"
                 ? "Review local runs"
                 : view === "setup"
-                  ? "Set up Open Assist"
-                  : "Open Assist settings"
+                  ? "Set up Butler"
+                  : "Butler settings"
             }
           >
             <div className="utility-heading">
@@ -418,8 +418,8 @@ function App() {
                   {view === "review"
                     ? "Your local runs"
                     : view === "setup"
-                      ? "Set up Open Assist"
-                      : "Open Assist"}
+                      ? "Set up Butler"
+                      : "Butler"}
                 </b>
               </div>
               <button
@@ -446,7 +446,7 @@ function App() {
                     <p>
                       Review a run before contributing it. Your voice audio is
                       never saved. Deleting a run also removes its task and
-                      corrections from what Open Assist learned; learned
+                      corrections from what Butler learned; learned
                       routines stay until you forget them in Settings.
                     </p>
                     {runs.length === 0 ? (
@@ -964,9 +964,9 @@ const messagesFallback: MessagesInfo = {
 /** The plain-language setup step each macOS permission state needs. */
 function messagesSetup(m: MessagesInfo): string {
   if (m.automation === "denied")
-    return "macOS is blocking Open Assist from using Messages. Allow it in System Settings › Privacy & Security › Automation › Open Assist › Messages.";
+    return "macOS is blocking Butler from using Messages. Allow it in System Settings › Privacy & Security › Automation › Butler › Messages.";
   if (m.database === "no_access")
-    return "To read your replies, Open Assist needs Full Disk Access in System Settings › Privacy & Security, then a restart of the app.";
+    return "To read your replies, Butler needs Full Disk Access in System Settings › Privacy & Security, then a restart of the app.";
   if (m.database === "locked")
     return "Leave the Messages app open: its database cannot be read while Messages is closed.";
   if (m.database === "missing")
@@ -1378,7 +1378,7 @@ function SettingsPanel({
         </h1>
         <p>
           {s.handsFree
-            ? "Say ‘Hey Assist’. Tell it what to do."
+            ? "Say ‘Hey Butler’. Tell it what to do."
             : "Hold to speak. Release to act."}
           <br />
           {s.handsFree
@@ -1426,7 +1426,7 @@ function SettingsPanel({
               : "Speech stays on this Mac. No cloud fallback."}
           </span>
           <button className="setup-link" onClick={onSetup}>
-            Set up Open Assist
+            Set up Butler
             <ArrowRight size={11} />
           </button>
           <button aria-label="Recheck permissions" onClick={onRefresh}>
@@ -1454,7 +1454,7 @@ function SettingsPanel({
       >
         <div className="setting-fields voice-mode">
           <label>
-            Talk to Open Assist
+            Talk to Butler
             <select
               value={s.handsFree ? "hands-free" : "shortcut"}
               onChange={(e) =>
@@ -1462,12 +1462,12 @@ function SettingsPanel({
               }
             >
               <option value="shortcut">Hold Option + Space</option>
-              <option value="hands-free">Say “Hey Assist”</option>
+              <option value="hands-free">Say “Hey Butler”</option>
             </select>
           </label>
           <p>
             {s.handsFree
-              ? "Keeps your microphone on to listen locally for ‘Hey Assist’. It waits while you think, then takes it from there. Turn it off anytime in the menu bar."
+              ? "Keeps your microphone on to listen locally for ‘Hey Butler’. It waits while you think, then takes it from there. Turn it off anytime in the menu bar."
               : "The microphone opens only while you hold the shortcut."}
             {s.handsFree &&
               " Background speech and audio are never saved or sent."}
@@ -1475,7 +1475,7 @@ function SettingsPanel({
           {info.settings.handsFree && (
             <p role="status">
               {info.voice.wakeListening
-                ? "Listening for ‘Hey Assist’."
+                ? "Listening for ‘Hey Butler’."
                 : "Hands-free enabled. Enable microphone and local speech access above if needed."}
             </p>
           )}
@@ -1851,7 +1851,7 @@ function SettingsPanel({
                 onChange={(e) => set("voiceSounds", e.target.checked)}
               />
               <span>
-                Play a soft sound when I start and stop listening (‘Hey Assist’
+                Play a soft sound when I start and stop listening (‘Hey Butler’
                 only)
               </span>
             </label>
@@ -1865,7 +1865,7 @@ function SettingsPanel({
                 {patience?.label ?? "Normal"} patience
                 {s.handsFree &&
                   (s.followUpListening
-                    ? " · Hears replies without ‘Hey Assist’"
+                    ? " · Hears replies without ‘Hey Butler’"
                     : " · Wake phrase every time")}
               </span>
             </span>
@@ -1900,7 +1900,7 @@ function SettingsPanel({
               How long I wait when you pause. Choose Relaxed if you think out
               loud.
               {!s.handsFree &&
-                " This applies to ‘Hey Assist’. With Option + Space, I listen until you let go."}
+                " This applies to ‘Hey Butler’. With Option + Space, I listen until you let go."}
             </p>
             {s.handsFree && (
               <>
@@ -1911,7 +1911,7 @@ function SettingsPanel({
                     aria-describedby={`${ids}-followup`}
                     onChange={(e) => set("followUpListening", e.target.checked)}
                   />
-                  <span>Listen for your reply without “Hey Assist”</span>
+                  <span>Listen for your reply without “Hey Butler”</span>
                 </label>
                 <p id={`${ids}-followup`}>
                   After I ask something or you finish a sentence, I keep
@@ -2143,7 +2143,7 @@ function SettingsPanel({
           </summary>
           <div className="setting-fields">
             <p>
-              Open Assist can text one number — yours — when a task starts,
+              Butler can text one number — yours — when a task starts,
               needs you or finishes, and read short replies from that same
               number as commands. It never texts anyone else, never approves
               anything by text, and only reads messages that arrive after you
@@ -2172,7 +2172,7 @@ function SettingsPanel({
             <p id={`${ids}-messages-handle`}>
               Stored encrypted on this Mac. It must be a number or address that
               is not signed in to Messages on this Mac, so your own texts can be
-              told apart from the ones Open Assist sends.
+              told apart from the ones Butler sends.
             </p>
             <label>
               What gets sent
@@ -2252,7 +2252,7 @@ function SettingsPanel({
           </summary>
           <div className="setting-fields">
             <p>
-              Open Assist remembers how your tasks went, your corrections and
+              Butler remembers how your tasks went, your corrections and
               the apps you use, so repeated tasks get faster. It knows where
               apps and files are from macOS metadata, never file contents.
               Everything stays encrypted on this Mac; only a few relevant notes
@@ -2267,7 +2267,7 @@ function SettingsPanel({
               <span>Learn from my tasks</span>
             </label>
             <p>
-              While it runs, Open Assist also sees which apps you have open and
+              While it runs, Butler also sees which apps you have open and
               notifications as they arrive, so it can pick up work already in
               progress and tell you what you missed. Notifications from
               protected apps are never read.
@@ -2364,7 +2364,7 @@ function SettingsPanel({
                 onClick={() => setForgetting(true)}
               >
                 <Trash2 size={13} />
-                Forget what Open Assist learned
+                Forget what Butler learned
               </button>
             )}
             {forgetting && (
@@ -2658,7 +2658,7 @@ function SetupView({
   };
   const openPane = (pane: PrivacyPane) =>
     void attempt(() => api.openPrivacyPane(pane));
-  // The macOS prompts are what put Open Assist in those lists in the first
+  // The macOS prompts are what put Butler in those lists in the first
   // place; the deep links only take the user to the switch.
   const askMacOS = async () => {
     setAsking(true);
@@ -2818,7 +2818,7 @@ function SetupView({
             className="primary"
             onClick={() => onStep("permissions")}
           >
-            Set up Open Assist
+            Set up Butler
             <ArrowRight size={13} />
           </button>
           <p className="setup-hint">
@@ -2837,7 +2837,7 @@ function SetupView({
         <section className="setup-step" aria-labelledby={`${ids}-permissions`}>
           <h1 id={`${ids}-permissions`}>Four permissions</h1>
           <p>
-            Open Assist needs these to see your screen and use the keyboard and
+            Butler needs these to see your screen and use the keyboard and
             mouse. macOS asks for each one; you grant it in System Settings.
             Nothing is captured until you start a task, and moving the mouse
             pauses it.
@@ -2868,7 +2868,7 @@ function SetupView({
           {!live.onDevice && (
             <p className="setup-warning" role="status">
               This Mac has no on-device speech model for{" "}
-              {live.locale || "your language"}. Open Assist will not transcribe.
+              {live.locale || "your language"}. Butler will not transcribe.
               Typed commands still work: tap ⌥ Space instead of holding it.
             </p>
           )}
@@ -2888,7 +2888,7 @@ function SetupView({
         <section className="setup-step" aria-labelledby={`${ids}-model`}>
           <h1 id={`${ids}-model`}>Choose a model</h1>
           <p>
-            Open Assist sends a screenshot of your screen and your task to one
+            Butler sends a screenshot of your screen and your task to one
             model you choose. It has no server of its own in between.
           </p>
           <div className="setup-card">
@@ -3068,7 +3068,7 @@ function SetupView({
         <section className="setup-step" aria-labelledby={`${ids}-voice`}>
           <h1 id={`${ids}-voice`}>Spoken replies</h1>
           <p>
-            Open Assist answers out loud when you talk to it. The built-in Mac
+            Butler answers out loud when you talk to it. The built-in Mac
             voice works now. A free natural voice runs entirely on this Mac
             after a one-time download.
           </p>

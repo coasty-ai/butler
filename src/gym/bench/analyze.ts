@@ -719,7 +719,7 @@ function table(header: string[], rows: string[][]): string {
 export function renderAnalysis(report: AnalysisReport): string {
   const out: string[] = [];
   out.push(
-    `Open Assist run analysis: ${report.runs.total} runs over ${report.lines} events from ${report.files} file(s).`,
+    `Butler run analysis: ${report.runs.total} runs over ${report.lines} events from ${report.files} file(s).`,
   );
   if (report.window.from)
     out.push(`window ${report.window.from} .. ${report.window.to}`);

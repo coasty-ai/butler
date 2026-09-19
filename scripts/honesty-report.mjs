@@ -1,4 +1,4 @@
-// The Honesty Report: how often Open Assist, driving this Mac with a given
+// The Honesty Report: how often Butler, driving this Mac with a given
 // model, claimed a task it did not finish.
 //
 //   node scripts/honesty-report.mjs                        # output/harness cycles and reports/

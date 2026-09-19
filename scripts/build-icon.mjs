@@ -5,7 +5,7 @@ for (const [command, args] of [
   ["swift", ["-module-cache-path", "tmp/swift-cache", "scripts/Icon.swift"]],
   [
     "iconutil",
-    ["-c", "icns", "build/open-assist.iconset", "-o", "build/open-assist.icns"],
+    ["-c", "icns", "build/butler.iconset", "-o", "build/butler.icns"],
   ],
 ]) {
   const result = spawnSync(command, args, { stdio: "inherit" });

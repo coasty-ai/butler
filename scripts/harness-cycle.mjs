@@ -1,4 +1,4 @@
-// Open Assist harness cycle: an unattended, repeatable measurement across a
+// Butler harness cycle: an unattended, repeatable measurement across a
 // matrix of models, run while nobody is at the Mac.
 //
 // PAID and REAL: every attempt drives this Mac's desktop with a cloud model,
@@ -193,7 +193,7 @@ Presence
   --idle <seconds>                 Idle required at the start and after any input; 300 or more. Default 300.
   --gate-poll <seconds>            Re-check interval while waiting. Default 15.
   --app-diagnostics <file>         The app's log, for "no active app run".
-  --allow-app-running              Start although the Open Assist app is running.
+  --allow-app-running              Start although the Butler app is running.
   --allow-display-holder <names>   Process names whose display-sleep assertion is not a person watching.
   --no-keep-awake                  Do not start caffeinate -d.
 Behaviour
@@ -1111,7 +1111,7 @@ function writeReports(results, extra = {}, analysis, comparison, verdict) {
 }
 
 console.warn(
-  `\nOpen Assist cycle ${cycleId}: ${queue.length} attempt(s) left of ${plan.length}, ${cells.map((c) => c.cell).join(", ")}, ${suite} suite.\n` +
+  `\nButler cycle ${cycleId}: ${queue.length} attempt(s) left of ${plan.length}, ${cells.map((c) => c.cell).join(", ")}, ${suite} suite.\n` +
     (autoShards
       ? `The whole plan needs ${autoShards} nights: this is shard 1/${autoShards}; the others run ${shardNights.join(", then ")}.\n`
       : "") +

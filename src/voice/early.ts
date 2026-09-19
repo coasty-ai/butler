@@ -21,7 +21,13 @@
  * outside the grammar, so they never run early.
  */
 import { scanText } from "../core/sanitize";
-import { isWakePhraseOnly, restartedTurn, voiceIntent } from "./turns";
+import {
+  WAKE_HEY,
+  WAKE_NAME,
+  isWakePhraseOnly,
+  restartedTurn,
+  voiceIntent,
+} from "./turns";
 
 export type EarlyVerb = "open" | "switch";
 export interface EarlyClause {
@@ -74,7 +80,10 @@ export const EARLY_GENERIC_NAMES = wordSet(
 const TRANSPARENT = wordSet("please now");
 const APP_WORDS = wordSet("app application");
 /** The activation phrase at the start, as native strips it (WakePolicy.swift). */
-const LEADING_WAKE = /^\s*hey[\s,]+(?:open\s+)?assist\b[\s,.:;!?—-]*/iu;
+const LEADING_WAKE = new RegExp(
+  String.raw`^\s*${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z])[\s,.:;!?—-]*`,
+  "iu",
+);
 
 interface Token {
   raw: string;
@@ -165,13 +174,15 @@ function parse(text: string): { lead: boolean; clause?: EarlyClause } {
     } else if (POLITE.has(w.word) && at(i + 1) === "you") i += 2;
     else break;
   }
-  // "Hey open…" is the wake phrase still arriving ("Hey Open Assist"), not a
-  // request to open something: native strips it only once it has matched.
-  if (hey && at(i) === "open") {
-    const after = at(i + 1);
-    if (after === undefined || "assist".startsWith(after))
-      return { lead: false };
-  }
+  // "Hey Butl…" is the wake phrase still arriving: not a request yet. ("Hey,
+  // open Notes" after an activation is one, and primes as usual.)
+  if (
+    hey &&
+    at(i) !== undefined &&
+    "butler".startsWith(at(i)!) &&
+    at(i + 1) === undefined
+  )
+    return { lead: false };
   let verb: EarlyVerb | undefined;
   if (at(i) === "open") {
     verb = "open";

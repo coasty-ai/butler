@@ -1,4 +1,4 @@
-# Open Assist visual direction
+# Butler visual direction
 
 The requested aesthetic is simple monochrome, Space Grotesk, and restrained motion inspired by JARVIS. The desktop stays a floating pill and a hidden utility window. The larger page is only a browser preview of the product.
 

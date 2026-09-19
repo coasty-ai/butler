@@ -6,7 +6,13 @@
  */
 import type { Action } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
-import { intentKey, voiceIntent, type VoiceIntentKind } from "./turns";
+import {
+  WAKE_HEY,
+  WAKE_NAME,
+  intentKey,
+  voiceIntent,
+  type VoiceIntentKind,
+} from "./turns";
 
 const ACTIONABLE: ReadonlySet<VoiceIntentKind> = new Set([
   "stop",
@@ -16,7 +22,16 @@ const ACTIONABLE: ReadonlySet<VoiceIntentKind> = new Set([
   "decline",
 ]);
 const QUOTES = /["“”«»‘]|(?<!\p{L})['’]|['’](?!\p{L})/gu;
-const WAKE_PHRASE = /\b(?:hey|hay|hi)[\s,]+(?:open\s+)?assist\b/i;
+/**
+ * "Hey Butler" in any spelling the wake matcher accepts, whatever follows it: the
+ * assistant never says it, even where the listener's gate would not wake.
+ */
+const WAKE_PHRASE_SOURCE = String.raw`\b${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z])`;
+const WAKE_PHRASE = new RegExp(WAKE_PHRASE_SOURCE, "iu");
+const WAKE_PHRASE_ALL = new RegExp(
+  WAKE_PHRASE_SOURCE + String.raw`[\s,.:;!?]*`,
+  "giu",
+);
 const LINK_END = /[.,;:!?)\]]+$/;
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -141,10 +156,11 @@ function clean(text: string): string {
     .replace(/…/g, ".")
     .replace(/\s*[—–]\s*/g, ", ")
     .replace(QUOTES, "");
-  // Never the wake phrase itself. The product name and words like
-  // "assistant" are fine: listening pauses while replies play, and the wake
-  // phrase must start an utterance with "hey".
-  s = s.replace(/\b(?:hey|hay|hi)[\s,]+(?:open\s+)?assist\b[\s,.:;!?]*/gi, "");
+  // Never the wake phrase itself. The product name ("I'm Butler") is fine:
+  // listening pauses while replies play, and the wake phrase must start an
+  // utterance with "hey". The name is never respelled for the ear here: this
+  // text also goes to iMessage and the phone, where it must read Butler.
+  s = s.replace(WAKE_PHRASE_ALL, "");
   return s
     .replace(/\s+([.,!?;:])/g, "$1")
     .replace(/([,;:])(?=[.!?])/g, "")

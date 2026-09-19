@@ -23,7 +23,7 @@ export interface ReviewData {
   bundle: Bundle;
   uploaded: boolean;
 }
-/** What Open Assist learned locally, for the user's own review in Settings. */
+/** What Butler learned locally, for the user's own review in Settings. */
 export interface MemorySummary {
   counts: {
     episodes: number;

@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
+import { localApp } from "./local-app.mjs";
 import { NativeController } from "../electron/controller.ts";
 import { ScreenChangedError } from "../src/core/errors.ts";
 mkdirSync("tmp/swift-cache", { recursive: true });
@@ -62,11 +63,9 @@ function request(method) {
 }
 const packaged = process.argv.includes("--packaged");
 const controller = new NativeController(
-  resolve(
-    packaged
-      ? "release/mac-arm64/Open Assist.app/Contents/Resources/coarena-controller"
-      : "native/bin/coarena-controller",
-  ),
+  packaged
+    ? resolve(localApp(process.cwd()).resources, "coarena-controller")
+    : resolve("native/bin/coarena-controller"),
   () => {},
   () => {},
   (event, data) => {

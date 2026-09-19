@@ -356,15 +356,17 @@ func turnConfidence(_ transcript: TurnTranscript) -> Double {
     return words > 0 ? total / words : 0
 }
 
-// Misheard wake phrases ("Hey assistant", "Hey sis", "His cyst") at the start of the first
-// segment of a session that the real wake phrase already activated. Activation itself
-// (commandAfterWakePhrase) is not widened.
+// Misheard wake phrases at the start of the first segment of a session that the real
+// wake phrase already activated: the name after a lead word, and the everyday words a
+// recognizer wrote for "Hey Butler" in noise ("but a lot", "but Allah", "Budger";
+// .data/names/butler-speech.log). Those are only ever stripped here, never used to wake:
+// activation itself (commandAfterWakePhrase) is not widened.
+private let wakeEcho = try! NSRegularExpression(
+    pattern: #"^(?:(?:hey|hay|hi|hei|his|a)[\s,]+(?:\#(wakeNamePattern)|but\s+a\s+lot|but\s+allah|budger)|\#(fusedWakePattern))(?![a-z])[\s,.:;!?—-]*"#,
+    options: .caseInsensitive)
 func stripWakeEcho(_ text: String) -> String {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    let expression = try! NSRegularExpression(
-        pattern: #"^(?:hey|hay|hi|his|a)[\s,]+(?:open\s+)?(?:assist(?:ant|s)?|a\s?sis|sis|cyst)\b[\s,.:;!?—-]*"#,
-        options: .caseInsensitive)
-    guard let match = expression.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+    guard let match = wakeEcho.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
           let end = Range(match.range, in: trimmed)?.upperBound else { return trimmed }
     return String(trimmed[end...]).trimmingCharacters(in: .whitespacesAndNewlines)
 }
@@ -406,9 +408,9 @@ func turnContext(for kind: FollowUpKind) -> TurnContext {
 
 // Speech that turns an open window into a turn. A continuation must sound like one
 // ("and search", "actually use Safari") so side conversation does not become a command.
-// Words that may be the start of the wake phrase ("Hey Assist"): a window waits for more
+// Words that may be the start of the wake phrase ("Hey Butler"): a window waits for more
 // text before treating them as the user's reply, so the wake phrase can take over.
-let wakeLeadWords: Set<String> = ["hey", "hay", "hi", "his"]
+let wakeLeadWords: Set<String> = ["hey", "hay", "hi", "hei"]
 
 func followUpOnset(text: String, speechRun: Double, kind: FollowUpKind) -> Bool {
     let words = voiceTokens(text).filter { !fillerWords.contains($0) }
@@ -502,6 +504,14 @@ let queuedAckMaxAge = 1.5
 func queuedUtteranceStale(priority: SpeakPriority, queuedAt: TimeInterval, now: TimeInterval) -> Bool {
     priority == .ack && now - queuedAt > queuedAckMaxAge
 }
+
+// The name is written Butler and said BUT-ler. Every macOS voice reads the written "Butler" as
+// EYE-sa (one says EE-sa) and "Butler" either way, but "Eesa" as BUT-ler in all six voices
+// measured (.data/names/butler-speech.log §2). Applied only to the text handed to the system
+// synthesizer: the same sentence reaches iMessage and the phone written as Butler, and Kokoro
+// has its own lexicon entry (src/voice/kokoro/g2p.ts).
+// "Butler" is an English word: every voice says it as written, so nothing is respelled.
+func systemVoiceText(_ text: String) -> String { text }
 
 // The phrase inventory is English; other locales keep replies visual.
 func speechLanguageSupported(locale: String) -> Bool { voiceLanguageParts(locale).language == "en" }

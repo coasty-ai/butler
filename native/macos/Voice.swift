@@ -74,6 +74,8 @@ var soundsEnabled = false
 var patience = Patience.normal
 var suspended = false
 var containsWakePhrase = false
+// The latest ambient hypothesis is the wake phrase alone: it activates once the speaker pauses.
+var pendingWake = false
 var lastWakeError = ""
 var wakeListening = false
 var maintenance: Timer?
@@ -149,7 +151,7 @@ func clearSpeech(windowReason: String = "cancel") {
         output(["event": "followup_closed", "kind": windowKind.rawValue, "endReason": windowReason])
     }
     // Invalidate callbacks before stopping/cancelling the old recognizer.
-    generation += 1; mode = nil
+    generation += 1; mode = nil; pendingWake = false
     stopAudio(); task?.cancel(); task = nil; request = nil
     finalDeadline?.cancel(); finalDeadline = nil; releaseTail?.cancel(); releaseTail = nil
     setWakeListening(false)
@@ -286,7 +288,7 @@ func startRecognition() -> Bool {
     let session = generation, segment = segmentGeneration
     let next = SFSpeechAudioBufferRecognitionRequest()
     next.shouldReportPartialResults = true; next.requiresOnDeviceRecognition = true; next.taskHint = .dictation
-    next.contextualStrings = ["Hey Assist", "Hey Open Assist"]
+    next.contextualStrings = recognizerContext(ambient: mode == .standby || mode == .followUp)
     request = next
     setTapInput(next)
     task = recognizer.recognitionTask(with: next) { result, error in
@@ -432,20 +434,22 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
         let now = uptime()
         switch current {
         case .standby:
-            guard commandAfterWakePhrase(raw) != nil else {
+            guard commandAfterWakePhrase(raw, ended: result.isFinal) != nil else {
                 // Do not emit background speech, partials, or microphone levels.
                 if !trimmed(raw).isEmpty { lastTextAt = now }
+                pendingWake = !result.isFinal && wakePhraseAwaitingPause(raw)
                 if result.isFinal { clearSpeech(); scheduleStandby() }
                 return
             }
             activateWake(context: .command, window: nil)
         case .followUp:
-            if commandAfterWakePhrase(raw) != nil {
+            if commandAfterWakePhrase(raw, ended: result.isFinal) != nil {
                 activateWake(context: turnContext(for: windowKind), window: windowKind)
             } else if followUpOnset(text: raw, speechRun: windowRun.longest, kind: windowKind) {
                 activateFollowUp()
             } else {
                 if !trimmed(raw).isEmpty { lastTextAt = now }
+                pendingWake = !result.isFinal && wakePhraseAwaitingPause(raw)
                 // Keep the window open with a fresh request until its deadline.
                 if result.isFinal { rotateRequest() }
                 return
@@ -462,7 +466,7 @@ func activateWake(context: TurnContext, window: FollowUpKind?) {
     signalController()
     speaker.stop(.bargeIn)
     let now = uptime()
-    mode = .handsFree; turnContext = context; containsWakePhrase = true; wakeSegment = segmentGeneration
+    mode = .handsFree; turnContext = context; containsWakePhrase = true; wakeSegment = segmentGeneration; pendingWake = false
     startedAt = now; lastTextAt = now; lastSpeechAt = now
     setWakeListening(false)
     output(["event": "wake_detected"])
@@ -473,7 +477,7 @@ func activateFollowUp() {
     signalController()
     speaker.stop(.bargeIn)
     let kind = windowKind, now = uptime()
-    mode = .handsFree; turnContext = turnContext(for: kind); containsWakePhrase = false; wakeSegment = -1
+    mode = .handsFree; turnContext = turnContext(for: kind); containsWakePhrase = false; wakeSegment = -1; pendingWake = false
     startedAt = now; lastTextAt = now; lastSpeechAt = now
     setWakeListening(false)
     output(["event": "followup_detected", "kind": kind.rawValue])
@@ -482,7 +486,7 @@ func activateFollowUp() {
 func absorbRecognition(_ result: SFSpeechRecognitionResult, raw: String, now: TimeInterval) {
     // A reply in a follow-up window that turns out to start with the wake phrase is a new
     // command: switch to wake timing and let main treat it as a wake activation.
-    if mode == .handsFree, !containsWakePhrase, turn.text.isEmpty, commandAfterWakePhrase(raw) != nil {
+    if mode == .handsFree, !containsWakePhrase, turn.text.isEmpty, commandAfterWakePhrase(raw, ended: result.isFinal) != nil {
         containsWakePhrase = true; wakeSegment = segmentGeneration; turnContext = .command
         lastTextAt = now; lastSpeechAt = now
         output(["event": "wake_detected"])
@@ -494,7 +498,7 @@ func absorbRecognition(_ result: SFSpeechRecognitionResult, raw: String, now: Ti
     let before = turn.text
     if result.isFinal {
         output(["event": "recognition_final", "textLength": command.count,
-                "source": commandAfterWakePhrase(raw) == nil ? "command_segment" : "wake_prefixed_segment"])
+                "source": startsWithWakePhrase(raw) ? "wake_prefixed_segment" : "command_segment"])
         let segments = result.bestTranscription.segments
         let relevant = segments.dropFirst(min(strippedWordCount(raw: raw, command: command), segments.count))
         let confidence = relevant.isEmpty ? 0 : relevant.map { Double($0.confidence) }.reduce(0, +) / Double(relevant.count)
@@ -513,7 +517,7 @@ func absorbRecognition(_ result: SFSpeechRecognitionResult, raw: String, now: Ti
     absorbPartial(&turn, update: command, gap: now - lastTextAt)
     if turn.text != before {
         output(["event": "recognition_update", "textLength": turn.text.count,
-                "source": commandAfterWakePhrase(raw) == nil ? "command_segment" : "wake_prefixed_segment"])
+                "source": startsWithWakePhrase(raw) ? "wake_prefixed_segment" : "command_segment"])
         textChanged(now)
     }
 }
@@ -855,9 +859,16 @@ func handle(_ command: [String: Any]) {
             switch current {
             case .standby:
                 if IsSecureEventInputEnabled() { clearSpeech(); securePaused = true; return }
+                // "Hey Butler", then a pause: the wake phrase stood apart after all.
+                if pendingWake && wakePauseElapsed(now: now, lastText: lastTextAt, lastSpeech: lastSpeechAt) {
+                    activateWake(context: .command, window: nil); return
+                }
                 if standbyEndpoint(now: now, started: startedAt, lastText: lastTextAt) == .recycle { clearSpeech(); scheduleStandby(0.1) }
             case .followUp:
                 if IsSecureEventInputEnabled() { clearSpeech(windowReason: "cancel"); securePaused = true; return }
+                if pendingWake && wakePauseElapsed(now: now, lastText: lastTextAt, lastSpeech: lastSpeechAt) {
+                    activateWake(context: turnContext(for: windowKind), window: windowKind); return
+                }
                 if followUpExpired(now: now, deadline: windowDeadline, lastSpeech: lastSpeechAt) {
                     clearSpeech(windowReason: "timeout"); scheduleStandby(0.1)
                 }

@@ -1,6 +1,6 @@
 /**
  * The public surface of the run loop: everything an embedder needs to drive
- * Open Assist against their own Controller, Provider and Recorder, and nothing
+ * Butler against their own Controller, Provider and Recorder, and nothing
  * else. Re-exports only — no logic lives here.
  *
  * See docs/MODULARITY.md §7 for the fifteen-line example this exists to enable.

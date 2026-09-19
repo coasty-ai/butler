@@ -453,7 +453,7 @@ describe("assistant session: deciding a turn", () => {
       "open",
       "how's it going",
       "open Spotify",
-      "hey assist",
+      "hey butler",
       "",
     ])
       t.session.preempt(text, "voice");

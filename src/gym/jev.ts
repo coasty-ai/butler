@@ -1,5 +1,5 @@
 /**
- * Measuring TypeSafe's Jev on Open Assist's own decisions. Jev is a "System
+ * Measuring TypeSafe's Jev on Butler's own decisions. Jev is a "System
  * One" model: it takes app state plus typed questions and returns typed
  * answers with probabilities, through OpenRouter's alpha Decisions endpoint,
  * and it writes no text. This is the pure half of scripts/eval-jev.mjs: the

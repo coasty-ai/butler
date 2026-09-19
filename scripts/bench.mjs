@@ -1,4 +1,4 @@
-// Open Assist automation benchmark.
+// Butler automation benchmark.
 //
 // PAID and REAL: every attempt drives this Mac's desktop with a cloud model,
 // exactly like `npm run test:live`. Nothing runs without
@@ -211,7 +211,7 @@ try {
 }
 
 console.warn(
-  `\nOpen Assist benchmark: ${plan.length} run(s) on this Mac with ${cell}.\n` +
+  `\nButler benchmark: ${plan.length} run(s) on this Mac with ${cell}.\n` +
     `Total cost ceiling $${budget.toFixed(2)}. Move the mouse or press a key to stop the benchmark;\n` +
     "it also stops at the first agent hand-off unless --continue-on-takeover.\n",
 );

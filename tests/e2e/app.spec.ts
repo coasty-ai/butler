@@ -90,11 +90,11 @@ test("tiny settings and responsive preview", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Open settings" }).click();
   await page
-    .getByRole("combobox", { name: "Talk to Open Assist" })
+    .getByRole("combobox", { name: "Talk to Butler" })
     .selectOption("hands-free");
   await expect(page.getByText(/Keeps your microphone on/)).toBeVisible();
   await expect(page.locator(".setup-note")).toContainText("No audio uploads");
-  await page.getByRole("combobox", { name: "Talk to Open Assist" }).scrollIntoViewIfNeeded();
+  await page.getByRole("combobox", { name: "Talk to Butler" }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: "output/qa/hands-free-settings.png", fullPage: true });
   await page.locator("summary").filter({ hasText: "Safety & limits" }).click();
   await page.getByRole("spinbutton", { name: "Action limit" }).fill("12");

@@ -4,7 +4,7 @@
  * names into plain words the lexicon G2P can read, then splits the result
  * into sentences so the first one can be synthesized first.
  *
- * Pure: no I/O, no Electron, no onnxruntime. Ported from the Open Assist
+ * Pure: no I/O, no Electron, no onnxruntime. Ported from this project's
  * Kokoro spike (kokoro-onnx-node/src/normalize.mjs).
  */
 

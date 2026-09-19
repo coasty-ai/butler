@@ -84,7 +84,7 @@ func electronAccessibilityChecks(_ check: (Bool, String) -> Void) {
     func eligible(_ pid: pid_t, _ bundle: String) -> Bool { manualAccessibilityEligible(pid:pid, bundleId:bundle, ownPid:100, parentPid:200, protectedApps:protected) }
     check(eligible(500, "com.tinyspeck.slackmacgap") && eligible(501, "com.hnc.Discord") && eligible(502, "notion.id"), "Electron apps get their accessibility tree switched on")
     check(eligible(503, "com.spotify.client") && eligible(504, "com.apple.finder") && eligible(505, ""), "apps that reject the attribute may still be attempted harmlessly")
-    check(!eligible(200, "com.github.Electron") && !eligible(100, "") && !eligible(506, "ai.coarena.openassist"), "Open Assist and this helper are never switched")
+    check(!eligible(200, "com.github.Electron") && !eligible(100, "") && !eligible(506, "ai.coarena.openassist"), "Butler and this helper are never switched")
     check(!eligible(0, "com.tinyspeck.slackmacgap") && !eligible(-1, "com.tinyspeck.slackmacgap"), "invalid pids are never switched")
     check(!eligible(507, "com.1password.1password") && !eligible(508, "com.bitwarden.desktop"), "protected Electron apps are never switched")
     check(!eligible(509, "com.microsoft.VSCode") && !eligible(510, "com.microsoft.VSCodeInsiders") && !eligible(511, "com.vscodium") && !eligible(512, "com.todesktop.230313mzl4w4u92"), "screen-reader-detecting editors are never switched")

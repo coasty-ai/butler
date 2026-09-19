@@ -1,6 +1,6 @@
 # Model evaluations
 
-Two opt-in scripts measure models against Open Assist's own decisions. Neither runs under `npm test`, and each refuses to run until its own environment flag is set, because each one spends money on model calls. Both read the API key from a named environment variable when they run and never print it. Their reports carry ids, labels, probabilities, counts and timings, never the text of a case. With `--verbose` they print one line per case: eval-dialog's lines include the model's TASK and SAY, while eval-jev's carry only labels and probabilities.
+Two opt-in scripts measure models against Butler's own decisions. Neither runs under `npm test`, and each refuses to run until its own environment flag is set, because each one spends money on model calls. Both read the API key from a named environment variable when they run and never print it. Their reports carry ids, labels, probabilities, counts and timings, never the text of a case. With `--verbose` they print one line per case: eval-dialog's lines include the model's TASK and SAY, while eval-jev's carry only labels and probabilities.
 
 Their unit tests (`tests/eval-jev.test.ts`) run the scripts against fake local endpoints, so they need no network and no key.
 

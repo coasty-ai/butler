@@ -1,6 +1,6 @@
 # Memory, system index and self-improvement
 
-Open Assist learns locally from what the user does so that repeated work gets faster, cheaper and more reliable. Everything is stored encrypted on the Mac. Only a small, task-relevant `MemoryContext` is sent to the configured model, never file contents. The learning setting (`settings.memory`, default on) can be turned off, and "Forget what Open Assist learned" deletes the store.
+Butler learns locally from what the user does so that repeated work gets faster, cheaper and more reliable. Everything is stored encrypted on the Mac. Only a small, task-relevant `MemoryContext` is sent to the configured model, never file contents. The learning setting (`settings.memory`, default on) can be turned off, and "Forget what Butler learned" deletes the store.
 
 ## Components
 

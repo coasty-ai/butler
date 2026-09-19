@@ -34,9 +34,9 @@ class Fixture: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let bounds = NSScreen.screens[0].frame
         window = FixtureWindow(contentRect:bounds,styleMask:[.borderless],backing:.buffered,defer:false)
-        window.title = "Open Assist regression check"
+        window.title = "Butler regression check"
         window.backgroundColor = NSColor(calibratedWhite:0.1,alpha:1)
-        let title = NSTextField(labelWithString:"Open Assist · local input regression test")
+        let title = NSTextField(labelWithString:"Butler · local input regression test")
         title.font = .systemFont(ofSize:28);title.textColor = .white;title.frame = NSRect(x:100,y:bounds.height-130,width:900,height:50)
         let subtitle = NSTextField(labelWithString:"Temporary test window. No model calls or personal screen uploads.")
         subtitle.textColor = .lightGray;subtitle.frame = NSRect(x:100,y:bounds.height-180,width:1000,height:40)

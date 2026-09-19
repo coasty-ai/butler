@@ -83,11 +83,14 @@ describe("intent normalization", () => {
 
   it("never acts on a turn that is only the wake phrase", () => {
     for (const text of [
-      "Hey Assist",
-      "hey assist.",
-      "Hey assistant",
-      "Hey sis",
-      "Hey Open Assist",
+      "Hey Butler",
+      "hey butler.",
+      "Hey Butler",
+      "Hey Butler",
+      "Hey, Butler!",
+      "Hi Buttler",
+      "hey hey butler butler",
+      "Hey Batala",
     ]) {
       expect(isWakePhraseOnly(text)).toBe(true);
       expect(
@@ -102,8 +105,66 @@ describe("intent normalization", () => {
         }),
       ).toEqual({ kind: "acknowledge" });
     }
-    expect(isWakePhraseOnly("Hey Assist open Safari")).toBe(false);
-    expect(isWakePhraseOnly("assistant manager contacts")).toBe(false);
+    expect(isWakePhraseOnly("Hey Butler open Safari")).toBe(false);
+    for (const text of [
+      "Isabel",
+      "Lisa",
+      "Hey Lisa",
+      "Hey sir",
+      "Sir",
+      "Isaac",
+      "is a",
+      "Hey, is a table free?",
+      "Butler service",
+      "Hey Assist",
+      "the butler did it",
+      "assistant manager contacts",
+    ])
+      expect([text, isWakePhraseOnly(text)]).toEqual([text, false]);
+  });
+  // tests/fixtures/voice-phrases.json "wake": the same accept, gate and
+  // never-accept cases native reads (TurnPolicyTests.swift). Native activates
+  // at the start of an utterance; here the same phrase said again inside a
+  // turn restarts it, gated the same way.
+  describe("the shared wake fixture", () => {
+    const wake = fixture.wake;
+    it("restarts at every spelling of the name, gated like native activation", () => {
+      for (const name of wake.names) {
+        expect(restartedTurn(`open mail hey ${name}, open Notes`, 1)).toEqual({
+          text: "open Notes",
+          segments: 2,
+        });
+        expect(restartedTurn(`open mail hey ${name} open Notes`, 1).text).toBe(
+          "open Notes",
+        );
+        const gated = `open mail hey ${name} the weather`;
+        expect(restartedTurn(gated, 1)).toEqual({ text: gated, segments: 1 });
+        expect([name, isWakePhraseOnly(`Hey ${name}`)]).toEqual([name, true]);
+        expect(
+          restartedTurn(`open calendar at 6 ${name} open calendar at 7`).text,
+        ).toBe("open calendar at 7");
+      }
+      for (const fused of wake.fused)
+        expect([fused, isWakePhraseOnly(fused)]).toEqual([fused, true]);
+    });
+    it("splits where native activation strips", () => {
+      for (const { in: said, out } of wake.activate) {
+        const heard = restartedTurn(`open mail ${said}`, 1);
+        // The same phrase said twice leaves its second copy to native's strip.
+        const expected = out.replace(/^hey butler\s+/i, "") || "open mail";
+        expect([said, heard.text]).toEqual([said, expected]);
+        expect([said, isWakePhraseOnly(said)]).toEqual([said, out === ""]);
+      }
+      for (const { in: said, out } of wake.activateFused)
+        expect([said, isWakePhraseOnly(said)]).toEqual([said, out === ""]);
+    });
+    it("never restarts on the near-misses and never calls them the wake phrase", () => {
+      for (const said of [...wake.neverActivate, ...wake.neverRestart]) {
+        const text = `open mail ${said}`;
+        expect(restartedTurn(text, 1)).toEqual({ text, segments: 1 });
+        expect([said, isWakePhraseOnly(said)]).toEqual([said, false]);
+      }
+    });
   });
   // Live 2026-09-18: the request said twice, the second time starting with
   // the wake phrase. Native handles a restart that opens a new segment; one
@@ -112,21 +173,26 @@ describe("intent normalization", () => {
     const request =
       "open calendar and put an event where I have to go pick up my packages at 6 PM";
     expect(
-      restartedTurn(`${request} hey assist open calendar and put an event`, 1),
+      restartedTurn(`${request} hey butler open calendar and put an event`, 1),
     ).toEqual({ text: "open calendar and put an event", segments: 2 });
     expect(
       restartedTurn(
-        "open notes, Hey, Open Assist: open mail. Hey assist, open Safari",
+        "open notes, Hey, Butler: open mail. Hey butler, open Safari",
       ),
     ).toEqual({ text: "open Safari", segments: 2 });
     // Nothing after it yet: the words before it stay the request.
-    expect(restartedTurn("open notes hey assist", 3)).toEqual({
+    expect(restartedTurn("open notes hey butler", 3)).toEqual({
       text: "open notes",
       segments: 3,
     });
-    expect(restartedTurn("open notes hey assist um", 1).text).toBe(
+    expect(restartedTurn("open notes hey butler um", 1).text).toBe(
       "open notes",
     );
+    // "Hey, is a table free?" as a biased recognizer writes it is not a restart.
+    expect(restartedTurn("book a table hey Butler table free", 1)).toEqual({
+      text: "book a table hey Butler table free",
+      segments: 1,
+    });
   });
   // The incident's own form: the bare name, then the request again, without a
   // pause long enough for a new recognizer segment.
@@ -135,41 +201,42 @@ describe("intent normalization", () => {
       "open calendar and put an event where I have to go pick up my packages at 6 PM";
     expect(
       restartedTurn(
-        `${request} Assist open calendar and put an event wher…`,
+        `${request} Butler open calendar and put an event wher…`,
         1,
       ),
     ).toEqual({ text: "open calendar and put an event wher…", segments: 2 });
-    expect(restartedTurn("open Safari, Assist, open Safari")).toEqual({
+    expect(restartedTurn("open Safari, Butler, open Safari")).toEqual({
       text: "open Safari",
       segments: 2,
     });
     expect(
-      restartedTurn("um open notes and write assist open notes and read", 1)
+      restartedTurn("um open notes and write butler open notes and read", 1)
         .text,
     ).toBe("open notes and read");
     // After a full wake phrase too, the last repeat wins.
     expect(
       restartedTurn(
-        "open notes hey assist open mail and reply Assist open mail and archive",
+        "open notes hey butler open mail and reply Butler open mail and archive",
       ).text,
     ).toBe("open mail and archive");
     // An activation phrase in front does not hide the repeat.
     expect(
-      restartedTurn("Hey Assist open calendar at 6 Assist open calendar at 7"),
+      restartedTurn("Hey Butler open calendar at 6 Butler open calendar at 7"),
     ).toEqual({ text: "open calendar at 7", segments: 2 });
-    // Without the repeat, "assist" is a word.
+    // Without the repeat, the name is a word.
     for (const text of [
-      "open the ticket and assist the customer with the refund",
+      "open the ticket and tell Butler about the refund",
       "open notes and ask it to assist me",
-      "tell Maria I can assist with the move",
-      "go to Open Assist settings",
-      "open safari assist open mail",
+      "text Butler that I'm running late",
+      "go to Butler settings",
+      "open safari butler open mail",
+      "book a flight to Pisa and open my calendar",
     ])
       expect(restartedTurn(text, 1)).toEqual({ text, segments: 1 });
   });
   it("hands main the request, not the raw transcript", () => {
     const text =
-      "open calendar and put an event where I have to go pick up my packages at 6 PM Assist open calendar and put an event wher…";
+      "open calendar and put an event where I have to go pick up my packages at 6 PM Butler open calendar and put an event wher…";
     expect(transcriptRequest({ text: `  ${text} `, segments: 1 })).toEqual({
       text: "open calendar and put an event wher…",
       segments: 2,
@@ -208,16 +275,16 @@ describe("intent normalization", () => {
   });
   it("leaves a turn without a restart exactly as it was", () => {
     for (const [text, segments] of [
-      ["Hey Assist open Safari", 1],
-      ["hey assist hey assist open Safari", 1],
+      ["Hey Butler open Safari", 1],
+      ["hey butler hey butler open Safari", 1],
       ["open notes and ask it to assist me", 1],
-      ["go to Open Assist settings", 2],
+      ["go to Butler settings", 2],
       ["tell her hey there", undefined],
     ] as const)
       expect(restartedTurn(text, segments)).toEqual({ text, segments });
   });
   it("never lets a restarted turn approve", () => {
-    const heard = restartedTurn("no wait hey assist yes", 1);
+    const heard = restartedTurn("no wait hey butler, yes", 1);
     expect(heard).toEqual({ text: "yes", segments: 2 });
     expect(
       planVoiceTurn({
@@ -1475,8 +1542,8 @@ describe("texted and remote sources", () => {
         text: "check my email",
         taskSource: "user_words",
       });
-      // "Hey assist" is only stripped from speech.
-      expect(plan({ text: "hey assist", source }).kind).toBe("start");
+      // "Hey Butler" is only stripped from speech.
+      expect(plan({ text: "hey butler", source }).kind).toBe("start");
     }
   });
 });
@@ -1613,7 +1680,7 @@ describe("routing order property", () => {
     "after that, approve it",
     "open Safari",
     "yes, open Safari",
-    "hey assist yes",
+    "hey butler yes",
     "um yes",
     "y-y-yes",
   ];

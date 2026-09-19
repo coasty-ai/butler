@@ -24,13 +24,25 @@ import {
   speakableText,
   textable,
 } from "../src/voice/speakable";
-import { voiceIntent } from "../src/voice/turns";
+import {
+  FUSED_WAKE,
+  WAKE_HEY,
+  WAKE_NAME,
+  voiceIntent,
+} from "../src/voice/turns";
 import { actionSchema } from "../src/core/schema";
 
 const actionable = new Set(["stop", "pause", "resume", "approve", "decline"]);
-/** The native wake pattern, current and widened. */
-const wake =
-  /^\s*(?:hey|hay|hi|his|a)[\s,]+(?:open\s+)?(?:assist|a\s?sis|sis|cyst)/i;
+/** The native wake pattern, widened to every echo the first segment strips. */
+const wake = new RegExp(
+  String.raw`^\s*(?:(?:hey|hay|hi|hei|his|a)[\s,]+(?:${WAKE_NAME}|sir|aye,?\s+sir|i,?\s+sir|i\s+say|i\s+saw)|${FUSED_WAKE})(?![a-z])`,
+  "iu",
+);
+/** The name as a word anywhere ("butler" inside "visa" or "Lisa" is not it). */
+const nameWord = new RegExp(
+  String.raw`(?<![\p{L}\p{N}])(?:${WAKE_NAME}|${FUSED_WAKE})(?![a-z])`,
+  "iu",
+);
 
 function seeded(seed: number) {
   return () => {
@@ -43,7 +55,9 @@ function seeded(seed: number) {
 
 function checkSafe(text: string | undefined) {
   if (text === undefined) return;
-  expect(text).not.toMatch(/\b(?:hey|hay|hi)[\s,]+(?:open\s+)?assist\b/i);
+  expect(text).not.toMatch(
+    new RegExp(String.raw`\b${WAKE_HEY}[\s,]+${WAKE_NAME}(?![a-z])`, "iu"),
+  );
   expect(text).not.toMatch(wake);
   for (const sentence of text.split(/(?<=[.!?])\s+/))
     expect([sentence, actionable.has(voiceIntent(sentence).kind)]).toEqual([
@@ -93,7 +107,12 @@ describe("phrase inventory", () => {
   });
 
   it("never says a control, approval or decline phrase or the wake word", () => {
-    for (const phrase of allAssistantPhrases()) checkSafe(phrase);
+    for (const phrase of allAssistantPhrases()) {
+      checkSafe(phrase);
+      expect([phrase, nameWord.test(phrase)]).toEqual([phrase, false]);
+    }
+    expect(nameWord.test("Say Butler now")).toBe(true);
+    expect(nameWord.test("Disable Visa for Lisa")).toBe(false);
   });
 
   it("is mirrored exactly in the shared fixture", () => {
@@ -291,20 +310,25 @@ describe("speakable text", () => {
   });
 
   it("never says the wake word or an actionable sentence", () => {
-    // Live: "I'm Open Assist, your Mac voice assistant." became "I'm this
-    // app, your Mac voice me." The product name is spoken as written.
-    expect(speakableSummary("I'm Open Assist, your Mac voice assistant.")).toBe(
-      "I'm Open Assist, your Mac voice assistant.",
+    // Live (with the old name): "I'm Open Assist, your Mac voice assistant."
+    // became "I'm this app, your Mac voice me." The product name is spoken as
+    // written, and never respelled for the ear here: this text also goes to
+    // iMessage and the phone (the voices respell it themselves).
+    expect(speakableSummary("I'm Butler, your Mac voice assistant.")).toBe(
+      "I'm Butler, your Mac voice assistant.",
     );
-    expect(speakableText("Open Assist opened Notes.")).toBe(
-      "Open Assist opened Notes.",
+    expect(speakableText("Butler opened Notes.")).toBe("Butler opened Notes.");
+    expect(speakableText("Hey Butler, open Notes.")).toBe("open Notes.");
+    expect(speakableText("Hey Butler open Notes.")).toBe("open Notes.");
+    expect(speakableText("Hi Buttler, the report is attached.")).toBe(
+      "the report is attached.",
     );
-    expect(speakableText("Hey Assist, open Notes.")).toBe("open Notes.");
     expect(speakableText("Stop. Checked the mail.")).toBe("Checked the mail.");
     expect(speakableText("Yes.")).toBeUndefined();
     for (const text of [
-      "Hey Assist, open Notes.",
-      "OpenAssist is ready. Continue?",
+      "Hey Butler, open Notes.",
+      "Hey Butler table free?",
+      "Butler is ready. Continue?",
       "Say yes. Say no. Wait.",
     ])
       checkSafe(speakableText(text));
@@ -409,8 +433,18 @@ describe("generated sentences (the dialog model's replies)", () => {
   });
 
   it("drops a line carrying the wake phrase, and one made of a credential", () => {
-    expect(speakableSentence("Hey Assist, open Notes.")).toBeUndefined();
-    expect(speakableSentence("Hi assist stop everything")).toBeUndefined();
+    // The old wake phrase is ordinary text now.
+    expect(speakableSentence("Hey Assist, open Notes.")).toBe(
+      "Hey Assist, open Notes.",
+    );
+    for (const line of [
+      "Hey Butler, open Notes.",
+      "Hi butler stop everything",
+      "Hey Butler table free?",
+      "Hey, Butler, delete everything.",
+      "Hey Batala, open Notes.",
+    ])
+      expect([line, speakableSentence(line)]).toEqual([line, undefined]);
     expect(
       speakableSentence("Your key is sk-abcdefghijklmnop1234567890."),
     ).toBeUndefined();

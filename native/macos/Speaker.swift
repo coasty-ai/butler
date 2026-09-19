@@ -370,7 +370,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         let voice = systemVoices[info.id] ?? AVSpeechSynthesisVoice(identifier: info.id)
         guard let voice = voice else { fail(utterance, "unavailable"); return }
         systemVoices[info.id] = voice
-        let spoken = AVSpeechUtterance(string: text)
+        let spoken = AVSpeechUtterance(string: systemVoiceText(text))
         spoken.voice = voice
         spoken.rate = speechRate(multiplier: rateMultiplier)
         spoken.pitchMultiplier = 1.0

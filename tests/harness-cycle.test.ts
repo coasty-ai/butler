@@ -1364,6 +1364,19 @@ describe("presence parsers over captured command output", () => {
       105,
     ]);
   });
+  // PS above is a build from before the rename (Open Assist.app): it may still
+  // be running while Butler.app is built, and it is the same agent either way.
+  it("recognises the packaged app under its new name as well as its old one", () => {
+    const renamed = `  201 /Users/someone/open-assist/release/mac-arm64/Butler.app/Contents/MacOS/Butler --natural-voice
+  202 /Users/someone/open-assist/release/mac-arm64/Butler.app/Contents/Frameworks/Butler Helper.app/Contents/MacOS/Butler Helper --type=gpu-process
+  203 /usr/bin/open -n -g -W /Users/someone/open-assist/release/mac-arm64/Butler.app
+  204 /Applications/Butler.app/Contents/MacOS/Butler
+  205 /Applications/VISA.app/Contents/MacOS/VISA
+  206 /Applications/Open Assist.app/Contents/MacOS/Open Assist
+  207 /Applications/Butler.app/Contents/MacOS/Open Assist`;
+    expect(appProcesses(renamed, [])).toEqual([201, 204, 206]);
+    expect(appProcesses(`${PS}\n${renamed}`, [], 201)).toEqual([102, 204, 206]);
+  });
   it("counts app runs still in flight in the app's log", () => {
     const id = "11111111-1111-4111-8111-111111111111";
     const other = "22222222-2222-4222-8222-222222222222";

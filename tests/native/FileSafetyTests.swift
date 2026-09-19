@@ -224,7 +224,7 @@ func fileSafetyChecks(_ check: (Bool, String) -> Void) {
     check(fileHandlerRefused(kind: .folder, handler: app("com.cocoatech.PathFinder", "Path Finder"), protectedApps: defaults), "a folder must open in Finder, not a replacement file manager")
     check(fileHandlerRefused(kind: .folder, handler: textEdit, protectedApps: defaults), "a folder whose handler is not Finder is refused")
     check(fileHandlerRefused(kind: .folder, handler: finder, protectedApps: defaults + ["com.apple.finder"]), "a folder is refused when Finder is protected")
-    for (id, name) in [("com.apple.keychainaccess", "Keychain Access"), ("com.apple.Terminal", "Terminal"), ("com.googlecode.iterm2", "iTerm"), ("com.apple.ScriptEditor2", "Script Editor"), ("com.apple.Automator", "Automator"), ("com.apple.DiskUtility", "Disk Utility"), ("com.apple.installer", "Installer"), ("ai.coarena.openassist", "Open Assist")] {
+    for (id, name) in [("com.apple.keychainaccess", "Keychain Access"), ("com.apple.Terminal", "Terminal"), ("com.googlecode.iterm2", "iTerm"), ("com.apple.ScriptEditor2", "Script Editor"), ("com.apple.Automator", "Automator"), ("com.apple.DiskUtility", "Disk Utility"), ("com.apple.installer", "Installer"), ("ai.coarena.openassist", "Butler")] {
         check(fileHandlerRefused(kind: .document, handler: app(id, name), protectedApps: []), "a document opening in launch-floor application \(name) is refused even with no protected apps")
     }
     check(fileHandlerRefused(kind: .document, handler: app("com.example.tool", "Acme Setup Assistant"), protectedApps: []), "a document opening in an installer-named application is refused")

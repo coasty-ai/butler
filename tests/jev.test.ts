@@ -424,7 +424,7 @@ describe("jev: the key and the setting", () => {
       .forEach((root) => rmSync(root, { recursive: true, force: true })),
   );
   const envFile = (content: string) => {
-    const root = mkdtempSync(join(tmpdir(), "open-assist-jev-"));
+    const root = mkdtempSync(join(tmpdir(), "butler-jev-"));
     roots.push(root);
     const file = join(root, ".env");
     writeFileSync(file, content, { mode: 0o600 });

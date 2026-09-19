@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-let directory = "build/open-assist.iconset"
+let directory = "build/butler.iconset"
 try FileManager.default.createDirectory(atPath:directory,withIntermediateDirectories:true)
 for base in [16,32,128,256,512] {
     for scale in [1,2] {

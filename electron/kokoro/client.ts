@@ -342,7 +342,7 @@ function electronFork(modulePath: string): KokoroWorkerHandle {
   for (const key of WORKER_ENV)
     if (process.env[key]) env[key] = process.env[key]!;
   const child = utility.fork(modulePath, [], {
-    serviceName: "Open Assist Voice",
+    serviceName: "Butler Voice",
     stdio: "ignore",
     env,
   });

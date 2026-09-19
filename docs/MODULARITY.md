@@ -7,7 +7,7 @@ at the time of writing, and it says which of those facts a reviewer should re-ch
 before starting, because `src/core/runner.ts` and the Swift helpers are being edited
 in parallel.
 
-Three questions are answered: what the modules should be, what makes Open Assist
+Three questions are answered: what the modules should be, what makes Butler
 easy to install and to embed, and which single change to make first.
 
 ## 0. What is there today, measured
@@ -101,7 +101,7 @@ before that.* `src/core/runner.ts:23` imports
 `utf16Prefix`). `src/memory/types.ts:1` imports back from `../core/schema`, and
 `src/memory/store.ts:12` imports `../storage/vault`, which imports `../core/schema`.
 That is a directory-level cycle: core → memory → core. It is the single thing that
-makes `@open-assist/core` impossible as written.
+makes `@butler-agent/core` impossible as written.
 
 **d. `src/providers` depends on `src/memory`.** *Fixed by PR-1: the table is now
 `src/providers/playbooks.ts`.* `src/providers/http.ts:10` imports
@@ -303,7 +303,7 @@ catalogue, the deterministic graders (which read only `controller.surface()`,
 diagnostics analyzer.
 **Depends on** `core`, `os`, `providers`, and `contribution` for the exporter.
 Nothing depends on it, so it is the natural first consumer of the barrels: if
-`scripts/bench.mjs` can import `@open-assist/core` and `@open-assist/macos` and
+`scripts/bench.mjs` can import `@butler-agent/core` and `@butler-agent/macos` and
 nothing else, the boundary is real.
 
 ### 3.9 `app` — what stays Electron
@@ -396,8 +396,8 @@ A six-package workspace adds, concretely:
 - **Six versions to bump per change.** A fix that touches `core` and `providers`
   becomes two version bumps, a changeset, and a lockfile churn — for a repository
   that currently ships by running `npm run package:mac:release`.
-- **A new failure mode with teeth.** `@open-assist/providers` at a version different
-  from `@open-assist/core` can silently change the cached system instruction in
+- **A new failure mode with teeth.** `@butler-agent/providers` at a version different
+  from `@butler-agent/core` can silently change the cached system instruction in
   `buildRequest`. Prompt-cache stability is a *cost* property here (Anthropic cache
   writes bill at 1.25×, reads at 0.1×); a version skew between the schema and the
   request builder is a real bill, not a style problem.
@@ -407,7 +407,7 @@ A six-package workspace adds, concretely:
 
 ### What it would buy
 
-An external embedder can `npm i @open-assist/core @open-assist/macos`. A second OS
+An external embedder can `npm i @butler-agent/core @butler-agent/macos`. A second OS
 adapter physically cannot import Electron. Contributors see the boundary in
 `package.json` instead of in a document.
 
@@ -415,12 +415,12 @@ adapter physically cannot import Electron. Contributors see the boundary in
 
 | Candidate | Recommendation |
 |---|---|
-| `@open-assist/core` | **Publish, eventually.** Only after §3.1 removes the cycle. It is the one piece with a plausible external consumer (someone running the loop against their own controller). zod is its only dependency. |
-| `@open-assist/macos` | **Publish with core, or not at all.** Useless without core; versions must move together. Ships a Swift build step, so an external consumer needs Xcode CLT — say so in its README or ship prebuilt binaries. |
-| `@open-assist/providers` | **Keep in-app.** Must not version-skew from `core` (prompt cache). If ever split, pin an exact peer dependency. |
-| `@open-assist/voice` | **Keep in-app.** No independent consumer. Its pure half is already importable as `src/voice`. |
-| `@open-assist/memory` | **Keep in-app.** Consumed through `MemoryAccess`, which lives in core; an embedder can supply their own. |
-| `@open-assist/channels` | **Keep in-app.** Channels are product decisions, not a library. |
+| `@butler-agent/core` | **Publish, eventually.** Only after §3.1 removes the cycle. It is the one piece with a plausible external consumer (someone running the loop against their own controller). zod is its only dependency. |
+| `@butler-agent/macos` | **Publish with core, or not at all.** Useless without core; versions must move together. Ships a Swift build step, so an external consumer needs Xcode CLT — say so in its README or ship prebuilt binaries. |
+| `@butler-agent/providers` | **Keep in-app.** Must not version-skew from `core` (prompt cache). If ever split, pin an exact peer dependency. |
+| `@butler-agent/voice` | **Keep in-app.** No independent consumer. Its pure half is already importable as `src/voice`. |
+| `@butler-agent/memory` | **Keep in-app.** Consumed through `MemoryAccess`, which lives in core; an embedder can supply their own. |
+| `@butler-agent/channels` | **Keep in-app.** Channels are product decisions, not a library. |
 
 **Do the directory and dependency split now; do the package split when a second
 consumer exists.** The discipline a workspace buys can be had for one test file:
@@ -548,14 +548,14 @@ because the user reads the DMG, not GitHub.
 
 > **macOS blocked this app.** This build is signed but not yet notarized by Apple.
 > Open **System Settings → Privacy & Security**, scroll to the message about
-> Open Assist, and click **Open Anyway**. You only do this once.
+> Butler, and click **Open Anyway**. You only do this once.
 
 ### Step 1 — Welcome
 
 Keep the existing landing copy in `src/ui/main.tsx:262–292` ("Tell your computer
 what to do", the ⌥Space demo, the sample command). Add one button below it.
 
-> **Set up Open Assist** — About two minutes. You can stop after any step.
+> **Set up Butler** — About two minutes. You can stop after any step.
 >
 > *or* **Try the safe tutorial first** — Simulated workspace. No permissions, no
 > model, no microphone.
@@ -564,7 +564,7 @@ what to do", the ⌥Space demo, the sample command). Add one button below it.
 
 > ## Four permissions
 >
-> Open Assist needs these to see your screen and use the keyboard and mouse. macOS
+> Butler needs these to see your screen and use the keyboard and mouse. macOS
 > asks for each one; you grant it in System Settings. Nothing is captured until you
 > start a task, and moving the mouse pauses it.
 
@@ -589,7 +589,7 @@ the exact pane.
 Conditional lines:
 
 > *(when `onDevice` is false)* This Mac has no on-device speech model for
-> **{locale}**. Open Assist will not transcribe. Typed commands still work: tap
+> **{locale}**. Butler will not transcribe. Typed commands still work: tap
 > ⌥Space instead of holding it.
 >
 > *(when `supported` is false)* Desktop control needs macOS 14 or later. The safe
@@ -608,7 +608,7 @@ failing*, and show the **Quit and reopen** button that calls
 
 > ## Choose a model
 >
-> Open Assist sends a screenshot of your screen and your task to one model you
+> Butler sends a screenshot of your screen and your task to one model you
 > choose. It has no server of its own in between.
 
 Two cards, the local one first.
@@ -668,7 +668,7 @@ Implementation notes for this step:
 
 > ## Spoken replies
 >
-> Open Assist answers out loud when you talk to it. The built-in Mac voice works
+> Butler answers out loud when you talk to it. The built-in Mac voice works
 > now. A free natural voice runs entirely on this Mac after a one-time download.
 >
 > **Natural voice — 332 MB.** Apple Silicon only. No account, no network use after
@@ -804,9 +804,9 @@ writes. This drives the real desktop and costs real money; it is the same wiring
 
 ```ts
 import { Runner, nullRecorder, defaultSettings, settingsSchema,
-         terminal, type Snapshot } from "@open-assist/core";        // or "./src/core"
-import { HttpProvider, selectProvider } from "@open-assist/core/providers";
-import { NativeController } from "@open-assist/macos";               // or "./src/os/macos"
+         terminal, type Snapshot } from "@butler-agent/core";        // or "./src/core"
+import { HttpProvider, selectProvider } from "@butler-agent/core/providers";
+import { NativeController } from "@butler-agent/macos";               // or "./src/os/macos"
 
 const settings = settingsSchema.parse(selectProvider(defaultSettings, "openai"));
 const provider = new HttpProvider(settings, process.env.OPENAI_API_KEY ?? "", fetch);

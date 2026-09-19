@@ -38,7 +38,7 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     }
     check(endpoint("I want to send an email to my", stable: 2.19, quiet: 2.19) == .none, "2.19 s after \"my\" is still unfinished")
     check(endpoint("Open", stable: 3.02, quiet: 3.02) == .none, "\"Open\" survives a 3.02 s pause")
-    check(endpoint("Hey Assist can you", stable: 1.36, quiet: 1.36) == .none && endpoint("can you", stable: 1.36, quiet: 1.36, context: .answer) == .none, "\"can you\" survives the pause that cut an answer")
+    check(endpoint("Hey Butler can you", stable: 1.36, quiet: 1.36) == .none && endpoint("can you", stable: 1.36, quiet: 1.36, context: .answer) == .none, "\"can you\" survives the pause that cut an answer")
     check(endpoint("open notes", stable: 2.0, quiet: 1.5) == .finish, "a complete command ends after 2.0 s stable and 1.5 s quiet")
     check(endpoint("open notes", stable: 1.9, quiet: 1.9) == .none, "a complete command waits for the full stable period")
     check(endpoint("open notes", stable: 4.0, quiet: 0) == .finish, "steady background sound cannot hold stable text open")
@@ -179,12 +179,13 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(turnConfidence(live) == 0, "an unfinalized live segment has no confidence")
     check(turnConfidence(TurnTranscript()) == 0, "an empty turn has no confidence")
 
-    // Wake-phrase restart. Live (2026-09-18, seg=2, transcript_recovered): the request,
-    // then the user said it again starting with "Assist", and both became one task.
+    // Wake-phrase restart. Live (2026-09-18, seg=2, transcript_recovered, with the old name):
+    // the request, then the user said it again starting with the bare name, and both became
+    // one task.
     let request = "open calendar and put an event where I have to go pick up my packages at 6 PM"
     var doubled = TurnTranscript()
     absorbFinalSegment(&doubled, text: request, confidence: 0.9)
-    absorbPartial(&doubled, update: "Assist open calendar and put an event wher", gap: 1.2)
+    absorbPartial(&doubled, update: "Butler open calendar and put an event wher", gap: 1.2)
     check(doubled.text == "open calendar and put an event wher", "a later segment opening with the wake phrase starts the request over")
     absorbFinalSegment(&doubled, text: "", confidence: nil)
     check(doubled.text == "open calendar and put an event wher" && doubled.committed.count == 2 && doubled.segmentCount == 2,
@@ -192,16 +193,17 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(turnConfidence(doubled) == 0, "an unconfirmed restart can never approve")
     var restartFinal = TurnTranscript()
     absorbFinalSegment(&restartFinal, text: "open notes and write", confidence: nil)
-    absorbFinalSegment(&restartFinal, text: "Hey Assist, open Safari", confidence: 0.8)
+    absorbFinalSegment(&restartFinal, text: "Hey Butler, open Safari", confidence: 0.8)
     check(restartFinal.text == "open Safari" && near(turnConfidence(restartFinal), 0.8),
           "the confidence is the request's own: the dropped segment no longer counts")
     // Ordinary speech in a later segment keeps the request whole (reviewed probes).
     for (first, later) in [("Don't send the reply to Dr Park yet", "his assistant will send it"),
-                           ("Reply to John's email and say I'll be there", "his assistant can send the invite"),
-                           ("text mom I'm running late", "hey sis can you grab the door"),
-                           ("open notes and write", "Hi sis, come in"),
-                           ("stop", "hi sis continue"),
-                           ("write that", "A cyst was removed from my knee"),
+                           ("Reply to John's email and say I'll be there", "Butler's assistant can send the invite"),
+                           ("text mom I'm running late", "hey sir can you grab the door"),
+                           ("open notes and write", "Hi Lisa, come in"),
+                           ("stop", "hey is a table free"),
+                           ("write that", "Hey Butler table free"),
+                           ("book the table", "Butler the weather in Denver"),
                            ("open the ticket and", "assist the customer with the refund")] {
         var spoken = TurnTranscript()
         absorbFinalSegment(&spoken, text: first, confidence: 0.9)
@@ -209,11 +211,11 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
         check(spoken.text == first + " " + later, "not a restart: \(later)")
     }
     var twice = TurnTranscript()
-    for segment in ["open notes", "Assist open mail", "Assist. Open Safari"] { absorbFinalSegment(&twice, text: segment, confidence: 0.9) }
+    for segment in ["open notes", "Butler open mail", "Butler. Open Safari"] { absorbFinalSegment(&twice, text: segment, confidence: 0.9) }
     check(twice.text == "Open Safari", "only the words after the last wake phrase are kept")
     var bare = TurnTranscript()
     absorbFinalSegment(&bare, text: request, confidence: 0.9)
-    absorbFinalSegment(&bare, text: "Assist.", confidence: 0.9)
+    absorbFinalSegment(&bare, text: "Butler.", confidence: 0.9)
     check(bare.text == request && near(turnConfidence(bare), 0.9), "a wake phrase with nothing after it keeps the previous text")
     absorbPartial(&bare, update: "open mail", gap: 1.5)
     check(bare.text == "open mail", "the segment after a lone wake phrase starts the request over")
@@ -221,24 +223,24 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     absorbFinalSegment(&bare, text: "and read it", confidence: 0.6)
     check(bare.text == "open mail and read it" && bare.segmentCount == 4, "segments after the restart join as usual")
     var mention = TurnTranscript()
-    absorbFinalSegment(&mention, text: "open notes and ask it to", confidence: 0.9)
-    absorbFinalSegment(&mention, text: "assist me with the list", confidence: 0.9)
-    check(mention.text == "open notes and ask it to assist me with the list", "\"assist me\" is a request, not a restart")
+    absorbFinalSegment(&mention, text: "open notes and write that", confidence: 0.9)
+    absorbFinalSegment(&mention, text: "Butler's number is 555", confidence: 0.9)
+    check(mention.text == "open notes and write that Butler's number is 555", "\"Butler's number\" is a request, not a restart")
     var product = TurnTranscript()
     absorbFinalSegment(&product, text: "go to", confidence: 0.9)
-    absorbFinalSegment(&product, text: "Open Assist settings", confidence: 0.9)
-    check(product.text == "go to Open Assist settings", "the product's name inside a request is not a restart")
+    absorbFinalSegment(&product, text: "Butler settings", confidence: 0.9)
+    check(product.text == "go to Butler settings", "the product's name inside a request is not a restart")
     var first = TurnTranscript()
-    absorbFinalSegment(&first, text: "Assist open notes", confidence: 0.9)
-    check(first.text == "Assist open notes", "the first segment is left to the wake strip that already ran")
+    absorbFinalSegment(&first, text: "Butler open notes", confidence: 0.9)
+    check(first.text == "Butler open notes", "the first segment is left to the wake strip that already ran")
 
     // Wake echo
-    check(stripWakeEcho("His cyst un PT can you check") == "un PT can you check", "a misheard wake phrase from the log is stripped")
-    check(stripWakeEcho("Hi, sis. Open notes") == "Open notes", "greeting variant stripped")
-    check(stripWakeEcho("A sister told me") == "A sister told me", "a real word starting like the wake phrase is kept")
+    check(stripWakeEcho("Hey, Budger. Open notes") == "Open notes", "a misheard wake phrase from the speech test is stripped")
+    check(stripWakeEcho("Hi Butler, open notes") == "open notes", "greeting variant stripped")
+    check(stripWakeEcho("Hey sirloin steak recipe") == "Hey sirloin steak recipe", "a real word starting like the wake echo is kept")
     check(stripWakeEcho("open notes") == "open notes", "text without a wake echo is unchanged")
-    check(commandAfterWakePhrase("Hey assistant open Notes") == nil, "activation is not widened by wake echo stripping")
-    check(strippedWordCount(raw: "Hey Assist, open notes", command: "open notes") == 2, "wake words are excluded from confidence")
+    check(commandAfterWakePhrase("Hey sir open Notes") == nil && commandAfterWakePhrase("Hey I say open Notes") == nil, "activation is not widened by wake echo stripping")
+    check(strippedWordCount(raw: "Hey Butler, open notes", command: "open notes") == 2, "wake words are excluded from confidence")
     check(strippedWordCount(raw: "open notes", command: "open notes") == 0, "nothing excluded without a wake phrase")
 
     // Follow-up windows
@@ -249,9 +251,11 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(followUpOnset(text: "Stop", speechRun: 0.3, kind: .continuation), "a control phrase continues a turn")
     check(!followUpOnset(text: "and search", speechRun: 0.16, kind: .continuation), "a continuation needs 0.24 s of energy")
     check(!followUpOnset(text: "the weather is nice", speechRun: 1.0, kind: .continuation), "side conversation is not a continuation")
-    // Live evidence: "Hey" opened an answer turn before "Assist" was recognized.
+    // Live evidence: "Hey" opened an answer turn before the name was recognized.
     check(!followUpOnset(text: "Hey", speechRun: 1.0, kind: .answer), "a lone wake lead word waits for the wake phrase")
-    check(!followUpOnset(text: "Hey Assist", speechRun: 1.0, kind: .answer), "the wake phrase itself is not an answer")
+    check(!followUpOnset(text: "Hey Butler", speechRun: 1.0, kind: .answer) && !followUpOnset(text: "Hei Esa", speechRun: 1.0, kind: .answer),
+          "the wake phrase itself is not an answer")
+    check(followUpOnset(text: "his car", speechRun: 1.0, kind: .answer), "\"his\" was an echo of the old name only: it no longer waits")
     check(followUpOnset(text: "Hi there friend", speechRun: 1.0, kind: .answer), "a longer reply starting with hi still counts")
     check(!followUpOnset(text: "um", speechRun: 1.0, kind: .continuation) && !followUpOnset(text: "um", speechRun: 1.0, kind: .answer), "filler-only speech never counts")
     check(followUpOnset(text: "Safari", speechRun: 0.24, kind: .answer), "an answer accepts one word")
@@ -393,11 +397,60 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
         let completeness = utteranceCompleteness(phrase, context: .command)
         check(completeness == (isControlPhrase(phrase) ? .control : .complete), "fixture complete: \(phrase)")
     }
-    let echoes = fixture["wakeEcho"] as? [[String: String]] ?? []
-    check(!echoes.isEmpty, "fixture has wake echo cases")
-    for echo in echoes { check(stripWakeEcho(echo["in"] ?? "") == echo["out"], "fixture wake echo: \(echo["in"] ?? "")") }
+    // "Hey Butler": the accept, gate and never-accept lists TypeScript reads too (voice-turns.test.ts).
+    let wake = fixture["wake"] as? [String: Any] ?? [:]
+    func strings(_ key: String) -> [String] { wake[key] as? [String] ?? [] }
+    func pairs(_ key: String) -> [(String, String)] {
+        (wake[key] as? [[String: String]] ?? []).map { ($0["in"] ?? "", $0["out"] ?? "") }
+    }
+    // "fused" and "activateFused" may be empty: no spelling runs "Hey" into "Butler".
+    for key in ["names", "neverActivate", "neverRestart", "liveWaits", "liveNever"] { check(!strings(key).isEmpty, "fixture wake has \(key)") }
+    for key in ["activate", "restart", "echo", "liveActivates"] { check(!pairs(key).isEmpty, "fixture wake has \(key)") }
+    for name in strings("names") {
+        check(commandAfterWakePhrase("Hey \(name), open Notes") == "open Notes", "every spelling of the name wakes: Hey \(name)")
+        check(commandAfterWakePhrase("Hey \(name) the weather") == nil, "the gate applies to every spelling: Hey \(name) the weather")
+        check(commandAfterWakeRestart("\(name) open Notes") == "open Notes" && commandAfterWakePhrase("\(name) open Notes") == nil,
+              "the bare name restarts but never wakes: \(name)")
+        check(stripWakeEcho("Hey \(name), open Notes") == "open Notes", "the first segment's strip knows every spelling: \(name)")
+    }
+    for fused in strings("fused") {
+        check(commandAfterWakePhrase("\(fused) open Notes") == "open Notes" && commandAfterWakePhrase("\(fused).") == "",
+              "hey run into the name wakes before a verb or apart: \(fused)")
+        check(commandAfterWakePhrase("\(fused) is lovely in the spring") == nil && commandAfterWakePhrase("\(fused) can I help you") == nil,
+              "hey run into the name needs a pause or a verb, not an opener: \(fused)")
+    }
+    for (input, output) in pairs("activate") + pairs("activateFused") {
+        check(commandAfterWakePhrase(input) == output, "fixture wake activates: \(input)")
+        check(activatedVoiceCommand(input) == output, "fixture wake is stripped after activation: \(input)")
+    }
+    for input in strings("neverActivate") {
+        check(commandAfterWakePhrase(input) == nil && commandAfterWakePhrase(input, ended: false) == nil, "fixture never wakes: \(input)")
+    }
+    for (input, output) in pairs("restart") { check(commandAfterWakeRestart(input) == output, "fixture restart: \(input)") }
+    for input in strings("neverRestart") { check(commandAfterWakeRestart(input) == nil, "fixture never restarts: \(input)") }
+    for (input, output) in pairs("echo") {
+        check(stripWakeEcho(input) == output, "fixture wake echo: \(input)")
+        if input != output && input.lowercased().hasPrefix("hey ") {
+            check(commandAfterWakePhrase(input) == nil || input.range(of: "butler", options: .caseInsensitive) != nil,
+                  "an echo spelling is only stripped, never used to wake: \(input)")
+        }
+    }
+    for input in strings("liveWaits") {
+        check(commandAfterWakePhrase(input, ended: false) == nil && wakePhraseAwaitingPause(input) && commandAfterWakePhrase(input) == "",
+              "a live wake phrase alone waits for a pause or the final: \(input)")
+    }
+    for (input, output) in pairs("liveActivates") { check(commandAfterWakePhrase(input, ended: false) == output, "fixture live activation: \(input)") }
+    for input in strings("liveNever") {
+        check(commandAfterWakePhrase(input, ended: false) == nil && !wakePhraseAwaitingPause(input), "fixture live never: \(input)")
+    }
+    // A word-boundary check: "butler" is inside "butlers" and "butlering".
+    let nameWord = try! NSRegularExpression(pattern: #"(?<![a-z])(?:\#(wakeNamePattern)|\#(fusedWakePattern))(?![a-z])"#, options: .caseInsensitive)
     for phrase in phrases("assistantPhrases") {
-        check(commandAfterWakePhrase(phrase) == nil && !isControlPhrase(phrase) && phrase.range(of: "assist", options: .caseInsensitive) == nil,
+        let names = nameWord.firstMatch(in: phrase, range: NSRange(phrase.startIndex..., in: phrase))
+        check(commandAfterWakePhrase(phrase) == nil && !isControlPhrase(phrase) && names == nil,
               "assistant phrase cannot wake, stop or pause: \(phrase)")
     }
+    check(nameWord.firstMatch(in: "Say Butler now", range: NSRange(location: 0, length: 11)) != nil
+          && nameWord.firstMatch(in: "Butlers go butlering", range: NSRange(location: 0, length: 20)) == nil,
+          "the assistant-phrase check matches the name as a word only")
 }

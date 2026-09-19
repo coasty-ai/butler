@@ -158,8 +158,8 @@ func presenceReport(hidIdleSeconds: Double, tapInstalledAt: TimeInterval?, lastM
 // optimized mode and show a sticky prompt, so they are never switched.
 let screenReaderDetectingAppPrefixes = ["com.microsoft.vscode", "com.vscodium", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf"]
 
-// Whether AXManualAccessibility may be set on an application: never on Open
-// Assist itself (or this helper), protected applications (matched like
+// Whether AXManualAccessibility may be set on an application: never on Butler
+// itself (or this helper), protected applications (matched like
 // guardSurface) or screen-reader-detecting editors.
 func manualAccessibilityEligible(pid: pid_t, bundleId: String, ownPid: pid_t, parentPid: pid_t, protectedApps: [String]) -> Bool {
     let id = bundleId.lowercased()

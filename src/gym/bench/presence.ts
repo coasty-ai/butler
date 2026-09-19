@@ -26,7 +26,7 @@ export type { PresenceReport };
 export interface GateReport extends PresenceReport {
   /** Display-sleep holders other than our own caffeinate (a call, a video). */
   displayHolders: number;
-  /** Open Assist app processes: a second agent on the same desktop. */
+  /** Butler app processes: a second agent on the same desktop. */
   appProcesses: number;
   /** Other harness processes (a cycle or a bench, from any checkout). */
   harnessProcesses: number;
@@ -125,8 +125,18 @@ export function parseAssertions(
 }
 
 /**
- * Whether the Open Assist app is running, from `ps -axo pid=,command=`: the
- * packaged bundle's main executable, or a development Electron started from
+ * The packaged app's main executable, `<name>.app/Contents/MacOS/<name>`, as
+ * Butler or as Open Assist. Its helpers ("Butler Helper.app") and other apps whose
+ * name only ends the same way ("Butlers.app") are not the app.
+ */
+const PACKAGED_APP =
+  /(?:^|\/)(Butler|Open Assist)\.app\/Contents\/MacOS\/\1(?:\s|$)/;
+
+/**
+ * Whether the app is running, from `ps -axo pid=,command=`: the packaged
+ * bundle's main executable, under its name (Butler) or the name it had before
+ * the rename (Open Assist; the same bundle id, so an old build may still be
+ * running while a new one is built), or a development Electron started from
  * one of this repository's checkouts (a worktree shares the main checkout's
  * node_modules, so its Electron lives there). Helper processes, VS Code
  * (whose main executable is also called Electron, inside its own bundle) and
@@ -144,8 +154,7 @@ export function appProcesses(
     const pid = Number(match[1]);
     if (pid === ownPid) continue;
     const command = match[2];
-    const packaged =
-      /Open Assist\.app\/Contents\/MacOS\/Open Assist(\s|$)/.test(command);
+    const packaged = PACKAGED_APP.test(command);
     const development =
       /(^|\/)Electron\.app\/Contents\/MacOS\/Electron(\s|$)/.test(command) &&
       (roots.some((root) => command.includes(root + "/")) ||

@@ -419,7 +419,7 @@ export const settingsSchema = z
      * config, never read from .env at runtime.
      */
     messages: z.boolean().default(false),
-    /** The one phone number or iMessage address Open Assist ever texts. */
+    /** The one phone number or iMessage address Butler ever texts. */
     messagesHandle: z.string().trim().max(100).default(""),
     /** Read replies from that handle as commands (status/stop/do …). */
     messagesCommands: z.boolean().default(true),

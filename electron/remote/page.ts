@@ -26,9 +26,9 @@ export const ICON_SVG =
 
 export function manifest(macName: string): string {
   return JSON.stringify({
-    name: "Open Assist Remote",
-    short_name: "Assist",
-    description: `Open Assist on ${macName}`,
+    name: "Butler Remote",
+    short_name: "Butler",
+    description: `Butler on ${macName}`,
     display: "standalone",
     start_url: "/",
     scope: "/",
@@ -115,14 +115,14 @@ export function renderPage(o: { nonce: string; macName: string }): string {
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Assist">
+<meta name="apple-mobile-web-app-title" content="Butler">
 <meta name="referrer" content="no-referrer">
-<title>Open Assist</title>
+<title>Butler</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="${ICON_SVG}">
 <style nonce="${nonce}">${CSS}</style>
 </head><body><main>
-<header><div><h1>Open Assist</h1><small id="mac-name">${esc(o.macName)}</small></div><div class="dot" id="dot"></div></header>
+<header><div><h1>Butler</h1><small id="mac-name">${esc(o.macName)}</small></div><div class="dot" id="dot"></div></header>
 <section class="card"><h2>Now</h2><p class="big" id="status">Connecting…</p><p id="task" class="muted"></p><p id="meta" class="muted"></p>
 <span class="chip" id="present" hidden>Someone’s at the Mac</span><span class="chip" id="locked" hidden>Remote locked from the Mac</span>
 <p id="question" class="muted" hidden></p></section>
@@ -148,9 +148,9 @@ export function unpairedPage(o: {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>Open Assist</title>
+<meta name="referrer" content="no-referrer"><title>Butler</title>
 <style nonce="${esc(o.nonce)}">${CSS}</style></head><body><main>
-<header><div><h1>Open Assist</h1><small>${esc(o.macName)}</small></div></header>
+<header><div><h1>Butler</h1><small>${esc(o.macName)}</small></div></header>
 <section class="card"><p class="big">Not allowed yet.</p>
 <p class="muted">On the Mac, open Settings › Phone remote and allow “${esc(o.deviceName)}”. Then reload this page.</p></section>
 </main></body></html>`;

@@ -1498,16 +1498,16 @@ function updateTray() {
   tray.setToolTip(
     settings.handsFree
       ? wakeListening
-        ? "Open Assist · Say Hey Assist"
-        : "Open Assist · Hands-free enabled"
-      : "Open Assist · Hold Option-Space",
+        ? "Butler · Say Hey Butler"
+        : "Butler · Hands-free enabled"
+      : "Butler · Hold Option-Space",
   );
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
         label: settings.handsFree
-          ? "Turn off Hey Assist microphone"
-          : "Enable Hey Assist · microphone stays on",
+          ? "Turn off Hey Butler microphone"
+          : "Enable Hey Butler · microphone stays on",
         type: "checkbox",
         checked: settings.handsFree,
         click: () =>
@@ -1530,7 +1530,7 @@ function updateTray() {
       },
       { type: "separator" },
       {
-        label: "Set up Open Assist…",
+        label: "Set up Butler…",
         click: () => showSettings("setup"),
       },
       { label: "Settings…", click: () => showSettings() },
@@ -1543,7 +1543,7 @@ function updateTray() {
           ]
         : []),
       { type: "separator" },
-      { label: "Quit Open Assist", click: () => app.quit() },
+      { label: "Quit Butler", click: () => app.quit() },
     ]),
   );
 }
@@ -3802,7 +3802,7 @@ app
       minWidth: 430,
       minHeight: 450,
       show: false,
-      title: "Open Assist · Settings",
+      title: "Butler · Settings",
       backgroundColor: "#101010",
       titleBarStyle: "hiddenInset",
       trafficLightPosition: { x: 17, y: 17 },
@@ -3917,7 +3917,7 @@ app
     });
     icon.setTemplateImage(true);
     tray = new Tray(icon);
-    tray.setTitle("Assist");
+    tray.setTitle("Butler");
     updateTray();
     debug("TrayReady", { geometry: tray.getBounds() });
     globalShortcut.register("CommandOrControl+Shift+Space", () => {
@@ -3971,7 +3971,7 @@ app
   })
   .catch(() => {
     dialog.showErrorBox(
-      "Open Assist could not start",
+      "Butler could not start",
       "The encrypted local store could not be opened. Ensure the OS keychain is available. No unencrypted history was created.",
     );
     app.quit();

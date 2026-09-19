@@ -1,6 +1,6 @@
-THIRD-PARTY NOTICES: OPEN ASSIST ON-DEVICE VOICE (KOKORO)
+THIRD-PARTY NOTICES: BUTLER ON-DEVICE VOICE (KOKORO)
 
-Open Assist is MIT-licensed. Its optional on-device voice uses the components
+Butler is MIT-licensed. Its optional on-device voice uses the components
 below. The model, voice, tokenizer, lexicon and G2P files are not bundled in
 the app: they are downloaded on request from the pinned revisions listed here
 and checked against a fixed SHA-256. onnxruntime-node is bundled.

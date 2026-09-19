@@ -1,6 +1,6 @@
 # Benchmark and failure analysis
 
-Two tools for improving Open Assist's automation with evidence instead of guesses.
+Two tools for improving Butler's automation with evidence instead of guesses.
 
 | Tool                 | Command                | What it costs            | What it touches                              |
 | -------------------- | ---------------------- | ------------------------ | -------------------------------------------- |

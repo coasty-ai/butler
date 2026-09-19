@@ -832,7 +832,7 @@ describe("rendering", () => {
     );
     expect(text).toContain("| openai:gpt-5.4-mini | 27 | 9 | 0 | 0 | 0 | 0 |");
     expect(text).toContain("never ranked");
-    expect(text).toContain("Every row is Open Assist driving the named model.");
+    expect(text).toContain("Every row is Butler driving the named model.");
     expect(text).toContain(
       "Generated 2026-09-24 from 1 cycle(s), 46 attempt(s), in 1 revision group(s)",
     );

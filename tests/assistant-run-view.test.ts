@@ -296,7 +296,7 @@ describe("run view", () => {
   });
 
   it("counts a run paused only by the asking activation as working", () => {
-    // "Hey Assist, how's it going?" pauses the run to listen; it resumes once
+    // "Hey Butler, how's it going?" pauses the run to listen; it resumes once
     // answered, so the answer says it is still on it, not waiting.
     const held = snapshot({
       run: { status: "paused" },

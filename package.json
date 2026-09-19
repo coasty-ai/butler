@@ -37,7 +37,7 @@
   },
   "build": {
     "appId": "ai.coarena.openassist",
-    "productName": "Open Assist",
+    "productName": "Butler",
     "files": [
       "dist/**/*",
       "dist-electron/main.cjs",
@@ -73,15 +73,15 @@
       }
     ],
     "mac": {
-      "icon": "build/open-assist.icns",
+      "icon": "build/butler.icns",
       "category": "public.app-category.productivity",
       "minimumSystemVersion": "14.0",
       "hardenedRuntime": true,
       "extendInfo": {
-        "NSScreenCaptureUsageDescription": "Open Assist captures your selected display only during a run.",
-        "NSAccessibilityUsageDescription": "Open Assist clicks and types on your instruction. Interrupt at any time.",
-        "NSMicrophoneUsageDescription": "Open Assist uses the microphone for voice commands and, when enabled, to listen for Hey Assist. Audio stays on this Mac.",
-        "NSSpeechRecognitionUsageDescription": "Open Assist transcribes voice commands on this Mac. Cloud transcription is disabled."
+        "NSScreenCaptureUsageDescription": "Butler captures your selected display only during a run.",
+        "NSAccessibilityUsageDescription": "Butler clicks and types on your instruction. Interrupt at any time.",
+        "NSMicrophoneUsageDescription": "Butler uses the microphone for voice commands and, when enabled, to listen for Hey Butler. Audio stays on this Mac.",
+        "NSSpeechRecognitionUsageDescription": "Butler transcribes voice commands on this Mac. Cloud transcription is disabled."
       }
     },
     "directories": {

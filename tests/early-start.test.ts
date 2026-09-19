@@ -569,8 +569,8 @@ describe("early start: gates", () => {
   it("never acts on the wake phrase, a stop or a credential", async () => {
     for (const steps of [
       [
-        ["Hey Assist", 0],
-        ["Hey Assist", 900],
+        ["Hey Butler", 0],
+        ["Hey Butler", 900],
       ],
       [["stop", 0]],
       [
@@ -804,7 +804,7 @@ describe("early start: the turn", () => {
       "open the",
       "stop",
       "Switch to Safari and",
-      "Hey Assist",
+      "Hey Butler",
       "Open Notes",
     ];
     const maybe = async (what: string) => {

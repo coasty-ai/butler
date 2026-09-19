@@ -2,7 +2,7 @@
  * The iMessage channel: bounded updates out, a strict command vocabulary in.
  *
  * Off by default. When the owner turns it on and stores their own handle in
- * the encrypted config, Open Assist texts that one handle about the moments of
+ * the encrypted config, Butler texts that one handle about the moments of
  * a run and reads replies from it as commands. Approvals never happen here:
  * they stay on the Mac, where the pill and the screen are.
  *
@@ -838,7 +838,7 @@ export class MessagesChannel {
       throw new Error("Turn on texting and add your number to send a test.");
     await this.ensureConfigured(target);
     await this.use().call("send", {
-      text: "Open Assist is set up. Text “status”, “stop”, “pause”, “continue” or “do <task>”.",
+      text: "Butler is set up. Text “status”, “stop”, “pause”, “continue” or “do <task>”.",
     });
     this.outgoing.push(this.now());
     this.state = { ...this.state, error: undefined };

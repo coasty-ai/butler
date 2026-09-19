@@ -140,7 +140,7 @@ func sendMessage(handle: String, text: String) throws {
     switch number {
     case -1743, -10004:
         throw MessageError(code: "AUTOMATION_DENIED",
-                           message: "macOS blocked Open Assist from using Messages. Allow it under Privacy & Security › Automation › Open Assist › Messages.")
+                           message: "macOS blocked Butler from using Messages. Allow it under Privacy & Security › Automation › Butler › Messages.")
     case -600, -609, -1728:
         throw MessageError(code: "HANDLE_UNKNOWN",
                            message: "Messages could not reach that number. Open Messages, sign in to iMessage and send it one message from this Mac first.")

@@ -20,7 +20,7 @@ enum DatabaseState: String {
 /// At most this many new rows are examined per poll; older extras are skipped.
 let messagePollLimit = 20
 
-let fullDiskAccessMessage = "Open Assist cannot read Messages. Give it Full Disk Access in System Settings › Privacy & Security, then reopen the app."
+let fullDiskAccessMessage = "Butler cannot read Messages. Give it Full Disk Access in System Settings › Privacy & Security, then reopen the app."
 
 /// Used only from one queue (dbQueue in the helper).
 final class MessagesDatabase {

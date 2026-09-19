@@ -1,10 +1,10 @@
 # Phone remote (tailnet)
 
-A small page your phone opens over your own Tailscale network to see what Open Assist is doing, send it plain-language instructions, stop, pause and continue, and, for phones you allow, approve routine steps. It replaces nothing: voice and the Mac's own pill keep working, and texted iMessage steering stays as a fallback. Off by default.
+A small page your phone opens over your own Tailscale network to see what Butler is doing, send it plain-language instructions, stop, pause and continue, and, for phones you allow, approve routine steps. It replaces nothing: voice and the Mac's own pill keep working, and texted iMessage steering stays as a fallback. Off by default.
 
 ## What it is not
 
-- Not on the internet. The server listens only on this Mac's Tailscale addresses (100.64.0.0/10 and fd7a:115c:a1e0::/48), never on 0.0.0.0, loopback or the LAN. Open Assist never runs `tailscale serve` or `tailscale funnel`, and refuses to start if either is configured on its port.
+- Not on the internet. The server listens only on this Mac's Tailscale addresses (100.64.0.0/10 and fd7a:115c:a1e0::/48), never on 0.0.0.0, loopback or the LAN. Butler never runs `tailscale serve` or `tailscale funnel`, and refuses to start if either is configured on its port.
 - Not a way around approvals. A phone can approve only "routine" questions (opening, quitting, benign navigation), the same set a follow-up "yes" without the wake phrase may answer. Sending, saving, deleting, paying, installing, signing in, settings, running programs, protected sites, blind surfaces and coding-agent requests are approved only on the Mac.
 - Not a model channel for control. Stop, pause, continue, approve and skip are deterministic. Free text goes through the same router as typed text (`planVoiceTurn` with source `"remote"`); "yes" from a phone never approves.
 

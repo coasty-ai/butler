@@ -1,6 +1,6 @@
 # Texting: updates and control over iMessage
 
-Open Assist can text one handle — the owner's own phone — when a run reaches a
+Butler can text one handle — the owner's own phone — when a run reaches a
 moment worth knowing about, and read short iMessage replies from that same
 handle as commands. It is **off by default**, needs two macOS permissions, and
 never approves anything: approvals stay on the Mac, where the screen is.
@@ -244,7 +244,7 @@ switched on by hand.
    and the channel reports `FULL_DISK_ACCESS` with the System Settings path.
    Only needed when `messagesCommands` is on.
 
-Both are granted to the Open Assist app; the helper is a child process and runs
+Both are granted to the Butler app; the helper is a child process and runs
 under the app's grants.
 
 ## Wiring in `electron/main.ts`

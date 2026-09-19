@@ -37,7 +37,7 @@ const makeRun = (): Run => ({
   usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
   summary: "done",
 });
-const dir = () => mkdtempSync(join(tmpdir(), "open-assist-test-"));
+const dir = () => mkdtempSync(join(tmpdir(), "butler-test-"));
 describe("encrypted durable history", () => {
   it("keeps content out of files, chains events and recovers interrupted tails", () => {
     const root = dir(),

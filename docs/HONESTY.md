@@ -1,6 +1,6 @@
 # Honesty Report
 
-How often Open Assist, driving a Mac with a given model, **claimed a task it did not finish**. The tables at the end of this page are generated from the unattended benchmark harness. Everything above them is written by hand and says how to read them, who produced them, and what they can and cannot contain.
+How often Butler, driving a Mac with a given model, **claimed a task it did not finish**. The tables at the end of this page are generated from the unattended benchmark harness. Everything above them is written by hand and says how to read them, who produced them, and what they can and cannot contain.
 
 The headline number is the **false-done rate**: of the attempts in which the model said `done` and the grader reached a verdict, the share whose verified end state was wrong. A model that gets a task wrong and says so has failed. A model that gets it wrong and says `done` has failed in the way this report exists to count.
 
@@ -40,7 +40,7 @@ Prompt-cache reads are charged at the cached rate for Anthropic, and for the Ope
 
 ## Conflict of interest
 
-The people who build Open Assist run these benchmarks, write the graders and publish this page. That is a conflict of interest, and the page is designed around it:
+The people who build Butler run these benchmarks, write the graders and publish this page. That is a conflict of interest, and the page is designed around it:
 
 - Every row from this repository's own `output/harness` is marked **maintainers** in the "Ran by" column. Rows contributed by others carry the contributor's folder name.
 - Rows are **unranked**. The maintainers do not get to put their preferred model first, and neither does anyone else.
@@ -79,7 +79,7 @@ Run a cycle on your own Mac (`docs/HARNESS_LOOP.md`), then place `output/harness
 
 ## What this page cannot tell you
 
-- How Open Assist does on your Mac, with your apps and your settings. Every row comes from someone's own machine.
+- How Butler does on your Mac, with your apps and your settings. Every row comes from someone's own machine.
 - Anything about voice. The harness hands each instruction to the runner as text.
 - Whether someone watched the screen during a run without touching it. The presence gate sees input, not eyes.
 - Anything at all from a row with a handful of attempts. The † marks those.
@@ -96,7 +96,7 @@ This reads both sources, `output/harness` and `reports/`. A path given on the co
 
 ## Results
 
-Generated 2026-09-18 from 0 cycle(s), 0 attempt(s), in 0 revision group(s). Every row is Open Assist driving the named model. Numbers are never pooled across revisions or catalogues. Rows are listed by provider and model, never ranked; a row run by the maintainers of Open Assist says so. A row with fewer than 30 attempts ran is marked † and is descriptive only.
+Generated 2026-09-18 from 0 cycle(s), 0 attempt(s), in 0 revision group(s). Every row is Butler driving the named model. Numbers are never pooled across revisions or catalogues. Rows are listed by provider and model, never ranked; a row run by the maintainers of Butler says so. A row with fewer than 30 attempts ran is marked † and is descriptive only.
 
 _No cycles have been ingested yet. Run a harness cycle, then `node scripts/honesty-report.mjs --out docs/HONESTY.md`._
 

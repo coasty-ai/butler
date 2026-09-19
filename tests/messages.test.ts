@@ -363,7 +363,7 @@ describe("helper contract", () => {
   it("wakes the channel for the helper's changed line, and only for it", async () => {
     // A real helper process: the fixture's changed line and an unknown event
     // arrive before each reply, and neither may be taken for the reply.
-    const root = mkdtempSync(join(tmpdir(), "open-assist-messages-helper-"));
+    const root = mkdtempSync(join(tmpdir(), "butler-messages-helper-"));
     const binary = join(root, "messages.cjs");
     writeFileSync(
       binary,
@@ -437,7 +437,7 @@ describe("message settings", () => {
     expect(messageTarget(settings())?.handle).toBe(OWNER);
   });
   it("imports PHONE_NO from .env as a convenience only", () => {
-    const root = mkdtempSync(join(tmpdir(), "open-assist-messages-"));
+    const root = mkdtempSync(join(tmpdir(), "butler-messages-"));
     try {
       const file = join(root, ".env");
       writeFileSync(file, `PHONE_NO=${OWNER}\nOPENAI_API_KEY=test\n`, {
@@ -921,7 +921,7 @@ describe("texted commands", () => {
   it("surfaces a send failure without throwing into the run", async () => {
     const { messages, helper } = channel();
     await messages.configure();
-    helper.failSend = "macOS blocked Open Assist from using Messages.";
+    helper.failSend = "macOS blocked Butler from using Messages.";
     messages.onSnapshot(snapshot("executing"));
     await messages.settled();
     expect(messages.status().error).toMatch(/blocked/);

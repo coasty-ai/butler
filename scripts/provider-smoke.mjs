@@ -5,6 +5,7 @@ import { readFileSync, mkdirSync, writeFileSync, mkdtempSync } from "node:fs";
 import { parseEnv } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
+import { localApp } from "./local-app.mjs";
 import { HttpProvider } from "../src/providers/http.ts";
 import {
   defaultSettings,
@@ -46,7 +47,7 @@ const report = {
 try {
   let desktopModule;
   if (desktop) {
-    const root = mkdtempSync(join(tmpdir(), "open-assist-provider-"));
+    const root = mkdtempSync(join(tmpdir(), "butler-provider-"));
     desktopModule = join(root, "provider.cjs");
     await build({
       entryPoints: ["scripts/fixtures/desktop-provider.ts"],
@@ -57,9 +58,7 @@ try {
       outfile: desktopModule,
     });
     application = await electron.launch({
-      executablePath: resolve(
-        "release/mac-arm64/Open Assist.app/Contents/MacOS/Open Assist",
-      ),
+      executablePath: localApp(process.cwd()).binary,
       args: [],
       env: {
         ...process.env,
@@ -77,7 +76,7 @@ try {
   });
   const page = await context.newPage();
   await page.setContent(`<!doctype html><html><body style="margin:0;background:#111;color:#eee;font:24px sans-serif">
-    <h1 style="margin:60px">New project</h1><p style="margin:60px">Open Assist synthetic test — no personal information.</p>
+    <h1 style="margin:60px">New project</h1><p style="margin:60px">Butler synthetic test — no personal information.</p>
     <label style="position:absolute;left:100px;top:270px" for="project">Project name</label>
     <input id="project" style="position:absolute;left:100px;top:310px;width:580px;height:55px;font:24px sans-serif">
     <button style="position:absolute;left:720px;top:480px;width:180px;height:64px;font:24px sans-serif" onclick="const name=document.getElementById('project').value; if(name==='Orbit'){document.body.innerHTML='<h1 style=margin:60px>Project Orbit ready</h1><p style=margin:60px>Setup complete.</p>'}">Continue</button>

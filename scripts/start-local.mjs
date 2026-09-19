@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { localApp, staleBuild } from "./local-app.mjs";
 
 const project = fileURLToPath(new URL("../", import.meta.url));
 const envFile = join(project, ".env");
@@ -9,7 +10,13 @@ if (!existsSync(envFile)) {
   console.error("Create .env using .env.example, then run this command again.");
   process.exit(1);
 }
-const appPath = join(project, "release/mac-arm64/Open Assist.app");
+const local = localApp(project);
+const stale = process.platform === "darwin" && staleBuild(local);
+if (stale) {
+  console.error(stale);
+  process.exit(1);
+}
+const appPath = local.app;
 const args = ["--import-env", envFile, ...process.argv.slice(2)];
 const packaged = process.platform === "darwin" && existsSync(appPath);
 const { ELECTRON_RUN_AS_NODE: _runAsNode, ...launchEnv } = process.env;
@@ -20,7 +27,7 @@ const child = spawn(
   { cwd: project, stdio: "inherit", env: launchEnv },
 );
 child.on("error", () => {
-  console.error("Could not launch Open Assist. Run npm run build first.");
+  console.error("Could not launch Butler. Run npm run build first.");
   process.exitCode = 1;
 });
 child.on("exit", (code) => {

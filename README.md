@@ -1,10 +1,12 @@
-# Open Assist
+# Butler
+
+_Formerly Open Assist._
 
 **Press a key. Tell your computer what to do.**
 
-A macOS voice assistant built from the supplied 39-page strategy PDF and the subsequent Open Assist MVP specification. Hold **Option + Space**, speak, and release. A floating pill shows Listening → Working in your app → Needs approval → Done, then disappears. Hold again to pause and steer the same task. Tap for a text command. Settings and optional local-run review live in the menu bar. To launch directly into hands-free listening with diagnostics, run `npm run debug:local -- --hands-free` (`--no-hands-free` disables it). For hands-free use, select **Say “Hey Assist”** under **Talk to Open Assist** in Settings and save, or enable it from the menu bar. Say “Hey Assist, open Notes,” then pause; say the wake phrase again to interrupt. The menu bar can turn off its microphone at any time.
+A macOS voice assistant built from the supplied 39-page strategy PDF and the subsequent Butler MVP specification. Hold **Option + Space**, speak, and release. A floating pill shows Listening → Working in your app → Needs approval → Done, then disappears. Hold again to pause and steer the same task. Tap for a text command. Settings and optional local-run review live in the menu bar. To launch directly into hands-free listening with diagnostics, run `npm run debug:local -- --hands-free` (`--no-hands-free` disables it). For hands-free use, select **Say “Hey Butler”** under **Talk to Butler** in Settings and save, or enable it from the menu bar. Say “Hey Butler, open Notes,” then pause; say the wake phrase again to interrupt. The menu bar can turn off its microphone at any time.
 
-Open Assist is the consumer product. CoArena is the intelligence/evaluation layer; CoArena Gym is the environment and evaluation product. Contributions connect them only after per-run review and consent.
+Butler is the consumer product. CoArena is the intelligence/evaluation layer; CoArena Gym is the environment and evaluation product. Contributions connect them only after per-run review and consent.
 
 **Status: development alpha.** Native push-to-talk, optional on-device wake-phrase listening, on-device speech, screen capture/input, correction handling, approval, encrypted local trajectories and opt-in contribution are implemented. Offline checks use synthetic tasks and mocked providers; GPT-5.4 mini has also completed a generated-screen task through the live API and a few real Calculator/Safari tasks through the terminal live harness. Live speech accuracy, arbitrary desktop reliability and shortcut latency still need device testing. See [validation](docs/VALIDATION.md), [implementation status](docs/IMPLEMENTATION.md) and [resources required](docs/RESOURCES.md).
 
@@ -12,18 +14,18 @@ Open Assist is the consumer product. CoArena is the intelligence/evaluation laye
 
 Requirements: a Mac with Apple Silicon (M1 or newer) running macOS 14 Sonoma or later.
 
-1. **Download** the latest `Open Assist-<version>-arm64.dmg` from [Releases](https://github.com/coasty-ai/open-assist/releases).
-2. **Install:** open the DMG and drag **Open Assist** into **Applications**.
-3. **First launch:** this alpha is signed ad hoc but not notarized by Apple, so macOS blocks the first open. Open it once, then go to **System Settings → Privacy & Security**, scroll down to the message about Open Assist and click **Open Anyway**. Alternatively, run this once in Terminal:
+1. **Download** the latest `Butler-<version>-arm64.dmg` from [Releases](https://github.com/coasty-ai/open-assist/releases).
+2. **Install:** open the DMG and drag **Butler** into **Applications**.
+3. **First launch:** this alpha is signed ad hoc but not notarized by Apple, so macOS blocks the first open. Open it once, then go to **System Settings → Privacy & Security**, scroll down to the message about Butler and click **Open Anyway**. Alternatively, run this once in Terminal:
    ```sh
-   xattr -dr com.apple.quarantine "/Applications/Open Assist.app"
+   xattr -dr com.apple.quarantine "/Applications/Butler.app"
    ```
-4. **Set up:** on the first launch the setup view opens and walks through permissions, a model, the optional natural voice and a first task. Every step is skippable and nothing is a dead end: it reopens from the menu bar (**Set up Open Assist…**) and from Settings. Prefer to look around first? Click **Try the safe tutorial first**; it runs on a simulated board and needs no permissions or keys.
+4. **Set up:** on the first launch the setup view opens and walks through permissions, a model, the optional natural voice and a first task. Every step is skippable and nothing is a dead end: it reopens from the menu bar (**Set up Butler…**) and from Settings. Prefer to look around first? Click **Try the safe tutorial first**; it runs on a simulated board and needs no permissions or keys.
 5. **Grant permissions** from the checklist: Screen Recording, Accessibility, Microphone and Speech Recognition. Each row explains what it is for and opens the exact System Settings pane, and the list rechecks itself every couple of seconds. **After granting Screen Recording, quit and reopen the app** — macOS applies it only to a process started after the grant, so the checklist says “Granted, restart needed” instead of showing a tick.
 6. **Choose a model** in the setup step or in Settings:
    - **Private local (free):** install [Ollama](https://ollama.com), run `ollama pull qwen3-vl:8b` (about 6 GB; `qwen3-vl:2b` is smaller but much weaker at finding controls), and keep the default endpoint. Setup looks for a running Ollama on the loopback address and says whether that model is installed.
    - **Bring your own key:** choose OpenAI, Anthropic or Google and paste your API key. **Check key** verifies it with one small request that never touches your screen, then saves it encrypted. Requests go directly to that provider.
-7. **Talk to it:** hold **Option + Space**, say what you want (“open Notes and write a shopping list”), and release. Tap the shortcut to type instead. For hands-free use, choose **Say “Hey Assist”** in Settings.
+7. **Talk to it:** hold **Option + Space**, say what you want (“open Notes and write a shopping list”), and release. Tap the shortcut to type instead. For hands-free use, choose **Say “Hey Butler”** in Settings.
 8. **Optional natural voice:** in the setup step, or in **Settings → Voice replies**, choose **Natural voice (free, on-device)** and click **Download** (332 MB, runs entirely on your Mac). Make sure your Mac's volume is up to hear replies.
 
 Stop anytime with **Escape** or by saying “stop”. Moving your mouse pauses the agent; it continues on its own when you let go.
@@ -49,17 +51,17 @@ For real tasks, open Settings once, configure a vision-capable model, and grant 
 
 Known text fields, recognized navigation and controls with a benign label (Close, Search, Play, …) can proceed automatically. Sending, publishing, paying, deleting and other labelled controls require approval. Unidentified targets trigger up to three recovery attempts, then pause for manual help instead of requesting approval for blind input. To open or switch apps the model uses a launch-only `open_app` action limited to installed apps in the standard application folders; installers, terminals, script apps and protected apps are refused. Passwords and protected surfaces require manual takeover.
 
-Open Assist learns locally. It knows your installed apps, standard folders and recently used files from Spotlight metadata, remembers your corrections and past tasks, and turns procedures that succeed repeatedly into skills that replay without model calls. Every replayed step still goes through the same safety checks. Memory is encrypted on this Mac; turn it off or forget everything in **Settings → Learning**. See [docs/MEMORY.md](docs/MEMORY.md). These deterministic rules still need live/adversarial validation; arbitrary desktop UI is not perfectly classified.
+Butler learns locally. It knows your installed apps, standard folders and recently used files from Spotlight metadata, remembers your corrections and past tasks, and turns procedures that succeed repeatedly into skills that replay without model calls. Every replayed step still goes through the same safety checks. Memory is encrypted on this Mac; turn it off or forget everything in **Settings → Learning**. See [docs/MEMORY.md](docs/MEMORY.md). These deterministic rules still need live/adversarial validation; arbitrary desktop UI is not perfectly classified.
 
 - **Local:** install Ollama, download a vision model, and use `http://127.0.0.1:11434`. The default `qwen3-vl:8b` is editable; it is not automatically downloaded. Cloud model identifiers are rejected.
 - **BYOM:** choose OpenAI, Anthropic, Google or an OpenAI-compatible endpoint. Enter your own API key, model ID, and current input/output token prices for estimated cost accounting. Requests go directly to that provider.
 - **Stop:** `Escape`, `Control + Option + Escape`, the stop control, or hold and say “stop.” Native Escape handling is independent of the renderer/model call during real runs.
 - **Talk / steer:** hold `Option + Space`; release to execute. The controller stops and a working run pauses immediately on key-down; if nothing usable is recognized, the run stays paused. Say “Wait,” “Stop,” “Use Chrome, not Safari,” or another correction.
 - **Type:** tap `Option + Space`, or use `Command + Shift + Space`.
-- **Approve:** click once, or hold the shortcut and say “yes” to the current approval. In hands-free mode, say “Hey Assist, yes,” or just “yes” while it is listening for your reply. Spoken approval is still bound to the pending action and a finalized recognition confidence check.
+- **Approve:** click once, or hold the shortcut and say “yes” to the current approval. In hands-free mode, say “Hey Butler, yes,” or just “yes” while it is listening for your reply. Spoken approval is still bound to the pending action and a finalized recognition confidence check.
 - **Hear replies:** it answers out loud when you talk to it: questions, approvals and results. Pause to think; it waits longer when your sentence sounds unfinished. Choose the voice, speed and patience in **Settings → Voice replies / Listening**. See [docs/VOICE_PRODUCT.md](docs/VOICE_PRODUCT.md).
 - **Take over:** move the mouse, click, scroll or type to pause the agent. Hold and say “continue” when ready. The app records the takeover event, not your intervening keystrokes.
-- **Text yourself updates:** optional, off by default. Open Assist can text one number — yours — when a task starts, needs you or finishes, and read short replies from that number: `status`, `stop`, `pause`, `continue`, or `do <task>`. Approvals never happen by text. Turn it on under **Settings → Text updates**, where the two macOS permissions (Automation for Messages, Full Disk Access to read replies) are explained. See [docs/MESSAGING.md](docs/MESSAGING.md).
+- **Text yourself updates:** optional, off by default. Butler can text one number — yours — when a task starts, needs you or finishes, and read short replies from that number: `status`, `stop`, `pause`, `continue`, or `do <task>`. Approvals never happen by text. Turn it on under **Settings → Text updates**, where the two macOS permissions (Automation for Messages, Full Disk Access to read replies) are explained. See [docs/MESSAGING.md](docs/MESSAGING.md).
 
 The adapters use a single custom GUI-action tool over vision-capable provider APIs. They do not yet translate each vendor's specialized built-in computer-use tools; use a model supporting image input and function calling (or Ollama JSON output).
 
@@ -73,7 +75,7 @@ npm run start:local -- --provider openai
 
 This selects `gpt-5.4-mini` and its estimated token rates. `--provider google` selects `gemini-3.5-flash-lite`; `--provider anthropic` selects `claude-sonnet-5`. These are editable starting points, not a guarantee of task success. The command without `--provider` imports keys while preserving the current model and privacy mode. Run it again after rotating a key. An `OPENROUTER_API_KEY` in the same file is imported into its own slot for the optional "Decide with Jev" setting; importing it never turns that setting on (tick it in Settings, or add `--decide-with-jev` to a debug launch).
 
-`PHONE_NO` is imported the same way, as the number for optional text updates. It is saved in the encrypted config and nothing is texted until you turn the feature on in **Settings → Text updates**; use a number or iMessage address that is not signed in to Messages on this Mac, so your own texts can be told apart from Open Assist's.
+`PHONE_NO` is imported the same way, as the number for optional text updates. It is saved in the encrypted config and nothing is texted until you turn the feature on in **Settings → Text updates**; use a number or iMessage address that is not signed in to Messages on this Mac, so your own texts can be told apart from Butler's.
 
 The main process imports only known API-key variables and saves them in the encrypted local store, bound to their provider and endpoint. Keys are never loaded into Vite, returned to the renderer, or included in the app package. After import, double-click the app normally; `.env` is no longer needed to launch it. Screen context goes directly to the selected provider; microphone audio stays local.
 

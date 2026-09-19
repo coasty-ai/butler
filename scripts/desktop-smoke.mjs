@@ -12,9 +12,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import assert from "node:assert/strict";
+import { localApp } from "./local-app.mjs";
 console.log("Starting desktop smoke");
 const port = 20000 + (process.pid % 20000);
-const root = mkdtempSync(join(tmpdir(), "open-assist-desktop-"));
+const root = mkdtempSync(join(tmpdir(), "butler-desktop-"));
 const desktopData = join(root, "desktop");
 mkdirSync(desktopData, { recursive: true });
 const envFixture = join(root, "credentials.env");
@@ -61,9 +62,7 @@ try {
     electron.launch({
       ...(process.argv.includes("--packaged")
         ? {
-            executablePath: resolve(
-              "release/mac-arm64/Open Assist.app/Contents/MacOS/Open Assist",
-            ),
+            executablePath: localApp(process.cwd()).binary,
             args: importKeys
               ? ["--import-env", envFixture, "--provider", "openai"]
               : [],
@@ -298,7 +297,7 @@ try {
   assert.equal(info.voice.wakeListening, false);
   assert.equal(
     await page
-      .getByRole("combobox", { name: "Talk to Open Assist" })
+      .getByRole("combobox", { name: "Talk to Butler" })
       .inputValue(),
     "shortcut",
   );
