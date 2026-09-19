@@ -329,6 +329,67 @@ describe("conversation: when to speak", () => {
     expect(t.spoken).toHaveLength(0);
   });
 
+  it("keeps the room open for a thanks while a question is pending under the conversation setting", () => {
+    // The helper heard a closing phrase and opened no window after it, knowing
+    // nothing of the question: the app asks for a continuation window, whose
+    // "yes" passes the stricter follow-up gates, never an approval window
+    // nobody heard asked for.
+    const quiet = setup({
+      voiceReplies: "off",
+      handsFree: true,
+      followUpWindow: "conversation",
+    });
+    quiet.voiceStart("ptt");
+    quiet.render(approval("Open Notes?"));
+    quiet.conversation.acknowledge(
+      { kind: "confirmAgain" },
+      { source: "followup" },
+    );
+    expect(quiet.spoken).toHaveLength(0);
+    expect(quiet.traces).toContainEqual({
+      event: "FollowUp",
+      data: { phase: "skipped", window: "approval", code: "unspoken" },
+    });
+    expect(quiet.listens()).toEqual([
+      { kind: "continuation", seconds: CONVERSATION_IDLE_SECONDS },
+    ]);
+    // Spoken, each re-ask carries its own approval window that takes over;
+    // the third thanks gets no re-ask and still keeps the room open.
+    const talk = setup({ handsFree: true, followUpWindow: "conversation" });
+    talk.voiceStart();
+    talk.play();
+    talk.render(approval("Open Notes?"));
+    talk.play();
+    for (let i = 0; i < 3; i++)
+      talk.conversation.acknowledge(
+        { kind: "confirmAgain" },
+        { source: "followup" },
+      );
+    const reasks = talk.spoken.filter((x) =>
+      PHRASES.confirmAgain.includes(x.text),
+    );
+    expect(reasks.map((x) => x.listen)).toEqual([
+      { kind: "approval", seconds: 12 },
+      { kind: "approval", seconds: 12 },
+    ]);
+    expect(talk.listens()).toEqual(
+      Array(3).fill({
+        kind: "continuation",
+        seconds: CONVERSATION_IDLE_SECONDS,
+      }),
+    );
+    // Under Briefly a thanks is no closing phrase: the helper's own window
+    // reopens after it, and the app asks for nothing.
+    const brief = setup({ voiceReplies: "off", handsFree: true });
+    brief.voiceStart("ptt");
+    brief.render(approval("Open Notes?"));
+    brief.conversation.acknowledge(
+      { kind: "confirmAgain" },
+      { source: "followup" },
+    );
+    expect(brief.listens()).toEqual([]);
+  });
+
   it("always mode speaks typed results, questions and failures but never typed acks", () => {
     const t = setup({ voiceReplies: "always" });
     t.typedStart();

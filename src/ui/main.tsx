@@ -1487,12 +1487,14 @@ function SettingsPanel({
                   value={s.followUpWindow}
                   disabled={!s.followUpListening}
                   aria-describedby={`${ids}-window`}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     set(
                       "followUpWindow",
                       e.target.value as Settings["followUpWindow"],
-                    )
-                  }
+                    );
+                    // A Briefly picked here stays; only the old default moves.
+                    set("followUpWindowChosen", true);
+                  }}
                 >
                   <option value="short">Briefly after each exchange</option>
                   <option value="long">Longer after each exchange</option>

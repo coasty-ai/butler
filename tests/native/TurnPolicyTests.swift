@@ -105,6 +105,20 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     var syllables = SpeechRun()
     for time in [1.0, 1.08, 1.24, 1.32] { syllables.observe(speech: time != 1.16, at: time) }
     check(near(syllables.longest, 0.4), "one missed sample between syllables keeps the run")
+    // The run counts for a window's onset only while it is recent: a 15-minute conversation window
+    // must not take a word the recognizer writes with no speech behind it as a turn.
+    check(speechRunRecentSeconds == 2.5, "speech energy counts for 2.5 s: the final for a short word arrives about 1.5 s after it")
+    check(near(run.recentLongest(at: 1.5), 0.24) && near(run.recentLongest(at: 3.6), 0.24) && run.recentLongest(at: 3.7) == 0,
+          "the onset run counts for 2.5 s after the last speech sample, then not at all")
+    var stale = SpeechRun()
+    for time in [10.0, 10.08, 10.16, 10.24] { stale.observe(speech: true, at: time) }
+    check(near(stale.longest, 0.32) && stale.recentLongest(at: 600) == 0, "a window open for minutes has no speech to show for a word written now")
+    stale.observe(speech: true, at: 600)
+    check(near(stale.longest, 0.08) && near(stale.recentLongest(at: 600.1), 0.08), "speech after a long quiet starts the count over")
+    var cluster = SpeechRun()
+    for time in [20.0, 20.08, 20.16, 21.0] { cluster.observe(speech: true, at: time) }
+    check(near(cluster.longest, 0.24) && near(cluster.recentLongest(at: 21.3), 0.24), "a new run within 2.5 s keeps the longest run of the cluster")
+    check(SpeechRun().recentLongest(at: 0) == 0, "no speech yet is no run")
 
     // TurnTranscript
     var reset = TurnTranscript()
@@ -309,6 +323,24 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     // The thanks alone is told from the other closers: while a question is open it acknowledges.
     for phrase in ["thanks", "Thank you.", "okay thanks", "thanks a lot", "thank you Butler", "Thanks, Butler."] { check(isThanks(phrase), "thanks alone: \(phrase)") }
     for phrase in ["that's all", "goodbye", "thanks that's all", "thanks bye", "thanks now open notes", "no thanks", "okay", ""] { check(!isThanks(phrase), "not thanks alone: \(phrase)") }
+    // The helper's own closes of a conversation-mode window are undone once they have passed: a
+    // reply (half duplex stops listening while Butler speaks) that asked for no window reopens a
+    // continuation window, for every kind but an approval; an approval's 12 s continue as a
+    // continuation window, while the other kinds expire only at the cap. Nothing under short or long.
+    for kind in [FollowUpKind.continuation, .answer, .scroll] {
+        check(conversationWindowAfter(.speaking, kind: kind, window: .conversation) == .continuation, "a reply closing a \(kind.rawValue) window reopens the conversation when it ends")
+        check(conversationWindowAfter(.expired, kind: kind, window: .conversation) == nil, "an expired \(kind.rawValue) window under the conversation setting stays closed")
+    }
+    check(conversationWindowAfter(.speaking, kind: .approval, window: .conversation) == nil, "a reply closing an approval window reopens nothing: the answer has its own window")
+    check(conversationWindowAfter(.expired, kind: .approval, window: .conversation) == .continuation, "an unanswered approval continues as a continuation window")
+    check(followUpSeconds(.approval, window: .conversation) == 12 && followUpSeconds(.continuation, window: .conversation) == conversationIdleSeconds,
+          "the approval stays bounded at 12 s; the window it leaves lasts until the inactivity cap")
+    for window in [FollowUpWindow.short, .long] {
+        for kind in [FollowUpKind.continuation, .answer, .approval, .scroll] {
+            check(conversationWindowAfter(.speaking, kind: kind, window: window) == nil && conversationWindowAfter(.expired, kind: kind, window: window) == nil,
+                  "under \(window.rawValue) a closed \(kind.rawValue) window stays closed")
+        }
+    }
     // The scroll window: as long as the controller's 90 s lease and a little over, and its own turn context.
     check(followUpSeconds(.scroll) == 95 && clampFollowUpSeconds(95, kind: .scroll) == 95 && clampFollowUpSeconds(200, kind: .scroll) == 95 && clampFollowUpSeconds(60, kind: .continuation) == 15,
           "a scroll window may stay open 95 s; every other kind still stops at 15")

@@ -11,6 +11,7 @@ import {
   followUpWindowHint,
   listenWhileSpeakingHint,
 } from "../src/ui/settings-voice";
+import { migrateFollowUpWindow } from "../src/voice/turns";
 
 const voiceKeys = [
   "voiceReplies",
@@ -21,6 +22,7 @@ const voiceKeys = [
   "listeningPatience",
   "followUpListening",
   "followUpWindow",
+  "followUpWindowChosen",
   "voiceSounds",
 ] as const satisfies readonly (keyof Settings)[];
 
@@ -33,6 +35,7 @@ const expectedDefaults = {
   listeningPatience: "normal",
   followUpListening: true,
   followUpWindow: "conversation",
+  followUpWindowChosen: false,
   voiceSounds: true,
 } satisfies Pick<Settings, (typeof voiceKeys)[number]>;
 
@@ -215,11 +218,38 @@ describe("voice settings", () => {
     expect(defaultSettings.followUpWindow).toBe("conversation");
     const { followUpWindow: _w, ...older } = structuredClone(defaultSettings);
     expect(settingsSchema.parse(older).followUpWindow).toBe("conversation");
-    // Nothing migrates: a choice already made stays as chosen.
+    // The schema itself migrates nothing: a saved value parses as saved.
     for (const followUpWindow of ["short", "long", "conversation"] as const)
       expect(
         settingsSchema.parse({ ...older, followUpWindow }).followUpWindow,
       ).toBe(followUpWindow);
+  });
+
+  it("moves the Briefly every earlier build saved on its own to Conversation once, and keeps a chosen one", () => {
+    // Every build before the default changed filled "short" into a config
+    // without the field and saved it back (the natural-voice migration, the
+    // --hands-free flag, every settings save), so the schema default alone
+    // never reaches an install that saved settings since; at launch main.ts
+    // runs this migration on the parsed settings.
+    expect(defaultSettings.followUpWindowChosen).toBe(false);
+    const { followUpWindowChosen: _c, ...older } =
+      structuredClone(defaultSettings);
+    expect(settingsSchema.parse(older).followUpWindowChosen).toBe(false);
+    const stored = settingsSchema.parse({ ...older, followUpWindow: "short" });
+    expect(migrateFollowUpWindow(stored)).toEqual({
+      ...stored,
+      followUpWindow: "conversation",
+    });
+    // The picker marks a choice: a chosen Briefly, and any Longer, stay.
+    const chosen = { ...stored, followUpWindowChosen: true };
+    expect(migrateFollowUpWindow(chosen)).toBe(chosen);
+    for (const followUpWindow of ["long", "conversation"] as const) {
+      const saved = { ...stored, followUpWindow };
+      expect(migrateFollowUpWindow(saved)).toBe(saved);
+    }
+    // What one launch moved the next leaves alone.
+    const once = migrateFollowUpWindow(stored);
+    expect(migrateFollowUpWindow(once)).toBe(once);
   });
 
   it("says what each Keep listening choice does, honestly about the room", () => {

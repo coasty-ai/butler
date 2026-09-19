@@ -628,6 +628,17 @@ export class Conversation {
               this.listenWindow("approval"),
               gateOf(s),
             );
+          // Under the conversation setting a bare "thanks" lands here, and the
+          // helper, which heard a closing phrase and knows nothing of the
+          // question, opened no window after it: the room stays open in a
+          // continuation window (never an approval window nobody heard asked
+          // for), whose "yes" passes the stricter follow-up gates. A spoken
+          // re-ask's own approval window takes over from it.
+          if (
+            settings.followUpWindow === "conversation" &&
+            this.windowsAllowed(handsFree)
+          )
+            void this.listen(this.listenWindow("continuation"));
           break;
         }
         case "nothingToApprove":

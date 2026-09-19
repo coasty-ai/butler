@@ -232,7 +232,13 @@ struct NoiseFloor: Equatable {
     }
 }
 
-// Continuous speech energy, tolerating one missed ~80 ms sample between syllables.
+// Continuous speech energy, tolerating one missed ~80 ms sample between syllables. The longest
+// run is forgotten after speechRunRecentSeconds of quiet (recentLongest is 0, and the next run
+// starts the count over), so words the recognizer writes with no speech behind them (its own
+// late guesses, in a window that has been open for minutes) never open a turn (followUpOnset).
+// Long enough for the recognizer's final for a short word, which arrives about 1.5 s after it,
+// with a soft last syllable that fell under the floor before that.
+let speechRunRecentSeconds = 2.5
 struct SpeechRun: Equatable {
     private(set) var start: TimeInterval?
     private(set) var last: TimeInterval = 0
@@ -240,11 +246,16 @@ struct SpeechRun: Equatable {
     @discardableResult
     mutating func observe(speech: Bool, at now: TimeInterval, sample: Double = 0.08, gapTolerance: Double = 0.2) -> Double {
         guard speech else { return longest }
-        if start == nil || now - last > gapTolerance { start = now }
+        if start == nil || now - last > gapTolerance {
+            if now - last > speechRunRecentSeconds { longest = 0 }
+            start = now
+        }
         last = now
         longest = max(longest, now - (start ?? now) + sample)
         return longest
     }
+    // The longest run while speech is recent; 0 once the room has been quiet for speechRunRecentSeconds.
+    func recentLongest(at now: TimeInterval) -> Double { now - last <= speechRunRecentSeconds ? longest : 0 }
 }
 
 // MARK: - Segment accumulation
@@ -515,6 +526,25 @@ func isThanks(_ text: String) -> Bool {
 func endsConversation(_ text: String) -> Bool {
     let key = normalizeVoiceKey(text)
     return isThanks(text) || conversationEnd.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil
+}
+
+// What is left of a conversation-mode window after a close of the helper's own; the user's
+// closes (the closing phrase, a click, a cancel, the inactivity cap, sleep, secure input) are
+// final. Half duplex stops listening while Butler speaks, so a reply closes the window open or
+// pending after a turn: a reply that asked for no window of its own reopens a continuation
+// window when it ends (resumeWindowAfterSpeech in Voice.swift), so a result, "Stopped." or a
+// progress line is never the end of the conversation. An approval window keeps its 12 s bound,
+// and when they pass unanswered it continues as a continuation window: the question stays on
+// the pill, and a later "yes" is a continuation turn with the stricter follow-up gates. A reply
+// closing an approval window reopens nothing, since the answer it wanted has its own window.
+// Nil: the window stays closed. Nothing under the short or long setting.
+enum WindowClose { case speaking, expired }
+func conversationWindowAfter(_ close: WindowClose, kind: FollowUpKind, window: FollowUpWindow) -> FollowUpKind? {
+    guard window == .conversation else { return nil }
+    switch (close, kind) {
+    case (.speaking, .approval), (.expired, .continuation), (.expired, .answer), (.expired, .scroll): return nil
+    case (.speaking, _), (.expired, .approval): return .continuation
+    }
 }
 
 // A window closes at its deadline, unless speech energy is still arriving (the user

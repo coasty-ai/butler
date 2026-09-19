@@ -61,6 +61,10 @@ var windowDeadline: TimeInterval = 0
 var windowRun = SpeechRun()
 var pendingWindow: DispatchWorkItem?
 var pendingWindowKind: FollowUpKind?
+// A reply closed a conversation-mode window (half duplex: no listening while Butler speaks) and
+// asked for no window of its own: the window reopens when the reply ends (speechEnded). Cleared by
+// the closes that are the user's (closeWindow: a key-down, a cancel, Electron's endFollowUp).
+var resumeWindowAfterSpeech = false
 var endpointNearSent = false
 var completenessCache: (text: String, context: TurnContext, value: Completeness) = ("", .command, .complete)
 var controllerPID: pid_t = 0
@@ -316,8 +320,15 @@ func cancelPendingWindow(_ reason: String) {
     }
 }
 func closeWindow(_ reason: String) {
+    resumeWindowAfterSpeech = false
     cancelPendingWindow(reason)
     if mode == .followUp { clearSpeech(windowReason: reason) }
+}
+// The window a reply about to play closes: the one open, or the one pending (the continuation
+// after a turn, or a window a reply or a listen request deferred past the echo guard).
+func closingWindowKind() -> FollowUpKind? {
+    if mode == .followUp { return windowKind }
+    return pendingWindow == nil ? nil : pendingWindowKind ?? .continuation
 }
 func ambientListeningAllowed() -> Bool {
     standbyAllowed(speaking: speaker.isActive, now: uptime(), echoGuardUntil: echoGuardUntil, fullDuplex: listenWhileSpeaking)
@@ -738,7 +749,7 @@ func recognized(_ result: SFSpeechRecognitionResult?, _ error: Error?, session: 
                 traceStandby("wake", raw, extra: ["boundary": standbyBoundary])
                 wakeOffset = standbyBoundary
                 activateWake(context: turnContext(for: windowKind), window: windowKind)
-            } else if !echo, followUpOnset(text: raw, speechRun: windowRun.longest, kind: windowKind, window: followUpWindow) {
+            } else if !echo, followUpOnset(text: raw, speechRun: windowRun.recentLongest(at: now), kind: windowKind, window: followUpWindow) {
                 activateFollowUp()
             } else {
                 traceStandby(echo ? "self_echo" : result.isFinal ? "final" : "partial", raw, extra: ["segments": result.bestTranscription.segments.count, "boundary": standbyBoundary])
@@ -856,18 +867,20 @@ func openWindow(_ kind: FollowUpKind, seconds: Double, announced: Bool) -> Bool 
         return false
     }
     guard handsFreeEnabled, followUpEnabled, !suspended, !keyHeld, !shuttingDown else { return refuse() }
-    if mode == .followUp {
-        windowKind = kind; windowDeadline = uptime() + seconds
-        output(["event": "followup_open", "kind": kind.rawValue, "seconds": seconds])
-        return true
-    }
+    if mode == .followUp { continueWindow(as: kind, seconds: seconds); return true }
     guard mode == nil || mode == .standby, listenWhileSpeaking || !speaker.isActive else { return refuse() }
     restart?.cancel()
     windowKind = kind
     guard beginAudio(.followUp) else { return refuse() }
+    continueWindow(as: kind, seconds: seconds)
+    return true
+}
+// The open window goes on as `kind` for `seconds`, in the same recognition request: a reply's or
+// a listen request's window taking over from the one open, or the continuation window an expired
+// approval leaves under the conversation setting.
+func continueWindow(as kind: FollowUpKind, seconds: Double) {
     windowKind = kind; windowDeadline = uptime() + seconds
     output(["event": "followup_open", "kind": kind.rawValue, "seconds": seconds])
-    return true
 }
 func listenRequest(_ command: [String: Any]) -> [String: Any] {
     guard let kind = FollowUpKind(rawValue: command["kind"] as? String ?? "") else { return ["opened": false, "reason": "invalid"] }
@@ -892,23 +905,39 @@ func listenRequest(_ command: [String: Any]) -> [String: Any] {
     }
     return openWindow(kind, seconds: seconds, announced: false) ? ["opened": true] : ["opened": false, "reason": "unavailable"]
 }
-// Speaker finished, was stopped, or failed. Ambient listening resumes after the echo guard;
-// a reply that asked for an answer opens its window with a fresh recognition request.
+// Speaker finished, was stopped, or failed. Ambient listening resumes after the echo guard; a
+// reply that asked for an answer opens its window with a fresh recognition request, and under the
+// conversation setting a reply that asked for none reopens the window it closed
+// (resumeWindowAfterSpeech), unannounced like the continuation after a turn.
 func speechEnded(listen: ListenRequest?) {
     // The guard only gates ambient listening, so the route is sampled only in hands-free mode.
     echoGuardUntil = max(echoGuardUntil, speaker.lastAudibleAt + echoGuard(bluetoothOutput: handsFreeEnabled && outputBluetooth))
     cancelPendingWindow("cancel")
-    // A short delay avoids restarting the recognizer when a silent PCM abort is followed at once by its system-voice fallback.
-    guard let listen = listen else { if mode == nil { scheduleStandby(0.15) }; return }
+    let resume = resumeWindowAfterSpeech
+    resumeWindowAfterSpeech = false
+    guard let listen = listen else {
+        if resume && handsFreeEnabled && followUpEnabled {
+            openWindowAfterSpeech(.continuation, seconds: followUpSeconds(.continuation, window: followUpWindow), announced: false)
+        } else if mode == nil {
+            // A short delay avoids restarting the recognizer when a silent PCM abort is followed at once by its system-voice fallback.
+            scheduleStandby(0.15)
+        }
+        return
+    }
     guard handsFreeEnabled, followUpEnabled else {
         output(["event": "followup_closed", "kind": listen.kind.rawValue, "endReason": "cancel"])
         if mode == nil { scheduleStandby(0.15) }
         return
     }
-    pendingWindowKind = listen.kind
+    openWindowAfterSpeech(listen.kind, seconds: listen.seconds, announced: true)
+}
+// Opens once the echo guard has passed, pending until then. announced: a window Electron asked
+// for, reported closed if it is cancelled or refused so Electron never waits on it.
+func openWindowAfterSpeech(_ kind: FollowUpKind, seconds: Double, announced: Bool) {
+    if announced { pendingWindowKind = kind }
     let work = DispatchWorkItem {
         pendingWindow = nil; pendingWindowKind = nil
-        if !openWindow(listen.kind, seconds: listen.seconds, announced: true) && mode == nil { scheduleStandby() }
+        if !openWindow(kind, seconds: seconds, announced: announced) && mode == nil { scheduleStandby() }
     }
     pendingWindow = work
     DispatchQueue.main.asyncAfter(deadline: .now() + echoGuardWait() + 0.02, execute: work)
@@ -948,6 +977,10 @@ func speakRequest(_ command: [String: Any], pcm: Bool) -> [String: Any] {
     // drops what it lets through.
     if !(fullDuplexRequested && voiceProcessing && pcm && speaker.sharesEngine) {
         restart?.cancel()
+        // Under the conversation setting the window this reply closes reopens once the reply ends.
+        if let closing = closingWindowKind(), conversationWindowAfter(.speaking, kind: closing, window: followUpWindow) != nil {
+            resumeWindowAfterSpeech = true
+        }
         cancelPendingWindow("speaking")
         if mode == .followUp { clearSpeech(windowReason: "speaking") } else if mode == .standby { clearSpeech() }
     }
@@ -1152,7 +1185,7 @@ func handle(_ command: [String: Any]) {
     case "listen": output(["id": id, "result": listenRequest(command)])
     case "endFollowUp":
         // For example after a click on Yes: no window, and no window after the current reply.
-        let had = mode == .followUp || pendingWindow != nil || speaker.current?.listen != nil
+        let had = mode == .followUp || pendingWindow != nil || speaker.current?.listen != nil || resumeWindowAfterSpeech
         speaker.clearListen()
         closeWindow("cancel")
         if mode == nil { scheduleStandby(0.1) }
@@ -1215,7 +1248,14 @@ func handle(_ command: [String: Any]) {
                     activateWake(context: turnContext(for: windowKind), window: windowKind); return
                 }
                 if followUpExpired(now: now, deadline: windowDeadline, lastSpeech: lastSpeechAt) {
-                    clearSpeech(windowReason: "timeout"); scheduleStandby(0.1)
+                    if let next = conversationWindowAfter(.expired, kind: windowKind, window: followUpWindow) {
+                        // An unanswered question is not the end of the conversation: the approval's
+                        // 12 s are up, and listening for commands goes on.
+                        output(["event": "followup_closed", "kind": windowKind.rawValue, "endReason": "timeout"])
+                        continueWindow(as: next, seconds: followUpSeconds(next, window: followUpWindow))
+                    } else {
+                        clearSpeech(windowReason: "timeout"); scheduleStandby(0.1)
+                    }
                 } else if windowRotationDue(now: now, rotatedAt: rotatedAt, lastSpeech: lastSpeechAt) {
                     // A scroll's or a conversation's window outlives one request: continue in a fresh one.
                     rotateRequest(reason: "cadence", preRoll: true)

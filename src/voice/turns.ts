@@ -6,7 +6,7 @@
  * tests/fixtures/voice-phrases.json pins both sides.
  */
 import type { FollowUpKind } from "./router";
-import type { TaskSource } from "../core/schema";
+import type { Settings, TaskSource } from "../core/schema";
 import { PHRASES, clarificationTemplate } from "./phrases";
 
 const FILLERS = new Set([
@@ -980,6 +980,22 @@ export function endsConversation(text: string): boolean {
 }
 
 export type FollowUpWindow = "short" | "long" | "conversation";
+/**
+ * Settings from a config saved before "conversation" was the default. Every
+ * earlier build filled "short" into a config without the field and saved it
+ * back (saveConfig runs at launch for the natural-voice migration, the
+ * --hands-free flag and every settings save), so a stored "short" is that old
+ * default, not a choice, unless the Keep listening picker set
+ * followUpWindowChosen; only then does it stay. A stored "long" was always a
+ * choice. Idempotent: what one launch moved the next leaves alone.
+ */
+export function migrateFollowUpWindow<
+  S extends Pick<Settings, "followUpWindow" | "followUpWindowChosen">,
+>(settings: S): S {
+  if (settings.followUpWindow !== "short" || settings.followUpWindowChosen)
+    return settings;
+  return { ...settings, followUpWindow: "conversation" };
+}
 /**
  * The one timer on a conversation-mode window (native conversationIdleSeconds,
  * TurnPolicy.swift). The window has no deadline of its own: after "Hey Butler"

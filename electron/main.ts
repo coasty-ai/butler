@@ -134,6 +134,7 @@ import { credentialScope, providerDefaults } from "../src/providers/catalog";
 import {
   APPROVAL_MIN_CONFIDENCE,
   isWakePhraseOnly,
+  migrateFollowUpWindow,
   planVoiceTurn,
   transcriptRequest,
   type TurnPlan,
@@ -4047,6 +4048,9 @@ app
         credentials = withProviderKey(credentials, settings, c.providerKey);
       // After the vault: an old "off" with a key stored may be deliberate.
       settings = migrateDecisions(settings, c.settings, !!jevKey(credentials));
+      // The "short" every earlier build saved on its own is no choice: the
+      // conversation default reaches an install that saved settings since.
+      settings = migrateFollowUpWindow(settings);
       uploads = c.uploads ?? {};
     }
     const decideWithJev = launchDecideWithJev(settings, process.argv);

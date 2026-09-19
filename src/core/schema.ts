@@ -336,12 +336,20 @@ export const settingsSchema = z
      * listening", with no timer but a 15-minute cap on silence; anything said
      * in the room meanwhile is taken as addressed to Butler. "short": 3 s to
      * add to a request, 8 s for an answer or a yes. "long": 20 s / 20 s /
-     * 12 s. Approvals stay bounded in every mode. A saved "short" or "long"
-     * stays as chosen; only a config without the field takes the default.
+     * 12 s. Approvals stay bounded in every mode. A saved "long" stays, and
+     * a saved "short" once the picker chose it (followUpWindowChosen); the
+     * "short" every earlier build wrote on its own moves to the default once
+     * (migrateFollowUpWindow, src/voice/turns.ts).
      */
     followUpWindow: z
       .enum(["short", "long", "conversation"])
       .default("conversation"),
+    /**
+     * The Keep listening picker was used. Every build before the conversation
+     * default filled "short" into a config without the field and saved it
+     * back, so only this tells a chosen Briefly from the old default.
+     */
+    followUpWindowChosen: z.boolean().default(false),
     /**
      * Open the app a spoken request starts with while the user is still
      * talking ("open Slack and…" brings Slack forward before "and";
@@ -534,6 +542,7 @@ export const defaultSettings: Settings = {
   listeningPatience: "normal",
   followUpListening: true,
   followUpWindow: "conversation",
+  followUpWindowChosen: false,
   earlyStart: true,
   voiceSounds: true,
   conversation: "model",
