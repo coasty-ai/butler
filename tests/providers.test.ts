@@ -180,6 +180,85 @@ describe("provider-neutral adapters", () => {
     }).body;
     expect(c.messages[0].content[0]).toEqual(workspace);
   });
+  it("teaches a bound run its window in one paragraph after the shared prefix, on every provider", () => {
+    const window = {
+      appName: "Slack",
+      title: "general",
+      covered: true,
+      staleRisk: true,
+      minimized: false,
+    };
+    const bound: Observation = {
+      ...o,
+      frame: {
+        ...o.frame,
+        appId: "com.tinyspeck.slackmacgap",
+        context: {
+          appName: "Slack",
+          windowTitle: "general",
+          background: window,
+        },
+      },
+    };
+    const instructionOf = (
+      provider: Settings["provider"],
+      body: any,
+    ): string =>
+      provider === "anthropic"
+        ? body.system[0].text
+        : provider === "openai"
+          ? body.instructions
+          : provider === "google"
+            ? body.systemInstruction.parts[0].text
+            : body.messages[0].content;
+    for (const provider of [
+      "openai",
+      "anthropic",
+      "google",
+      "compatible",
+      "ollama",
+    ] as const) {
+      const plain = instructionOf(
+        provider,
+        buildRequest(s(provider), "K", o).body,
+      );
+      const request = buildRequest(s(provider), "K", bound).body;
+      const withWindow = instructionOf(provider, request);
+      expect(plain).not.toContain("context.background");
+      // One insertion between the core and the provider's format line: every
+      // byte before and after it is the plain instruction's, so the shared
+      // prefix is the same entry in the provider's cache.
+      let at = 0;
+      while (plain[at] === withWindow[at]) at++;
+      const added = withWindow.slice(at, at + withWindow.length - plain.length);
+      expect(
+        withWindow.slice(0, at) + withWindow.slice(at + added.length),
+      ).toBe(plain);
+      expect(added).toMatch(/^\nThe target window is in the background/);
+      expect(plain.slice(at)).toMatch(
+        /^ (Return exactly one action|Reply with only the JSON action object)/,
+      );
+      for (const phrase of [
+        "fractions of this window image",
+        "cursor is not available",
+        "click_control, menu_item and type_text into a listed field",
+        "some applications ignore it",
+        "move does nothing here, and monitor is not available",
+        "use open_app or open_file, or press CMD+TAB",
+        "a browser behind another window needs no switching here",
+        "A drag, or a modifier chord that is not one of the application's menu shortcuts",
+        "context.background.covered is true the picture may be stale",
+        "trust context.controls and context.visibleText over pixels",
+        "by accessibility, by events posted to the application, or with the application in front for a second",
+        '"nothing changed" means the application ignores that route',
+        'a line beginning "No input was sent"',
+        "finished in front, after which these rules no longer apply",
+      ])
+        expect(added).toContain(phrase);
+      // The window's facts ride on the step, where the paragraph says they are.
+      expect(sent(provider, request).step.context.background).toEqual(window);
+    }
+  });
   it("prices Anthropic cache writes and reads and counts them as input", () => {
     const response = (usage: Record<string, unknown>) => ({
       content: [{ type: "tool_use", name: "coarena_action", input: args }],

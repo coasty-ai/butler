@@ -17,13 +17,8 @@ export {
   type TakeoverScope,
 } from "./runner";
 
-// Background runs: the note the model reads and the lines the pill shows.
-export {
-  BACKGROUND_NOTE,
-  isForegroundRequest,
-  isTargetHold,
-  spokenTargets,
-} from "./background";
+// Background runs: the windows the words name and the lines the pill shows.
+export { isForegroundRequest, isTargetHold, spokenTargets } from "./background";
 
 // Actions, settings and the geometry helpers.
 export {

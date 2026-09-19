@@ -502,6 +502,27 @@ describe("what one step costs", () => {
     expect(instruction).not.toContain('{"type":"menu_item"');
     // One literal example stays for providers that reply with bare JSON.
     expect(instruction).toContain('{"type":"hotkey"');
+    // A run bound to a background window reads one more paragraph between the
+    // core and the format line (design §2.4): 17,864 characters with it, the
+    // core before it byte-identical, so the plain instruction stays as it is.
+    const bound: string = buildRequest(settings, "K", {
+      ...notes,
+      frame: frame("com.apple.Notes", {
+        ...notesContext,
+        background: {
+          appName: "Notes",
+          title: "Groceries",
+          covered: false,
+          staleRisk: false,
+          minimized: false,
+        },
+      }),
+    }).body.system[0].text;
+    expect(bound.length).toBeLessThan(18000);
+    const format = instruction.indexOf(" Return exactly one action");
+    expect(format).toBeGreaterThan(15000);
+    expect(bound.startsWith(instruction.slice(0, format))).toBe(true);
+    expect(bound.endsWith(instruction.slice(format))).toBe(true);
   });
 });
 

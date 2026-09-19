@@ -14,13 +14,6 @@ import type {
 } from "./schema";
 import type { BackgroundRoute } from "./memory";
 
-/**
- * The model's standing instruction for a bound run (design §2.4), carried
- * on the model's copy of every frame as context.background.note.
- */
-export const BACKGROUND_NOTE =
-  "The target window is in the background. The screenshot is that window alone, captured while the user works in another window; the user's cursor is not available and nothing you do changes what the user sees in front. Coordinates are fractions of this window image. Prefer click_control, menu_item and type_text into a listed field: they act on the window directly. click(x,y) is delivered to the window, not through the mouse; some applications ignore it, and the result line tells you whether the window changed. Do not switch applications, use open_app, or press CMD+TAB: the window you are working in is already the one in the screenshot. If context.background.covered is true the picture may be stale; trust context.controls and context.visibleText over pixels.";
-
 /** Spoken candidates tried before the prelude's app and the focused window. */
 export const MAX_SPOKEN_TARGETS = 3;
 /** A name's word: letters and digits, joined inside by . ' + or - ("slack.com", "Wi-Fi"); never a boundary word. */

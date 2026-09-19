@@ -24,7 +24,6 @@ import {
   type RunPrelude,
 } from "../src/core/runner";
 import {
-  BACKGROUND_NOTE,
   coveredStaleRetry,
   finishInFront,
   foregroundHandoff,
@@ -351,16 +350,21 @@ describe("binding the window (design §2.2)", () => {
       expect.objectContaining({ type: "click_control", label: "Reply" }),
     ]);
     expect(c.executeTarget.mock.calls[0][3]).toEqual(["ax", "post"]);
-    // The model reads the standing note on its copy alone.
+    // The model's copy carries the window's facts and nothing else; the
+    // paragraph that explains them is the provider's (tests/providers.test.ts).
     const observed = provider.observations[0].frame.context?.background;
     expect(observed).toMatchObject({
       appName: "Slack",
       covered: false,
       staleRisk: true,
-      note: BACKGROUND_NOTE,
     });
-    expect(m.frames[0].context?.background?.note).toBeUndefined();
-    expect(runner.snapshot.frame?.context?.background?.note).toBeUndefined();
+    expect(Object.keys(observed!).sort()).toEqual([
+      "appName",
+      "covered",
+      "minimized",
+      "staleRisk",
+      "title",
+    ]);
     // The history names the rung and what the read found; the journal too.
     expect(provider.observations[1].history.at(-1)?.result).toBe(
       "Executed click on button “Reply” by accessibility; the window changed. Verify the next screenshot.",
@@ -1137,5 +1141,18 @@ describe("main.ts wiring", () => {
     expect(pill).toMatch(/isForegroundRequest\(s\.message\)\s*\?\s*s\.message/);
     expect(pill).toMatch(/background\s*\?\s*lastStepLine\(s\)/);
     expect(fn("lastStepLine")).toContain("stepLine(parsed.data)");
+  });
+  it("the pill shows a hold in the window whole, with the way to continue by hand under it", () => {
+    // targetHold is a pause with its own message, so the paused branch shows
+    // it as the label (never the bare "Paused.") over the continue hint; the
+    // "let go" line belongs to the screen-wide hold alone.
+    const pill = fn("renderPill");
+    expect(pill).toMatch(
+      /status === "takeover" \|\| \(s\.message && s\.message !== defaultPause\)\s*\?\s*s\.message\s*:\s*"Paused\."/,
+    );
+    expect(pill).toMatch(
+      /s\.message === MANUAL_PAUSE_MESSAGE\s*\?\s*"I’ll continue when you let go\."/,
+    );
+    expect(pill).toContain(": continueHint(settings.handsFree)");
   });
 });

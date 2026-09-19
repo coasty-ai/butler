@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { actionSchema, type Action, type Geometry } from "../src/core/schema";
 import {
-  BACKGROUND_NOTE,
   FOREGROUND_CAP,
   MAX_SPOKEN_TARGETS,
   MISS_LIMIT,
@@ -363,19 +362,6 @@ describe("what the model is told (design §2.4)", () => {
     ).toBe(
       "Executed click on button “Send” with Slack in front for a second. Verify the next screenshot.",
     );
-  });
-  it("keeps the note within the context bound and says what matters", () => {
-    expect(BACKGROUND_NOTE.length).toBeLessThanOrEqual(800);
-    for (const phrase of [
-      "click_control",
-      "menu_item",
-      "type_text",
-      "open_app",
-      "CMD+TAB",
-      "context.background.covered",
-      "context.controls",
-    ])
-      expect(BACKGROUND_NOTE).toContain(phrase);
   });
 });
 

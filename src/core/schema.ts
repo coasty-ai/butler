@@ -800,8 +800,8 @@ export interface ScreenContext {
    * means other windows hide nearly all of it; `staleRisk` that its engine
    * (a browser or Electron) stops drawing when covered, so the picture may be
    * the last frame before it was covered and the controls list is the truth.
-   * `note` is the runner's standing instruction for this mode, on the model's
-   * copy only (BACKGROUND_NOTE, src/core/background.ts).
+   * On the model's copy only; the instruction that explains these fields is
+   * the provider's (src/providers/http.ts).
    */
   background?: BackgroundContext;
 }
@@ -811,7 +811,6 @@ export interface BackgroundContext {
   covered: boolean;
   staleRisk: boolean;
   minimized: boolean;
-  note?: string;
 }
 /**
  * The window a background run is bound to for its whole life (design §2.2).

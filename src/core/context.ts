@@ -67,9 +67,8 @@ const contextSchema = z
       })
       .strict()
       .optional(),
-    // A bound run's window (design §2.3): flags the helper reports and the
-    // runner's standing note for the model, which survives the provider's
-    // second cleaning here.
+    // A bound run's window (design §2.3): the flags the helper reports, which
+    // the instruction's background paragraph explains (src/providers/http.ts).
     background: z
       .object({
         appName: short,
@@ -77,7 +76,6 @@ const contextSchema = z
         covered: z.boolean(),
         staleRisk: z.boolean(),
         minimized: z.boolean(),
-        note: bounded(800).optional(),
       })
       .strict()
       .optional(),
@@ -163,7 +161,6 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
         covered: c.background.covered,
         staleRisk: c.background.staleRisk,
         minimized: c.background.minimized,
-        ...(c.background.note !== undefined && { note: c.background.note }),
       },
     }),
   };

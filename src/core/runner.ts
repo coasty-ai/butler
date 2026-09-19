@@ -39,7 +39,6 @@ import {
   withoutWindow,
 } from "./schema";
 import {
-  BACKGROUND_NOTE,
   MISS_LIMIT,
   NO_BACKGROUND_ROUTE,
   aimAtDisplay,
@@ -2342,8 +2341,9 @@ export class Runner {
   }
   /**
    * The model's copy of a frame: the watch context of a wake-up run and, for
-   * a bound run, the window's background facts with the standing note. Only
-   * this copy carries them; snapshots, traces and saved frames do not.
+   * a bound run, the window's background facts (the instruction that explains
+   * them is the provider's, src/providers/http.ts). Only this copy carries
+   * them; snapshots, traces and saved frames do not.
    */
   private modelFrame(frame: Frame): Frame {
     const target = this.boundTarget();
@@ -2361,7 +2361,6 @@ export class Runner {
             staleRisk: false,
             minimized: false,
             ...frame.context.background,
-            note: BACKGROUND_NOTE,
           },
         }),
       },
