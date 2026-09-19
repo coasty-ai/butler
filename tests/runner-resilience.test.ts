@@ -16,9 +16,11 @@ import {
 } from "../src/core/schema";
 import {
   Runner,
+  TARGET_HANDOFF_MESSAGE,
   actionSignature,
   declinedResult,
   nativeAction,
+  refusedTargetsWarning,
   repetitionPeriod,
   screenChangedResult,
   searchRoute,
@@ -378,7 +380,7 @@ describe("runner policy counters", () => {
           : surface,
     });
     const p = scripted(
-      Array.from({ length: 3 }, () => act({ type: "open_app", name: "Notez" })),
+      Array.from({ length: 4 }, () => act({ type: "open_app", name: "Notez" })),
     );
     const runner = new Runner(c, p, m.recorder, settings, () => {});
     const running = runner.start("test");
@@ -1348,8 +1350,7 @@ describe("runner open_app execution", () => {
     expect(opens(execute)).toBe(2);
     expect(m.of("ActionRetargetRequested")).toHaveLength(1);
   });
-  it("hands over after three windowless repeats instead of looping", async () => {
-    const { TARGET_HANDOFF_MESSAGE } = await import("../src/core/runner");
+  it("hands over after four windowless repeats instead of looping", async () => {
     realOpenApp();
     const m = memory();
     const execute = vi.fn(async () => ({
@@ -1364,7 +1365,7 @@ describe("runner open_app execution", () => {
     }));
     const c = controller({ surface: async () => windowlessCalendar, execute });
     const p = scripted(
-      Array.from({ length: 4 }, () =>
+      Array.from({ length: 5 }, () =>
         act({ type: "open_app", name: "Calendar" }),
       ),
     );
@@ -2061,5 +2062,109 @@ describe("loop detection by the control an action hits", () => {
       actionSignature(menu(["Edit", "Search"])),
     );
     expect(repetitionPeriod(same)).toBe(1);
+  });
+});
+
+// Cycle 20260919-0226, seven runs, none of which asked the user: three refused
+// targets in a row (a path not in the local index, a chord with nothing
+// verifiable in focus, a double-click on nothing) handed the task to a user
+// who was not there, saying "click it for me" about a file no click could
+// produce. The third refusal now asks the model to conclude; only a refused
+// target after that hands over.
+describe("the model's last word before a targeting hand-off", () => {
+  const unidentified =
+    "No input was sent. This target could not be identified.";
+  const refuseAims = () => {
+    policy.evaluate = (a) =>
+      a.type === "double_click"
+        ? { kind: "RETRY", reason: unidentified }
+        : { kind: "ALLOW", reason: "Test." };
+  };
+  const aim = act({ type: "double_click", x: 0.5, y: 0.5 });
+  const lastWord = (o: Observation) =>
+    o.history.map((h) => h.result.endsWith(refusedTargetsWarning));
+  it("asks the model to conclude at the third refused target, and its fail ends the run instead of a hand-off", async () => {
+    refuseAims();
+    const m = memory();
+    const c = controller();
+    const p = scripted([
+      aim,
+      aim,
+      aim,
+      act({ type: "fail", reason: "The file is not there." }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("failed");
+    expect(runner.snapshot.message).toBe("The file is not there.");
+    expect(m.of("UserTakeoverStarted")).toHaveLength(0);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(3);
+    expect(c.execute).not.toHaveBeenCalled();
+    // The first two refusals carry their reason alone; the third adds the
+    // last word, which the fourth reply answered.
+    expect(p.observations[3].history.map((h) => h.result)).toEqual([
+      unidentified,
+      unidentified,
+      unidentified + refusedTargetsWarning,
+    ]);
+    expect(
+      m.of("ActionProposed").map((e) => (e.data.action as Action).type),
+    ).toEqual(["fail"]);
+  });
+  it("hands over when the last word is answered with a fourth refused target, and never pauses instead", async () => {
+    refuseAims();
+    const m = memory();
+    const c = controller();
+    const p = scripted(Array.from({ length: 4 }, () => aim));
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "takeover");
+    expect(runner.snapshot.message).toBe(TARGET_HANDOFF_MESSAGE);
+    expect(m.of("UserTakeoverStarted").map((e) => e.data)).toEqual([
+      { source: "handoff" },
+    ]);
+    expect(m.of("RunPaused")).toHaveLength(0);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(4);
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(lastWord(p.observations[3])).toEqual([false, false, true]);
+    runner.stop();
+    await running;
+    expect(runner.snapshot.run?.status).toBe("cancelled");
+  });
+  it("relaxes nothing: a route taken after the last word goes through policy, an aim after it is still refused, and only an executed step ends the streak", async () => {
+    refuseAims();
+    const m = memory();
+    const c = controller();
+    const p = scripted([
+      aim,
+      aim,
+      aim,
+      act({ type: "menu_item", path: ["File", "Open"] }),
+      aim,
+      aim,
+      aim,
+      act({ type: "fail", reason: "Not there." }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("failed");
+    expect(c.execute).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(c.execute).mock.calls[0][0]).toMatchObject({
+      type: "menu_item",
+    });
+    expect(m.of("UserTakeoverStarted")).toHaveLength(0);
+    expect(m.of("RunPaused")).toHaveLength(0);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(6);
+    // The executed route ended the streak: the next three refusals earned a
+    // second last word, not a hand-off.
+    expect(lastWord(p.observations[7])).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+    ]);
   });
 });

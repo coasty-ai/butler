@@ -483,6 +483,23 @@ export function sameProbe(a: ProgressProbe, b: ProgressProbe): boolean {
 export const noProgressWarning =
   " Note: this action produced no visible change (same application, window, screenshot and focus), and the one before it did not either. Repeating it will not work: take a different route now, such as a keyboard shortcut from context.playbook, the menu bar, or request_user to ask the user.";
 /**
+ * Refused targets in a row, since the last executed step, before the model is
+ * asked to conclude; one more after that hands the task to the user.
+ */
+const REFUSED_TARGETS_LAST_WORD = 3;
+/**
+ * Advice added to the third refused target in a row. The user's click resolves
+ * a control the helper cannot identify, not a path that is not in the index or
+ * a chord nothing verifiable holds focus for, and the bench has nobody to
+ * click at all (cycle 20260919-0226: seven runs handed off this way, three of
+ * them with no step executed, none had asked the user). So before the hand-off
+ * the model gets one step to conclude: a route it has not tried, an honest
+ * fail, or a question only the user can answer. Advice like noProgressWarning:
+ * no decision changes, and a refused target after it hands over as before.
+ */
+export const refusedTargetsWarning =
+  " Three targets in a row were refused and nothing was sent. Do not aim at another. Take a route you have not tried (context.menus, context.controls, context.playbook); if what the objective needs is not there (a file, a folder, a control, an application), stop with fail and say what is missing; request_user only for a step only the user can do.";
+/**
  * What moved when native refused a step, in the model's terms, so it changes
  * approach instead of proposing the same step again (live: six identical
  * CMD+N refused while Calendar's focus settled after launch).
@@ -3432,12 +3449,17 @@ export class Runner {
             });
             continue;
           }
+          const refused = ++this.targetingRetries;
           history.push({
             type: action.type,
             action: echoAction(action),
-            result: noInput(decision.reason),
+            result:
+              noInput(decision.reason) +
+              (refused === REFUSED_TARGETS_LAST_WORD
+                ? refusedTargetsWarning
+                : ""),
           });
-          if (++this.targetingRetries >= 3) {
+          if (refused > REFUSED_TARGETS_LAST_WORD) {
             this.targetingRetries = 0;
             this.takeover(
               action.type === "open_app" &&

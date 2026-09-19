@@ -350,7 +350,7 @@ describe("takeover source", () => {
     const m2 = journal();
     const again = new Runner(
       controller(),
-      scripted([click, click, click]),
+      scripted([click, click, click, click]),
       m2.recorder,
       settings,
       () => {},

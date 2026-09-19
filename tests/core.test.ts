@@ -641,7 +641,11 @@ describe("run loop", () => {
     const running = runner.start("Open Notes");
     while (runner.snapshot.run?.status !== "takeover") await tick();
     await tick();
-    expect(next).toHaveBeenCalledTimes(3);
+    // Three refused targets, the third with the last word, then the fourth hands over.
+    expect(next).toHaveBeenCalledTimes(4);
+    expect(next.mock.calls[3][0].history.at(-1)?.result).toMatch(
+      /refused and nothing was sent/,
+    );
     expect(execute).not.toHaveBeenCalled();
     expect(runner.snapshot.pending).toBeUndefined();
     expect(m.events.some((e) => e.type === "PolicyConfirmationRequested")).toBe(
