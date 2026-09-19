@@ -659,6 +659,101 @@ function verifiedFolder(targetURL: string | undefined): boolean {
     !/\.[A-Za-z0-9-]{1,15}\/$/.test(url.pathname)
   );
 }
+/**
+ * File extensions whose double-click in the Finder opens a document viewer
+ * or editor and nothing else, lowercase; matched case-insensitively on the
+ * item's own file URL (the helper's AXURL), never on its label, since the
+ * Finder hides ".app". Not here on purpose: html (a browser runs its
+ * scripts from a file: origin), zip (Archive Utility writes the archive's
+ * contents beside it, which is a change to the folder and can plant a
+ * disguised program for the next click), and every extension the
+ * executableExtension regex names. The packages rtfd, pages, numbers and
+ * key are directories that open as documents, so they are read here before
+ * verifiedFolder's bundle rule.
+ */
+// svg is not on the list: a browser is a common default handler for it and runs
+// scripts from a file: origin, the same reason html stays a question.
+export const documentExtensions: readonly string[] = [
+  "txt",
+  "rtf",
+  "rtfd",
+  "md",
+  "markdown",
+  "pdf",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "heic",
+  "heif",
+  "webp",
+  "tiff",
+  "tif",
+  "csv",
+  "tsv",
+  "json",
+  "xml",
+  "yaml",
+  "yml",
+  "log",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "pages",
+  "numbers",
+  "key",
+  "mov",
+  "mp4",
+  "m4v",
+  "mp3",
+  "m4a",
+  "wav",
+  "aiff",
+  "aac",
+  "epub",
+  "ics",
+  "vcf",
+];
+/** A name that LaunchServices hands to a program that runs it, or that runs. */
+const executableExtension =
+  /\.(?:app|command|tool|sh|zsh|bash|pkg|mpkg|dmg|scpt|applescript|workflow|terminal|jar|py|rb|pl)\b/;
+/**
+ * Whether a Finder item's own URL names a document: a file: URL whose last
+ * path segment (URL-decoded, a package's trailing "/" dropped) has a stem
+ * and an extension from documentExtensions. The last extension decides,
+ * as LaunchServices binds the handler by it: "report.pdf.app" is an
+ * application and "notes.txt.command" a script, so neither is a document;
+ * a document inside /Applications is still opened by its viewer. A symlink
+ * cannot be told from its URL. No URL, another scheme, a name without a
+ * stem (".txt") or an unknown extension is not a document.
+ */
+export function documentURL(targetURL: string | undefined): boolean {
+  if (!targetURL) return false;
+  let url: URL;
+  try {
+    url = new URL(targetURL);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "file:") return false;
+  const segments = url.pathname.replace(/\/+$/, "").split("/");
+  let name: string;
+  try {
+    name = decodeURIComponent(segments[segments.length - 1] ?? "");
+  } catch {
+    return false;
+  }
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return false;
+  const extension = name.slice(dot + 1).toLowerCase();
+  return (
+    documentExtensions.includes(extension) &&
+    !executableExtension.test(`.${extension}`)
+  );
+}
 function protectedHost(host: string, settings: Settings): boolean {
   const h = host.toLowerCase();
   return settings.protectedDomains.some((d) => {
@@ -1609,7 +1704,10 @@ function decideAction(
           };
     if (keys === "CMD+Q")
       return { kind: "CONFIRM", reason: "Quit this application?" };
-    // Finder opens the selection with these; opening can run a program.
+    // Finder opens the selection with these; opening can run a program. The
+    // surface carries no selection URL for a key (targetURL belongs to a
+    // pointer target), so nothing here can tell a document from a program
+    // the way the double-click rule does, and the question stays.
     if (
       surface.appId === "com.apple.finder" &&
       ["CMD+O", "CMD+DOWN"].includes(keys)
@@ -1722,18 +1820,27 @@ function decideAction(
   // items inside still pass the label check below.
   if (!surface.unknown && leftClick && surface.targetRole === "AXMenuBarItem")
     return { kind: "ALLOW", reason: "Open an application menu." };
-  // Finder opens whatever is double-clicked, and hides ".app". Only a verified
-  // folder (a file URL ending in "/" whose name is not a bundle) is routine.
+  // Finder opens whatever is double-clicked, and hides ".app". A document by
+  // the item's own file URL (documentURL: the extension decides what opens
+  // it, so a disguised "report.pdf.app" is not one) opens without a question;
+  // a verified folder (a file URL ending in "/" whose name is not a bundle)
+  // is routine and judged by the rules below; anything else, including an
+  // item with no URL, is asked about. Measured 2026-09-19 (probe cycle
+  // 20260919-1148-2c31e83): two recovery tasks double-clicked plain text
+  // files and were asked, so a .txt could never open unattended.
   if (
     action.type === "double_click" &&
     (surface.appId === "com.apple.finder" ||
-      surface.targetAppId === "com.apple.finder") &&
-    !verifiedFolder(surface.targetURL)
-  )
-    return {
-      kind: "CONFIRM",
-      reason: "Open this item? It may run a program.",
-    };
+      surface.targetAppId === "com.apple.finder")
+  ) {
+    if (documentURL(surface.targetURL))
+      return { kind: "ALLOW", reason: "Open a document." };
+    if (!verifiedFolder(surface.targetURL))
+      return {
+        kind: "CONFIRM",
+        reason: "Open this item? It may run a program.",
+      };
+  }
   // A result link on a search results page only opens that result. Its title
   // ("Post X · …", "How to delete…") describes the page, not an action here.
   if (
@@ -1951,12 +2058,7 @@ function decideAction(
     surface.targetAppId !== "com.apple.Spotlight"
   ) {
     // Opening a file can run a program; that is not routine.
-    if (
-      action.type === "double_click" &&
-      /\.(?:app|command|tool|sh|zsh|bash|pkg|mpkg|dmg|scpt|applescript|workflow|terminal|jar|py|rb|pl)\b/.test(
-        words,
-      )
-    )
+    if (action.type === "double_click" && executableExtension.test(words))
       return {
         kind: "CONFIRM",
         reason: "Open this file? It may run a program.",

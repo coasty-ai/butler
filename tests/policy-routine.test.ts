@@ -7,6 +7,8 @@ import {
   type Surface,
 } from "../src/core/schema";
 import {
+  documentExtensions,
+  documentURL,
   evaluate,
   launcherMatches,
   isInstallerName,
@@ -979,13 +981,26 @@ describe("Finder opening and code-running surfaces", () => {
       "CONFIRM",
     ],
     [
-      "double-click a file URL",
+      // Until 2026-09-19 this was CONFIRM, the false positive the recovery
+      // tasks hit: the URL's extension names a document, so it opens.
+      "double-click a document by its file URL",
       doubleClick,
       {
         ...finder,
         targetRole: "AXCell",
         targetText: "notes",
         targetURL: "file:///Users/x/notes.txt",
+      },
+      "ALLOW",
+    ],
+    [
+      "double-click a file URL with an unknown extension",
+      doubleClick,
+      {
+        ...finder,
+        targetRole: "AXCell",
+        targetText: "data",
+        targetURL: "file:///Users/x/data.bin",
       },
       "CONFIRM",
     ],
@@ -2449,5 +2464,234 @@ describe("click_control roles the model spells its own way", () => {
           role,
         }).success,
       ).toBe(true);
+  });
+});
+
+describe("Finder double-click on a document by its own URL", () => {
+  const finder = { appId: "com.apple.finder", targetRole: "AXCell" };
+  const item = (targetURL: string | undefined, text = "item") =>
+    decide(doubleClick, { ...finder, targetText: text, targetURL });
+  const opened: Decision = { kind: "ALLOW", reason: "Open a document." };
+  const asked: Decision = {
+    kind: "CONFIRM",
+    reason: "Open this item? It may run a program.",
+  };
+  const executable = [
+    "app",
+    "command",
+    "tool",
+    "sh",
+    "zsh",
+    "bash",
+    "pkg",
+    "mpkg",
+    "dmg",
+    "scpt",
+    "applescript",
+    "workflow",
+    "terminal",
+    "jar",
+    "py",
+    "rb",
+    "pl",
+  ];
+
+  it("ships the document list as fixed, lowercase and disjoint from every executable extension", () => {
+    expect([...documentExtensions]).toEqual([
+      "txt",
+      "rtf",
+      "rtfd",
+      "md",
+      "markdown",
+      "pdf",
+      "png",
+      "jpg",
+      "jpeg",
+      "gif",
+      "heic",
+      "heif",
+      "webp",
+      "tiff",
+      "tif",
+      "csv",
+      "tsv",
+      "json",
+      "xml",
+      "yaml",
+      "yml",
+      "log",
+      "doc",
+      "docx",
+      "xls",
+      "xlsx",
+      "ppt",
+      "pptx",
+      "pages",
+      "numbers",
+      "key",
+      "mov",
+      "mp4",
+      "m4v",
+      "mp3",
+      "m4a",
+      "wav",
+      "aiff",
+      "aac",
+      "epub",
+      "ics",
+      "vcf",
+    ]);
+    for (const ext of documentExtensions)
+      expect(ext, ext).toBe(ext.toLowerCase());
+    for (const ext of ["zip", "html", "htm", "svg", "js", "webloc", "inetloc"])
+      expect(documentExtensions, ext).not.toContain(ext);
+    for (const ext of executable) expect(documentExtensions).not.toContain(ext);
+  });
+
+  it.each(documentExtensions.map((ext) => [ext] as [string]))(
+    "opens a .%s without a question",
+    (ext) => {
+      // Packages (rtfd, pages, numbers, key) come from the helper with a
+      // trailing slash, like any directory; the rule reads the name either way.
+      const packaged = ["rtfd", "pages", "numbers", "key"].includes(ext);
+      const url = `file:///Users/x/Documents/report.${ext}${packaged ? "/" : ""}`;
+      expect(documentURL(url)).toBe(true);
+      expect(item(url, "report")).toEqual(opened);
+    },
+  );
+
+  it.each([
+    ["an uppercase extension", "file:///Users/x/NOTES.TXT"],
+    ["a mixed-case extension", "file:///Users/x/Budget.Pdf"],
+    ["a URL-encoded name", "file:///Users/x/my%20notes%20(final).txt"],
+    ["a non-ASCII encoded name", "file:///Users/x/r%C3%A9sum%C3%A9.pdf"],
+    ["a name with dots in its stem", "file:///Users/x/2026.09.budget.txt"],
+    ["a package with a trailing slash", "file:///Users/x/Letter.pages/"],
+    ["a package without one", "file:///Users/x/Letter.pages"],
+    ["a folder with a bundle-looking stem", "file:///Users/x/a.b/c.txt"],
+    // The extension decides what opens it: a text file under /Applications
+    // is opened by its text editor, not run, wherever it sits.
+    [
+      "a document inside /Applications",
+      "file:///Applications/Utilities/ReadMe.txt",
+    ],
+    [
+      "a document inside an application bundle",
+      "file:///Applications/Numbers.app/Contents/Resources/Release%20Notes.rtf",
+    ],
+  ])("opens %s", (_name, url) => {
+    expect(documentURL(url)).toBe(true);
+    expect(item(url)).toEqual(opened);
+  });
+
+  it.each([
+    // A disguised program: Finder shows "report.pdf"; the URL says ".app".
+    ["a double extension ending in .app", "file:///Users/x/report.pdf.app/"],
+    ["a double extension ending in .command", "file:///Users/x/x.txt.command"],
+    ["a double extension ending in .sh", "file:///Users/x/notes.md.sh"],
+    ["an application bundle", "file:///Applications/Zoom.app/"],
+    ["a disk image", "file:///Users/x/Downloads/Installer.dmg"],
+    ["a shell script", "file:///Users/x/run.sh"],
+    ["an installer package", "file:///Users/x/Setup.pkg"],
+    ["a web page", "file:///Users/x/page.html"],
+    ["an archive", "file:///Users/x/photos.zip"],
+    ["an unknown extension", "file:///Users/x/data.bin"],
+    ["a name without a stem", "file:///Users/x/.txt"],
+    ["a name without an extension", "file:///Users/x/README"],
+    ["a name ending in a dot", "file:///Users/x/notes."],
+    ["an https URL", "https://example.com/notes.txt"],
+    ["a data URL", "data:text/plain,notes.txt"],
+    ["an unparseable URL", "not a url.txt"],
+    ["a malformed escape", "file:///Users/x/bad%E0%A4%A.txt"],
+  ])("asks about %s", (_name, url) => {
+    expect(documentURL(url)).toBe(false);
+    expect(item(url)).toEqual(asked);
+  });
+
+  it("asks about every executable extension, on its own or behind a document's", () => {
+    for (const ext of executable) {
+      expect(documentURL(`file:///Users/x/thing.${ext}`), ext).toBe(false);
+      expect(item(`file:///Users/x/thing.${ext}`), ext).toEqual(asked);
+      expect(item(`file:///Users/x/thing.txt.${ext}`), ext).toEqual(asked);
+    }
+  });
+
+  it("asks about an item with no URL and a document extension in its label alone", () => {
+    expect(documentURL(undefined)).toBe(false);
+    expect(documentURL("")).toBe(false);
+    expect(item(undefined, "notes.txt")).toEqual(asked);
+    // The generic rule for other applications is unchanged: the label decides there.
+    expect(
+      decide(doubleClick, {
+        appId: "com.example.files",
+        targetRole: "AXCell",
+        targetText: "run.command",
+      }).kind,
+    ).toBe("CONFIRM");
+  });
+
+  it("keeps a verified folder routine and a bundle asked, as before", () => {
+    expect(item("file:///Users/x/Documents/Invoices/", "Invoices").kind).toBe(
+      "ALLOW",
+    );
+    expect(item("file:///Users/x/Documents/Invoices/", "Invoices")).not.toEqual(
+      opened,
+    );
+    expect(item("file:///Applications/zoom.us.app/", "Zoom")).toEqual(asked);
+    expect(item("file:///Users/x/Run.workflow/", "Run")).toEqual(asked);
+  });
+
+  it("reads the Finder as the target application too", () => {
+    expect(
+      decide(doubleClick, {
+        targetAppId: "com.apple.finder",
+        targetRole: "AXImage",
+        targetText: "notes",
+        targetURL: "file:///Users/x/Desktop/notes.txt",
+      }),
+    ).toEqual(opened);
+  });
+
+  it("leaves the autonomy 'all' path as it was: programs done without asking, documents opened either way", () => {
+    const all = {
+      ...structuredClone(defaultSettings),
+      autonomy: "all" as const,
+      autonomyAllAcknowledged: true,
+    };
+    const under = (targetURL: string | undefined) =>
+      evaluate(
+        doubleClick,
+        { ...base, ...finder, targetText: "item", targetURL },
+        all,
+        false,
+      );
+    expect(under("file:///Users/x/notes.txt")).toEqual(opened);
+    expect(under("file:///Applications/Zoom.app/")).toEqual({
+      kind: "ALLOW",
+      reason:
+        "Open this item: done without asking, as you set. Reported when done.",
+    });
+    expect(under(undefined).kind).toBe("ALLOW");
+    // Unacknowledged, "all" is not in force.
+    expect(
+      evaluate(
+        doubleClick,
+        { ...base, ...finder, targetText: "item" },
+        { ...all, autonomyAllAcknowledged: false },
+        false,
+      ),
+    ).toEqual(asked);
+  });
+
+  it("still asks on the Finder's open keys, which carry no selection URL", () => {
+    const finderKeys = { appId: "com.apple.finder" };
+    expect(decide(hotkey("CMD", "O"), finderKeys)).toEqual(asked);
+    expect(decide(hotkey("CMD", "DOWN"), finderKeys)).toEqual(asked);
+    expect(
+      decide(hotkey("CMD", "O"), {
+        ...finderKeys,
+        targetURL: "file:///Users/x/notes.txt",
+      }),
+    ).toEqual(asked);
   });
 });
