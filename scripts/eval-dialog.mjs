@@ -273,7 +273,10 @@ const report = JSON.stringify(
   null,
   2,
 );
-console.log(report);
+// Wait for the pipe to take the whole report before exiting: on macOS a pipe's
+// stdout is asynchronous, and process.exit right after console.log can cut a
+// report over 8 KiB at its first chunk.
+await new Promise((done) => process.stdout.write(report + "\n", done));
 if (out) {
   const path = resolve(out);
   mkdirSync(dirname(path), { recursive: true });

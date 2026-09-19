@@ -411,7 +411,15 @@ if (values.json) {
         )
       : undefined,
   }));
-  console.log(JSON.stringify({ summary, turns: shown }, null, 2));
+  // Wait for the pipe to take the whole report: on macOS a pipe's stdout is
+  // asynchronous, and process.exit right after console.log cut a report over
+  // 8 KiB at its first chunk.
+  await new Promise((done) =>
+    process.stdout.write(
+      JSON.stringify({ summary, turns: shown }, null, 2) + "\n",
+      done,
+    ),
+  );
   process.exit(0);
 }
 
