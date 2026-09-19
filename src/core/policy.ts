@@ -161,9 +161,6 @@ const benignControlLabels = new Set([
   "info",
   "details",
   "general",
-  // System Settings lists the General pane's rows as buttons described by
-  // their pane name; About only shows information (cycle 20260919-0226).
-  "about",
   "play",
   "pause",
   "play video",
@@ -1823,6 +1820,18 @@ function decideAction(
         return {
           kind: "ALLOW",
           reason: "Use a control on a search results page.",
+        };
+      // System Settings lists the General pane's rows as buttons described by
+      // their pane name; About only shows information (cycle 20260919-0226).
+      // Scoped to System Settings: an "About" elsewhere is not known.
+      if (
+        surface.appId === "com.apple.systempreferences" &&
+        normalizeControlLabel(shown) === "about"
+      )
+        return {
+          kind: "ALLOW",
+          reason:
+            "Open System Settings’ About pane: it only shows information.",
         };
       if (benignControl(role, shown))
         return {

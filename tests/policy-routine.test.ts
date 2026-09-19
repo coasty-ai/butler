@@ -318,7 +318,7 @@ describe("System Settings pane rows (cycle 20260919-0226-17c6e7f)", () => {
   it("opens the About row without asking", () => {
     expect(decide(named("About", { x: 0.781, y: 0.109 }), aboutRow)).toEqual({
       kind: "ALLOW",
-      reason: "Activate an identified, non-consequential control.",
+      reason: "Open System Settings’ About pane: it only shows information.",
     });
     // The search route: the sidebar result is a row whose text names it.
     expect(

@@ -120,8 +120,11 @@ export function extractSkill(
     const action = step?.action;
     if (!action || typeof action.type !== "string") continue;
     const type = action.type;
-    const { frame_id: _frame, ...rest } = action;
+    // A step's note carried a value between steps of one run; it is never
+    // part of the procedure a skill keeps.
+    const { frame_id: _frame, note: _note, ...rest } = action;
     void _frame;
+    void _note;
     // Every text-bearing field is checked; a credential drops the whole skill.
     for (const value of [
       ...Object.values(rest),
@@ -223,9 +226,13 @@ const withoutOpenApp = (step: SkillStep): SkillStep => {
 /** What makes two steps the same procedure: wait durations do not. */
 const comparable = (step: SkillStep) => {
   const plain = withoutOpenApp(step);
+  const { note: _note, ...action } = (plain?.action ?? {}) as Record<
+    string,
+    unknown
+  >;
+  void _note;
   return {
-    action:
-      plain?.action?.type === "wait" ? { type: "wait" } : (plain?.action ?? {}),
+    action: action.type === "wait" ? { type: "wait" } : action,
     target: plain?.target ?? null,
     expectAppId: plain?.expectAppId ?? null,
   };

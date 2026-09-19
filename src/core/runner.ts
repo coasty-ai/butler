@@ -419,7 +419,7 @@ export const appSwitchWarning =
  * three times running after "choose a different approach" and paused.
  */
 export const declinedResult = (question: string) =>
-  `The user declined: ${question} Do not propose this step again; a step of the same kind asks again. Take a route that needs no approval (a listed control, a menu item from context.menus, the application's own shortcut), or finish: done for what is verified, otherwise fail and say what needed approval.`;
+  `The user declined: ${question} Do not propose this step again; a step of the same kind asks again. Take a route that needs no approval (a listed control, a menu item from context.menus, the application's own shortcut), or finish: fail and say what needed approval (done only when the objective is already visibly complete).`;
 /**
  * The history result for an open_app that brought a running application to
  * the front with no window, after its own Window menu showed none either
@@ -3453,11 +3453,15 @@ export class Runner {
           history.push({
             type: action.type,
             action: echoAction(action),
+            // The model's copy of an entry is cut at MODEL_RESULT_CHARS: the
+            // last word must survive the longest refusal reason.
             result:
-              noInput(decision.reason) +
-              (refused === REFUSED_TARGETS_LAST_WORD
-                ? refusedTargetsWarning
-                : ""),
+              refused === REFUSED_TARGETS_LAST_WORD
+                ? noInput(decision.reason).slice(
+                    0,
+                    MODEL_RESULT_CHARS - refusedTargetsWarning.length,
+                  ) + refusedTargetsWarning
+                : noInput(decision.reason),
           });
           if (refused > REFUSED_TARGETS_LAST_WORD) {
             this.targetingRetries = 0;
