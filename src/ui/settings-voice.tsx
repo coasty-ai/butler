@@ -20,7 +20,12 @@ const kokoroVoiceLabels: Record<Settings["kokoroVoice"], string> = {
 };
 
 /** What each autonomy choice means, under the picker. */
-export function autonomyHint(autonomy: Settings["autonomy"]): string {
+export function autonomyHint(
+  autonomy: Settings["autonomy"],
+  acknowledged = true,
+): string {
+  if (autonomy === "all" && !acknowledged)
+    return "Tick the line below to turn this on. Until then, only steps you did not ask for wait for you, and money, sending, deleting, installing and account settings always do.";
   if (autonomy === "ask")
     return "Every consequential step waits for you: saving, replacing, sending, buying, deleting.";
   if (autonomy === "flow")
@@ -33,23 +38,18 @@ export function autonomyHint(autonomy: Settings["autonomy"]): string {
 export const AUTONOMY_ALL_ACKNOWLEDGEMENT =
   "I understand it can send, buy, delete and install without asking me.";
 /**
- * "Allow everything" runs only while the acknowledgement stands, so the
- * settings the app saves keep the two together: picking another mode drops
- * the acknowledgement, and picking this one without ticking leaves the mode
- * where it was.
+ * "Allow everything" runs only while the acknowledgement stands (the policy
+ * checks both fields; unticked, it asks as "only for what I did not ask for"
+ * does). Picking it shows the acknowledgement to tick; picking another mode
+ * drops the acknowledgement. Live 2026-09-18: snapping back to the old mode
+ * until ticked hid the tick box, so the mode could never be chosen.
  */
 export function autonomyChange(
-  current: Settings,
   autonomy: Settings["autonomy"],
   acknowledged: boolean,
 ): Pick<Settings, "autonomy" | "autonomyAllAcknowledged"> {
   if (autonomy !== "all") return { autonomy, autonomyAllAcknowledged: false };
-  return acknowledged
-    ? { autonomy: "all", autonomyAllAcknowledged: true }
-    : {
-        autonomy: current.autonomy === "all" ? "flow" : current.autonomy,
-        autonomyAllAcknowledged: false,
-      };
+  return { autonomy: "all", autonomyAllAcknowledged: acknowledged };
 }
 /** What the "Talk naturally" hint says about where the words go. */
 export function conversationHint(s: Settings): string {
@@ -185,7 +185,6 @@ export function VoiceSettings({
           aria-describedby={`${ids}-autonomy`}
           onChange={(e) => {
             const change = autonomyChange(
-              s,
               e.target.value as Settings["autonomy"],
               s.autonomyAllAcknowledged,
             );
@@ -199,13 +198,13 @@ export function VoiceSettings({
           <option value="all">Never ask, allow everything</option>
         </select>
       </label>
-      {(s.autonomy === "all" || s.autonomyAllAcknowledged) && (
+      {s.autonomy === "all" && (
         <label className="consent">
           <input
             type="checkbox"
-            checked={s.autonomy === "all" && s.autonomyAllAcknowledged}
+            checked={s.autonomyAllAcknowledged}
             onChange={(e) => {
-              const change = autonomyChange(s, "all", e.target.checked);
+              const change = autonomyChange("all", e.target.checked);
               set("autonomy", change.autonomy);
               set("autonomyAllAcknowledged", change.autonomyAllAcknowledged);
             }}
@@ -214,7 +213,7 @@ export function VoiceSettings({
         </label>
       )}
       <p id={`${ids}-autonomy`} className="field-hint">
-        {autonomyHint(s.autonomy)}
+        {autonomyHint(s.autonomy, s.autonomyAllAcknowledged)}
       </p>
       <label className="consent">
         <input

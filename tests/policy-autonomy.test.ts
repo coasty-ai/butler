@@ -239,30 +239,23 @@ describe("how often it asks: allow everything", () => {
   });
 
   it("keeps the acknowledgement and the mode together", () => {
-    const current = { ...defaultSettings, autonomy: "task" as const };
-    // Picking it without ticking leaves the mode alone.
-    expect(autonomyChange(current, "all", false)).toEqual({
-      autonomy: "task",
+    // Picking it without ticking shows the tick box and asks meanwhile.
+    // Picking it shows the tick box, unticked; the policy still asks until
+    // it is ticked (live 2026-09-18: snapping back hid the tick box).
+    expect(autonomyChange("all", false)).toEqual({
+      autonomy: "all",
       autonomyAllAcknowledged: false,
     });
-    expect(autonomyChange(current, "all", true)).toEqual({
+    expect(autonomyChange("all", true)).toEqual({
       autonomy: "all",
       autonomyAllAcknowledged: true,
     });
-    // Leaving it, or unticking, drops the acknowledgement with it.
-    const on = {
-      ...current,
-      autonomy: "all" as const,
-      autonomyAllAcknowledged: true,
-    };
-    expect(autonomyChange(on, "flow", true)).toEqual({
+    // Leaving it drops the acknowledgement with it; unticking keeps it pending.
+    expect(autonomyChange("flow", true)).toEqual({
       autonomy: "flow",
       autonomyAllAcknowledged: false,
     });
-    expect(autonomyChange(on, "all", false)).toEqual({
-      autonomy: "flow",
-      autonomyAllAcknowledged: false,
-    });
+    expect(autonomyHint("all", false)).toMatch(/Tick the line below/);
     // And it says what it means before it is ticked.
     expect(AUTONOMY_ALL_ACKNOWLEDGEMENT).toMatch(
       /send, buy, delete and install without asking/,
