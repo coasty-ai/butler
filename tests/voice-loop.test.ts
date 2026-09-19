@@ -514,13 +514,39 @@ describe("voice suite: the fixture", () => {
     const safari = task("browse-goto-example").setup ?? [];
     expect(safari.map((s) => s.kind)).toEqual([
       "osascript",
-      "sh",
+      "osascript",
       "osascript",
       "osascript",
     ]);
-    expect(safari[1].script).toBe("pgrep -xq Safari || open -a Safari");
+    // Safari found running with zero windows gets one (the first rehearsal,
+    // 2026-09-19, waited 20 s for a window `open -a Safari` never made), and
+    // the task then uses that window, so closing it leaves Safari as found.
+    expect(safari[1]).toMatchObject({ record: "safariLaunchWindow" });
+    expect(safari[1].script).toMatch(/count windows of process "Safari"/);
+    expect(safari[1].script).toMatch(
+      /if n is 0 then\n  do shell script "open -a Safari about:blank"\n  return "true"/,
+    );
     expect(safari[2]).toMatchObject({ poll: true });
-    expect(safari[3].script).toMatch(/make new document/);
+    expect(safari[3].script).toMatch(
+      /if "\{state\.safariLaunchWindow\}" is "true" then\n    set URL of current tab of window 1 to "about:blank"\n  else\n    make new document with properties \{URL:"about:blank"\}\n  end if/,
+    );
+    for (const t of suite.tasks) {
+      const setup = t.setup ?? [];
+      const tells = setup.findIndex(
+        (s) =>
+          !s.poll &&
+          s.script.includes('tell application "Safari"') &&
+          !s.script.includes('application "Safari" is running'),
+      );
+      if (tells < 0) continue;
+      expect(
+        setup.slice(0, tells).some((s) => s.record === "safariLaunchWindow"),
+        `${t.id} scripts Safari without giving it a window first`,
+      ).toBe(true);
+      expect(setup[tells].script, t.id).toMatch(
+        /\{state\.safariLaunchWindow\}/,
+      );
+    }
     const calc = task("app-quit-calculator");
     expect(calc.setup?.[1].script).toBe("open -a Calculator");
     expect(calc.setup?.[2]).toMatchObject({ poll: true });
@@ -650,8 +676,10 @@ describe("voice suite: the fixture", () => {
       stderr: "",
       ms: ok.ms,
     });
-    // Never true: the poll ends when it said it would, and no try may
-    // outlive it (a hung osascript is killed and asked again).
+    // Never true: the poll ends when it said it would, and no try is
+    // started with less than POLL.minTryMs left. The first rehearsal
+    // (2026-09-19) gave its last try the 4 ms that remained; the kill read
+    // as `exit 124` and the detail blamed a hang for a window that never came.
     clock = 0;
     slept.length = 0;
     tries.length = 0;
@@ -670,16 +698,65 @@ describe("voice suite: the fixture", () => {
       { timeoutMs: 1000, intervalMs: 300, now, sleep },
     );
     expect(never.ok).toBe(false);
-    expect(never.attempts).toBe(3);
-    expect(never.ms).toBe(1000);
-    expect(tries).toEqual([1000, 600, 200]);
+    expect(never.attempts).toBe(2);
+    expect(never.ms).toBe(800);
+    expect(tries).toEqual([1000, 600]);
+    expect(Math.min(...tries)).toBeGreaterThanOrEqual(POLL.minTryMs);
+    expect(never.hung).toBe(0);
     const failed = pollStepResult(never);
     expect(failed.code).toBe(124);
     expect(failed.stderr).toMatch(
-      /^poll 3x\/1000 ms: execution error: System Events got an error/,
+      /^poll 2x\/800 ms: execution error: System Events got an error/,
+    );
+    // A try that hangs is killed at POLL.attemptMs (2 s), never given the
+    // whole budget, and the detail reports the last try that answered plus
+    // the count of hung tries; when every try hung it says so.
+    clock = 0;
+    tries.length = 0;
+    const script: (124 | "false")[] = [124, 124, "false"];
+    const mixed = await pollUntilTrue(
+      async (timeoutMs) => {
+        tries.push(timeoutMs);
+        const next = script.shift() ?? "false";
+        if (next === 124) {
+          clock += timeoutMs;
+          return { code: 124, stdout: "", stderr: "", ms: timeoutMs };
+        }
+        clock += 100;
+        return { code: 0, stdout: next, stderr: "", ms: 100 };
+      },
+      { timeoutMs: 5000, now, sleep },
+    );
+    expect(tries).toEqual([POLL.attemptMs, POLL.attemptMs, 500]);
+    expect(mixed).toMatchObject({ ok: false, attempts: 3, hung: 2 });
+    expect(pollStepResult(mixed).stderr).toBe(
+      `poll 3x/${mixed.ms} ms: false (2 tries hung)`,
+    );
+    clock = 0;
+    tries.length = 0;
+    const allHung = await pollUntilTrue(
+      async (timeoutMs) => {
+        tries.push(timeoutMs);
+        clock += timeoutMs;
+        return { code: 124, stdout: "", stderr: "", ms: timeoutMs };
+      },
+      { timeoutMs: 7000, now, sleep },
+    );
+    expect(tries).toEqual([POLL.attemptMs, POLL.attemptMs, POLL.attemptMs]);
+    expect(allHung).toMatchObject({ attempts: 3, hung: 3, ms: 6750 });
+    expect(pollStepResult(allHung).stderr).toBe(
+      "poll 3x/6750 ms: every try hung at 2000 ms",
     );
     expect(
-      pollStepResult({ ok: false, attempts: 0, ms: 0, last: null }).stderr,
+      pollStepResult({
+        ok: false,
+        attempts: 0,
+        ms: 0,
+        last: null,
+        lastAnswer: null,
+        hung: 0,
+        tryMs: POLL.attemptMs,
+      }).stderr,
     ).toMatch(/never tried/);
   });
 

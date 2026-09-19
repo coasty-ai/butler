@@ -83,7 +83,10 @@ export const STEP = {
 export const POLL = {
   intervalMs: 250,
   minIntervalMs: 100,
-  attemptMs: 5000,
+  /** One try may hang this long before it is killed and asked again. */
+  attemptMs: 2000,
+  /** A try is not started with less than this left: a cut-short try reads as a hang. */
+  minTryMs: 500,
 } as const;
 
 export interface StateCheck {
@@ -722,14 +725,24 @@ export interface PollOutcome {
   ms: number;
   /** The last try, for the detail when the poll gave up. */
   last: StepResult | null;
+  /** The last try that answered (was not killed at its own bound). */
+  lastAnswer: StepResult | null;
+  /** Tries killed at their own bound: a query that hung, not one that said no. */
+  hung: number;
+  /** The bound one try had. */
+  tryMs: number;
 }
 
 /**
  * Runs `attempt` until it exits 0 with stdout `true`, every `intervalMs`,
  * for at most `timeoutMs` in all; one try may hang at most `attemptMs`
- * (or what is left), so a stuck osascript is killed and tried again, and
- * the poll as a whole ends when it said it would. The clock and the sleep
- * are injected so the rule is tested without waiting.
+ * (2 s), so a stuck osascript is killed and tried again and can never eat
+ * the whole budget, and the poll as a whole ends when it said it would. A
+ * try is not started with less than `minTryMs` left: the first rehearsal
+ * (2026-09-19 01:5x) gave its last try the 4 ms that remained, the kill
+ * read as `exit 124`, and the detail blamed a hung System Events query
+ * for what was a window that never came. The clock and the sleep are
+ * injected so the rule is tested without waiting.
  */
 export async function pollUntilTrue(
   attempt: (timeoutMs: number) => Promise<StepResult>,
@@ -737,6 +750,7 @@ export async function pollUntilTrue(
     timeoutMs: number;
     intervalMs?: number;
     attemptMs?: number;
+    minTryMs?: number;
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
   },
@@ -747,39 +761,62 @@ export async function pollUntilTrue(
     ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const intervalMs = options.intervalMs ?? POLL.intervalMs;
   const attemptMs = options.attemptMs ?? POLL.attemptMs;
+  const minTryMs = Math.min(
+    options.minTryMs ?? POLL.minTryMs,
+    options.timeoutMs,
+  );
   const started = now();
   let attempts = 0;
+  let hung = 0;
   let last: StepResult | null = null;
+  let lastAnswer: StepResult | null = null;
+  const done = (ok: boolean): PollOutcome => ({
+    ok,
+    attempts,
+    ms: now() - started,
+    last,
+    lastAnswer,
+    hung,
+    tryMs: attemptMs,
+  });
   for (;;) {
     const remaining = options.timeoutMs - (now() - started);
-    if (remaining <= 0) break;
+    if (remaining < minTryMs) break;
     last = await attempt(Math.min(attemptMs, remaining));
     attempts++;
-    if (last.code === 0 && last.stdout.trim() === "true")
-      return { ok: true, attempts, ms: now() - started, last };
+    if (last.code === 124) hung++;
+    else lastAnswer = last;
+    if (last.code === 0 && last.stdout.trim() === "true") return done(true);
     const left = options.timeoutMs - (now() - started);
-    if (left <= 0) break;
+    if (left < minTryMs) break;
     await sleep(Math.min(intervalMs, left));
   }
-  return { ok: false, attempts, ms: now() - started, last };
+  return done(false);
 }
 
 /**
  * A poll as one step result: exit 0 and `true` when it was satisfied, else
- * exit 124 with a stderr that says how many tries in how long and what the
- * last try said, so the ledger's detail names the reason.
+ * exit 124 with a stderr that says how many tries in how long, what the
+ * last try that answered said, and how many tries hung, so the ledger's
+ * detail names the reason and never blames a hang for a plain "false".
  */
 export function pollStepResult(outcome: PollOutcome): StepResult {
   if (outcome.ok)
     return { code: 0, stdout: "true", stderr: "", ms: outcome.ms };
-  const last = outcome.last;
-  const said = last
-    ? last.stderr.trim() || last.stdout.trim() || `exit ${last.code}`
-    : "never tried";
+  const answer = outcome.lastAnswer;
+  const said = answer
+    ? answer.stderr.trim() || answer.stdout.trim() || `exit ${answer.code}`
+    : outcome.attempts
+      ? `every try hung at ${outcome.tryMs} ms`
+      : "never tried";
+  const hung =
+    answer && outcome.hung
+      ? ` (${outcome.hung} tr${outcome.hung === 1 ? "y" : "ies"} hung)`
+      : "";
   return {
     code: 124,
-    stdout: last?.stdout ?? "",
-    stderr: `poll ${outcome.attempts}x/${outcome.ms} ms: ${said}`,
+    stdout: answer?.stdout ?? "",
+    stderr: `poll ${outcome.attempts}x/${outcome.ms} ms: ${said}${hung}`,
     ms: outcome.ms,
   };
 }
