@@ -13,10 +13,12 @@ import {
   type EarlyCode,
   type EarlyController,
 } from "../electron/early-start";
-import { EARLY_LIMITS } from "../src/voice/early";
+import { EARLY_LIMITS, type AppMatch } from "../src/voice/early";
 
 const VSCODE = "com.microsoft.VSCode";
 const SLACK = "com.tinyspeck.slackmacgap";
+const SAFARI = "com.apple.Safari";
+const FINDER = "com.apple.finder";
 const geometry = {
   display_id: 1,
   x: 0,
@@ -46,6 +48,8 @@ type DesktopOptions = {
   front?: Partial<Surface>;
   /** What surface(open_app) reports about the named app. */
   launcher?: Partial<Surface>;
+  /** What surface(open_file) reports about the path. */
+  file?: Partial<Surface>;
   execute?: (a: Action, signal: AbortSignal) => Promise<void | ExecutionResult>;
   capture?: () => Promise<void>;
   resume?: () => Promise<void>;
@@ -76,6 +80,14 @@ function desktop(o: DesktopOptions = {}) {
       }
       calls.push(`surface(${action.type}:${action.frame_id})`);
       await o.lookup?.();
+      if (action.type === "open_file")
+        return {
+          ...base(),
+          fileStatus: "resolved",
+          fileKind: "folder",
+          fileName: "Downloads",
+          ...o.file,
+        } as Surface;
       return {
         ...base(),
         launcherStatus: "resolved",
@@ -103,10 +115,15 @@ function desktop(o: DesktopOptions = {}) {
       executed.push(a);
       signals.push(signal);
       if (o.execute) return o.execute(a, signal);
+      if (a.type === "open_file")
+        return {
+          opened: { path: a.path, kind: "folder" as const, appId: FINDER },
+        };
+      const name = o.launcher?.launcherName ?? "Slack";
       return {
         launched: {
-          appId: SLACK,
-          name: "Slack",
+          appId: o.launcher?.launcherAppId ?? SLACK,
+          name,
           frontmost: true,
           wasRunning: true,
           windows: 1,
@@ -158,11 +175,22 @@ function clock() {
   };
 }
 
+/** The installed app list as main.ts answers for it. */
+function installed(names: string[]): (key: string) => AppMatch {
+  return (key) => {
+    if (names.includes(key)) return "exact";
+    const begins = names.filter((n) => n.startsWith(key + " ")).length;
+    return begins === 1 ? "prefix" : begins ? "ambiguous" : "none";
+  };
+}
 function setup(
   o: DesktopOptions & {
     settings?: Partial<Settings>;
     blocked?: EarlyCode;
     noController?: boolean;
+    knownApps?: string[];
+    /** The browser for a site; null when none is known. */
+    browser?: string | null;
   } = {},
 ) {
   const desk = desktop(o);
@@ -177,6 +205,8 @@ function setup(
     controller: () => (o.noController ? undefined : desk.controller),
     settings: () => config.settings,
     blocked: () => config.blocked,
+    ...(o.knownApps ? { knownApp: installed(o.knownApps) } : {}),
+    browser: () => (o.browser === null ? undefined : (o.browser ?? "Safari")),
     onOpened: (name) => opened.push(name),
     trace: (event, data = {}) => traces.push({ event, data }),
     now: clk.now,
@@ -255,6 +285,7 @@ describe("early start: the step", () => {
       {
         code: "ok",
         settle: "boundary",
+        target: "app",
         earlyMs: expect.any(Number),
         durationMs: expect.any(Number),
       },
@@ -274,10 +305,211 @@ describe("early start: the step", () => {
     });
     await ticks();
     expect(t.of("EarlyStartEnded")).toEqual([
-      { phase: "kept", code: "ok", leadMs: expect.any(Number) },
+      { phase: "kept", code: "ok", target: "app", leadMs: expect.any(Number) },
     ]);
     // Content-free: no app, name, bundle or words.
     expect(JSON.stringify(t.traces)).not.toMatch(/slack|dana|tinyspeck/i);
+  });
+  it("brings the browser forward for a site the moment its name is heard", async () => {
+    const t = setup({
+      browser: "Safari",
+      launcher: { launcherName: "Safari", launcherAppId: SAFARI },
+    });
+    t.begin();
+    await t.say(["Go to", 0], ["Go to youtube", 300]);
+    await t.early.idle();
+    // The address is never entered early: only the browser opens.
+    expect(t.executed).toEqual([
+      { type: "open_app", name: "Safari", frame_id: "frame-1" },
+    ]);
+    expect(t.opened).toEqual(["Safari"]);
+    expect(t.of("EarlyStartExecuted")).toEqual([
+      {
+        code: "ok",
+        settle: "eager",
+        target: "site",
+        earlyMs: 0,
+        durationMs: expect.any(Number),
+      },
+    ]);
+    // Kept for any site the final names, and never as the whole request:
+    // the run still loads the page.
+    const claim = t.early.finish(
+      t.invocation,
+      "Go to youtube dot com and play lofi.",
+    )!;
+    expect(claim.completes).toBe(false);
+    expect(await claim.take()).toMatchObject({
+      action: { type: "open_app", name: "Safari" },
+      outcome: { launched: { appId: SAFARI } },
+      completes: false,
+    });
+    await ticks();
+    expect(t.of("EarlyStartEnded")).toEqual([
+      { phase: "kept", code: "ok", target: "site", leadMs: expect.any(Number) },
+    ]);
+    expect(JSON.stringify(t.traces)).not.toMatch(/youtube|safari/i);
+    // "Go to youtube." alone is not complete either.
+    const alone = setup({
+      launcher: { launcherName: "Safari", launcherAppId: SAFARI },
+    });
+    alone.begin();
+    await alone.say(["Go to youtube", 0]);
+    await alone.early.idle();
+    expect(
+      alone.early.finish(alone.invocation, "Go to youtube.")!.completes,
+    ).toBe(false);
+  });
+  it("opens nothing for a site without a known browser", async () => {
+    const t = setup({ browser: null });
+    t.begin();
+    await t.say(["Go to youtube", 0]);
+    await t.early.idle();
+    expect(t.executed).toEqual([]);
+    expect(t.of("EarlyStartExecuted")).toEqual([
+      { code: "unresolved", settle: "eager", target: "site" },
+    ]);
+  });
+  it("opens a standard folder in Finder the moment its name is heard", async () => {
+    const t = setup();
+    t.begin();
+    await t.say(["Open", 0], ["Open downloads", 300]);
+    await t.early.idle();
+    expect(t.calls).toEqual([
+      "configure",
+      "surface()",
+      "resume",
+      "capture",
+      "stop",
+      "surface(open_file:frame-1)",
+      "resume",
+      "execute",
+      "stop",
+    ]);
+    expect(t.executed).toEqual([
+      { type: "open_file", path: "~/Downloads", frame_id: "frame-1" },
+    ]);
+    expect(t.opened).toEqual(["Downloads"]);
+    expect(t.of("EarlyStartExecuted")).toEqual([
+      {
+        code: "ok",
+        settle: "eager",
+        target: "folder",
+        earlyMs: 0,
+        durationMs: expect.any(Number),
+      },
+    ]);
+    const claim = t.early.finish(t.invocation, "Open downloads.")!;
+    expect(claim.completes).toBe(true);
+    expect(await claim.take()).toMatchObject({
+      action: { type: "open_file", path: "~/Downloads", frame_id: "frame-1" },
+      surface: { fileStatus: "resolved", fileKind: "folder" },
+      reason: "Open a document or folder from the local index.",
+      outcome: {
+        opened: { path: "~/Downloads", kind: "folder", appId: FINDER },
+      },
+      completes: true,
+    });
+    await ticks();
+    expect(t.of("EarlyStartEnded")).toEqual([
+      {
+        phase: "kept",
+        code: "ok",
+        target: "folder",
+        leadMs: expect.any(Number),
+      },
+    ]);
+    expect(JSON.stringify(t.traces)).not.toMatch(/downloads|finder/i);
+    // With more words the folder opens and the run goes on from there.
+    const more = setup();
+    more.begin();
+    await more.say(["Open my downloads", 0]);
+    await more.early.idle();
+    expect(
+      more.early.finish(
+        more.invocation,
+        "Open my downloads and find the report",
+      )!.completes,
+    ).toBe(false);
+  });
+  for (const [label, file, code] of [
+    [
+      "a path the helper does not resolve",
+      { fileStatus: "unresolved" },
+      "unresolved",
+    ],
+    ["a refused path", { fileStatus: "refused" }, "refused"],
+    [
+      "a document where a folder was named",
+      { fileKind: "document" },
+      "unresolved",
+    ],
+  ] as [string, Partial<Surface>, EarlyCode][])
+    it(`opens nothing for ${label}`, async () => {
+      const t = setup({ file });
+      t.begin();
+      await t.say(["Open downloads", 0]);
+      await t.early.idle();
+      expect(t.executed).toEqual([]);
+      expect(t.of("EarlyStartExecuted")).toEqual([
+        { code, settle: "eager", target: "folder" },
+      ]);
+    });
+  it("opens the one installed app whose name begins with the words", async () => {
+    const idea = {
+      launcher: {
+        launcherName: "IntelliJ IDEA",
+        launcherAppId: "com.jetbrains.intellij",
+      },
+      knownApps: ["intellij idea", "slack"],
+    };
+    const t = setup(idea);
+    t.begin();
+    await t.say(["Open", 0], ["Open IntelliJ", 300]);
+    await t.early.idle();
+    expect(t.executed).toEqual([
+      { type: "open_app", name: "IntelliJ", frame_id: "frame-1" },
+    ]);
+    expect(t.of("EarlyStartExecuted")[0]).toMatchObject({
+      code: "ok",
+      settle: "eager",
+      target: "app",
+    });
+    // The final names the app in full, or only its first word: kept either way.
+    const claim = t.early.finish(
+      t.invocation,
+      "Open IntelliJ IDEA and run the tests",
+    )!;
+    expect(claim.completes).toBe(false);
+    expect(await claim.take()).toMatchObject({ action: { name: "IntelliJ" } });
+    const whole = setup(idea);
+    whole.begin();
+    await whole.say(["Open IntelliJ", 0]);
+    await whole.early.idle();
+    expect(
+      whole.early.finish(whole.invocation, "Open IntelliJ IDEA.")!.completes,
+    ).toBe(true);
+    // Another app beginning the same way: the step is not kept.
+    const other = setup(idea);
+    other.begin();
+    await other.say(["Open IntelliJ", 0]);
+    await other.early.idle();
+    expect(
+      other.early.finish(other.invocation, "Open IntelliJ Community"),
+    ).toBeUndefined();
+    await ticks();
+    expect(other.of("EarlyStartEnded")).toEqual([
+      { phase: "abandoned", code: "final_changed", target: "app" },
+    ]);
+    // The helper resolves the words to some other app: nothing opens.
+    const differs = setup({ knownApps: ["intellij idea"] });
+    differs.begin();
+    await differs.say(["Open IntelliJ", 0]);
+    await differs.early.idle();
+    expect(differs.executed).toEqual([]);
+    expect(differs.of("EarlyStartExecuted")).toEqual([
+      { code: "not_exact", settle: "eager", target: "app" },
+    ]);
   });
   it("starts the screenshot at the first 'open', before the name arrives", async () => {
     const gate = deferred();
@@ -384,12 +616,14 @@ describe("early start: the step", () => {
       expect(t.calls).toContain("surface(open_app:frame-1)");
       expect(latchedAfterEveryResume(t.calls)).toBe(true);
       expect(t.of("EarlyStartExecuted")).toEqual([
-        { code, settle: "boundary" },
+        { code, settle: "boundary", target: "app" },
       ]);
       expect(t.opened).toEqual([]);
       expect(t.early.finish(t.invocation, KEEP)).toBeUndefined();
       await ticks();
-      expect(t.of("EarlyStartEnded")).toEqual([{ phase: "skipped", code }]);
+      expect(t.of("EarlyStartEnded")).toEqual([
+        { phase: "skipped", code, target: "app" },
+      ]);
     });
   it("shows the main window of the app in front with none", async () => {
     const t = setup({ front: { appId: SLACK }, launcher: { windowCount: 0 } });
@@ -412,7 +646,7 @@ describe("early start: the step", () => {
     await paused.early.idle();
     expect(paused.executed).toEqual([]);
     expect(paused.of("EarlyStartExecuted")).toEqual([
-      { code: "not_exact", settle: "pause" },
+      { code: "not_exact", settle: "pause", target: "app" },
     ]);
     const bounded = setup(chrome);
     bounded.begin();
@@ -444,7 +678,7 @@ describe("early start: the step", () => {
     await t.early.idle();
     expect(t.executed).toEqual([]);
     expect(t.of("EarlyStartExecuted")).toEqual([
-      { code: "not_exact", settle: "boundary" },
+      { code: "not_exact", settle: "boundary", target: "app" },
     ]);
   });
   it("keeps nothing when the final arrives before the app was opened", async () => {
@@ -460,7 +694,7 @@ describe("early start: the step", () => {
     expect(t.executed).toEqual([]);
     // "skipped": it settled but opened nothing.
     expect(t.of("EarlyStartEnded")).toEqual([
-      { phase: "skipped", code: "final_first" },
+      { phase: "skipped", code: "final_first", target: "app" },
     ]);
   });
   it("opens nothing when the user switched apps since the screenshot", async () => {
@@ -473,7 +707,7 @@ describe("early start: the step", () => {
     await t.early.idle();
     expect(t.executed).toEqual([]);
     expect(t.of("EarlyStartExecuted")).toEqual([
-      { code: "screen_changed", settle: "boundary" },
+      { code: "screen_changed", settle: "boundary", target: "app" },
     ]);
   });
   it("gives up when the user touches the mouse or keys during the step", async () => {
@@ -616,7 +850,7 @@ describe("early start: the turn", () => {
     expect(latchedAfterEveryResume(t.calls)).toBe(true);
     await ticks();
     expect(t.of("EarlyStartEnded")).toEqual([
-      { phase: "skipped", code: "cancelled" },
+      { phase: "skipped", code: "cancelled", target: "app" },
     ]);
   });
   it("opens nothing when the turn is cancelled while the app is looked up", async () => {
@@ -631,7 +865,7 @@ describe("early start: the turn", () => {
     expect(t.executed).toEqual([]);
     expect(t.calls.at(-1)).toBe("surface(open_app:frame-1)");
     expect(t.of("EarlyStartExecuted")).toEqual([
-      { code: "cancelled", settle: "boundary" },
+      { code: "cancelled", settle: "boundary", target: "app" },
     ]);
   });
   it("opens nothing when a run starts while the app is looked up", async () => {
@@ -644,7 +878,7 @@ describe("early start: the turn", () => {
     await t.early.idle();
     expect(t.executed).toEqual([]);
     expect(t.of("EarlyStartExecuted")).toEqual([
-      { code: "blocked_starting", settle: "boundary" },
+      { code: "blocked_starting", settle: "boundary", target: "app" },
     ]);
   });
   it("makes no native call on a cancel after the app opened", async () => {
@@ -658,7 +892,7 @@ describe("early start: the turn", () => {
     expect(t.calls).toHaveLength(before);
     await ticks();
     expect(t.of("EarlyStartEnded")).toEqual([
-      { phase: "abandoned", code: "cancelled" },
+      { phase: "abandoned", code: "cancelled", target: "app" },
     ]);
   });
   it("lets the final win the race: a timer after it does nothing", async () => {
@@ -684,7 +918,7 @@ describe("early start: the turn", () => {
     );
     await ticks();
     expect(t.of("EarlyStartEnded")).toEqual([
-      { phase: "abandoned", code: "final_changed" },
+      { phase: "abandoned", code: "final_changed", target: "app" },
     ]);
     // Never undone, and the app the user was in is still the remembered one:
     // only a kept step re-remembers (in take()), so the restore still works.
@@ -736,7 +970,7 @@ describe("early start: the turn", () => {
     claim.release("plan_not_start");
     await ticks();
     expect(t.of("EarlyStartEnded")).toEqual([
-      { phase: "kept", code: "ok", leadMs: expect.any(Number) },
+      { phase: "kept", code: "ok", target: "app", leadMs: expect.any(Number) },
     ]);
     // A turn that did not start a run releases the step instead.
     const other = setup();
@@ -746,7 +980,7 @@ describe("early start: the turn", () => {
     other.early.finish(other.invocation, KEEP)!.release("plan_not_start");
     await ticks();
     expect(other.of("EarlyStartEnded")).toEqual([
-      { phase: "released", code: "plan_not_start" },
+      { phase: "released", code: "plan_not_start", target: "app" },
     ]);
   });
   it("ends the old turn on a new activation during the step", async () => {
@@ -761,7 +995,7 @@ describe("early start: the turn", () => {
     await t.early.idle();
     await ticks();
     expect(t.of("EarlyStartEnded")).toEqual([
-      { phase: "abandoned", code: "reactivated" },
+      { phase: "abandoned", code: "reactivated", target: "app" },
     ]);
     // The old turn's words no longer count.
     t.early.partial(t.invocation - 1, "Open Notes and");
@@ -787,7 +1021,7 @@ describe("early start: the turn", () => {
     ]);
   });
 
-  it("keeps the latch closed and opens only apps, whatever happens (property)", async () => {
+  it("keeps the latch closed and only opens apps and standard folders, whatever happens (property)", async () => {
     // A small seeded generator: failures and interleavings are reproducible.
     let seed = 20260918;
     const random = () => {
@@ -806,6 +1040,11 @@ describe("early start: the turn", () => {
       "Switch to Safari and",
       "Hey Butler",
       "Open Notes",
+      "Go to youtube",
+      "go to github dot com and",
+      "Open downloads",
+      "open my downloads folder and",
+      "open Visual",
     ];
     const maybe = async (what: string) => {
       for (let i = Math.floor(random() * 3); i > 0; i--) await ticks(1);
@@ -822,6 +1061,7 @@ describe("early start: the turn", () => {
           await maybe("execute");
           return undefined;
         },
+        knownApps: ["visual studio code", "slack"],
       });
       const lookups = new Map<number, number>();
       const surface = t.controller.surface;
@@ -848,7 +1088,9 @@ describe("early start: the turn", () => {
       await t.clk.to(at + 5000);
       await t.early.idle();
       expect(latchedAfterEveryResume(t.calls), t.calls.join(",")).toBe(true);
-      for (const a of t.executed) expect(a.type).toBe("open_app");
+      for (const a of t.executed)
+        if (a.type === "open_file") expect(a.path).toBe("~/Downloads");
+        else expect(a.type).toBe("open_app");
       // One settle per turn: at most one app lookup, whatever the partials.
       for (const n of lookups.values()) expect(n).toBeLessThanOrEqual(2);
     }

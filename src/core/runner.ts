@@ -718,17 +718,19 @@ export interface MonitorHandoff {
 }
 /**
  * A step executed before this run existed, while the user was still speaking
- * ("open Slack and…" brings Slack forward before "and"): electron/early-start.ts
- * took it through the same native verification and policy as a run step, and
- * the run journals it as its own first frame and step.
+ * ("open Slack and…" brings Slack forward before "and"; "go to youtube and…"
+ * the browser; "open downloads and…" the folder in Finder):
+ * electron/early-start.ts took it through the same native verification and
+ * policy as a run step, and the run journals it as its own first frame and
+ * step.
  */
 export interface RunPrelude {
   /** The frame the step was verified against, captured before the run. */
   frame: Frame;
-  /** surface(action) at execute time: the launcher resolution policy saw. */
+  /** surface(action) at execute time: the launcher or file resolution policy saw. */
   surface: Surface;
-  /** frame_id is frame.id. */
-  action: Extract<Action, { type: "open_app" }>;
+  /** frame_id is frame.id. An open_file only ever opens a standard folder. */
+  action: Extract<Action, { type: "open_app" | "open_file" }>;
   /** The ALLOW decision's reason. */
   reason: string;
   outcome?: ExecutionResult;
@@ -822,13 +824,15 @@ export class Runner {
   /** The last few actions executed, for a monitor handoff. */
   private executed: Action[] = [];
   /**
-   * The app a prelude opened: a recalled plan that starts by opening it
-   * continues at its next step, and with completes the run ends once the app
-   * is in front (checked once, on the first observation).
+   * The app or folder a prelude opened: a recalled plan that starts by
+   * opening it continues at its next step, and with completes the run ends
+   * once the app (Finder, for a folder) is in front (checked once, on the
+   * first observation).
    */
   private prelude?: {
     appId?: string;
     names: Set<string>;
+    paths: Set<string>;
     display: string;
     completes: boolean;
   };
@@ -1548,11 +1552,18 @@ export class Runner {
     // The task was amended while recall ran; its plan matched the old wording.
     if (this.amendments !== amendments) this.dropAmendedPlan();
   }
-  /** A plan's first step opens the app the prelude already opened. */
+  /** A plan's first step opens the app or folder the prelude already opened. */
   private preludeOpens(plan: ReplayPlan): boolean {
     const opened = this.prelude;
     const first = plan.steps[0]?.action;
-    if (!opened || !first || first.type !== "open_app") return false;
+    if (!opened || !first) return false;
+    if (first.type === "open_file")
+      return (
+        first.app === undefined &&
+        typeof first.path === "string" &&
+        opened.paths.has(first.path.replace(/\/+$/, ""))
+      );
+    if (first.type !== "open_app") return false;
     if (
       typeof first.name === "string" &&
       opened.names.has(normalizeAppName(first.name))
@@ -1824,8 +1835,8 @@ export class Runner {
   }
   /**
    * Journals a step taken before this run existed as the run's first frame
-   * and step, exactly as the loop records an executed open_app: the model's
-   * history starts with its result, so it is never taken again.
+   * and step, exactly as the loop records an executed open_app or open_file:
+   * the model's history starts with its result, so it is never taken again.
    */
   private applyPrelude(p: RunPrelude) {
     const frame = this.recordFrame(p.frame);
@@ -1836,17 +1847,32 @@ export class Runner {
     this.recordExecuted(p.action, frame, frame, p.surface, p.outcome, {
       early: true,
     });
-    const launched = p.outcome?.launched;
-    const names = new Set([normalizeAppName(p.action.name)]);
-    if (typeof launched?.name === "string" && launched.name)
-      names.add(normalizeAppName(launched.name));
+    const names = new Set<string>();
+    const paths = new Set<string>();
+    let appId: unknown, display: string;
+    if (p.action.type === "open_app") {
+      const launched = p.outcome?.launched;
+      names.add(normalizeAppName(p.action.name));
+      if (typeof launched?.name === "string" && launched.name)
+        names.add(normalizeAppName(launched.name));
+      appId = launched?.appId;
+      display = String(launched?.name || p.action.name);
+    } else {
+      // The folder opened in Finder: its path as asked and as opened.
+      const opened = p.outcome?.opened;
+      const path = p.action.path.replace(/\/+$/, "");
+      paths.add(path);
+      if (typeof opened?.path === "string" && opened.path)
+        paths.add(opened.path.replace(/\/+$/, ""));
+      appId = opened?.appId;
+      display = path.split("/").pop() || path;
+    }
     this.prelude = {
       appId:
-        typeof launched?.appId === "string" && launched.appId
-          ? launched.appId.toLowerCase()
-          : undefined,
+        typeof appId === "string" && appId ? appId.toLowerCase() : undefined,
       names,
-      display: bound(String(launched?.name || p.action.name), 100),
+      paths,
+      display: bound(display, 100),
       completes: p.completes,
     };
   }

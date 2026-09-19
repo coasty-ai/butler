@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { KNOWN_SITES } from "../core/places";
 import { scanText } from "../core/sanitize";
 import { isSafeIndexPath, tokenize } from "./retrieve";
 import { outlineOf, stripPoliteness } from "./skills";
@@ -51,11 +52,15 @@ const unquote = (text: string) =>
     .replace(/^["'`]+|["'`]+$/g, "")
     .trim();
 
-function preferredBrowser(
-  index: SystemIndex | undefined,
+/**
+ * The browser a URL or search intent opens: the most used installed one,
+ * else Safari. The early step (electron/early-start.ts) brings the same one
+ * forward while "go to youtube…" is still being said.
+ */
+export function preferredBrowser(
+  apps: SystemIndex["apps"],
   data: MemoryData | undefined,
 ): { name: string; bundleId: string } {
-  const apps = index?.apps ?? [];
   const installed = (b: (typeof BROWSERS)[number]) =>
     apps.find((a) => a.bundleId === b.bundleId || a.name === b.name);
   const candidates = BROWSERS.flatMap((b) => {
@@ -90,7 +95,7 @@ function browserPlan(
   index: SystemIndex | undefined,
   data: MemoryData | undefined,
 ): ReplayPlan {
-  const browser = preferredBrowser(index, data);
+  const browser = preferredBrowser(index?.apps ?? [], data);
   const steps: PlanStep[] = [
     { action: { type: "open_app", name: browser.name } },
     {
@@ -236,6 +241,7 @@ const nameKey = (name: string) =>
 function matchApp(
   target: string,
   index: SystemIndex | undefined,
+  exactOnly = false,
 ): ReplayPlan | undefined {
   const apps = (index?.apps ?? []).filter(
     (a) =>
@@ -254,7 +260,7 @@ function matchApp(
     (a) => nameKey(a.name.replace(/\.app$/i, "")) === query,
   );
   let app = exact.length ? unique(exact) : undefined;
-  if (!exact.length) {
+  if (!exact.length && !exactOnly) {
     const tokens = tokenize(query);
     if (!tokens.length) return undefined;
     app = unique(
@@ -307,7 +313,7 @@ function matchFile(
 }
 
 const INTENT_VERB =
-  /^(?:search|look ?up|google|youtube|play|open|launch|start|switch to|go to|visit|navigate to|browse to|bring up)\b/i;
+  /^(?:search|look ?up|google|youtube|play|open|launch|start|switch to|go to|take me to|show me|visit|navigate to|browse to|bring up)\b/i;
 
 /**
  * Whether the task may be an app, URL or search intent. Those plans read only
@@ -350,23 +356,40 @@ export function matchIntent(
   if (fileKeyword) return matchFile(fileKeyword[1], index);
 
   const verb =
-    /^(open up|open|launch|start|switch to|go to|visit|navigate to|browse to|bring up)\s+(.+)$/i.exec(
+    /^(open up|open|launch|start|switch to|go to|take me to|show me|visit|navigate to|browse to|bring up)\s+(.+)$/i.exec(
       text,
     );
   if (!verb) return undefined;
   const action = verb[1].toLowerCase();
   const target = verb[2].trim();
+  const appName = target
+    .replace(/^(?:the|my)\s+/i, "")
+    .replace(/\s+(?:app|application)$/i, "");
 
   if (
-    ["go to", "open", "open up", "visit", "navigate to", "browse to"].includes(
-      action,
-    )
+    [
+      "go to",
+      "take me to",
+      "show me",
+      "open",
+      "open up",
+      "visit",
+      "navigate to",
+      "browse to",
+    ].includes(action)
   ) {
     const url = parseTarget(
       target,
       action.startsWith("open") ? "open" : action,
     );
     if (url) return browserPlan("url", url.url, url.domain, index, data);
+    // A well-known site by the name people say ("youtube", "my gmail"),
+    // unless an app is installed under exactly that name.
+    const host = KNOWN_SITES.get(
+      nameKey(unquote(target).replace(/^(?:the|my)\s+/i, "")),
+    );
+    if (host && !matchApp(appName, index, true))
+      return browserPlan("url", host, host, index, data);
   }
 
   // "open report.pdf": a single-word name with a document extension.
@@ -377,8 +400,5 @@ export function matchIntent(
   }
 
   if (["visit", "navigate to", "browse to"].includes(action)) return undefined;
-  const appName = target
-    .replace(/^(?:the|my)\s+/i, "")
-    .replace(/\s+(?:app|application)$/i, "");
   return matchApp(appName, index);
 }

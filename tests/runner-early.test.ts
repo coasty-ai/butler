@@ -18,6 +18,8 @@ import { EarlyStart, type EarlyController } from "../electron/early-start";
 
 const VSCODE = "com.microsoft.VSCode";
 const SLACK = "com.tinyspeck.slackmacgap";
+const SAFARI = "com.apple.Safari";
+const FINDER = "com.apple.finder";
 const geometry = {
   display_id: 1,
   x: 0,
@@ -104,6 +106,13 @@ function desktop(front = SLACK) {
               windowCount: 1,
             }
           : {}),
+        ...(action?.type === "open_file"
+          ? {
+              fileStatus: "resolved" as const,
+              fileKind: "folder" as const,
+              fileName: "Downloads",
+            }
+          : {}),
       };
     }),
     capture: vi.fn(async () => {
@@ -122,6 +131,8 @@ function desktop(front = SLACK) {
             windows: 1,
           },
         };
+      if (a.type === "open_file")
+        return { opened: { path: a.path, kind: "folder", appId: FINDER } };
     }),
     resume: vi.fn(async () => {
       calls.push("resume");
@@ -175,6 +186,42 @@ function prelude(completes = false): RunPrelude {
       },
     },
     completes,
+  };
+}
+/** The early step for "open downloads…": the folder opened in Finder. */
+function folderPrelude(completes = false): RunPrelude {
+  return {
+    frame: structuredClone(earlyFrame),
+    surface: {
+      appId: VSCODE,
+      pid: 1,
+      secureInput: false,
+      unknown: false,
+      fileStatus: "resolved",
+      fileKind: "folder",
+      fileName: "Downloads",
+    },
+    action: { type: "open_file", path: "~/Downloads", frame_id: "early-frame" },
+    reason: "Open a document or folder from the local index.",
+    outcome: { opened: { path: "~/Downloads", kind: "folder", appId: FINDER } },
+    completes,
+  };
+}
+/** The early step for "go to youtube…": the browser the page loads in. */
+function browserPrelude(): RunPrelude {
+  return {
+    ...prelude(),
+    surface: { ...earlySurface, launcherAppId: SAFARI, launcherName: "Safari" },
+    action: { type: "open_app", name: "Safari", frame_id: "early-frame" },
+    outcome: {
+      launched: {
+        appId: SAFARI,
+        name: "Safari",
+        frontmost: true,
+        wasRunning: true,
+        windows: 1,
+      },
+    },
   };
 }
 function memoryWith(plan?: ReplayPlan): MemoryAccess {
@@ -345,6 +392,114 @@ describe("a run with a prelude", () => {
     );
     runner.stop();
     await until(() => runner.settled);
+  });
+});
+
+describe("a run with a folder or browser prelude", () => {
+  it("journals the early folder as its first step and tells the model", async () => {
+    const r = await run("Open downloads and find the report", {
+      prelude: folderPrelude(),
+      front: FINDER,
+    });
+    expect(r.events.map((e) => e.type).slice(0, 5)).toEqual([
+      "RunStarted",
+      "FrameCaptured",
+      "ActionProposed",
+      "PolicyAllowed",
+      "ActionExecuted",
+    ]);
+    expect(r.of("ActionExecuted")[0].data).toMatchObject({
+      early: true,
+      frame_id: "early-frame",
+      action: { type: "open_file", path: "~/Downloads" },
+      opened: { kind: "folder" },
+    });
+    expect(r.provider.observations[0].history[0]).toEqual({
+      type: "open_file",
+      action: { type: "open_file", path: "~/Downloads" },
+      result: expect.stringMatching(
+        /^Opened ~\/Downloads \(folder\) in com\.apple\.finder\./,
+      ),
+    });
+    // Nothing is opened again by the run itself.
+    expect(r.calls).not.toContain("execute(open_file)");
+    expect(r.getRun().actions).toBe(1);
+  });
+  it("finishes the built-in folder intent without a model call or a second open", async () => {
+    const intent: ReplayPlan = {
+      id: "intent:file:downloads",
+      source: "intent",
+      mode: "replay",
+      steps: [{ action: { type: "open_file", path: "~/Downloads/" } }],
+      completeWhen: { opened: true },
+      outline: ["Open Downloads"],
+    };
+    const r = await run("Open the downloads folder", {
+      prelude: folderPrelude(),
+      memory: memoryWith(intent),
+      front: FINDER,
+    });
+    expect(r.provider.next).not.toHaveBeenCalled();
+    expect(r.controller.execute).not.toHaveBeenCalled();
+    expect(r.of("PlanCompleted")).toHaveLength(1);
+    expect(r.getRun().status).toBe("completed");
+  });
+  it("completes on the first capture when the words were only the folder", async () => {
+    const r = await run("Open downloads.", {
+      prelude: folderPrelude(true),
+      memoryOff: true,
+      front: FINDER,
+    });
+    expect(r.provider.next).not.toHaveBeenCalled();
+    expect(r.getRun()).toMatchObject({
+      status: "completed",
+      summary: "Opened Downloads.",
+    });
+    // Finder not in front after all: the model looks.
+    const other = await run("Open downloads.", {
+      prelude: folderPrelude(true),
+      memoryOff: true,
+      front: VSCODE,
+    });
+    expect(other.provider.next).toHaveBeenCalledTimes(1);
+  });
+  it("continues a site's browser plan at the address bar", async () => {
+    // "go to youtube": the browser came forward early; the run's plan starts
+    // at Command-L instead of opening the browser again (which would be
+    // refused as frontmost and abandon the plan).
+    const page: ReplayPlan = {
+      id: "intent:url:youtube",
+      source: "intent",
+      mode: "replay",
+      steps: [
+        { action: { type: "open_app", name: "Safari" } },
+        { action: { type: "hotkey", keys: ["CMD", "L"] }, expectAppId: SAFARI },
+        {
+          action: { type: "type_text", text: "youtube.com" },
+          expectAppId: SAFARI,
+        },
+        { action: { type: "key", key: "ENTER" }, expectAppId: SAFARI },
+      ],
+      completeWhen: { host: "youtube.com" },
+      outline: [
+        "Open Safari",
+        "Press Command-L",
+        'Type "youtube.com"',
+        "Press Enter",
+      ],
+    };
+    const r = await run("Go to youtube", {
+      prelude: browserPrelude(),
+      memory: memoryWith(page),
+      front: SAFARI,
+    });
+    expect(r.of("PlanStepProposed").map((e) => e.data.index)[0]).toBe(1);
+    expect(r.calls).not.toContain("surface(open_app)");
+    expect(r.calls).not.toContain("execute(open_app)");
+    expect(r.provider.observations[0]?.history[0]).toMatchObject({
+      type: "open_app",
+      result: expect.stringMatching(/^Opened Safari \(com\.apple\.Safari\)/),
+    });
   });
 });
 

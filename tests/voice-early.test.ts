@@ -5,18 +5,34 @@ import {
   earlyLead,
   finalKeeps,
   leadingClause,
+  type AppMatch,
   type EarlyClause,
   type TrackerEvent,
 } from "../src/voice/early";
+import { KNOWN_FOLDERS, KNOWN_SITES } from "../src/core/places";
 
 type Row = [text: string, clause: Partial<EarlyClause> | undefined];
 const open = (name: string, next: EarlyClause["next"]) => ({
   verb: "open" as const,
+  target: "app" as const,
   name,
   next,
 });
 const sw = (name: string, next: EarlyClause["next"]) => ({
   verb: "switch" as const,
+  target: "app" as const,
+  name,
+  next,
+});
+const site = (host: string, next: EarlyClause["next"]) => ({
+  verb: "open" as const,
+  target: "site" as const,
+  name: host,
+  next,
+});
+const folder = (name: string, next: EarlyClause["next"]) => ({
+  verb: "open" as const,
+  target: "folder" as const,
   name,
   next,
 });
@@ -62,8 +78,6 @@ describe("leadingClause", () => {
     ["open Slack with Dana", open("Slack", "veto")],
     ["open Slack for me", open("Slack", "veto")],
     ["Open Slack website", open("Slack", "veto")],
-    ["open Slack dot com", open("Slack", "veto")],
-    ["open slack.com and", open("slack.com", "veto")],
     ["Open Slack's settings", open("Slack", "veto")],
     ["open Slack?", open("Slack", "veto")],
     ["Open Slack the channel", open("Slack", "more")],
@@ -75,34 +89,96 @@ describe("leadingClause", () => {
     ["Okay, so open Slack and", open("Slack", "boundary")],
     ["Hey Butler open Slack and", open("Slack", "boundary")],
     ["um open uh Slack and", open("Slack", "boundary")],
-    // Every early verb.
+    // Every early verb, for an app.
     ["open up Slack and", open("Slack", "boundary")],
     ["launch Slack and", open("Slack", "boundary")],
     ["pull up Notes and", open("Notes", "boundary")],
     ["bring up Calendar then", open("Calendar", "boundary")],
+    ["go to Safari and", open("Safari", "boundary")],
+    ["take me to Safari and", open("Safari", "boundary")],
+    ["show me Slack and", open("Slack", "boundary")],
     ["Switch to Safari and", sw("Safari", "boundary")],
     ["switch over to Safari and", sw("Safari", "boundary")],
+    // Every early verb, for a site.
+    ["open YouTube and", site("YouTube", "boundary")],
+    ["open up youtube and", site("youtube", "boundary")],
+    ["launch youtube and", site("youtube", "boundary")],
+    ["pull up youtube and", site("youtube", "boundary")],
+    ["bring up youtube and", site("youtube", "boundary")],
+    ["Go to YouTube and", site("YouTube", "boundary")],
+    ["take me to youtube and", site("youtube", "boundary")],
+    ["show me youtube and", site("youtube", "boundary")],
+    [
+      "Switch to youtube and",
+      { ...site("youtube", "boundary"), verb: "switch" },
+    ],
+    // Every early verb, for a folder.
+    ["open downloads and", folder("downloads", "boundary")],
+    ["open up Downloads and", folder("Downloads", "boundary")],
+    ["launch downloads and", folder("downloads", "boundary")],
+    ["pull up downloads and", folder("downloads", "boundary")],
+    ["bring up downloads and", folder("downloads", "boundary")],
+    ["go to downloads and", folder("downloads", "boundary")],
+    ["take me to downloads and", folder("downloads", "boundary")],
+    ["show me downloads and", folder("downloads", "boundary")],
+    [
+      "switch to downloads and",
+      { ...folder("downloads", "boundary"), verb: "switch" },
+    ],
+    // Sites: the well-known names, spoken and written addresses.
+    ["go to google docs and", site("google docs", "boundary")],
+    ["open my gmail", site("gmail", "end")],
+    ["open Gmail and", site("Gmail", "boundary")],
+    ["go to github dot com", site("github.com", "end")],
+    ["go to github dot com and", site("github.com", "boundary")],
+    ["go to drive dot google dot com", site("drive.google.com", "end")],
+    ["go to notion dot so", site("notion.so", "end")],
+    ["open github.com", site("github.com", "end")],
+    ["open slack.com and", site("slack.com", "boundary")],
+    ["open Slack dot com", site("slack.com", "end")],
+    ["go to www.GitHub.com/anthropics", site("www.github.com", "more")],
+    ["go to github dot com slash nkov", site("github.com", "more")],
+    // An address still arriving is undecided; a label that is no domain vetoes.
+    ["go to github dot", undefined],
+    ["go to github dot foo", undefined],
+    ["go to github dot something and", site("github.something", "veto")],
+    ["open Notes.app", open("Notes.app", "veto")],
+    ["open report.pdf and", open("report.pdf", "veto")],
+    // Folders: alone, after "my", or with "folder".
+    ["open my downloads", folder("downloads", "end")],
+    ["open my downloads folder and", folder("downloads", "boundary")],
+    ["open the downloads folder and", folder("downloads", "boundary")],
+    ["open downloads folder", folder("downloads", "end")],
+    ["go to Desktop", folder("Desktop", "end")],
+    ["show me Documents and", folder("Documents", "boundary")],
     // Names.
     ["open App Store and", open("App Store", "boundary")],
     ["open Slack app and", open("Slack", "boundary")],
     ["open the Notes app and", open("Notes", "boundary")],
+    ["open the YouTube app and", open("YouTube", "boundary")],
     ["open Visual Studio Code and", open("Visual Studio Code", "boundary")],
     ["open Google Chrome and", open("Google Chrome", "boundary")],
     ["open Wi-Fi settings and", open("Wi-Fi settings", "boundary")],
     // Parsed here; native resolution and policy decide.
     ["open 1Password and", open("1Password", "boundary")],
     ["open settings and", open("settings", "boundary")],
-    ["open Gmail and", open("Gmail", "boundary")],
     // No clause: pointers, descriptions, other verbs, too long a name.
     ["open the Notes and", undefined],
+    ["open the downloads", undefined],
+    ["open the projects folder and", undefined],
+    ["show me the desktop", undefined],
     ["Open the Slack message from Dana", undefined],
+    ["open the file called notes and", undefined],
+    ["open the file report and", undefined],
     ["open a new tab and", undefined],
     ["open my email and", undefined],
+    ["open my Slack and", undefined],
     ["Open it and send it to Dana", undefined],
     ["Open that and", undefined],
     ["Open Microsoft Visual Studio Code Insiders and", undefined],
-    ["go to Safari and", undefined],
-    ["Go to YouTube and", undefined],
+    ["go Safari and", undefined],
+    ["take me home and", undefined],
+    ["show Slack and", undefined],
     ["Start a timer and", undefined],
     ["Type hello and", undefined],
     ["send Dana a message", undefined],
@@ -110,12 +186,13 @@ describe("leadingClause", () => {
     ["Open", undefined],
     ["Open the", undefined],
     ["open up", undefined],
+    ["go to", undefined],
     ["Hey Butler", undefined],
     ["stop", undefined],
     ["", undefined],
   ];
   it("has a table worth trusting", () =>
-    expect(rows.length).toBeGreaterThan(40));
+    expect(rows.length).toBeGreaterThan(100));
   for (const [text, want] of rows)
     it(JSON.stringify(text), () => {
       const got = leadingClause(text);
@@ -125,6 +202,20 @@ describe("leadingClause", () => {
         expect(got!.key).toBe(got!.name.toLowerCase());
       }
     });
+  it("names every well-known site and folder", () => {
+    for (const name of KNOWN_SITES.keys())
+      expect(leadingClause(`go to ${name} and`)).toMatchObject({
+        target: "site",
+        key: name,
+        next: "boundary",
+      });
+    for (const name of KNOWN_FOLDERS.keys())
+      expect(leadingClause(`open ${name}`)).toMatchObject({
+        target: "folder",
+        key: name,
+        next: "end",
+      });
+  });
   it("never names more than four words or a pointer", () => {
     for (const text of [
       "open alpha beta gamma delta epsilon and",
@@ -149,13 +240,17 @@ describe("earlyLead", () => {
       "switch over to",
       "Pull up",
       "bring up",
+      "Go to",
+      "take me to",
+      "show me",
       "can you open",
       "um open",
     ])
       expect(earlyLead(text), text).toBe(true);
     for (const text of [
       "go",
-      "Go to",
+      "take me",
+      "show",
       "start",
       "type",
       "send",
@@ -195,16 +290,88 @@ describe("finalKeeps", () => {
       finalKeeps(slack, "open Notes hey butler open Slack and message Dana"),
     ).toEqual({ keeps: true, exact: false });
   });
+  it("keeps a site's step for any site, and never as the whole request", () => {
+    // The step was the browser: the address is still entered by the run.
+    const youtube = leadingClause("go to youtube")!;
+    expect(finalKeeps(youtube, "Go to youtube.")).toEqual({
+      keeps: true,
+      exact: false,
+    });
+    expect(finalKeeps(youtube, "go to youtube dot com and play lofi")).toEqual({
+      keeps: true,
+      exact: false,
+    });
+    expect(finalKeeps(youtube, "open github and")).toEqual({
+      keeps: true,
+      exact: false,
+    });
+    expect(finalKeeps(youtube, "open youtube music")).toEqual({
+      keeps: false,
+      exact: false,
+    });
+    expect(finalKeeps(youtube, "open the youtube app")).toEqual({
+      keeps: false,
+      exact: false,
+    });
+  });
+  it("keeps a step settled on the words an app's name begins with when the final names that app", () => {
+    const visual = leadingClause("open Visual")!;
+    const opened = "visual studio code";
+    expect(finalKeeps(visual, "Open Visual Studio Code.", opened)).toEqual({
+      keeps: true,
+      exact: true,
+    });
+    expect(
+      finalKeeps(visual, "open visual studio code and run the tests", opened),
+    ).toEqual({ keeps: true, exact: false });
+    expect(finalKeeps(visual, "Open Visual.", opened)).toEqual({
+      keeps: true,
+      exact: true,
+    });
+    // Another app whose name begins the same way, or no lookup yet.
+    expect(finalKeeps(visual, "open Visual Paradigm", opened)).toEqual({
+      keeps: false,
+      exact: false,
+    });
+    expect(finalKeeps(visual, "Open Visual Studio Code.")).toEqual({
+      keeps: false,
+      exact: false,
+    });
+  });
+  it("keeps a folder only by its name", () => {
+    const downloads = leadingClause("open downloads")!;
+    expect(finalKeeps(downloads, "Open my downloads folder.")).toEqual({
+      keeps: true,
+      exact: true,
+    });
+    expect(finalKeeps(downloads, "open downloads and find the report")).toEqual(
+      { keeps: true, exact: false },
+    );
+    expect(finalKeeps(downloads, "open Desktop")).toEqual({
+      keeps: false,
+      exact: false,
+    });
+    expect(finalKeeps(downloads, "open Slack")).toEqual({
+      keeps: false,
+      exact: false,
+    });
+  });
 });
 
+/** The installed app list as main.ts answers for it: exact, the one name beginning with the words, several, or none. */
+function installed(names: string[]): (key: string) => AppMatch {
+  return (key) => {
+    if (names.includes(key)) return "exact";
+    const begins = names.filter((n) => n.startsWith(key + " ")).length;
+    return begins === 1 ? "prefix" : begins ? "ambiguous" : "none";
+  };
+}
 /** Feeds timed partials, firing the tracker's timers in order. */
 function play(
   steps: [text: string | null, at: number][],
   knownApps?: string[],
 ) {
-  const tracker = new ClauseTracker(
-    knownApps && ((key) => knownApps.includes(key)),
-  );
+  const tracker = new ClauseTracker(knownApps && installed(knownApps));
   const events: (TrackerEvent & { t: number })[] = [];
   let timer: number | undefined;
   const record = (list: TrackerEvent[], t: number) => {
@@ -233,6 +400,7 @@ const settled = (r: ReturnType<typeof play>) =>
         t: number;
         settle: {
           by: string;
+          target: string;
           clause: EarlyClause;
           firstAt: number;
           at: number;
@@ -303,6 +471,193 @@ describe("ClauseTracker", () => {
       ["Open Slack", 300],
     ]);
     expect(settled(unknown)!.settle.by).toBe("pause");
+    expect(settled(unknown)!.settle.target).toBe("app");
+  });
+  it("opens the one app whose name begins with the words, but waits inside a word", () => {
+    // "open Visual…": only Visual Studio Code begins so, so it opens now.
+    const one = play(
+      [
+        ["Open", 0],
+        ["Open Visual", 300],
+        ["Open Visual Studio", 600],
+      ],
+      ["visual studio code", "slack"],
+    );
+    expect(settled(one)).toMatchObject({ t: 300 });
+    expect(settled(one)!.settle).toMatchObject({
+      by: "eager",
+      target: "app",
+      clause: { name: "Visual" },
+    });
+    // Two names begin with it: wait for the rest.
+    const two = play(
+      [
+        ["Open", 0],
+        ["Open Visual", 300],
+        ["Open Visual Studio Code", 600],
+      ],
+      ["visual studio code", "visual studio code insiders"],
+    );
+    expect(settled(two)).toMatchObject({ t: 600 });
+    expect(settled(two)!.settle.clause.name).toBe("Visual Studio Code");
+    // The name going on as heard never calls the step off; another does.
+    expect(closed(one)).toBeUndefined();
+    const other = play(
+      [
+        ["Open Visual", 0],
+        ["Open Notes", 300],
+      ],
+      ["visual studio code"],
+    );
+    expect(closed(other)).toMatchObject({ code: "veto", t: 300 });
+    // A word still being said is no prefix of anything.
+    const mid = play(
+      [
+        ["Open", 0],
+        ["Open Vis", 300],
+      ],
+      ["visual studio code"],
+    );
+    expect(settled(mid)).toMatchObject({ t: 900, settle: { by: "pause" } });
+    // An everyday word never opens what it begins.
+    const generic = play([["Open system", 0]], ["system settings"]);
+    expect(settled(generic)).toMatchObject({ t: 600, settle: { by: "pause" } });
+    // Two letters could begin anything.
+    expect(settled(play([["Open Go", 0]], ["go far"]))).toMatchObject({
+      settle: { by: "pause" },
+    });
+  });
+  it("goes to a well-known site or a domain the moment it is heard", () => {
+    const youtube = play(
+      [
+        ["Go to", 0],
+        ["Go to youtube", 300],
+        ["Go to youtube and", 600],
+      ],
+      ["slack"],
+    );
+    expect(youtube.kinds.map((e) => [e.kind, e.t])).toEqual([
+      ["prime", 0],
+      ["settled", 300],
+    ]);
+    expect(settled(youtube)!.settle).toMatchObject({
+      by: "eager",
+      target: "site",
+      clause: { target: "site", key: "youtube" },
+    });
+    // A domain is complete with its top-level domain, not before.
+    const domain = play([
+      ["open notion", 0],
+      ["open notion dot", 300],
+      ["open notion dot so", 600],
+    ]);
+    expect(settled(domain)).toMatchObject({ t: 600 });
+    expect(settled(domain)!.settle).toMatchObject({
+      by: "eager",
+      target: "site",
+      clause: { key: "notion.so" },
+    });
+    // Without an app list a site still opens at once: the browser is known.
+    expect(settled(play([["go to reddit", 0]]))).toMatchObject({
+      t: 0,
+      settle: { by: "eager", target: "site" },
+    });
+  });
+  it("waits when a site's name could go on", () => {
+    // "google" may become "google docs", "google drive" or Google Chrome.
+    const google = play(
+      [
+        ["Go to", 0],
+        ["Go to google", 300],
+        ["Go to google docs", 600],
+      ],
+      ["google chrome"],
+    );
+    expect(settled(google)).toMatchObject({ t: 600 });
+    expect(settled(google)!.settle.clause.key).toBe("google docs");
+    // Said alone, it settles on the pause as the site.
+    const alone = play([["Go to google", 0]], ["google chrome"]);
+    expect(settled(alone)).toMatchObject({
+      t: EARLY_LIMITS.pauseMs,
+      settle: { by: "pause", target: "site" },
+    });
+    // "amazon" may become the Amazon Music app.
+    const amazon = play(
+      [
+        ["open amazon", 0],
+        ["open amazon music", 300],
+      ],
+      ["amazon music"],
+    );
+    expect(settled(amazon)).toMatchObject({
+      t: 300,
+      settle: { by: "eager", target: "app" },
+    });
+  });
+  it("names an installed app over a site of the same name, never a domain", () => {
+    const app = play([["open netflix", 0]], ["netflix"]);
+    expect(settled(app)!.settle).toMatchObject({
+      by: "eager",
+      target: "app",
+      clause: { target: "site" },
+    });
+    const domain = play([["open netflix dot com", 0]], ["netflix"]);
+    expect(settled(domain)!.settle.target).toBe("site");
+  });
+  it("keeps a settled site through a longer address, but not a change of place", () => {
+    const grows = play([
+      ["go to youtube", 0],
+      ["go to youtube dot com", 300],
+      ["go to youtube dot com and play", 600],
+    ]);
+    expect(settled(grows)).toMatchObject({ t: 0 });
+    expect(closed(grows)).toBeUndefined();
+    const changes = play([
+      ["go to youtube", 0],
+      ["go to youtube music", 300],
+    ]);
+    expect(closed(changes)).toMatchObject({ code: "veto", t: 300 });
+  });
+  it("opens a standard folder the moment it is heard", () => {
+    for (const text of [
+      "open downloads",
+      "open my downloads",
+      "go to Desktop",
+      "show me the documents folder",
+    ])
+      expect(settled(play([[text, 0]])), text).toMatchObject({
+        t: 0,
+        settle: { by: "eager", target: "folder" },
+      });
+    // "the downloads" may go on to name a page; the folder word decides.
+    const the = play([
+      ["open the", 0],
+      ["open the downloads", 300],
+      ["open the downloads folder", 600],
+    ]);
+    expect(settled(the)).toMatchObject({ t: 600 });
+    expect(settled(the)!.settle.clause.key).toBe("downloads");
+    // A folder that is also an app's name waits for the words to end.
+    const app = play([["open downloads", 0]], ["downloads manager"]);
+    expect(settled(app)).toMatchObject({ settle: { by: "pause" } });
+  });
+  it("never settles a file or folder described rather than named", () => {
+    for (const text of [
+      "open the file called notes",
+      "open the file report",
+      "open my email",
+      "open the projects folder",
+      "show me the desktop",
+    ])
+      expect(
+        settled(
+          play([
+            [text, 0],
+            [null, 5000],
+          ]),
+        ),
+        text,
+      ).toBeUndefined();
   });
 
   it("still calls off a settled step when the user changes their mind before it runs", () => {
@@ -449,7 +804,7 @@ describe("ClauseTracker", () => {
   });
   it("never primes for other verbs, the wake phrase or a stop", () => {
     for (const text of [
-      "Go to YouTube and",
+      "Go home and",
       "Start a timer and",
       "Type hello and",
       "Hey Butler",

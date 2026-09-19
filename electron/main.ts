@@ -86,6 +86,8 @@ import {
 } from "../src/ui/api";
 import { NativeController, budgetDelay } from "./controller";
 import { EarlyStart, type EarlyClaim } from "./early-start";
+import { preferredBrowser } from "../src/memory/intents";
+import type { AppMatch } from "../src/voice/early";
 import {
   NativeVoice,
   approvalHint,
@@ -268,10 +270,11 @@ const helperPause = "Desktop control restarted. Say continue to resume.";
 const debug: DiagnosticSink = (event, data = {}) =>
   trace(diagnostics?.write, event, { runId: snapshot.run?.id, ...data });
 /**
- * Opens the app a spoken request starts with while the user is still talking
- * ("open Slack and…" brings Slack forward before "and"), only while nothing
- * else runs, starts or waits. receiveVoice is its only caller, so typed,
- * texted and phone turns never get an early step.
+ * Goes where a spoken request starts while the user is still talking ("open
+ * Slack and…" brings Slack forward before "and", "go to youtube…" the browser,
+ * "open downloads…" the folder), only while nothing else runs, starts or
+ * waits. receiveVoice is its only caller, so typed, texted and phone turns
+ * never get an early step.
  */
 const early = new EarlyStart({
   controller: () => {
@@ -282,13 +285,19 @@ const early = new EarlyStart({
     }
   },
   settings: () => settings,
-  knownApp: (key) => {
+  knownApp: (key): AppMatch => {
     if (!installedAppNames.size) {
       refreshAppNames();
-      return false;
+      return "none";
     }
-    return installedAppNames.has(normalizeAppName(key));
+    const name = normalizeAppName(key);
+    if (installedAppNames.has(name)) return "exact";
+    let begins = 0;
+    for (const app of installedAppNames)
+      if (app.startsWith(name + " ")) begins++;
+    return begins === 1 ? "prefix" : begins ? "ambiguous" : "none";
   },
+  browser: () => preferredBrowser(installedApps, memory?.data()).name,
   blocked: () =>
     shuttingDown
       ? "unavailable"
@@ -1353,22 +1362,32 @@ function prewarmIndex() {
     });
 }
 /**
- * The installed applications' names, from whatever the last "index" answer
- * listed. The early opener uses them to open an app the moment its exact name
- * is heard ("open Slack and …" opens Slack before the "and"); an empty set
- * only means the step waits for a boundary or a pause, as it did before.
+ * The installed applications, from whatever the last "index" answer listed.
+ * The early opener uses their names to open an app the moment its exact name
+ * (or the one name beginning with the words) is heard ("open Slack and …"
+ * opens Slack before the "and"), and the list to bring forward the browser a
+ * site will load in; an empty list only means the step waits for a boundary
+ * or a pause, as it did before, and the browser is Safari.
  */
+let installedApps: SystemIndex["apps"] = [];
 let installedAppNames = new Set<string>();
 function rememberAppNames(result: unknown) {
-  const apps = (result as { apps?: { name?: unknown }[] } | undefined)?.apps;
+  const apps = (result as { apps?: unknown[] } | undefined)?.apps;
   if (!Array.isArray(apps)) return;
+  const listed: SystemIndex["apps"] = [];
   const names = new Set<string>();
-  for (const app of apps) {
-    const name =
-      typeof app?.name === "string" ? normalizeAppName(app.name) : "";
-    if (name) names.add(name);
+  for (const app of apps as { name?: unknown; bundleId?: unknown }[]) {
+    if (typeof app?.name !== "string" || typeof app.bundleId !== "string")
+      continue;
+    const name = normalizeAppName(app.name);
+    if (!name) continue;
+    names.add(name);
+    listed.push({ name: app.name, bundleId: app.bundleId });
   }
-  if (names.size) installedAppNames = names;
+  if (names.size) {
+    installedApps = listed;
+    installedAppNames = names;
+  }
 }
 /** Asks for the app list when the early opener has none yet; never awaited. */
 function refreshAppNames() {

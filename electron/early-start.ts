@@ -1,19 +1,24 @@
 /**
- * Opens the app a spoken request starts with while the user is still talking:
- * "open Slack and message Dana" brings Slack forward before the sentence ends.
- * src/voice/early.ts decides which clause qualifies and when it has settled;
- * this runs the one step, before any run exists, with the Runner's own native
- * sequence (surface, surfacePolicy, capture, surface(open_app), evaluate,
- * execute) and accepts ALLOW or nothing: no retry, approval, hand-off or
- * pause. The helper's stop latch, which holds all agent input while the user
- * talks, is lifted only inside resume → capture → stop and resume → execute
- * → stop, and closed again in finally whatever happened.
+ * Goes where a spoken request starts while the user is still talking: "open
+ * Slack and message Dana" brings Slack forward, "go to youtube and…" the
+ * browser the page will load in, and "open downloads and…" the folder in
+ * Finder, before the sentence ends. src/voice/early.ts decides which clause
+ * qualifies and when it has settled; this runs the one step, before any run
+ * exists, with the Runner's own native sequence (surface, surfacePolicy,
+ * capture, surface(action), evaluate, execute) and accepts ALLOW or nothing:
+ * no retry, approval, hand-off or pause. Only open_app and open_file are ever
+ * built here: nothing is typed, clicked or sent, and no address is entered
+ * (the run does that after the final). The helper's stop latch, which holds
+ * all agent input while the user talks, is lifted only inside resume →
+ * capture → stop and resume → execute → stop, and closed again in finally
+ * whatever happened.
  *
  * When the final transcript still starts with the same clause and the turn
  * starts a run, the step is that run's prelude (src/core/runner.ts); otherwise
  * nothing is recorded or said and the app simply stays open. The early
  * screenshot stays in memory and is written only as the first frame of the
- * run it belongs to. Diagnostics carry codes and timings, never a name.
+ * run it belongs to. Diagnostics carry codes, the kind of place and timings,
+ * never a name.
  */
 import type {
   Action,
@@ -26,11 +31,13 @@ import { validateAction } from "../src/core/schema";
 import { evaluate, normalizeAppName, surfacePolicy } from "../src/core/policy";
 import { nativeAction, type RunPrelude } from "../src/core/runner";
 import { trace, type DiagnosticSink } from "../src/core/diagnostics";
+import { KNOWN_FOLDERS } from "../src/core/places";
 import { scanText } from "../src/core/sanitize";
 import {
   ClauseTracker,
   EARLY_LIMITS,
   finalKeeps,
+  type AppMatch,
   type Settle,
   type TrackerEvent,
   EARLY_GENERIC_NAMES,
@@ -86,12 +93,18 @@ export interface EarlyStartDeps {
   /** main's own reasons not to act now (a run, an approval, the queue…). */
   blocked(): EarlyCode | undefined;
   /**
-   * Whether these heard words are an installed app's exact name. The step
-   * then runs without waiting for a boundary or a pause, which is what
+   * How the installed apps match these heard words (src/voice/early.ts
+   * AppMatch). An exact name, or the one name that begins with the words,
+   * runs the step without waiting for a boundary or a pause, which is what
    * "open Slack and …" asks for. Absent until the app list is known.
    */
-  knownApp?(key: string): boolean;
-  /** The app came forward; main shows it on the listening pill. */
+  knownApp?(key: string): AppMatch;
+  /**
+   * The browser a web address opens in (the one src/memory/intents.ts sends
+   * the run to), so "go to youtube" brings it forward before the page loads.
+   */
+  browser?(): string | undefined;
+  /** The app or folder came forward; main shows it on the listening pill. */
   onOpened(name: string): void;
   trace: DiagnosticSink;
   now?(): number;
@@ -109,7 +122,7 @@ export interface EarlyClaim {
 }
 type Step = Omit<RunPrelude, "completes">;
 type Primed = { frame: Frame; at: number };
-type OpenApp = Extract<Action, { type: "open_app" }>;
+type Opening = RunPrelude["action"];
 interface EarlyTurn {
   invocation: number;
   /** main's voiceContext: rememberForeground for this activation. */
@@ -127,6 +140,8 @@ interface EarlyTurn {
   stepResult?: Step;
   timer?: unknown;
   executedAt?: number;
+  /** The app the heard words resolved to (normalizeAppName), once looked up. */
+  opened?: string;
   /** Why the turn gets no (further) early step; the first reason wins. */
   closed?: EarlyCode;
   /** Final, cancel or a new activation: no partial or timer acts any more. */
@@ -157,7 +172,7 @@ export class EarlyStart {
     this.turn = {
       invocation,
       ready,
-      tracker: new ClauseTracker((key) => this.deps.knownApp?.(key) ?? false),
+      tracker: new ClauseTracker((key) => this.deps.knownApp?.(key) ?? "none"),
       abort: new AbortController(),
     };
   }
@@ -193,7 +208,7 @@ export class EarlyStart {
       this.conclude(turn, turn.closed ?? "final_first", "abandoned");
       return undefined;
     }
-    const kept = finalKeeps(settle.clause, finalText);
+    const kept = finalKeeps(settle.clause, finalText, turn.opened);
     // A run is never started with credentials in its words.
     if (
       !kept.keeps ||
@@ -299,7 +314,7 @@ export class EarlyStart {
   /**
    * One EarlyStartEnded per turn that primed or settled, once its step (if
    * any) has resolved: "kept", "released" or "abandoned" with the given code
-   * when the app was opened, "skipped" when a settled step opened nothing,
+   * when the place was opened, "skipped" when a settled step opened nothing,
    * and "abandoned" with the turn's own reason when nothing settled.
    */
   private conclude(
@@ -313,6 +328,7 @@ export class EarlyStart {
       trace(this.deps.trace, "EarlyStartEnded", {
         phase: opened ? phase : turn.settle ? "skipped" : "abandoned",
         code: opened ? code : (turn.closed ?? code),
+        ...(turn.settle ? { target: turn.settle.target } : {}),
         ...(opened && phase === "kept" && turn.finishedAt !== undefined
           ? { leadMs: turn.finishedAt - turn.executedAt! }
           : {}),
@@ -368,7 +384,10 @@ export class EarlyStart {
       return this.fail(turn, this.failure(turn, error));
     }
   }
-  /** The one early open_app of this turn; ALLOW or nothing. */
+  /**
+   * The one early step of this turn, ALLOW or nothing: open_app for an app
+   * (or the browser a site loads in), open_file for a standard folder.
+   */
   private async step(
     turn: EarlyTurn,
     settle: Settle,
@@ -378,6 +397,7 @@ export class EarlyStart {
       trace(this.deps.trace, "EarlyStartExecuted", {
         code,
         settle: settle.by,
+        target: settle.target,
         ...extra,
       });
       return undefined;
@@ -394,18 +414,25 @@ export class EarlyStart {
     const c = this.deps.controller();
     if (!c) return refuse("unavailable");
     const settings = this.deps.settings();
-    let action: OpenApp;
+    // A site's step is the browser the run will load the page in.
+    const name =
+      settle.target === "site" ? this.deps.browser?.() : settle.clause.name;
+    if (!name) return refuse("unresolved");
+    let action: Opening;
     try {
       const valid = validateAction(
-        {
-          type: "open_app",
-          name: settle.clause.name,
-          frame_id: primed.frame.id,
-        },
+        settle.target === "folder"
+          ? {
+              type: "open_file",
+              path: KNOWN_FOLDERS.get(settle.clause.key),
+              frame_id: primed.frame.id,
+            }
+          : { type: "open_app", name, frame_id: primed.frame.id },
         primed.frame,
       );
       // Built here and only here: nothing else can ever run early.
-      if (valid.type !== "open_app") return refuse("policy");
+      if (valid.type !== "open_app" && valid.type !== "open_file")
+        return refuse("policy");
       action = valid;
     } catch {
       return refuse("unresolved");
@@ -418,20 +445,33 @@ export class EarlyStart {
     }
     // The user switched apps since the screenshot.
     if (surface.appId !== primed.frame.appId) return refuse("screen_changed");
-    if (surface.launcherStatus !== "resolved")
-      return refuse(surface.launcherStatus ?? "unresolved");
-    // Without a boundary the name may be unfinished ("open Visual…", "open
-    // Google…"), so only the app's exact display name counts; a boundary
-    // proves the name was finished, so "Chrome and…" may be Google Chrome.
-    // Everyday words ("settings") always need the exact name, whatever
-    // followed them: "open settings and…" must not open System Settings.
-    if (
-      (settle.by !== "boundary" ||
-        EARLY_GENERIC_NAMES.has(settle.clause.key)) &&
-      normalizeAppName(surface.launcherName ?? "") !==
-        normalizeAppName(settle.clause.name)
-    )
-      return refuse("not_exact");
+    if (action.type === "open_file") {
+      if (surface.fileStatus !== "resolved" || surface.fileKind !== "folder")
+        return refuse(
+          surface.fileStatus === "refused" ? "refused" : "unresolved",
+        );
+    } else {
+      if (surface.launcherStatus !== "resolved")
+        return refuse(surface.launcherStatus ?? "unresolved");
+      // Without a boundary the name may be unfinished ("open Visual…", "open
+      // Google…"), so only the app's exact display name counts, or, settled
+      // eagerly, the one installed name that begins with the heard words; a
+      // boundary proves the name was finished, so "Chrome and…" may be Google
+      // Chrome. Everyday words ("settings") always need the exact name,
+      // whatever followed them: "open settings and…" must not open System
+      // Settings.
+      const heard = normalizeAppName(action.name);
+      const resolved = normalizeAppName(surface.launcherName ?? "");
+      const finished =
+        settle.by === "boundary" ||
+        (settle.by === "eager" && resolved.startsWith(heard + " "));
+      if (
+        resolved !== heard &&
+        (!finished || EARLY_GENERIC_NAMES.has(settle.clause.key))
+      )
+        return refuse("not_exact");
+      if (settle.target === "app") turn.opened = resolved;
+    }
     const decision = evaluate(action, surface, settings, false);
     if (decision.kind !== "ALLOW")
       return refuse(
@@ -466,10 +506,15 @@ export class EarlyStart {
     // Only the turn still being spoken owns the pill; after the final (or a
     // newer activation) the line would land on somebody else's turn.
     if (!turn.ended && this.turn === turn)
-      this.deps.onOpened(outcome?.launched?.name || settle.clause.name);
+      this.deps.onOpened(
+        action.type === "open_file"
+          ? (surface.fileName ?? settle.clause.name)
+          : outcome?.launched?.name || action.name,
+      );
     trace(this.deps.trace, "EarlyStartExecuted", {
       code: "ok",
       settle: settle.by,
+      target: settle.target,
       ...executed,
     });
     return {

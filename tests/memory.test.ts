@@ -729,9 +729,56 @@ describe("built-in intents", () => {
     ).toEqual({ type: "type_text", text: "notes.app/welcome" });
   });
 
+  it("goes to a well-known site by the name people say, unless an app has that name", () => {
+    for (const [task, host] of [
+      ["go to youtube", "youtube.com"],
+      ["Take me to GitHub.", "github.com"],
+      ["show me reddit", "reddit.com"],
+      ["open my gmail", "mail.google.com"],
+      ["open google docs", "docs.google.com"],
+      // "google" alone is the site, not one of the two Google apps.
+      ["open google", "google.com"],
+    ]) {
+      const plan = matchIntent(task, index());
+      expect(plan, task).toMatchObject({
+        source: "intent",
+        completeWhen: { host },
+        steps: [
+          { action: { type: "open_app", name: "Safari" } },
+          {},
+          { action: { type: "type_text", text: host } },
+          {},
+        ],
+      });
+      validate(plan);
+    }
+    // An app installed under exactly that name wins; "the … app" asks for one.
+    const netflix = index({
+      apps: [
+        ...index().apps,
+        { name: "Netflix", bundleId: "com.netflix.Netflix" },
+      ],
+    });
+    expect(matchIntent("open netflix", netflix)).toMatchObject({
+      steps: [{ action: { type: "open_app", name: "Netflix" } }],
+    });
+    expect(matchIntent("open netflix", index())?.completeWhen).toEqual({
+      host: "netflix.com",
+    });
+    expect(matchIntent("open the youtube app", index())).toBeUndefined();
+    // The new verbs open apps too.
+    expect(matchIntent("show me calculator", index())?.completeWhen).toEqual({
+      appId: "com.apple.calculator",
+    });
+    expect(matchIntent("take me to notes", index())?.steps[0].action).toEqual({
+      type: "open_app",
+      name: "Notes",
+    });
+  });
+
   it("refuses ambiguous, unknown and multi-step requests", () => {
     for (const task of [
-      "open google",
+      "open google drive and docs",
       "open photoshop",
       "open calculator and compute 12*7",
       "open safari and then go to youtube.com",
