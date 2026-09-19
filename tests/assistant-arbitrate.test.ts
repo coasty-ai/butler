@@ -864,7 +864,7 @@ describe("words that point elsewhere", () => {
     // "it" and "them" would still be whatever the notification says.
     for (const [words, task, code] of [
       ["send it to them", "Send it to them in Safari", "rewrite_points"],
-      ["pay that", "Pay that in Safari", "rewrite_points"],
+      ["pay them", "Pay them in Safari", "rewrite_points"],
       ["send it to them", "Send Dana what she asked for", "rewrite_points"],
       ["do what she asked", "Do what Dana asked in Safari", "vague"],
     ]) {
@@ -909,7 +909,10 @@ describe("words that point elsewhere", () => {
       { act: "start", task: "Call Dana" },
       { utterance: "yeah do it", userWords: ["call her back", "yeah do it"] },
     );
-    expect([pointed.plan.kind, pointed.proposal]).toEqual(["reply", "Call Dana"]);
+    expect([pointed.plan.kind, pointed.proposal]).toEqual([
+      "reply",
+      "Call Dana",
+    ]);
     // The dialog eval's start-again: the pointer resolved to the user's
     // own earlier request still runs, with the model's provenance.
     const again = decide(
@@ -933,9 +936,69 @@ describe("words that point elsewhere", () => {
 
   it("falls back to the user's own words when only the TASK points elsewhere", () => {
     const base = start("send Dana the report");
-    const a = decide(base, { act: "start", task: "Send it" });
-    expect(a.plan).toEqual(base);
-    expect(a.code).toBe("rewrite_vague");
+    for (const task of ["Send it", "Send that", "Accept the invite"]) {
+      const a = decide(base, { act: "start", task });
+      expect([task, a.plan, a.code]).toEqual([task, base, "rewrite_vague"]);
+    }
+  });
+
+  it("runs a verb the user names with a thing on the screen for its object, in their words", () => {
+    // tests/fixtures/dialog-eval.jsonl deictic-task-*: the router starts
+    // them, and a TASK in the user's words runs with their provenance.
+    for (const text of [
+      "reply yes to that",
+      "accept the invite",
+      "delete this",
+      "send that",
+      "approve it",
+      "click the button",
+      "delete the second one",
+    ]) {
+      const base = routed(text);
+      expect([text, base]).toEqual([
+        text,
+        { kind: "start", text, taskSource: "user_words" },
+      ]);
+      const a = decide(base, { act: "start", task: text }, { utterance: text });
+      expect([text, a.plan, a.code]).toEqual([text, base, "start"]);
+      expect(a.taskSource).toBe("user_words");
+      // Never a fast start: the model reads words that point at the screen.
+      expect(fastStart(base, text)).toBe(false);
+    }
+    // A TASK that adds what the user never said is offered, as any rewrite.
+    const elaborated = decide(
+      routed("accept the invite"),
+      { act: "start", task: "Accept the calendar invite from Dana" },
+      { utterance: "accept the invite" },
+    );
+    expect([
+      elaborated.plan.kind,
+      elaborated.proposal,
+      elaborated.code,
+    ]).toEqual([
+      "reply",
+      "Accept the calendar invite from Dana",
+      "proposal_vocabulary",
+    ]);
+    // The allowance is the user's: the model resolving "yeah do that" to a
+    // thing on the screen from an untrusted line is still asked about.
+    for (const task of [
+      "Accept the invite",
+      "Install the update",
+      "Send that",
+    ]) {
+      const a = decide(
+        routed("yeah do that"),
+        { act: "start", task },
+        { utterance: "yeah do that", userWords: ["yeah do that"] },
+      );
+      expect([task, a.plan, a.proposal, a.code]).toEqual([
+        task,
+        askWhatToDo("yeah do that"),
+        undefined,
+        "vague",
+      ]);
+    }
   });
 
   it("keeps a correction to the run under way in the user's own words", () => {

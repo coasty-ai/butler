@@ -474,7 +474,12 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
         : askWhatToDo(words),
       code,
     );
-  if (rewrite && deicticTask(rewrite))
+  // The screen allowance is the user's, never the model's: a rewrite in
+  // their own words keeps it, but one that points at a thing on the screen
+  // in the model's words ("Send it" for "send Dana the report", "Install
+  // the update" for "yeah do that") is as vague as agreement.
+  const own = !!rewrite && intentKey(rewrite) === intentKey(words);
+  if (rewrite && deicticTask(rewrite, own))
     return vague ? unclear("vague") : settle(base, "rewrite_vague");
   if (vague && !rewrite) return unclear("vague");
   // The pointer resolved to words that still point ("send it to them in
@@ -499,7 +504,6 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
           : { context: i.context, userWords: i.userWords },
       )
     : ({ ok: false, code: "too_long" } as const);
-  const own = !!rewrite && intentKey(rewrite) === intentKey(words);
   const source: TaskSource = own
     ? (baseSource ?? i.heard ?? "user_words")
     : "model_rewrite";

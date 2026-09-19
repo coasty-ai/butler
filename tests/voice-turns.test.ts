@@ -1833,19 +1833,20 @@ describe("words that point elsewhere", () => {
     "do the thing Dana wanted",
     "follow the instructions in the email",
     "complete the steps in the doc",
-    // A verb that sends, pays, installs or deletes, with only a pointer.
-    "send that",
+    // A verb that sends, pays or calls, with only whoever the other text is
+    // from ("her", "them" after a verb or "to" that takes a recipient) or a
+    // value written in it (a number, a link, the money) for an object.
     "send it to her please",
+    "send her that",
+    "send it to them",
     "call her back",
     "call back the number she left",
     "call the number Dana sent me",
+    "call her number",
     "reply to her",
     "pay them",
+    "invite them",
     "wire the money",
-    "install it",
-    "delete them all",
-    "approve it",
-    "forward it to me",
     "go to the link in the email",
     // Such a verb with no object at all: the screen's prompt is the object
     // ("Accept to grant remote access", "Reply YES to authorize").
@@ -1866,44 +1867,19 @@ describe("words that point elsewhere", () => {
     // and what it agrees to, come from the notification.
     "reply yes",
     "reply ok",
-    "reply yes to that",
     "text them yes",
     "text her ok",
     "tell them yes",
-    "send it, I'm sure",
     // A button named by its verb.
     "click ok",
     "click allow",
     "press accept",
     "click send",
-    // A thing another text proposes: which invite, which transfer.
-    "accept the invite",
-    "confirm the booking",
-    "approve the transaction",
-    "approve the transfer",
-    "install the update",
-    "run the installer",
-    "download the attachment",
-    "click the button",
-    // Giving out, entering, agreeing, unlocking, signing in: whatever the
-    // other text asks for.
+    // Giving out or entering a value the other text holds, signing in
+    // wherever it says.
     "give them the code",
     "tell them the code",
     "enter the code",
-    "type it",
-    "paste it here",
-    "agree to that",
-    "authorize it",
-    "allow it",
-    "enable it",
-    "unlock it",
-    "grant it",
-    "verify it",
-    "join it",
-    "add it",
-    "uninstall that",
-    "wipe it",
-    "reset it",
     "log in there",
     "sign in",
     // An answer to a menu: which option is the other text's to say.
@@ -1912,10 +1888,9 @@ describe("words that point elsewhere", () => {
     "option two",
     "choose the second",
     "go with the second one",
-    // A looking verb followed by one that signs or sends.
+    // A looking verb followed by one that signs in or enters a value.
     "open the link and sign in",
     "go to the link and enter the code",
-    "look at it and send it",
     // The same in other languages.
     "sí, envíalo",
     "oui, envoie-le",
@@ -2009,6 +1984,51 @@ describe("words that point elsewhere", () => {
     "send my invite to Dana",
     "transfer $40 to Sam",
     "invite Dana",
+    // A verb the user names with a thing on the screen for its object: the
+    // user points at what they see, the runner sees the same frame, and its
+    // policy asks before the step that sends, pays or deletes
+    // (tests/fixtures/dialog-eval.jsonl deictic-task-*).
+    "reply yes to that",
+    "reply ok to this",
+    "send that",
+    "send this one",
+    "send it, I'm sure",
+    "delete this",
+    "delete these",
+    "delete them all",
+    "delete the second one",
+    "approve it",
+    "accept this one",
+    "accept the invite",
+    "accept her invite",
+    "approve the request",
+    "approve the transaction",
+    "approve the transfer",
+    "confirm the booking",
+    "install it",
+    "install the update",
+    "run the installer",
+    "download the attachment",
+    "click the button",
+    "tap that",
+    "forward it to me",
+    "forward them to me",
+    "share those",
+    "type it",
+    "paste it here",
+    "agree to that",
+    "authorize it",
+    "allow it",
+    "enable it",
+    "unlock it",
+    "grant it",
+    "verify it",
+    "join it",
+    "add it",
+    "uninstall that",
+    "wipe it",
+    "reset it",
+    "look at it and send it",
     // "My boss" is a person, not what the user calls the assistant.
     "send that to my boss",
     "forward that to my boss",
@@ -2114,11 +2134,16 @@ describe("words that point elsewhere", () => {
       words: "do what she asked",
     });
     expect(
-      plan({ text: "send that when you're done", run: working }),
-    ).toMatchObject({ kind: "clarify", words: "send that" });
+      plan({ text: "send it to her when you're done", run: working }),
+    ).toMatchObject({ kind: "clarify", words: "send it to her" });
     expect(plan({ text: "after that, check my email", run: working })).toEqual({
       kind: "queue",
       text: "check my email",
+    });
+    // A thing on the screen with a verb the user names queues like any task.
+    expect(plan({ text: "send that when you're done", run: working })).toEqual({
+      kind: "queue",
+      text: "send that",
     });
     // A run under way hears it as a correction, as it always has: it may be
     // the answer to the run's own question.

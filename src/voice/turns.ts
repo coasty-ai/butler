@@ -1335,16 +1335,42 @@ const REPORTED = wordSet(`
   shared posted forwarded texted emailed messaged provided included attached
 `);
 /**
- * Things whose value is written somewhere else: which number, which link,
- * which invite, which of the buttons.
+ * Things whose value is written somewhere else and would be the run's input:
+ * which number to call, which link to open, which code to enter.
  */
-const REFERENTS = wordSet(`
+const VALUES = wordSet(`
   number numbers address addresses link links url urls code codes amount amounts account accounts
-  details info information instructions steps contact money payment funds request requests suggestion
-  suggestions task tasks plan option options choice choices button buttons item items invite
-  invitation invitations transaction transactions transfer transfers booking bookings attachment
-  attachments installer installers update updates
+  details info information instructions steps contact money funds
 `);
+/**
+ * Things another text proposes, shown on the screen as they are: which
+ * invite, which button, which update. Acted on, they are what the user
+ * sees, so a verb the user names with one of them for its object is a task
+ * on the screen (deicticTask); named alone they still point elsewhere.
+ */
+const PROPOSED = wordSet(`
+  request requests suggestion suggestions task tasks plan option options choice choices button buttons
+  item items invite invitation invitations transaction transactions transfer transfers booking bookings
+  attachment attachments installer installers update updates payment
+`);
+const REFERENTS = new Set([...VALUES, ...PROPOSED]);
+/**
+ * Pointers at a thing on the screen: the words for things ("that", "them",
+ * "this one"), a place in what is shown ("the second one", "the last one")
+ * and the proposed things above. Never a person, a report of another text
+ * or a value: those name whoever or whatever the other text says.
+ */
+const THINGS = new Set([
+  ...wordSet(`
+    that thats it this those these them one ones thing things stuff something anything everything
+    same again before earlier above last latest previous
+    first second third fourth fifth sixth seventh eighth ninth tenth two three four five six seven
+    eight nine ten
+  `),
+  ...PROPOSED,
+]);
+/** Where on the screen ("paste it here"): neither a thing nor another text. */
+const PLACES = wordSet("here there");
 /** "My number" is the user's own, not another text's. */
 const OWNED = wordSet("my our");
 /** Function words: no request of their own. */
@@ -1376,6 +1402,16 @@ const CONSEQUENTIAL = wordSet(`
  * that I'm on my way", "reply that works".
  */
 const CLAUSE_VERBS = wordSet("reply respond answer text message tell email dm");
+/**
+ * Verbs whose "them" is whoever the other text is from ("pay them", "text
+ * them yes"); after any other verb "them" is things ("delete them all").
+ */
+const RECIPIENT_VERBS = new Set([
+  ...CLAUSE_VERBS,
+  ...wordSet("call dial ring phone ping pay venmo give invite tip"),
+]);
+/** Prepositions that make the pronoun after them a recipient: "send it to them". */
+const RECIPIENT_LEADS = wordSet("to for with");
 /**
  * Looking and opening: their pointers are theirs to keep ("open it", "play
  * that again"), unless a verb that sends or signs follows ("open the link
@@ -1534,22 +1570,31 @@ const OBJECT_DETS = new Set([...SOURCE_DETS, ...SOURCE_KINDS, ...OWNED]);
  * "okay do what she asked", "yeah do that", "do it again", "the second
  * option"), a stand-in verb whose object only points ("do what it says in
  * Chrome", "pick the first one"), or a verb that sends, pays, installs,
- * deletes, agrees or signs in whose object is only a pointer ("send that",
- * "call her back", "call the number in the note", "accept the invite") or
- * nothing at all ("go ahead and accept", "reply yes", "call back"). Such
- * words carry no task: a run would take its substance from the screen, a
- * notification or whatever the assistant last read out, in the user's name.
+ * deletes, agrees or signs in with nothing for an object ("go ahead and
+ * accept", "reply yes", "call back", "click ok") or with only what another
+ * text names: whoever it is from ("call her back", "send it to her", "text
+ * them yes") or a value written in it ("call the number in the note",
+ * "enter the code", "wire the money"). Such words carry no task: a run
+ * would take its substance from the screen, a notification or whatever the
+ * assistant last read out, in the user's name.
  *
  * One word of the user's own (an app, a name, a thing, a message they
  * dictate) makes it a task: "do the dishes list in Notes", "open that
  * folder called Taxes", "text her that I'm late", "text Dana yes", "reply
- * to that email" (the email is the thing, not a verb). Looking and opening
- * verbs keep their pointers ("play that again", "open it"): they cannot
- * send or spend on another text's say-so, unless such a verb follows them
- * ("open the link and sign in"). Questions ("what's that?", "did she
- * call?") ask rather than tell.
+ * to that email" (the email is the thing, not a verb). With `screen`, so
+ * does a verb the user names with a thing on the screen for its object
+ * ("send that", "delete this", "accept the invite", "reply yes to that",
+ * "click the button", "delete the second one"): the user is pointing at
+ * what they see, the runner sees the same frame, and its policy asks before
+ * the step that sends, pays or deletes. The allowance is for the user's own
+ * words; a model rewrite (`screen` false) gets none, since the model never
+ * saw the screen and may have taken the thing from a text it was shown.
+ * Looking and opening verbs keep their pointers ("play that again", "open
+ * it"): they cannot send or spend on another text's say-so, unless such a
+ * verb follows them ("open the link and sign in"). Questions ("what's
+ * that?", "did she call?") ask rather than tell.
  */
-export function deicticTask(text: string): boolean {
+export function deicticTask(text: string, screen = true): boolean {
   let words = keyParts(text).key;
   const frame = ASKING_FRAMES.find((f) => f.every((w, i) => words[i] === w));
   if (frame) words = words.slice(frame.length);
@@ -1560,6 +1605,9 @@ export function deicticTask(text: string): boolean {
   let verb: string | undefined;
   let verbAt = -1;
   let looking = false;
+  /** A pointer at a thing on the screen, and one at what another text names. */
+  let thing = false;
+  let elsewhere = false;
   for (const [i, word] of words.entries()) {
     const prev = words[i - 1] ?? "";
     // After a verb that takes a message, "that" begins the message the
@@ -1574,7 +1622,24 @@ export function deicticTask(text: string): boolean {
       !points.slice(i + 1).some(Boolean)
     )
       return false;
-    if (points[i]) continue;
+    if (points[i]) {
+      if (PLACES.has(word)) continue;
+      // "Her" before a thing ("accept her invite") is its determiner, not
+      // a person; "them" is people only after a verb or a preposition that
+      // takes a recipient ("pay them", "send it to them").
+      if (
+        PERSONS.has(word) &&
+        OBJECT_DETS.has(word) &&
+        REFERENTS.has(words[i + 1] ?? "")
+      )
+        continue;
+      const recipient =
+        word === "them" &&
+        ((!!verb && RECIPIENT_VERBS.has(verb)) || RECIPIENT_LEADS.has(prev));
+      if (THINGS.has(word) && !recipient) thing = true;
+      else elsewhere = true;
+      continue;
+    }
     if (CONSEQUENTIAL.has(word)) {
       // The first verb, one joined to it ("open the link and sign in") or
       // the button it names ("click allow", "press accept"). After a verb,
@@ -1600,10 +1665,12 @@ export function deicticTask(text: string): boolean {
     if (hollowAt(words, i)) continue;
     return false;
   }
-  // A verb that sends with only pointers, or nothing, for an object is as
-  // vague as agreement alone, which points at whatever was said last.
-  // Looking verbs keep their pointers.
-  return !!verb || !looking;
+  // A verb that sends with nothing for an object, or only what another text
+  // names, is as vague as agreement alone, which points at whatever was
+  // said last; with a thing on the screen for its object it is the user's
+  // task on that thing. Looking verbs keep their pointers.
+  if (verb) return !(screen && thing && !elsewhere);
+  return !looking;
 }
 
 /**
