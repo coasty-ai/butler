@@ -1,4 +1,11 @@
 import { z } from "zod";
+import {
+  RESERVED_PROVIDERS,
+  TOOL_ID,
+  TOOL_LIMITS,
+  type ToolSummary,
+  type ToolUnavailable,
+} from "./tools";
 const unit = z.number().finite().min(0).max(1);
 export const supportedKeys = [
   "ENTER",
@@ -215,6 +222,21 @@ export const actionSchema = z.discriminatedUnion("type", [
       until: z.enum(["done", "input", "change"]).default("done"),
     })
     .strict(),
+  /**
+   * Calls one tool from context.tools (src/core/tools.ts) instead of driving
+   * the screen: validated, tiered and asked about like any step, executed by
+   * the tool layer, never by the native helper.
+   */
+  z
+    .object({
+      ...base,
+      type: z.literal("tool_call"),
+      tool: z.string().regex(TOOL_ID),
+      args: z.record(z.string().max(64), z.unknown()).default({}),
+      /** "This one call completes the objective": honoured only for a verified builtin write. */
+      finish: z.boolean().default(false),
+    })
+    .strict(),
   z
     .object({
       ...base,
@@ -278,6 +300,65 @@ export type RunOrigin =
  */
 export type TaskSource =
   "user_words" | "user_words_unsure" | "model_rewrite" | "proposal";
+/** One tool server the user connected (docs/TOOLS.md). */
+export const toolServerSchema = z
+  .object({
+    id: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,39}$/)
+      .refine((id) => !RESERVED_PROVIDERS.has(id), "Reserved id."),
+    name: z.string().trim().min(1).max(40), // the user's label; appears in questions
+    transport: z.enum(["stdio", "http"]),
+    command: z.string().max(500).default(""),
+    args: z.array(z.string().max(500)).max(40).default([]),
+    env: z
+      .record(z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/), z.string().max(500))
+      .default({}), // non-secret
+    secretEnv: z
+      .array(z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/))
+      .max(16)
+      .default([]), // values in the vault
+    cwd: z.string().max(500).default(""),
+    url: z.string().max(300).default(""), // https only; validated by validateToolSettings
+    secretHeaders: z
+      .array(z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,63}$/))
+      .max(8)
+      .default([]), // values in the vault
+    enabled: z.boolean().default(false),
+    /** The user read the consent sheet and approved this exact argv (approvedCommand). */
+    consented: z.boolean().default(false),
+    trust: z.enum(["ask", "reads_unattended"]).default("ask"),
+    /** The privacy tier: "none" may run in PRIVATE_LOCAL under the sandbox; "internet" is BYOM only. */
+    network: z.enum(["none", "internet"]).default("internet"),
+    approvedCommand: z.string().max(64).default(""), // sha256(argv, cwd, sorted env names, url)
+    recipe: z.string().max(40).default(""), // ServerRecipe.id that created the row; "" when pasted
+    tools: z
+      .record(
+        z.string().max(128),
+        z.object({ on: z.boolean(), pin: z.string().max(64) }).strict(),
+      )
+      .default({}),
+    addedAt: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ToolServer = z.infer<typeof toolServerSchema>;
+export const toolsSettingsSchema = z
+  .object({
+    enabled: z.boolean().default(true), // master switch; inert until a consent below
+    /** The Apple bridge (coarena-apple), one consent per app; each asks macOS for its own grant from Settings. */
+    apple: z
+      .object({
+        calendar: z.boolean().default(false),
+        reminders: z.boolean().default(false),
+        notes: z.boolean().default(false),
+        mail: z.boolean().default(false),
+      })
+      .strict()
+      .prefault({}),
+    servers: z.array(toolServerSchema).max(TOOL_LIMITS.servers).default([]),
+  })
+  .strict()
+  .prefault({}); // NOT .default({}): inner defaults must apply (measured, plan §3.8)
 export const settingsSchema = z
   .object({
     privacy: privacySchema,
@@ -499,6 +580,7 @@ export const settingsSchema = z
      * config from before this field as already set up.
      */
     setupComplete: z.boolean().default(false),
+    tools: toolsSettingsSchema,
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
@@ -572,6 +654,11 @@ export const defaultSettings: Settings = {
   remoteScreenshots: "off",
   remoteDevices: [],
   setupComplete: false,
+  tools: {
+    enabled: true,
+    apple: { calendar: false, reminders: false, notes: false, mail: false },
+    servers: [],
+  },
 };
 /** One phone the remote knows about (settings.remoteDevices). */
 export type RemoteDevice = Settings["remoteDevices"][number];
@@ -821,6 +908,8 @@ export interface Observation {
   history: { type: string; action?: Record<string, unknown>; result: string }[];
   /** Task-relevant memory and system index context (bounded; see docs/MEMORY.md). */
   memory?: MemoryContext;
+  /** The tools this run may call, on the model's copy only; never persisted. */
+  tools?: { now: string; list: ToolSummary[]; unavailable: ToolUnavailable[] };
 }
 export interface MemoryContext {
   /** Learned preferences relevant to the task (sanitized, short). */
@@ -946,6 +1035,8 @@ export interface Run {
   /** Absent on runs recorded before origins existed: treat as "typed". */
   origin?: RunOrigin;
   taskSource?: TaskSource;
+  /** Tool calls this run made, and how many of them changed something. */
+  tools?: { calls: number; writes: number };
 }
 export interface Snapshot {
   run: Run | null;
@@ -964,9 +1055,22 @@ export interface Recorder {
   frame(runId: string, frame: Frame): void;
   save(run: Run): void;
 }
+export const TOOL_ARGS_TOO_LARGE = "TOOL_ARGS_TOO_LARGE";
+/** Nesting depth of a JSON value: 0 for a leaf, 1 for a flat object or array. */
+function depth(value: unknown): number {
+  if (!value || typeof value !== "object") return 0;
+  const inner = Array.isArray(value) ? value : Object.values(value);
+  return 1 + inner.reduce<number>((max, v) => Math.max(max, depth(v)), 0);
+}
 export function validateAction(input: unknown, frame: Frame): Action {
   const a = actionSchema.parse(input);
   if (a.frame_id !== frame.id) throw new Error("STALE_FRAME");
+  if (
+    a.type === "tool_call" &&
+    (JSON.stringify(a.args).length > TOOL_LIMITS.argsBytes ||
+      depth(a.args) > TOOL_LIMITS.argsDepth)
+  )
+    throw new Error(TOOL_ARGS_TOO_LARGE);
   if (a.type === "hotkey" && a.keys.length === 1)
     return { type: "key", key: a.keys[0], frame_id: a.frame_id };
   return a;

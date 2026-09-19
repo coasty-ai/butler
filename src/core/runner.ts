@@ -46,6 +46,7 @@ import {
   type Decision,
 } from "./policy";
 import { watchSpec, type WatchChain, type WatchSpec } from "./monitor";
+import type { ToolAccess } from "./tools";
 import { redactSecrets, scanText } from "./sanitize";
 import {
   HelperUnavailableError,
@@ -746,6 +747,8 @@ export interface RunnerExtras {
    * from here and the run completes. Without this hook monitor is refused.
    */
   onMonitor?(binding: WatchBinding, spec: WatchSpec, run: MonitorHandoff): void;
+  /** The tool layer (src/tools registry). Without it a tool_call is refused with TOOL_UNAVAILABLE. */
+  tools?: ToolAccess;
 }
 export class Runner {
   settled = true;
@@ -2039,6 +2042,12 @@ export class Runner {
        * happened.
        */
       undo?: boolean;
+      /**
+       * One tool step decided before the run (src/assistant/tool-answers.ts toolFastPath): proposed on
+       * the first frame as { type: "tool_call", tool, args, finish: true } with no model call; validation,
+       * policy and approval apply as to any step, and a tool missing from the frozen list leaves it to the model.
+       */
+      toolStep?: { tool: string; args: Record<string, unknown> };
     } = {},
   ) {
     if (this.active()) throw new Error("A run is already active.");

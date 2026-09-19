@@ -36,6 +36,9 @@ export {
   INSTALLER_PATTERN,
 } from "./policy";
 
+// The tool layer's contract: ids, tiers, limits, texts and the runner-facing access.
+export * from "./tools";
+
 // Redaction and the private-endpoint rule.
 export { scanText, sanitizeText, redactSecrets } from "./sanitize";
 export { validateProviderEndpoint } from "./privacy";
