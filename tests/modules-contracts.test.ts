@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import Ajv from "ajv";
+import Ajv2020 from "ajv/dist/2020";
 import { z } from "zod";
 import fixture from "./fixtures/partial-timelines.json";
 import { defaultSettings } from "../src/core/schema";
@@ -24,8 +26,10 @@ import {
   openUrlInputSchema,
   openUrlOutputSchema,
   portOfTool,
+  segmentInputSchema,
   segmentOutputSchema,
   speakOutputSchema,
+  type JsonSchema,
   type PortName,
   type ToolName,
 } from "../src/modules/contracts";
@@ -380,5 +384,178 @@ describe("TOOL_SCHEMAS", () => {
     });
     // A schema that is not an object is left as it is.
     expect(jsonSchemaOf(z.string())).toEqual({ type: "string" });
+  });
+});
+
+describe("the JSON Schemas under the client's Ajv", () => {
+  const decideTexts: [string, FastContext][] = [
+    ["go to youtube", ctx()],
+    ["play a midwest safety video", ctx({ frontHost: "www.youtube.com" })],
+    ["open slack", ctx()],
+    ["scroll down", ctx()],
+    ["send it to dana", ctx()],
+    ["fire up the thing", ctx()],
+  ];
+  /** The owner's sentence through the real stream: its clauses, every event and the last partial. */
+  function ownerSegments() {
+    const stream = createClauseStream();
+    const events: ClauseEvent[] = [];
+    for (const sample of owner.samples) events.push(...stream.push(sample));
+    const last = owner.samples[owner.samples.length - 1];
+    events.push(...stream.final(last.text, last.atMs + 400));
+    return {
+      stream,
+      events,
+      last,
+      output: { clauses: stream.clauses(), events },
+    };
+  }
+
+  it("flatten the decider's union into an object schema whose branches still decide", () => {
+    const decide = TOOL_SCHEMAS.decide_clause.outputSchema;
+    expect(decide.type).toBe("object");
+    expect(decide.required).toEqual(["kind"]);
+    expect(decide.properties).toEqual({
+      kind: {
+        type: "string",
+        enum: ["open_app", "open_url", "scroll", "none"],
+      },
+      name: expect.objectContaining({ type: "string" }),
+      url: expect.objectContaining({ type: "string" }),
+      siteKey: expect.objectContaining({ type: "string" }),
+      label: expect.objectContaining({ type: "string" }),
+      direction: { type: "string", enum: ["down", "up"] },
+      reason: { type: "string", enum: [...FAST_NONE_REASONS] },
+    });
+    const branches = decide.oneOf as JsonSchema[];
+    expect(branches).toHaveLength(4);
+    for (const branch of branches)
+      expect(branch).toMatchObject({
+        type: "object",
+        additionalProperties: false,
+      });
+    expect(
+      branches.find((b) => JSON.stringify(b).includes('"open_url"'))!.required,
+    ).toEqual(["kind", "url"]);
+    // The segmenter's input names the stateless adapter's two optional fields after the three it needs.
+    expect(TOOL_SCHEMAS.segment_clauses.inputSchema).toMatchObject({
+      required: ["text", "atMs", "previous"],
+    });
+    expect(
+      Object.keys(
+        TOOL_SCHEMAS.segment_clauses.inputSchema.properties as object,
+      ),
+    ).toEqual(["text", "atMs", "previous", "final", "lastChangedAtMs"]);
+    for (const tool of Object.keys(TOOL_SCHEMAS) as ToolName[])
+      for (const json of [
+        TOOL_SCHEMAS[tool].inputSchema,
+        TOOL_SCHEMAS[tool].outputSchema,
+      ])
+        expect(json.properties, tool).toBeTypeOf("object");
+  });
+
+  it("compile in strict mode, draft-07 and 2020-12 alike, and admit exactly what the zod schemas do", () => {
+    const validators = [
+      new Ajv({ strict: true }),
+      new Ajv2020({ strict: true }),
+    ];
+    for (const ajv of validators)
+      for (const tool of Object.keys(TOOL_SCHEMAS) as ToolName[]) {
+        expect(
+          () => ajv.compile(TOOL_SCHEMAS[tool].inputSchema),
+          tool,
+        ).not.toThrow();
+        expect(
+          () => ajv.compile(TOOL_SCHEMAS[tool].outputSchema),
+          tool,
+        ).not.toThrow();
+      }
+    const ajv = validators[0];
+    const decideOut = ajv.compile(TOOL_SCHEMAS.decide_clause.outputSchema);
+    for (const [text, context] of decideTexts) {
+      const action = decideFast(clauseOf(text), context);
+      expect(decideOut(action), text).toBe(true);
+      expect(decideOut({ ...action, extra: 1 }), text).toBe(false);
+    }
+    expect(
+      decideOut({ kind: "open_url", url: "https://www.youtube.com/" }),
+    ).toBe(true);
+    expect(
+      decideOut({
+        kind: "open_url",
+        url: "https://www.youtube.com/",
+        label: "YouTube · example",
+      }),
+    ).toBe(true);
+    expect(decideOut({ kind: "open_url" })).toBe(false);
+    expect(decideOut({ kind: "type", text: "x" })).toBe(false);
+    expect(decideOut({ kind: "none", reason: "later" })).toBe(false);
+    const decideIn = ajv.compile(TOOL_SCHEMAS.decide_clause.inputSchema);
+    expect(
+      decideIn({ clause: clauseOf("go to youtube"), context: ctx() }),
+    ).toBe(true);
+    const { output, last, stream } = ownerSegments();
+    expect(ajv.compile(TOOL_SCHEMAS.segment_clauses.outputSchema)(output)).toBe(
+      true,
+    );
+    const segmentIn = ajv.compile(TOOL_SCHEMAS.segment_clauses.inputSchema);
+    expect(
+      segmentIn({
+        text: last.text,
+        atMs: last.atMs,
+        previous: stream.clauses(),
+      }),
+    ).toBe(true);
+    expect(
+      segmentIn({
+        text: last.text,
+        atMs: last.atMs,
+        previous: stream.clauses(),
+        lastChangedAtMs: last.atMs,
+        final: true,
+      }),
+    ).toBe(true);
+    expect(
+      segmentIn({
+        text: last.text,
+        atMs: last.atMs,
+        previous: [],
+        final: "yes",
+      }),
+    ).toBe(false);
+    const chooseIn = ajv.compile(TOOL_SCHEMAS.choose.inputSchema);
+    expect(
+      chooseIn(chooseInputOf("clause", CLAUSE_QUESTION, { clause: "x" })),
+    ).toBe(true);
+    const chooseOut = ajv.compile(TOOL_SCHEMAS.choose.outputSchema);
+    expect(chooseOut({ choice: "open_app", p: 0.9 })).toBe(true);
+    expect(chooseOut({ choice: "open_app", p: 0.9, why: "because" })).toBe(
+      false,
+    );
+    const openOut = ajv.compile(TOOL_SCHEMAS.open_url.outputSchema);
+    expect(openOut({ navigated: true, method: "script" })).toBe(true);
+    expect(openOut({ navigated: true })).toBe(false);
+    const speakOut = ajv.compile(TOOL_SCHEMAS.speak.outputSchema);
+    expect(speakOut({ played: true, ms: 3 })).toBe(true);
+    expect(speakOut({ audio: "UklGRg==", format: "wav", ms: 3 })).toBe(true);
+    expect(speakOut({ audio: "UklGRg==", format: "ogg", ms: 3 })).toBe(false);
+  });
+
+  it("segment_clauses takes the stateless segmenter's final flag and last-change time", () => {
+    const { last, stream } = ownerSegments();
+    const input = {
+      text: last.text,
+      atMs: last.atMs,
+      previous: stream.clauses(),
+    };
+    expect(segmentInputSchema.parse(input)).toEqual(input);
+    const full = { ...input, lastChangedAtMs: last.atMs - 350, final: true };
+    expect(segmentInputSchema.parse(full)).toEqual(full);
+    expect(
+      segmentInputSchema.safeParse({ ...input, final: "yes" }).success,
+    ).toBe(false);
+    expect(
+      segmentInputSchema.safeParse({ ...input, lastChangedAtMs: -1 }).success,
+    ).toBe(false);
   });
 });

@@ -443,10 +443,23 @@ export interface ToolSchema {
   inputSchema: JsonSchema;
   outputSchema: JsonSchema;
 }
-const isObjectSchema = (branch: unknown) =>
+const isObjectSchema = (branch: unknown): branch is JsonSchema =>
   typeof branch === "object" &&
   branch !== null &&
   (branch as JsonSchema).type === "object";
+/**
+ * The one property schema that stands for a key over every branch of a
+ * union: the branches' own when they agree, an enum when each pins a
+ * different string (the discriminator), anything otherwise; the branches
+ * themselves still decide.
+ */
+function mergedProperty(schemas: JsonSchema[]): JsonSchema {
+  const first = JSON.stringify(schemas[0]);
+  if (schemas.every((s) => JSON.stringify(s) === first)) return schemas[0];
+  if (schemas.every((s) => s.type === "string" && typeof s.const === "string"))
+    return { type: "string", enum: schemas.map((s) => s.const) };
+  return {};
+}
 /**
  * A zod schema as the JSON Schema an MCP tool declares. The input side is
  * taken (a reply is the input to our parser; the transforms that fill in
@@ -455,16 +468,38 @@ const isObjectSchema = (branch: unknown) =>
  * input and output schemas and which every port's shapes satisfy.
  */
 export function jsonSchemaOf(schema: z.ZodType): JsonSchema {
-  const json = z.toJSONSchema(schema, { io: "input" }) as JsonSchema;
+  // draft-07: what the MCP client's Ajv reads without a meta-schema, and a
+  // subset of 2020-12 for every keyword these shapes use.
+  const json = z.toJSONSchema(schema, {
+    io: "input",
+    target: "draft-07",
+  }) as JsonSchema;
   delete json.$schema;
-  const branches = json.oneOf ?? json.anyOf;
+  const branches = (json.oneOf ?? json.anyOf) as unknown[] | undefined;
   if (
     json.type === undefined &&
     Array.isArray(branches) &&
     branches.length &&
     branches.every(isObjectSchema)
-  )
+  ) {
+    // A union of object branches, flattened into an object schema at the
+    // top: type "object", the properties every branch names, required where
+    // all agree; the branches stay under oneOf and still decide.
     json.type = "object";
+    const byKey = new Map<string, JsonSchema[]>();
+    for (const branch of branches)
+      for (const [key, value] of Object.entries(
+        (branch.properties ?? {}) as Record<string, JsonSchema>,
+      ))
+        byKey.set(key, [...(byKey.get(key) ?? []), value]);
+    json.properties = Object.fromEntries(
+      [...byKey].map(([key, schemas]) => [key, mergedProperty(schemas)]),
+    );
+    const required = branches
+      .map((branch) => (branch.required as string[] | undefined) ?? [])
+      .reduce((all, one) => all.filter((key) => one.includes(key)));
+    if (required.length) json.required = required;
+  }
   return json;
 }
 const DESCRIPTIONS: Record<ToolName, string> = {
