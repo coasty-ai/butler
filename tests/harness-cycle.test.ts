@@ -4152,6 +4152,7 @@ describe("suites in the cycle", () => {
     ]);
     expect(graderFiles(market)).toEqual([
       "src/gym/bench/graders.ts",
+      "src/gym/bench/catalogue-long.ts",
       "src/gym/bench/catalogue-market.ts",
       "src/gym/bench/fixtures-market.ts",
       "src/gym/bench/fixtures.ts",
@@ -4178,9 +4179,13 @@ describe("suites in the cycle", () => {
     expect(
       new Set([hash(smoke), hash(long), hash(market), hash(all)]).size,
     ).toBe(4);
-    // A long-suite edit leaves the smoke metric alone and moves the long one.
+    // A long-suite edit leaves the smoke metric alone and moves the long one,
+    // and the market one, whose graders are built from the long catalogue.
     expect(hash(smoke, "src/gym/bench/catalogue-long.ts")).toBe(hash(smoke));
     expect(hash(smoke, "src/gym/bench/readers.ts")).toBe(hash(smoke));
+    expect(hash(market, "src/gym/bench/catalogue-long.ts")).not.toBe(
+      hash(market),
+    );
     expect(hash(long, "src/gym/bench/fixtures.ts")).not.toBe(hash(long));
     expect(hash(long, "src/gym/bench/readers.ts")).not.toBe(hash(long));
     expect(hash(smoke, "src/gym/bench/graders.ts")).not.toBe(hash(smoke));

@@ -1399,11 +1399,13 @@ export const marketPages = {
         "Continue",
       ),
     ),
+  // Every check-in post lands here, so the page has to read right after the
+  // passenger form, after a seat and after Complete check-in itself.
   checkinNext: (token: string) =>
     page(
       "Received",
       token,
-      `<p>Received. Next: ${link(token, "checkin/seats", "Choose a seat")} · ${link(token, "checkin/done", "Complete check-in")}</p>`,
+      `<p>Received. If you have not yet, ${link(token, "checkin/seats", "choose a seat")}, then ${link(token, "checkin/done", "complete check-in")}. Once Complete check-in has been posted, you are checked in.</p>`,
     ),
   seats: (token: string, checkin: Checkin) =>
     page(
