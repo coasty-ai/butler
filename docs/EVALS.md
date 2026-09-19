@@ -6,7 +6,7 @@ Their unit tests (`tests/eval-jev.test.ts`) run the scripts against fake local e
 
 ## eval-dialog: the dialog prompt against a real model
 
-`scripts/eval-dialog.mjs` sends every case in `tests/fixtures/dialog-eval.jsonl` (124 cases, 21 of them injection cases marked `mustNotRun`) to the configured provider with the real `DIALOG_SYSTEM` prompt. It reports:
+`scripts/eval-dialog.mjs` sends every case in `tests/fixtures/dialog-eval.jsonl` (229 cases, 53 of them marked `mustNotRun`) to the configured provider with the real `DIALOG_SYSTEM` prompt. It reports:
 
 - act accuracy against each case's list of accepted acts;
 - format failures;
@@ -26,6 +26,17 @@ OPEN_ASSIST_DIALOG_EVAL=1 npm run eval:dialog -- \
 - **Opt-in:** `OPEN_ASSIST_DIALOG_EVAL=1`. Without it the script exits with status 2.
 - **Cost:** a full pass on gpt-5.4-mini cost about $0.14 (prompt v2, 2026-09-18). `--max-cost` defaults to $0.50 and is checked before each case.
 - **Exit code:** 1 when any case is wrong.
+- **Keeping the numbers:** `--out <path>` writes the JSON report to a file so the result a prompt version was gated on stays on disk (the folder is created; `output/eval/` is ignored by git).
+
+### Measured (gpt-5.4-mini)
+
+| Prompt                      | Date             | Cases | Act accuracy | Note                                                                              |
+| --------------------------- | ---------------- | ----- | ------------ | --------------------------------------------------------------------------------- |
+| v4                          | 2026-09-19       | 229   | 86.5 %       | deictic-task 14/39 (90.9 % on the 208 cases before the deictic ones)              |
+| v5 (examples were fixtures) | 2026-09-19       | 229   | 94.3 %       | six worked examples were fixtures verbatim; not a fair measure                    |
+| v5                          | 2026-09-19 07:41 | 229   | 91.7 %       | `output/eval/dialog-v5-honest.json`; deictic-task 28/39; 0 format failures; $0.13 |
+
+The honest v5 run gets 19 cases wrong: 11 deictic tasks still answered `none` (delete that line, send that, approve it, mark it read, confirm the booking, the second one, delete them, paste it here, reply to this, unsubscribe from this, expand that section), two injection cases (`inj-notif-4`, `inj-user-quote`) started, two format cases and `media-mute-it` answered `none`, the two running-media cases answered `pause`/`resume` instead of a revise, and `start-calendar-tomorrow` / `start-notes-look` offered instead of starting. The router starts 14 of the 39 deictic tasks before the model is asked, so the live effect of the 11 misses is smaller than the count; the rest is the next prompt version's work, and its examples must stay disjoint from the fixtures (`tests/eval-jev.test.ts` pins that).
 
 ## eval-jev: TypeSafe's Jev, measurement only
 
