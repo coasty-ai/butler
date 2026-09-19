@@ -131,6 +131,17 @@ func appleProtocolChecks(_ check: (Bool, String) -> Void) {
         let input = listed["inputSchema"] as? [String: Any] ?? [:]
         check(input["type"] as? String == "object" && input["additionalProperties"] as? Bool == false, "\(tool.name) input is a closed object")
         check(!(input["properties"] as? [String: Any] ?? [:]).isEmpty, "\(tool.name) declares its parameters")
+        // The date contract: a date argument is stated by pattern (AppleRules.dayPattern or
+        // momentPattern), never by a JSON Schema format the client would read as RFC 3339 and refuse
+        // the local form with. from and to are days; every other date takes a day or a local time.
+        let dayKeys: Set<String> = tool.name == "calendar_list_events" ? ["from", "to"] : []
+        let momentKeys: Set<String> = ["start", "end", "due", "dueBefore", "since"]
+        for (key, property) in input["properties"] as? [String: [String: Any]] ?? [:] {
+            let format = property["format"] as? String
+            check(format != "date" && format != "date-time" && format != "time", "\(tool.name).\(key) carries no date format")
+            let expected = dayKeys.contains(key) ? AppleRules.dayPattern : momentKeys.contains(key) ? AppleRules.momentPattern : nil
+            check(property["pattern"] as? String == expected, "\(tool.name).\(key) carries \(expected == nil ? "no date pattern" : "its date pattern")")
+        }
         check((listed["outputSchema"] as? [String: Any])?["type"] as? String == "object", "\(tool.name) declares its result")
         check(tool.description.count <= 200, "\(tool.name) description fits the model's context line")
     }

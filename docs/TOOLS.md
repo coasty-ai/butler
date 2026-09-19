@@ -64,7 +64,16 @@ a tool that does not exist (`mail_send`, `osascript`, …) is `-32602`.
 Annotations: every read has `readOnlyHint: true`; every add has
 `readOnlyHint: false, destructiveHint: false`; all are `openWorldHint: false`.
 Dates in arguments are `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM[:SS]`, local time
-unless they carry `Z` or an offset. Dates in results carry the local offset
+unless they carry `Z` or an offset. The schema states this by `pattern`
+(`AppleRules.dayPattern` for `from`/`to`, which take whole days;
+`AppleRules.momentPattern` for `start`, `end`, `due`, `dueBefore`, `since`),
+never by `format: "date-time"`: the client validates arguments with the MCP
+SDK's Ajv before a call, and `date-time` there is RFC 3339 with an offset,
+which would refuse the local form the bridge documents (measured). The
+patterns fix the shape; ranges (month 13, hour 24) are the bridge's
+`BAD_ARGS`. The fast path (`src/assistant/tool-answers.ts`) sends whole days
+for a listing and filters "tonight", "this morning" and "this afternoon" on
+the lines it gets back. Dates in results carry the local offset
 (`2026-09-19T18:00:00-07:00`).
 
 | Tool                    | Arguments                                        | Tier / consent                 | Result `structuredContent`                                                                                  |
@@ -143,8 +152,9 @@ the exact reply or `null` for a notification. `AppleProtocolTests.swift` replays
 them against `AppleServer` over `FixtureStore` and compares bytes;
 `tests/tools-apple.test.ts` checks that the table's `lines()` and `facts()`
 accept every recorded reply and reject any shape with a key missing or added,
-and that `dateKeys` cover every `date`/`date-time` parameter in
-`tools-list.json`.
+and that `dateKeys` cover every parameter `tools-list.json` pins to a date
+pattern, and that the SDK's validator accepts the local forms against those
+schemas.
 
 ## The launcher shim (`coarena-launch`)
 

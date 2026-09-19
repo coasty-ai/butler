@@ -102,6 +102,13 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const LAUNCH_CODE = /\bLAUNCH_(?:BAD_COMMAND|NO_SANDBOX|NO_DISCLAIM)\b/;
 const LAUNCH_STDERR_BYTES = 256;
 const DATE_FORMATS = new Set(["date", "date-time", "time"]);
+/**
+ * A pattern that pins a `YYYY-MM-DD` day, alone or followed by a time: how the
+ * Apple bridge states its dates (AppleRules.dayPattern, momentPattern), since
+ * `format: "date-time"` would have Ajv refuse the offset-less local form.
+ */
+const LOCAL_DATE_PATTERN =
+  /^\^\\d\{4\}-\\d\{2\}-\\d\{2\}(\$$|\(.*[T:].*\)\?\$$)/;
 const validators = new AjvJsonSchemaValidator();
 
 type Schema = Record<string, unknown>;
@@ -128,7 +135,20 @@ const required = (schema: unknown): Set<string> =>
       ? schema.required.filter((v): v is string => typeof v === "string")
       : [],
   );
-/** "title (text), start (date-time), end? (date-time)": required first, at most eight. */
+/**
+ * What kind of date a property takes, or undefined: its JSON Schema format
+ * ("date", "date-time", "time"), or "date, local" / "date-time, local" for a
+ * string pinned to the local form by pattern (the Apple bridge).
+ */
+function dateKind(p: Schema): string | undefined {
+  if (typeof p.format === "string" && DATE_FORMATS.has(p.format))
+    return p.format;
+  if (typeof p.pattern !== "string") return undefined;
+  const match = LOCAL_DATE_PATTERN.exec(p.pattern);
+  if (!match) return undefined;
+  return match[1] === "$" ? "date, local" : "date-time, local";
+}
+/** "title (text), start (date-time, local), end? (date-time, local)": required first, at most eight. */
 function paramsLine(schema: unknown): string {
   const props = properties(schema);
   const must = required(schema);
@@ -147,6 +167,8 @@ function paramsLine(schema: unknown): string {
             : typeof type === "string"
               ? type
               : "value";
+    const date = dateKind(p);
+    if (date) return `${word}, ${date}`;
     return typeof p.format === "string" && p.format
       ? `${word}, ${p.format}`
       : word;
@@ -160,12 +182,10 @@ function paramsLine(schema: unknown): string {
     .join(", ")
     .slice(0, 300);
 }
-/** Argument keys the schema types as a date, date-time or time. */
+/** Argument keys the schema types as a date, date-time or time, by format or by the local pattern. */
 function dateKeys(schema: unknown): string[] {
   return Object.entries(properties(schema))
-    .filter(
-      ([, p]) => typeof p.format === "string" && DATE_FORMATS.has(p.format),
-    )
+    .filter(([, p]) => dateKind(p) !== undefined)
     .map(([name]) => name);
 }
 /** The title (or name) and the description's first sentence, ≤ 200 characters. */

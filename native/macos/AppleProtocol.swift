@@ -72,11 +72,16 @@ private func text(_ description: String, max: Int, format: String? = nil) -> [St
     if let format { property["format"] = format }
     return property
 }
+/// A whole local day, `YYYY-MM-DD`. Stated as a pattern, not `format: "date"`,
+/// so the client and the bridge check the same thing (AppleRules.dayPattern).
 private func day(_ description: String) -> [String: Any] {
-    ["type": "string", "format": "date", "description": description]
+    ["type": "string", "pattern": AppleRules.dayPattern, "description": description]
 }
+/// A local day or date-time (`2026-09-19T18:00`), optionally with `Z` or an
+/// offset. `format: "date-time"` would make the client refuse the offset-less
+/// local form the bridge documents and reads (AppleRules.momentPattern).
 private func moment(_ description: String) -> [String: Any] {
-    ["type": "string", "format": "date-time", "description": description]
+    ["type": "string", "pattern": AppleRules.momentPattern, "description": description]
 }
 /// What every read returns: the lines a voice can speak and how many more there were.
 private let linesOutput = schema(

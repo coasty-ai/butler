@@ -30,6 +30,32 @@ func appleRulesChecks(_ check: (Bool, String) -> Void) {
         check(AppleRules.date(bad, calendar: calendar) == nil, "not a date: \(bad)")
     }
 
+    // The schema's patterns (what the client's Ajv checks before a call) against the parser: every
+    // documented form the parser reads matches momentPattern, so the client never refuses a call the
+    // bridge would take; a shape that is not a date fails the pattern, so it never reaches the bridge;
+    // ranges (month 13, hour 24, an offset past 14 h) pass the pattern and are refused here.
+    func matches(_ pattern: String, _ text: String) -> Bool {
+        let regex = try! NSRegularExpression(pattern: pattern)
+        return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+    for good in ["2026-09-19T18:00", "2026-09-19", "2026-09-19 18:00:30", "2026-09-20T01:00:00Z", "2026-09-19T21:00:00-04:00",
+                 "2026-09-19T21:00:00.250+0300"] {
+        check(AppleRules.date(good, calendar: calendar) != nil && matches(AppleRules.momentPattern, good),
+              "the parser and momentPattern both take \(good)")
+    }
+    for shape in ["", "tomorrow", "2026-09-19T18", "19/09/2026", "2026-09-19T18:00X", "2026-9-19", "2026-09-19T18:00:00+07:00 "] {
+        check(!matches(AppleRules.momentPattern, shape) && AppleRules.date(shape, calendar: calendar) == nil,
+              "momentPattern refuses the shape \(shape) as the parser does")
+    }
+    for range in ["2026-13-01", "2026-09-19T24:00", "2026-09-19T18:00+25:00"] {
+        check(matches(AppleRules.momentPattern, range) && AppleRules.date(range, calendar: calendar) == nil,
+              "a range the pattern cannot see is the parser's refusal: \(range)")
+    }
+    check(matches(AppleRules.dayPattern, "2026-09-19"), "dayPattern takes a day")
+    for notDay in ["2026-09-19T00:00", "2026-09-19 00:00", "2026-09-19Z", "2026-9-19"] {
+        check(!matches(AppleRules.dayPattern, notDay), "dayPattern refuses \(notDay)")
+    }
+
     // Arguments: unknown keys, types, bounds, one line.
     check(failure { try AppleRules.keys(["title": "x", "attendees": []], allowed: ["title"]) } == "BAD_ARGS", "an extra key is refused")
     check(message { try AppleRules.keys(["b": 1, "a": 1], allowed: ["a"]) }.hasPrefix("Unknown argument b."), "the refusal names the key")

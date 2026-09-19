@@ -24,12 +24,12 @@
                 "properties": {
                   "from": {
                     "description": "First day, YYYY-MM-DD, local.",
-                    "format": "date",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   },
                   "to": {
                     "description": "Last day, inclusive; at most 31 days after from.",
-                    "format": "date",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   }
                 },
@@ -81,12 +81,12 @@
                   },
                   "end": {
                     "description": "Local date-time; 1 minute to 24 hours after start. With allDay, the last day.",
-                    "format": "date-time",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:?\\d{2})?)?$",
                     "type": "string"
                   },
                   "start": {
                     "description": "Local date-time like 2026-09-19T18:00; a day alone with allDay.",
-                    "format": "date-time",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:?\\d{2})?)?$",
                     "type": "string"
                   },
                   "title": {
@@ -162,7 +162,7 @@
                 "properties": {
                   "dueBefore": {
                     "description": "Only reminders due before this local date or date-time.",
-                    "format": "date-time",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:?\\d{2})?)?$",
                     "type": "string"
                   },
                   "list": {
@@ -210,7 +210,7 @@
                 "properties": {
                   "due": {
                     "description": "Local date (2026-09-25) or date-time (2026-09-25T09:00).",
-                    "format": "date-time",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:?\\d{2})?)?$",
                     "type": "string"
                   },
                   "list": {
@@ -434,7 +434,7 @@
                   },
                   "since": {
                     "description": "Only messages received at or after this local date or date-time.",
-                    "format": "date-time",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}(?:[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:?\\d{2})?)?$",
                     "type": "string"
                   },
                   "subject": {

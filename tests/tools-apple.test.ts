@@ -2,9 +2,16 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 import { APPLE } from "../src/tools/providers/apple";
 import { BUILTIN_SERVERS } from "../src/tools/providers";
 import { RESERVED_PROVIDERS, type BuiltinTool } from "../src/core/tools";
+
+/** The validator the MCP client runs over arguments before a call (src/tools/mcp.ts). */
+const validators = new AjvJsonSchemaValidator();
+/** The bridge's date contract: a `YYYY-MM-DD` day, alone or with a local time (AppleRules.dayPattern, momentPattern). */
+const isDatePattern = (pattern: string | undefined) =>
+  typeof pattern === "string" && pattern.startsWith("^\\d{4}-\\d{2}-\\d{2}");
 
 /**
  * The Apple bridge's table against the fixtures the native tests hold the
@@ -34,7 +41,7 @@ interface ListedTool {
   name: string;
   title: string;
   inputSchema: {
-    properties: Record<string, { format?: string }>;
+    properties: Record<string, { format?: string; pattern?: string }>;
     required: string[];
   };
   outputSchema: {
@@ -156,14 +163,64 @@ describe("the Apple bridge table", () => {
   it("covers every date-typed parameter with dateKeys, and nothing else", () => {
     for (const entry of listed) {
       const dated = Object.entries(entry.inputSchema.properties)
-        .filter(([, p]) =>
-          ["date", "date-time", "time"].includes(p.format ?? ""),
-        )
+        .filter(([, p]) => isDatePattern(p.pattern))
         .map(([key]) => key)
         .sort();
       expect((tool(entry.name).dateKeys ?? []).slice().sort()).toEqual(dated);
     }
     expect(tool("calendar_create_event").dateKeys).toEqual(["start", "end"]);
+    expect(tool("calendar_list_events").dateKeys).toEqual(["from", "to"]);
+  });
+
+  it("states its dates by the local pattern the client's validator accepts, never by a format it would refuse", () => {
+    // The SDK's Ajv reads format "date-time" as RFC 3339 and refuses the
+    // offset-less local form the bridge documents and reads; measured.
+    const strict = validators.getValidator({
+      type: "object",
+      properties: { start: { type: "string", format: "date-time" } },
+    } as never);
+    expect(strict({ start: "2026-09-19T18:00" }).valid).toBe(false);
+    const schema = (name: string) =>
+      validators.getValidator(
+        listed.find((t) => t.name === name)!.inputSchema as never,
+      );
+    for (const entry of listed)
+      for (const [key, p] of Object.entries(entry.inputSchema.properties)) {
+        expect(
+          ["date", "date-time", "time"],
+          `${entry.name}.${key}`,
+        ).not.toContain(p.format ?? "");
+        if ((tool(entry.name).dateKeys ?? []).includes(key))
+          expect(isDatePattern(p.pattern), `${entry.name}.${key}`).toBe(true);
+      }
+    // What the fast path and the model send: local, no offset, a day alone
+    // where the bridge takes days.
+    const event = schema("calendar_create_event");
+    expect(event({ title: "Dentist", start: "2026-09-19T18:00" }).valid).toBe(
+      true,
+    );
+    expect(
+      event({ title: "Offsite", start: "2026-09-21", allDay: true }).valid,
+    ).toBe(true);
+    expect(
+      event({ title: "Dentist", start: "2026-09-19T18:00:00-07:00" }).valid,
+    ).toBe(true);
+    expect(event({ title: "Dentist", start: "tomorrow at 6" }).valid).toBe(
+      false,
+    );
+    const list = schema("calendar_list_events");
+    expect(list({ from: "2026-09-19", to: "2026-09-19" }).valid).toBe(true);
+    expect(list({ from: "2026-09-19T00:00", to: "2026-09-19" }).valid).toBe(
+      false,
+    );
+    const reminders = schema("reminders_list");
+    expect(reminders({ dueBefore: "2026-09-19" }).valid).toBe(true);
+    expect(reminders({ dueBefore: "2026-09-19T23:59" }).valid).toBe(true);
+    const create = schema("reminders_create");
+    expect(create({ title: "Call Dana", due: "2026-09-19T09:00" }).valid).toBe(
+      true,
+    );
+    expect(schema("mail_search")({ since: "2026-09-17" }).valid).toBe(true);
   });
 
   it("asks with a question of a kind in the contract, whatever the arguments", () => {

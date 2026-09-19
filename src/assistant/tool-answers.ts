@@ -182,9 +182,17 @@ const NOUN_WORDS = new Set(
     " ",
   ),
 );
+/**
+ * The days a question covers, as the bridge reads them (calendar_list_events
+ * takes whole days, YYYY-MM-DD), and for "tonight", "this morning" and "this
+ * afternoon" the hours of that day the answer keeps (sayLines filters the
+ * lines; the bridge is never sent a time).
+ */
 interface Window {
   from: Wall;
   to: Wall;
+  /** Start hours kept, [from, to); absent for whole days. */
+  hours?: { from: number; to: number };
   label: string;
 }
 /** The window a question names, or the whole of today when it names none. */
@@ -194,8 +202,8 @@ function windowOf(
 ): { window: Window; rest: string } | undefined {
   const now = today(clock);
   const wholeDay = (d: Wall, label: string): Window => ({
-    from: withTime(d, 0),
-    to: withTime(d, 23, 59),
+    from: d,
+    to: d,
     label,
   });
   const week = WEEK.exec(text);
@@ -205,8 +213,8 @@ function windowOf(
     const end = addDays(monday, week[1].toLowerCase() === "next" ? 13 : 6);
     return {
       window: {
-        from: withTime(start, 0),
-        to: withTime(end, 23, 59),
+        from: start,
+        to: end,
         label: `${capitalize(week[1].toLowerCase())} week`,
       },
       rest: text.replace(week[0], " "),
@@ -221,27 +229,24 @@ function windowOf(
   if (relative === "tonight" || relative === "this evening")
     return {
       window: {
-        from: withTime(date, 17),
-        to: withTime(date, 23, 59),
-        label: capitalize(relative),
+        ...wholeDay(date, capitalize(relative)),
+        hours: { from: 17, to: 24 },
       },
       rest,
     };
   if (relative === "this morning")
     return {
       window: {
-        from: withTime(date, 0),
-        to: withTime(date, 12),
-        label: "This morning",
+        ...wholeDay(date, "This morning"),
+        hours: { from: 0, to: 12 },
       },
       rest,
     };
   if (relative === "this afternoon")
     return {
       window: {
-        from: withTime(date, 12),
-        to: withTime(date, 17),
-        label: "This afternoon",
+        ...wholeDay(date, "This afternoon"),
+        hours: { from: 12, to: 17 },
       },
       rest,
     };
@@ -251,6 +256,28 @@ function windowOf(
       ? capitalize(DAY_NAMES[weekdayOf(date)])
       : `${DAY_NAMES[weekdayOf(date)][0].toUpperCase()}${DAY_NAMES[weekdayOf(date)].slice(1)} ${date.d} ${capitalize(MONTH_NAMES[date.m - 1])}`;
   return { window: wholeDay(date, label), rest };
+}
+/**
+ * The hour an event line starts at, from the bridge's own shape
+ * ("Sat 19 Sep, 3 PM to 4 PM: Review (Work)", "Fri 18 Sep, 9:45 AM to …");
+ * undefined for an all-day line or any other shape, which a part-day window
+ * keeps rather than hides.
+ */
+const LINE_START = /^[^,]*,\s*(\d{1,2})(?::\d{2})?\s*(AM|PM)\b/i;
+function startHour(line: string): number | undefined {
+  const m = LINE_START.exec(line);
+  if (!m) return undefined;
+  const hour = Number(m[1]);
+  if (!(hour >= 1 && hour <= 12)) return undefined;
+  return (hour % 12) + (m[2].toUpperCase() === "PM" ? 12 : 0);
+}
+/** The lines whose start falls in the window's hours; every line when it has none. */
+function inHours(lines: string[], hours: Window["hours"]): string[] {
+  if (!hours) return lines;
+  return lines.filter((line) => {
+    const hour = startHour(line);
+    return hour === undefined || (hour >= hours.from && hour < hours.to);
+  });
 }
 const joinList = (items: string[]) =>
   items.length <= 1
@@ -265,12 +292,16 @@ function sayLines(
   o: ToolOutcome,
   label: string,
   noun: "calendar" | "reminders",
+  hours?: Window["hours"],
 ): string {
   if (o.code !== "ok")
     return o.code === "denied"
       ? `I don’t have access to your ${noun}.`
       : `I couldn’t read your ${noun} right now.`;
-  const lines = (o.lines ?? []).filter((l) => l.trim());
+  const lines = inHours(
+    (o.lines ?? []).filter((l) => l.trim()),
+    hours,
+  );
   if (!lines.length)
     return noun === "calendar"
       ? `${label}’s clear.`
@@ -303,12 +334,14 @@ function answer(
     .split(/[^a-z'-]+/)
     .filter((w) => w && !FILL.has(w) && !NOUN_WORDS.has(w));
   if (other.length) return undefined;
+  // Whole days, as the bridge takes them: a day in dueBefore means before
+  // the next day's start, so the window's last day is included.
   if (calendar)
     return {
       kind: "answer",
       tool: "apple__calendar_list_events",
       args: { from: localIso(window.from), to: localIso(window.to) },
-      say: (o) => sayLines(o, window.label, "calendar"),
+      say: (o) => sayLines(o, window.label, "calendar", window.hours),
     };
   return {
     kind: "answer",

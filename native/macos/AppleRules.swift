@@ -161,6 +161,15 @@ enum AppleRules {
     static let maxDuration = 86_400.0
     static let allDayMaxDays = 31
 
+    /// The date contract, as the inputSchema states it and the client (the
+    /// MCP SDK's Ajv) checks it before a call: a day is `YYYY-MM-DD`; a moment
+    /// is a day or a local date-time `YYYY-MM-DDTHH:MM[:SS[.fff]]`, with an
+    /// optional `Z` or offset. No JSON Schema `format`: `date-time` would
+    /// refuse the offset-less local form that `date(_:calendar:)` reads.
+    /// Ranges (month 13, hour 24, an offset past 14 h) are this file's job.
+    static let dayPattern = #"^\d{4}-\d{2}-\d{2}$"#
+    static let momentPattern = #"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$"#
+
     // MARK: - Arguments
 
     static func badArgs(_ message: String) -> AppleFailure { AppleFailure(code: "BAD_ARGS", message: message) }

@@ -27,42 +27,107 @@ describe("toolFastPath: answers", () => {
     expect(path("what's on my calendar Thursday?")).toMatchObject({
       kind: "answer",
       tool: "apple__calendar_list_events",
-      args: { from: "2026-09-24T00:00", to: "2026-09-24T23:59" },
+      args: { from: "2026-09-24", to: "2026-09-24" },
     });
     expect(path("anything tomorrow?")).toMatchObject({
       kind: "answer",
       tool: "apple__calendar_list_events",
-      args: { from: "2026-09-19T00:00", to: "2026-09-19T23:59" },
+      args: { from: "2026-09-19", to: "2026-09-19" },
     });
+    // The bridge takes whole days (YYYY-MM-DD, never a time): a part of a
+    // day is the whole day to the bridge and a filter on the lines here.
     expect(path("What do I have this afternoon?")).toMatchObject({
-      args: { from: "2026-09-18T12:00", to: "2026-09-18T17:00" },
+      args: { from: "2026-09-18", to: "2026-09-18" },
     });
     expect(path("check my calendar")).toMatchObject({
-      args: { from: "2026-09-18T00:00", to: "2026-09-18T23:59" },
+      args: { from: "2026-09-18", to: "2026-09-18" },
     });
     expect(path("show me my schedule for tonight")).toMatchObject({
-      args: { from: "2026-09-18T17:00", to: "2026-09-18T23:59" },
+      args: { from: "2026-09-18", to: "2026-09-18" },
     });
     expect(path("what's on my calendar this week?")).toMatchObject({
-      args: { from: "2026-09-18T00:00", to: "2026-09-20T23:59" },
+      args: { from: "2026-09-18", to: "2026-09-20" },
     });
     expect(path("what's on my calendar next week?")).toMatchObject({
-      args: { from: "2026-09-21T00:00", to: "2026-09-27T23:59" },
+      args: { from: "2026-09-21", to: "2026-09-27" },
     });
     // Said on a Friday, "Friday" is today.
     expect(path("any meetings on Friday?")).toMatchObject({
-      args: { from: "2026-09-18T00:00", to: "2026-09-18T23:59" },
+      args: { from: "2026-09-18", to: "2026-09-18" },
     });
+  });
+  it("sends the bridge only the forms its schema takes: days for a listing, a local day or date-time for an add", () => {
+    // AppleRules.dayPattern and momentPattern (tests/fixtures/apple/tools-list.json).
+    const DAY = /^\d{4}-\d{2}-\d{2}$/;
+    const MOMENT =
+      /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+    for (const text of [
+      "what's on my calendar Thursday?",
+      "anything tomorrow?",
+      "What do I have this afternoon?",
+      "show me my schedule for tonight",
+      "what's on my calendar this week?",
+      "check my calendar",
+    ]) {
+      const found = path(text)!;
+      expect(found.args.from, text).toMatch(DAY);
+      expect(found.args.to, text).toMatch(DAY);
+    }
+    for (const text of ["what's due tomorrow?", "check my reminders"])
+      expect(path(text)!.args.dueBefore).toMatch(DAY);
+    for (const text of [
+      "add dentist tomorrow at 6 PM to my calendar",
+      "remind me to call Dana tomorrow at 9",
+      "remind me tomorrow to water the plants",
+    ]) {
+      const found = path(text)!;
+      const when = found.args.start ?? found.args.due;
+      expect(when, text).toMatch(MOMENT);
+      expect(when, text).not.toMatch(/Z|[+-]\d{2}:?\d{2}$/);
+    }
+  });
+  it("keeps only the lines that start in a part-day window, and every line it cannot place", () => {
+    const lines = [
+      "Fri 18 Sep, 9:45 AM to 10:15 AM: Standup (Work)",
+      "Fri 18 Sep, 12 PM to 1 PM: Lunch (Home)",
+      "Fri 18 Sep, 3 PM to 4 PM: Review (Work)",
+      "Fri 18 Sep, 6 PM to 7 PM: Dentist (Home)",
+      "Fri 18 Sep, all day: Offsite (Home)",
+    ];
+    const say = (text: string, said: string[] = lines) => {
+      const found = path(text)!;
+      if (found.kind !== "answer") throw new Error("expected an answer");
+      return found.say(outcome(said), CLOCK);
+    };
+    expect(say("show me my schedule for tonight")).toBe(
+      "Tonight: Fri 18 Sep, 6 PM to 7 PM: Dentist (Home) and Fri 18 Sep, all day: Offsite (Home).",
+    );
+    expect(say("what's on this morning?")).toBe(
+      "This morning: Fri 18 Sep, 9:45 AM to 10:15 AM: Standup (Work) and Fri 18 Sep, all day: Offsite (Home).",
+    );
+    expect(say("What do I have this afternoon?")).toBe(
+      "This afternoon: Fri 18 Sep, 12 PM to 1 PM: Lunch (Home), Fri 18 Sep, 3 PM to 4 PM: Review (Work) and Fri 18 Sep, all day: Offsite (Home).",
+    );
+    expect(
+      say("anything this evening?", [
+        "Fri 18 Sep, 3 PM to 4 PM: Review (Work)",
+      ]),
+    ).toBe("This evening’s clear.");
+    // A whole day keeps every line; a line of another shape is never hidden.
+    expect(say("check my calendar")).toMatch(/^Today: .*, and 1 more\.$/);
+    expect(say("show me my schedule for tonight", ["Dentist at 6"])).toBe(
+      "Tonight: Dentist at 6.",
+    );
   });
   it("reads the reminders due by the end of the window", () => {
     expect(path("what's due tomorrow?")).toMatchObject({
       kind: "answer",
       tool: "apple__reminders_list",
-      args: { dueBefore: "2026-09-19T23:59" },
+      args: { dueBefore: "2026-09-19" },
     });
     expect(path("check my reminders")).toMatchObject({
       tool: "apple__reminders_list",
-      args: { dueBefore: "2026-09-18T23:59" },
+      args: { dueBefore: "2026-09-18" },
     });
     expect(path("list my to-dos for this week")).toMatchObject({
       tool: "apple__reminders_list",
@@ -219,7 +284,7 @@ describe("toolFastPath: what falls through", () => {
     };
     // Half past noon on New Year's Day in Auckland.
     expect(toolFastPath("anything tomorrow?", later)).toMatchObject({
-      args: { from: "2027-01-02T00:00", to: "2027-01-02T23:59" },
+      args: { from: "2027-01-02", to: "2027-01-02" },
     });
     expect(
       toolFastPath("add lunch tomorrow at 1 pm to my calendar", later),
