@@ -87,6 +87,8 @@ export type TriggerEvent =
   | "ActionExecuted"
   | "speech_started"
   | "speech_finished"
+  /** SpeechOut{phase: requested}: the reply is on its way, ~0.8 s before speech_started (barge-in). */
+  | "SpeechOut"
   | "transcript_final"
   | "RunState";
 
@@ -459,20 +461,33 @@ export function selectTasks(
   return { tasks, unknown };
 }
 
-/** Subcodes for tasks whose preflight probe failed, by task id. */
+/**
+ * Subcodes for tasks whose preflight probe failed (`false`) or could not be
+ * read (`null`), by task id. A failed read is not a pass: a task whose
+ * cleanup needs the probed thing must not run on a guess.
+ */
 export function taskSkips(
   tasks: VoiceTask[],
-  probes: Partial<Record<Probe, boolean>>,
+  probes: Partial<Record<Probe, boolean | null>>,
 ): Record<string, string> {
-  const subcode: Record<Probe, string> = {
-    "notes-automation": "NOTES_AUTOMATION",
-    "focus-shortcut": "SHORTCUT_MISSING",
+  const subcode: Record<Probe, { failed: string; unknown: string }> = {
+    "notes-automation": {
+      failed: "NOTES_AUTOMATION",
+      unknown: "NOTES_AUTOMATION_UNKNOWN",
+    },
+    "focus-shortcut": {
+      failed: "SHORTCUT_MISSING",
+      unknown: "SHORTCUT_UNKNOWN",
+    },
   };
   const skips: Record<string, string> = {};
   for (const task of tasks)
-    for (const probe of task.probes ?? [])
-      if (probes[probe] === false && !skips[task.id])
-        skips[task.id] = subcode[probe];
+    for (const probe of task.probes ?? []) {
+      const result = probes[probe];
+      if (result === true || result === undefined || skips[task.id]) continue;
+      skips[task.id] =
+        result === null ? subcode[probe].unknown : subcode[probe].failed;
+    }
   return skips;
 }
 

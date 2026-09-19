@@ -67,16 +67,19 @@ const {
   voiceToken,
 } = await import("../src/gym/voice/suite.ts");
 const {
+  HidTakeoverTracker,
   SKIP,
-  TERMINAL,
   gradeTurn,
-  hidTakeover,
   isChatter,
+  isSpeechSample,
+  lastTurnDone,
   medianLevel,
   quietThreshold,
   summarizeTurn,
+  summarizeUtterances,
   voiceGate,
 } = await import("../src/gym/voice/grade.ts");
+const { AppWatch, linesSince } = await import("../src/gym/voice/watch.ts");
 const { ENVIRONMENT_CODES, classify } =
   await import("../src/gym/voice/classify.ts");
 const { buildResults, fixBrief, renderReport } =
@@ -155,9 +158,20 @@ const NOISE_MAX_MS = 25_000;
 const outDir = values["out-dir"]
   ? resolve(values["out-dir"])
   : join(root, "output", "voice");
-const idleSeconds = Number(values["idle-seconds"]);
-const rate = Number(values.rate);
-const repeat = Math.max(1, Number(values.repeat) || 1);
+/** A numeric flag, validated like --time-box: NaN would pass every gate that compares against it. */
+function numberFlag(name, { min = 0, integer = false } = {}) {
+  const n = Number(values[name]);
+  if (!Number.isFinite(n) || n < min || (integer && !Number.isInteger(n))) {
+    console.error(
+      `--${name} ${values[name]} is not ${integer ? "a whole number" : "a number"}${min > 0 ? ` of at least ${min}` : ""}.`,
+    );
+    process.exit(2);
+  }
+  return n;
+}
+const idleSeconds = numberFlag("idle-seconds");
+const rate = numberFlag("rate", { min: 1, integer: true });
+const repeat = numberFlag("repeat", { min: 1, integer: true });
 const timeBoxSeconds = parseDuration(values["time-box"]);
 if (!timeBoxSeconds) {
   console.error(
@@ -258,18 +272,32 @@ async function runStep(step, fill) {
     : sh(script, step.timeoutMs ?? 10_000);
 }
 
-/** Speaks through the speakers; resolves when `say` has finished. */
+/**
+ * Speaks through the speakers; resolves when `say` has finished. Never
+ * rejects: a missing voice or a lost output device comes back as `failed`,
+ * so the task records SAY_FAILED, cleans up and the cycle stops in order.
+ */
 function speak(text) {
-  return new Promise((resolveSay, reject) => {
+  return new Promise((resolveSay) => {
     const spokenAt = Date.now();
-    const child = spawn("say", ["-v", values.voice, "-r", String(rate), text], {
-      stdio: "ignore",
-    });
-    child.on("error", reject);
+    let child;
+    try {
+      child = spawn("say", ["-v", values.voice, "-r", String(rate), text], {
+        stdio: "ignore",
+      });
+    } catch (error) {
+      resolveSay({ spokenAt, sayEndedAt: Date.now(), failed: error.message });
+      return;
+    }
+    child.on("error", (error) =>
+      resolveSay({ spokenAt, sayEndedAt: Date.now(), failed: error.message }),
+    );
     child.on("close", (code) =>
-      code === 0
-        ? resolveSay({ spokenAt, sayEndedAt: Date.now() })
-        : reject(new Error(`say exited ${code}`)),
+      resolveSay({
+        spokenAt,
+        sayEndedAt: Date.now(),
+        failed: code === 0 ? undefined : `say exited ${code}`,
+      }),
     );
   });
 }
@@ -361,77 +389,9 @@ function readTail(file, bytes = 4 * 1024 * 1024) {
   return { text, events: parseLines(lines) };
 }
 
-/**
- * What the app is doing now, from every event the loop has read: listening,
- * speaking, open runs, open follow-up windows, the standby levels and when
- * it last did anything the gate should wait out.
- */
-class AppWatch {
-  constructor() {
-    this.listening = null;
-    this.lastEventAt = 0;
-    this.speechFinishedAt = undefined;
-    this.speaking = false;
-    this.followupOpen = false;
-    this.runs = new Map();
-    this.lastActionAt = undefined;
-    this.levels = [];
-    this.heardTextAt = undefined;
-    this.permissions = null;
-    this.verbose = null;
-    this.takeover = false;
-  }
-  feed(events) {
-    for (const e of events) {
-      const d = e.data ?? {};
-      const at = Date.parse(e.timestamp);
-      if (!isChatter(e)) this.lastEventAt = Math.max(this.lastEventAt, at);
-      if (e.event === "VoiceEvent") {
-        if (d.phase === "wake_status") this.listening = d.listening === true;
-        if (d.phase === "speech_started") this.speaking = true;
-        if (d.phase === "speech_finished") {
-          this.speaking = false;
-          this.speechFinishedAt = at;
-        }
-        if (d.phase === "followup_open") this.followupOpen = true;
-        if (d.phase === "followup_closed") this.followupOpen = false;
-        if (d.phase === "standby_trace") {
-          if (d.kind === "level" && typeof d.rms === "number") {
-            this.levels.push({ at, rms: d.rms });
-            if (this.levels.length > 60) this.levels.shift();
-          }
-          if (typeof d.textLength === "number" && d.textLength > 0)
-            this.heardTextAt = at;
-        }
-      }
-      if (e.event === "Permissions" && d.permissions)
-        this.permissions = d.permissions;
-      if (e.event === "Command" && typeof d.text === "string")
-        this.verbose = true;
-      if (e.event === "RunState" && typeof d.task === "string")
-        this.verbose = true;
-      if (e.event === "RunState" && d.runId && d.status)
-        this.runs.set(d.runId, d.status);
-      if (e.event === "RunStarted" && d.runId && !this.runs.has(d.runId))
-        this.runs.set(d.runId, "starting");
-      if (e.event === "ActionExecuted") this.lastActionAt = at;
-      if (e.event === "UserTakeoverStarted") {
-        const source = d.source ?? d.data?.source;
-        if (source === "manual_input" || source === undefined)
-          this.takeover = true;
-      }
-      if (e.event === "NativeUserTakeover") this.takeover = true;
-    }
-  }
-  get runOpen() {
-    for (const status of this.runs.values())
-      if (!TERMINAL.has(status)) return true;
-    return false;
-  }
-  recentLevels(sinceMs, now = Date.now()) {
-    return this.levels.filter((l) => now - l.at <= sinceMs).map((l) => l.rms);
-  }
-}
+// What the app is doing now is read by src/gym/voice/watch.ts AppWatch, fed
+// with every event the loop reads: listening, speaking, open runs, the open
+// follow-up window, the standby levels, its last action and the last takeover.
 
 /* ------------------------------------------------------------ preflight */
 
@@ -524,7 +484,12 @@ async function readFacts() {
       : verboseEnv === false || verboseLog === false
         ? false
         : null;
-  const unsettled = tail.text === undefined ? 0 : unsettledRuns(tail.text);
+  // Open runs since the app's own start only: a run a crash or force-quit
+  // cut off in an earlier session is not this app's, and it would refuse
+  // every cycle until the log grew past it.
+  const sinceStart =
+    tail.text === undefined ? undefined : linesSince(tail.text, appStart);
+  const unsettled = sinceStart === undefined ? 0 : unsettledRuns(sinceStart);
   const hidIdleSeconds = await readHidIdle();
   const volume = await readVolume();
   const levels = watch.recentLevels(60_000);
@@ -600,7 +565,9 @@ const macos = (
 
 const facts = await readFacts();
 const skips = taskSkips(selection.tasks, {
-  "focus-shortcut": facts.focusShortcut === null ? true : facts.focusShortcut,
+  // A `shortcuts list` that failed or timed out is not a shortcut present:
+  // the task's cleanup could not turn Focus off again (SHORTCUT_UNKNOWN).
+  "focus-shortcut": facts.focusShortcut,
   // Notes automation is probed only for a real run: the probe may launch Notes.
 });
 const runnable = () => selection.tasks.filter((t) => !skips[t.id]);
@@ -723,12 +690,15 @@ function writeOutputs(results) {
     `${JSON.stringify(results, null, 2)}\n`,
   );
   writeFileSync(join(cycleDir, "report.md"), `${renderReport(results)}\n`);
+  // `<CODE>.voice.md`: the fix loop writes its own `<code>.md` into the same
+  // folder, and on a case-insensitive disk `UNHEARD.md` and `unheard.md` are
+  // one file. The voice brief carries the voice probe; the loop's, the bench's.
   const laneDir = join(cycleDir, "lanes");
   mkdirSync(laneDir, { recursive: true });
   for (const cls of results.failureClasses)
     if (!ENVIRONMENT_CODES.includes(cls.code) && cls.attempts > 0)
       writeFileSync(
-        join(laneDir, `${cls.code}.md`),
+        join(laneDir, `${cls.code}.voice.md`),
         `${fixBrief(cls, results)}\n`,
       );
 }
@@ -933,7 +903,14 @@ const records = [];
 const gateRows = [];
 let humanSeenAt;
 let speechLevel = null;
-let quietThresholdValue = null;
+// The quiet gate starts from the floor alone (max(3 x floor, floor + 4)) and
+// tightens to floor + 0.35 x (speech - floor) once a real sample of the
+// loop's own voice is captured; a pre-speech room sample never calibrates it.
+let quietThresholdValue =
+  preflightFacts.quiet.source === "trace" && facts.quietFloor !== undefined
+    ? quietThreshold(facts.quietFloor)
+    : null;
+preflightFacts.quiet.threshold = quietThresholdValue;
 let interrupts = 0;
 let stopRequested = false;
 let stoppedBecause;
@@ -1039,7 +1016,8 @@ async function waitGate(task, { checkVolume = true } = {}) {
  * events it saw so the utterance's summary sees the end of the run.
  */
 async function stopRun(into) {
-  await speak(`${WAKE}, stop`);
+  const said = await speak(`${WAKE}, stop`);
+  if (said.failed) return false;
   const until = Date.now() + STOP_WAIT_MS;
   while (Date.now() < until) {
     into.push(...feed().filter((e) => !SKIP.has(e.event)));
@@ -1064,6 +1042,8 @@ function triggerFired(trigger, events) {
       case "speech_finished":
       case "transcript_final":
         return e.event === "VoiceEvent" && d.phase === trigger.event;
+      case "SpeechOut":
+        return e.event === "SpeechOut" && d.phase === "requested";
       case "RunStarted":
       case "ActionExecuted":
         return e.event === trigger.event;
@@ -1154,6 +1134,8 @@ async function runTask(task, attempt) {
   const context = { verbose: true, fill };
   const evidence = {};
   let aborted = null;
+  let sayFailed = false;
+  let noise;
 
   const gate = await waitGate(task);
   if (gate.stop) return { stop: gate.stop };
@@ -1165,225 +1147,253 @@ async function runTask(task, attempt) {
     reasons: gate.reasons,
   });
 
-  // Setup, then the gate once more (setup takes seconds and the owner may be back).
-  for (const step of task.setup ?? []) {
-    const result = await runStep(step, fill);
-    if (result.code !== 0) {
-      context.envSubcode = "SETUP_FAILED";
-      console.log(`  ${turnId}: setup step exited ${result.code}`);
-      break;
+  // Setup and cleanup are paired in try/finally: whatever ends the task, a
+  // crash included, its window is closed and the speakers are put back.
+  try {
+    // Setup, then the gate once more (setup takes seconds and the owner may be back).
+    for (const step of task.setup ?? []) {
+      const result = await runStep(step, fill);
+      if (result.code !== 0) {
+        context.envSubcode = "SETUP_FAILED";
+        console.log(`  ${turnId}: setup step exited ${result.code}`);
+        break;
+      }
+      if (step.record) fill.state[step.record] = result.stdout.trim();
     }
-    if (step.record) fill.state[step.record] = result.stdout.trim();
-  }
-  if (!context.envSubcode) {
-    const again = await waitGate(task, { checkVolume: false });
-    if (again.stop) {
-      await cleanup(task, fill);
-      return { stop: again.stop };
+    if (!context.envSubcode) {
+      const again = await waitGate(task, { checkVolume: false });
+      if (again.stop) return { stop: again.stop };
     }
-  }
 
-  if (!context.envSubcode) {
-    writeFileSync(marker, "");
-    feed();
-    const noise = startNoise(task);
-    await noise.before();
-    const timeoutMs = defaultTimeoutMs(task);
-    const unheardMs = task.unheardMs ?? DEFAULT_UNHEARD_MS;
-    let turnDeadline = Date.now() + timeoutMs;
-    let promptStartedAt = Date.now();
-    let lastHid = { at: 0, idle: undefined };
-    const anyRun = () =>
-      utterances.some(
-        (u) => summarizeTurn(u.events, u.spokenAt, u.sayEndedAt).runStarted,
-      );
+    if (!context.envSubcode) {
+      writeFileSync(marker, "");
+      feed();
+      noise = startNoise(task);
+      await noise.before();
+      const timeoutMs = defaultTimeoutMs(task);
+      const unheardMs = task.unheardMs ?? DEFAULT_UNHEARD_MS;
+      let turnDeadline = Date.now() + timeoutMs;
+      let promptStartedAt = Date.now();
+      let lastHid = { at: 0, idle: undefined };
+      const hidTracker = new HidTakeoverTracker();
+      const anyRun = () =>
+        summarizeUtterances(utterances).some((s) => s.runStarted);
+      // Only a takeover since this prompt is this turn's: the log tail fed at
+      // startup holds every earlier one of the session.
+      const personHere = () => watch.takeoverSince(promptStartedAt);
 
-    outer: for (let i = 0; i < turns.length; i++) {
-      const turn = turns[i];
-      const previous = utterances.at(-1);
-      if (i > 0) {
-        // Fire on the trigger, then the delay; wait out the app's speech unless barging in.
-        const trigger = turn.after;
+      outer: for (let i = 0; i < turns.length; i++) {
+        const turn = turns[i];
+        const previous = utterances.at(-1);
+        if (i > 0) {
+          const trigger = turn.after;
+          const followup = trigger.event === "followup_open";
+          for (;;) {
+            previous.events.push(...feed().filter((e) => !SKIP.has(e.event)));
+            if (personHere()) {
+              aborted = "TAKEOVER";
+              break outer;
+            }
+            if (Date.now() > turnDeadline || stopRequested) {
+              context.timedOut = watch.runOpen;
+              break outer;
+            }
+            if (followup) {
+              // The window the app opens right after the transcript is closed
+              // ~300 ms later for its own ack (trial 05:43 #2); the line goes
+              // into a window that is open, with no reply pending, before
+              // and after the delay, on fresh events each time.
+              if (watch.followupReady(trigger.kind)) {
+                await sleep(trigger.plus ?? 300);
+                previous.events.push(
+                  ...feed().filter((e) => !SKIP.has(e.event)),
+                );
+                if (watch.followupReady(trigger.kind)) break;
+              }
+            } else if (triggerFired(trigger, previous.events)) {
+              await sleep(trigger.plus ?? 300);
+              break;
+            }
+            await sleep(POLL_MS);
+          }
+          if (!turn.bargeIn) {
+            // Wait out the app's speech and its echo guard, read fresh.
+            const until = Date.now() + 15_000;
+            for (;;) {
+              previous.events.push(...feed().filter((e) => !SKIP.has(e.event)));
+              const quiet =
+                !watch.speaking &&
+                !(
+                  watch.speechFinishedAt &&
+                  Date.now() - watch.speechFinishedAt < 800
+                );
+              if (quiet || Date.now() >= until) break;
+              await sleep(POLL_MS);
+            }
+          }
+        }
+        const line = fillPlaceholders(turn.say, fill);
+        const text = turn.withWake ? `${WAKE}, ${line}` : line;
+        const said = await speak(text);
+        if (said.failed) {
+          console.log(`  ${turnId}: say failed (${said.failed})`);
+          context.envSubcode = "SAY_FAILED";
+          sayFailed = true;
+          break;
+        }
+        const { spokenAt, sayEndedAt } = said;
+        if (i === 0) {
+          promptStartedAt = spokenAt;
+          turnDeadline = sayEndedAt + timeoutMs;
+          noise.afterPromptStarted();
+        }
+        const utterance = { spokenAt, sayEndedAt, events: [] };
+        utterances.push(utterance);
+        // The run status the earlier lines left: the app writes RunState only
+        // on a change, so a pause the last line caused is never re-emitted.
+        const carried =
+          i > 0
+            ? summarizeUtterances(utterances.slice(0, -1)).at(-1).lastStatus
+            : null;
+        const unheardDeadline = sayEndedAt + unheardMs;
+        const isLast = i === turns.length - 1;
+        let idleSince = Date.now();
+        let noiseStopped = false;
         for (;;) {
-          previous.events.push(...feed().filter((e) => !SKIP.has(e.event)));
-          if (triggerFired(trigger, previous.events)) break;
-          if (watch.takeover) {
+          const fresh = feed();
+          const kept = fresh.filter((e) => !SKIP.has(e.event));
+          utterance.events.push(...kept);
+          if (kept.some((e) => !isChatter(e))) idleSince = Date.now();
+          const s = summarizeTurn(
+            utterance.events,
+            spokenAt,
+            sayEndedAt,
+            carried,
+          );
+          // Calibrate the quiet threshold against the loop's own voice, once
+          // a level inside its say window is clearly speech, not the room.
+          if (speechLevel === null && quietThresholdValue !== null) {
+            const during = watch.levels
+              .filter((l) => l.at >= spokenAt && l.at <= sayEndedAt + 2000)
+              .map((l) => l.rms);
+            const level = during.length ? Math.max(...during) : undefined;
+            if (
+              level !== undefined &&
+              isSpeechSample(facts.quietFloor, level)
+            ) {
+              speechLevel = level;
+              quietThresholdValue = quietThreshold(facts.quietFloor, level);
+              preflightFacts.quiet.speech = level;
+              preflightFacts.quiet.threshold = quietThresholdValue;
+            }
+          }
+          if (s.transcriptMs !== null && !noiseStopped) {
+            noise.onTranscript();
+            noiseStopped = true;
+          }
+          // A person at the Mac ends the cycle, and nothing more is said. A
+          // HID reset is a suspect first, and a person only when the app's
+          // own ActionExecuted has not explained it a few seconds later.
+          if (Date.now() - lastHid.at > 1000)
+            lastHid = { at: Date.now(), idle: await readHidIdle() };
+          const hid = hidTracker.observe({
+            now: lastHid.at,
+            hidIdleSeconds: lastHid.idle,
+            promptStartedAt,
+            lastActionAt: watch.lastActionAt,
+            runOpen: watch.runOpen,
+          });
+          if (s.takeover || personHere() || hid) {
+            if (hid && !s.takeover) context.hidTakeover = true;
             aborted = "TAKEOVER";
             break outer;
           }
+          // Never approve: a confirmation, a click or a hand asked for is
+          // declined with stop, so the run ends now and not at the timeout.
+          if (
+            (s.confirmations > 0 || s.needClick || s.handoffSources.length) &&
+            !context.stoppedByLoop &&
+            watch.runOpen
+          ) {
+            context.stoppedByLoop = true;
+            await stopRun(utterance.events);
+          }
+          if (!isLast && triggerFired(turns[i + 1].after, utterance.events))
+            break;
+          if (
+            isLast &&
+            lastTurnDone(turn, s, {
+              anyRun: anyRun(),
+              quietMs: Date.now() - idleSince,
+              elapsedMs: Date.now() - spokenAt,
+              pastUnheardDeadline: Date.now() > unheardDeadline,
+              stopRunAfter: !!task.stopRunAfter,
+            })
+          )
+            break;
           if (Date.now() > turnDeadline || stopRequested) {
             context.timedOut = watch.runOpen;
             break outer;
           }
           await sleep(POLL_MS);
         }
-        await sleep(trigger.plus ?? 300);
-        if (!turn.bargeIn) {
-          const until = Date.now() + 15_000;
-          while (
-            (watch.speaking ||
-              (watch.speechFinishedAt &&
-                Date.now() - watch.speechFinishedAt < 800)) &&
-            Date.now() < until
-          ) {
-            previous.events.push(...feed().filter((e) => !SKIP.has(e.event)));
-            await sleep(POLL_MS);
-          }
-        }
       }
-      const line = fillPlaceholders(turn.say, fill);
-      const text = turn.withWake ? `${WAKE}, ${line}` : line;
-      const { spokenAt, sayEndedAt } = await speak(text);
-      if (i === 0) {
-        promptStartedAt = spokenAt;
-        turnDeadline = sayEndedAt + timeoutMs;
-        noise.afterPromptStarted();
-      }
-      const utterance = { spokenAt, sayEndedAt, events: [] };
-      utterances.push(utterance);
-      const unheardDeadline = sayEndedAt + unheardMs;
-      const isLast = i === turns.length - 1;
-      let idleSince = Date.now();
-      let noiseStopped = false;
-      for (;;) {
-        const fresh = feed();
-        const kept = fresh.filter((e) => !SKIP.has(e.event));
-        utterance.events.push(...kept);
-        if (kept.some((e) => !isChatter(e))) idleSince = Date.now();
-        const s = summarizeTurn(utterance.events, spokenAt, sayEndedAt);
-        // Calibrate the quiet threshold against the loop's own first voice.
-        if (speechLevel === null && preflightFacts.quiet.source === "trace") {
-          const during = watch.levels
-            .filter((l) => l.at >= spokenAt && l.at <= sayEndedAt + 2000)
-            .map((l) => l.rms);
-          const level = medianLevel(during);
-          if (level !== undefined && facts.quietFloor !== undefined) {
-            speechLevel = level;
-            quietThresholdValue = quietThreshold(facts.quietFloor, level);
-            preflightFacts.quiet.speech = level;
-            preflightFacts.quiet.threshold = quietThresholdValue;
-          }
-        }
-        if (s.transcriptMs !== null && !noiseStopped) {
-          noise.onTranscript();
-          noiseStopped = true;
-        }
-        // A person at the Mac ends the cycle, and nothing more is said.
-        if (Date.now() - lastHid.at > 1000)
-          lastHid = { at: Date.now(), idle: await readHidIdle() };
-        const hid = hidTakeover({
-          now: Date.now(),
-          hidIdleSeconds: lastHid.idle,
-          promptStartedAt,
-          lastActionAt: watch.lastActionAt,
-        });
-        if (s.takeover || watch.takeover || hid) {
-          if (hid && !s.takeover) context.hidTakeover = true;
-          aborted = "TAKEOVER";
-          break outer;
-        }
-        // Never approve: a confirmation or a click asked for is declined with stop.
-        if (
-          (s.confirmations > 0 || s.needClick) &&
-          !context.stoppedByLoop &&
-          watch.runOpen
-        ) {
-          context.stoppedByLoop = true;
-          await stopRun(utterance.events);
-        }
-        if (!isLast && triggerFired(turns[i + 1].after, utterance.events))
-          break;
-        if (isLast) {
-          if (turn.expect.outcome === "silence") {
-            if (Date.now() > unheardDeadline) break;
-          } else {
-            const arrived = turn.withWake
-              ? s.wakeMs !== null
-              : s.transcriptMs !== null;
-            if (!arrived && Date.now() > unheardDeadline) break;
-            if (s.terminal && anyRun()) break;
-            if (
-              turn.expect.outcome === "interrupt" &&
-              s.speech.interrupted &&
-              Date.now() - idleSince > 2000
-            )
-              break;
-            if (
-              arrived &&
-              !anyRun() &&
-              s.spoken &&
-              Date.now() - idleSince > 6000
-            )
-              break;
-            if (
-              arrived &&
-              !anyRun() &&
-              !s.spoken &&
-              s.plan &&
-              Date.now() - idleSince > 12_000
-            )
-              break;
-          }
-        }
-        if (Date.now() > turnDeadline || stopRequested) {
-          context.timedOut = watch.runOpen;
-          break outer;
-        }
-        await sleep(POLL_MS);
-      }
-    }
-    noise.stop();
+      noise.stop();
 
-    if (!aborted) {
-      // The end of a steering task, or a timeout: stop only a run still going.
-      if (watch.runOpen && (task.stopRunAfter || context.timedOut)) {
-        context.stoppedByLoop = true;
-        await stopRun(utterances.at(-1).events);
+      if (!aborted) {
+        // The end of a steering task, or a timeout: stop only a run still going.
+        if (watch.runOpen && (task.stopRunAfter || context.timedOut)) {
+          context.stoppedByLoop = true;
+          await stopRun(utterances.at(-1).events);
+        }
+        if (watch.runOpen) {
+          context.envSubcode = "RUN_LEFT_OPEN";
+          aborted = "RUN_LEFT_OPEN";
+        }
       }
-      if (watch.runOpen) {
-        context.envSubcode = "RUN_LEFT_OPEN";
-        aborted = "RUN_LEFT_OPEN";
+      // The state, read back only when the prompt reached the app.
+      const last = turns.at(-1).expect;
+      const heardAtAll =
+        utterances.length &&
+        summarizeTurn(
+          utterances[0].events,
+          utterances[0].spokenAt,
+          utterances[0].sayEndedAt,
+        ).wakeMs !== null;
+      if (
+        !aborted &&
+        !sayFailed &&
+        (heardAtAll || last.outcome === "silence")
+      ) {
+        const checks = turns.flatMap((t) => t.expect.state ?? []);
+        for (const check of checks) {
+          const result = await runStep(check, fill);
+          evidence[check.name] = {
+            value: result.code === 0 ? result.stdout : undefined,
+            exitCode: result.code,
+            ms: result.ms,
+          };
+        }
+        if (last.frontmost) {
+          const result = await osascript(FRONTMOST_SCRIPT);
+          evidence.frontmost = {
+            value: result.code === 0 ? result.stdout : undefined,
+            exitCode: result.code,
+            ms: result.ms,
+          };
+        }
       }
     }
-    // The state, read back only when the prompt reached the app.
-    const last = turns.at(-1).expect;
-    const heardAtAll =
-      utterances.length &&
-      summarizeTurn(
-        utterances[0].events,
-        utterances[0].spokenAt,
-        utterances[0].sayEndedAt,
-      ).wakeMs !== null;
-    if (!aborted && (heardAtAll || last.outcome === "silence")) {
-      const checks = turns.flatMap((t) => t.expect.state ?? []);
-      for (const check of checks) {
-        const result = await runStep(check, fill);
-        evidence[check.name] = {
-          value: result.code === 0 ? result.stdout : undefined,
-          exitCode: result.code,
-          ms: result.ms,
-        };
-      }
-      if (last.frontmost) {
-        const result = await osascript(FRONTMOST_SCRIPT);
-        evidence.frontmost = {
-          value: result.code === 0 ? result.stdout : undefined,
-          exitCode: result.code,
-          ms: result.ms,
-        };
-      }
-    }
+  } finally {
+    noise?.stop();
+    await cleanup(task, fill);
+    // The loop needs the speakers at its own level after every task.
+    const volume = await readVolume();
+    if (volume && (volume.muted || Math.abs(volume.level - V) > 2))
+      await setVolume(V, false);
   }
 
-  await cleanup(task, fill);
-  // The loop needs the speakers at its own level after every task.
-  const volume = await readVolume();
-  if (volume && (volume.muted || Math.abs(volume.level - V) > 2))
-    await setVolume(V, false);
-
-  const summaries = utterances.map((u) =>
-    summarizeTurn(u.events, u.spokenAt, u.sayEndedAt),
-  );
+  const summaries = summarizeUtterances(utterances);
   const grade = gradeTurn(task, summaries, evidence, context);
   const classification = classify(grade);
   const record = {
@@ -1435,6 +1445,8 @@ async function runTask(task, attempt) {
     ledger({ kind: "abort", code: aborted, turnId });
     return { abort: aborted, turnId };
   }
+  // A voice that cannot speak will not speak the next prompt either.
+  if (sayFailed) return { stop: "SAY_FAILED" };
   return {};
 }
 
@@ -1506,6 +1518,18 @@ try {
     console.log(
       `Next: npm run loop -- --output ${outDir} (lanes from this cycle's failure classes).`,
     );
+} catch (error) {
+  // A crash mid-cycle still leaves results.json saying why it stopped; the
+  // task's own cleanup already ran in runTask's finally.
+  stoppedBecause = "CRASHED";
+  console.error(`Stopping: the loop crashed.\n${error?.stack ?? error}`);
+  try {
+    ledger({ kind: "stop", reason: stoppedBecause });
+    writeResults(abortedOn);
+  } catch {
+    /* the disk is the problem; the lock is still released */
+  }
+  exitCode = 1;
 } finally {
   releaseLock();
 }

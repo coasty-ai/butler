@@ -167,6 +167,12 @@ export interface TurnSummary {
   captureTotals: number[];
   standby: { levels: { atMs: number; rms: number }[]; heardText: boolean };
   lastWakeStatus: boolean | null;
+  /**
+   * The run's status at the end of the slice: the newest RunState here, else
+   * the status the previous utterance left (the app writes RunState only on
+   * a change, so a run paused by the last utterance stays paused unseen).
+   */
+  lastStatus: string | null;
   events: number;
 }
 
@@ -183,11 +189,14 @@ const field = (d: Record<string, unknown>, key: string): unknown =>
 /**
  * One utterance's summary from the events collected after it was spoken.
  * Offsets are from `spokenAt` (when `say` started), as the trials measured.
+ * `previousStatus` seeds the status timeline with what the earlier
+ * utterance left, so a resume after a pause the last line caused is seen.
  */
 export function summarizeTurn(
   events: DiagnosticEvent[],
   spokenAt: number,
   sayEndedAt: number = spokenAt,
+  previousStatus: string | null = null,
 ): TurnSummary {
   const s: TurnSummary = {
     spokenAt,
@@ -246,10 +255,11 @@ export function summarizeTurn(
     captureTotals: [],
     standby: { levels: [], heardText: false },
     lastWakeStatus: null,
+    lastStatus: previousStatus,
     events: 0,
   };
   const t = (e: DiagnosticEvent) => Date.parse(e.timestamp) - spokenAt;
-  let lastStatus: string | null = null;
+  let lastStatus: string | null = previousStatus;
   for (const e of events) {
     const d = e.data ?? {};
     if (!isChatter(e)) s.events++;
@@ -385,6 +395,7 @@ export function summarizeTurn(
         else if (lastStatus === "paused" && !TERMINAL.has(status))
           s.resumedMs ??= t(e);
         lastStatus = status;
+        s.lastStatus = status;
       }
       if (status && TERMINAL.has(status)) {
         s.terminal = status;
@@ -409,6 +420,28 @@ export function summarizeTurn(
       s.replyAfterTranscriptMs = s.replyMs - s.transcriptMs;
   }
   return s;
+}
+
+/** One utterance as the script collected it. */
+export interface Utterance {
+  events: DiagnosticEvent[];
+  spokenAt: number;
+  sayEndedAt?: number;
+}
+
+/**
+ * The summaries of a task's utterances in order, each seeded with the run
+ * status the one before it left: the way a multi-turn task must be read.
+ */
+export function summarizeUtterances(utterances: Utterance[]): TurnSummary[] {
+  const out: TurnSummary[] = [];
+  let carried: string | null = null;
+  for (const u of utterances) {
+    const s = summarizeTurn(u.events, u.spokenAt, u.sayEndedAt, carried);
+    carried = s.lastStatus;
+    out.push(s);
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------- hearing */
@@ -904,6 +937,19 @@ export function gradeTurn(
       : { checks: {}, unreadable: [], failed: [], primaryFailed: [] };
   const first = summaries[0];
   const replyIsAck = expectOutcome !== "answer" && expectOutcome !== "question";
+  // A barge-in spoken after the app had already finished its reply tested
+  // nothing: the loop's timing, not the dialog's, so the harness owns it.
+  const bargeLate = turns.some((turn, i) => {
+    const s = summaries[i];
+    return (
+      turn.expect.outcome === "interrupt" &&
+      !!s &&
+      s.wakeMs !== null &&
+      s.speech.finishedMs !== null &&
+      s.speech.interrupted === false &&
+      s.speech.finishedMs <= s.wakeMs
+    );
+  });
   return {
     taskId: task.id,
     category: task.category,
@@ -926,7 +972,8 @@ export function gradeTurn(
     takeover: summaries.some((s) => s.takeover) || !!context.hidTakeover,
     stoppedByLoop: !!context.stoppedByLoop,
     timedOut: !!context.timedOut,
-    envSubcode: context.envSubcode ?? null,
+    envSubcode:
+      context.envSubcode ?? (bargeLate ? "SPEECH_ENDED_BEFORE_WAKE" : null),
     failures: summaries.flatMap((s) => s.failures),
     actions: summaries.reduce((n, s) => n + s.actions.length, 0),
     mutations: summaries.reduce((n, s) => n + s.mutations, 0),
@@ -1050,12 +1097,34 @@ export function voiceGate(f: VoiceGateFacts): VoiceGateDecision {
   return { ok: true, idle: { required, seen } };
 }
 
+/** Without a speech sample the room is quiet under this multiple of its floor. */
+export const QUIET_FLOOR_MULTIPLE = 3;
+/** ...and never under this much above it, so a near-silent floor is not a trap. */
+export const QUIET_FLOOR_MARGIN = 4;
+
+/**
+ * Whether a standby level can be the loop's own voice: well above the floor.
+ * The standby engine stops emitting levels at `wake_detected`, so a sample
+ * inside the say window is often the room just before the voice started.
+ */
+export function isSpeechSample(floor: number, level: number): boolean {
+  return level >= floor * 2 && level >= floor + 5;
+}
+
 /**
  * The quiet threshold between the room's floor and the loop's own voice:
- * `floor + 0.35 x (speech - floor)`, calibrated per cycle and printed.
+ * `floor + 0.35 x (speech - floor)` once a real speech sample was captured,
+ * never under the fallback `max(3 x floor, floor + 4)` the gate uses until
+ * then. Calibrated per cycle and printed.
  */
-export function quietThreshold(floor: number, speechLevel: number): number {
-  return floor + 0.35 * Math.max(0, speechLevel - floor);
+export function quietThreshold(floor: number, speechLevel?: number): number {
+  const fallback = Math.max(
+    floor * QUIET_FLOOR_MULTIPLE,
+    floor + QUIET_FLOOR_MARGIN,
+  );
+  if (speechLevel === undefined || !isSpeechSample(floor, speechLevel))
+    return fallback;
+  return Math.max(fallback, floor + 0.35 * (speechLevel - floor));
 }
 
 /** The median of standby `level` rms values, or undefined without samples. */
@@ -1066,20 +1135,186 @@ export function medianLevel(levels: number[]): number | undefined {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/** Slack after the app's own last action (or the prompt) under which a HID reset is its own. */
+export const HID_SLACK_SECONDS = 3;
+/** A suspected HID reset must outlive this with no ActionExecuted explaining it. */
+export const HID_CONFIRM_MS = 3000;
 /**
- * A person at the Mac during a turn: HID idle shorter than the time since
- * the prompt while the app executed nothing in the last 3 s. The app's own
- * clicks reset the counter, so a recent ActionExecuted explains a reset.
+ * ...and this while a run is open: the helper posts its keystrokes first and
+ * the runner writes ActionExecuted only when the step returns, so a typed
+ * line holds the idle counter at zero for seconds before the log explains it.
  */
-export function hidTakeover(o: {
+export const HID_CONFIRM_RUN_MS = 10_000;
+
+export interface HidSample {
   now: number;
+  /** HIDIdleTime from ioreg, read at `now`. */
   hidIdleSeconds: number | undefined;
   promptStartedAt: number;
+  /** The app's newest ActionExecuted. */
   lastActionAt?: number;
-}): boolean {
+  /** A run is open, so the app may be posting input the log has not written yet. */
+  runOpen?: boolean;
+  slackSeconds?: number;
+}
+
+/**
+ * A person at the Mac during a turn, from one reading: the HID counter was
+ * reset later than the prompt started and later than the app's own last
+ * action, both plus slack. The app's synthetic input resets HIDIdleTime like
+ * a hand would, so "idle shorter than the time since the prompt" is never
+ * enough on its own; the reset must be one nothing of the app's explains.
+ */
+export function hidTakeover(o: HidSample): boolean {
   if (o.hidIdleSeconds === undefined) return false;
-  const sincePrompt = (o.now - o.promptStartedAt) / 1000;
-  const appJustActed =
-    o.lastActionAt !== undefined && o.now - o.lastActionAt <= 3000;
-  return o.hidIdleSeconds < sincePrompt && !appJustActed;
+  const slack = (o.slackSeconds ?? HID_SLACK_SECONDS) * 1000;
+  const resetAt = o.now - o.hidIdleSeconds * 1000;
+  const since = Math.max(o.promptStartedAt, o.lastActionAt ?? 0);
+  return resetAt > since + slack;
+}
+
+/**
+ * The HID rule over time: a reset the app has not explained is a suspect,
+ * and a person only when it is still unexplained `HID_CONFIRM_MS` later
+ * (`HID_CONFIRM_RUN_MS` with a run open). The ActionExecuted that lands
+ * after the helper's own click or keystroke clears the suspect; a person's
+ * touch has nothing to clear it.
+ */
+export class HidTakeoverTracker {
+  /** When the newest unexplained reset happened, from the idle counter. */
+  resetAt: number | undefined = undefined;
+  /** When it was first seen. */
+  suspectAt: number | undefined = undefined;
+
+  /** Feeds one reading; true when a person is confirmed at the Mac. */
+  observe(sample: HidSample): boolean {
+    if (!hidTakeover(sample)) {
+      this.resetAt = undefined;
+      this.suspectAt = undefined;
+      return false;
+    }
+    const resetAt = sample.now - (sample.hidIdleSeconds ?? 0) * 1000;
+    // Newer input moves the reset; the suspicion itself dates from the first.
+    if (this.resetAt === undefined || resetAt > this.resetAt + 500)
+      this.resetAt = resetAt;
+    this.suspectAt ??= sample.now;
+    const needed = sample.runOpen ? HID_CONFIRM_RUN_MS : HID_CONFIRM_MS;
+    return sample.now - this.suspectAt >= needed;
+  }
+}
+
+/* ------------------------------------------------------------ follow-up */
+
+/** A SpeechOut request older than this with no speech is speech that never played. */
+export const SPEECH_PENDING_MS = 5000;
+
+export interface FollowupFacts {
+  now: number;
+  /** A followup_open without its followup_closed. */
+  followupOpen: boolean;
+  /** The open window's kind, when the trigger asks for one. */
+  followupKind?: string | null;
+  /** speech_started without its speech_finished. */
+  speaking: boolean;
+  /** The newest SpeechOut requested. */
+  speechRequestedAt?: number;
+  speechStartedAt?: number;
+  speechFinishedAt?: number;
+}
+
+/** A reply was requested and has neither started nor finished playing yet. */
+export function speechPending(f: FollowupFacts): boolean {
+  if (f.speechRequestedAt === undefined) return false;
+  if (f.now - f.speechRequestedAt > SPEECH_PENDING_MS) return false;
+  const started =
+    f.speechStartedAt !== undefined && f.speechStartedAt >= f.speechRequestedAt;
+  const finished =
+    f.speechFinishedAt !== undefined &&
+    f.speechFinishedAt >= f.speechRequestedAt;
+  return !started && !finished;
+}
+
+/**
+ * Whether a follow-up line may be spoken now: a window is open, of the kind
+ * asked for, the app is not speaking and has no reply pending. The app
+ * opens a window right after the transcript and closes it ~300 ms later
+ * (`endReason: "speaking"`) to say its ack, then opens another after
+ * `speech_finished`; a line spoken into the first one lands on a closed
+ * microphone (trial 05:43 #2).
+ */
+export function followupReady(f: FollowupFacts, kind?: string): boolean {
+  if (!f.followupOpen || f.speaking) return false;
+  if (kind && f.followupKind && f.followupKind !== kind) return false;
+  return !speechPending(f);
+}
+
+/* ------------------------------------------------------------- the turn */
+
+/** Quiet after the app's spoken reply before an answer or question turn ends. */
+export const ANSWER_SETTLE_MS = 6000;
+/** Quiet after a plan with no reply and no run. */
+export const PLAN_SETTLE_MS = 12_000;
+/** After an interrupt, or after the steering outcome of a run meant to keep going. */
+export const STEER_SETTLE_MS = 2000;
+
+/** When, in the utterance's own offsets, the expected steering outcome was seen. */
+export function outcomeAtMs(outcome: Outcome, s: TurnSummary): number | null {
+  switch (outcome) {
+    case "pause":
+      return s.pausedMs;
+    case "resume":
+      return s.resumedMs;
+    case "stop":
+      return s.terminalMs;
+    case "revise":
+      return s.transcriptMs;
+    default:
+      return null;
+  }
+}
+
+export interface LastTurnFacts {
+  /** Any utterance of the task started a run. */
+  anyRun: boolean;
+  /** Milliseconds since the newest non-chatter event. */
+  quietMs: number;
+  /** Milliseconds since this utterance's `say` started. */
+  elapsedMs: number;
+  /** The unheard deadline (say end + unheardMs) has passed. */
+  pastUnheardDeadline: boolean;
+  /** The task's run is meant to keep going; the loop stops it afterwards. */
+  stopRunAfter?: boolean;
+}
+
+/**
+ * Whether the last utterance of a task has been answered: a terminal run;
+ * the expected steering outcome of a run meant to keep going, settled; an
+ * interrupt that landed; a reply with 6 s of quiet; a plan with 12 s of
+ * quiet; or nothing heard by the unheard deadline. The script polls this
+ * and otherwise waits for the task's timeout.
+ */
+export function lastTurnDone(
+  turn: Pick<Turn, "withWake" | "expect">,
+  s: TurnSummary,
+  o: LastTurnFacts,
+): boolean {
+  if (turn.expect.outcome === "silence") return o.pastUnheardDeadline;
+  const arrived =
+    turn.withWake === false ? s.transcriptMs !== null : s.wakeMs !== null;
+  if (!arrived) return o.pastUnheardDeadline;
+  if (s.terminal && o.anyRun) return true;
+  if (
+    turn.expect.outcome === "interrupt" &&
+    s.speech.interrupted &&
+    o.quietMs > STEER_SETTLE_MS
+  )
+    return true;
+  if (o.stopRunAfter && outcomeMatches(turn.expect, s).ok) {
+    const at = outcomeAtMs(turn.expect.outcome, s);
+    if (at !== null && o.elapsedMs - at >= STEER_SETTLE_MS) return true;
+  }
+  if (!o.anyRun && s.spoken && o.quietMs > ANSWER_SETTLE_MS) return true;
+  if (!o.anyRun && !s.spoken && s.plan && o.quietMs > PLAN_SETTLE_MS)
+    return true;
+  return false;
 }

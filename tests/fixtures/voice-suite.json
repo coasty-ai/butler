@@ -319,7 +319,7 @@
           {
             "name": "bodyHasPhrase",
             "kind": "osascript",
-            "script": "tell application \"Notes\" to return plaintext of (first note whose name contains \"{token}\")",
+            "script": "tell application \"Notes\" to return plaintext of (first note whose plaintext contains \"{token}\")",
             "expect": "contains",
             "value": "oat milk",
             "primary": true
@@ -327,7 +327,7 @@
           {
             "name": "oneNote",
             "kind": "osascript",
-            "script": "tell application \"Notes\" to return (count (notes whose name contains \"{token}\")) as string",
+            "script": "tell application \"Notes\" to return (count (notes whose plaintext contains \"{token}\")) as string",
             "expect": "equals",
             "value": "1"
           }
@@ -348,7 +348,7 @@
       "cleanup": [
         {
           "kind": "osascript",
-          "script": "tell application \"Notes\" to delete (every note whose name contains \"{token}\")"
+          "script": "tell application \"Notes\" to delete (every note whose plaintext contains \"{token}\")"
         },
         {
           "kind": "osascript",
@@ -357,7 +357,7 @@
       ],
       "tags": ["dictation"],
       "probes": ["notes-automation"],
-      "notes": "Dictation into a note the loop created and named with the token. Skipped when Notes automation is denied."
+      "notes": "Dictation into a note the loop created with the token in its body. Notes names a note after its first line, so the check and the cleanup match the body (plaintext), never the name: text typed above the token would otherwise rename the note and orphan it. Skipped when Notes automation is denied."
     },
     {
       "id": "dictate-follow-up-bold",
@@ -948,15 +948,15 @@
       "category": "correction",
       "turns": [
         {
-          "say": "what is the capital of France",
+          "say": "what are the planets in order from the sun",
           "withWake": true,
-          "heard": "capital.*france",
+          "heard": "planets",
           "expect": { "outcome": "answer" }
         },
         {
           "say": "stop",
           "withWake": true,
-          "after": { "event": "speech_started", "plus": 300 },
+          "after": { "event": "SpeechOut", "plus": 0 },
           "heard": "stop",
           "bargeIn": true,
           "expect": { "outcome": "interrupt" }
@@ -964,7 +964,7 @@
       ],
       "timeoutMs": 30000,
       "tags": ["correction", "barge-in"],
-      "notes": "Barge-in: the wake phrase over the app's own speech must stop it within 1.5 s."
+      "notes": "Barge-in: the wake phrase over the app's own speech must stop it within 1.5 s. Wake detection takes 2.2-3 s from say start, so the stop starts at SpeechOut requested (~0.8 s before speech_started) and the question needs an answer long enough (eight planets, ~5 s) to still be playing; a reply that ended before the wake is the harness's timing (ENV_NOT_READY/SPEECH_ENDED_BEFORE_WAKE), not the dialog's."
     },
     {
       "id": "multi-notes-shopping-list",

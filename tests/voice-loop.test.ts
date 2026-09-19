@@ -15,20 +15,28 @@ import {
   strictVoiceClass,
 } from "../src/gym/voice/classify";
 import {
+  HID_CONFIRM_MS,
+  HID_CONFIRM_RUN_MS,
+  HidTakeoverTracker,
   checkHolds,
+  followupReady,
   gradeTurn,
   heardVerdict,
   hidTakeover,
+  isSpeechSample,
+  lastTurnDone,
   medianLevel,
   outcomeMatches,
   quietThreshold,
   summarizeTurn,
+  summarizeUtterances,
   voiceGate,
   type DiagnosticEvent,
   type TurnGrade,
   type VoiceGateFacts,
 } from "../src/gym/voice/grade";
 import {
+  SKIP_REMEDY,
   buildResults,
   compareCycles,
   fixBrief,
@@ -39,6 +47,7 @@ import {
   type VoicePlan,
   type VoiceResults,
 } from "../src/gym/voice/report";
+import { AppWatch, linesSince } from "../src/gym/voice/watch";
 import {
   TOKEN_RE,
   defaultTimeoutMs,
@@ -247,7 +256,11 @@ const grade = (
 ) =>
   gradeTurn(
     t,
-    events.map((slice) => summarizeTurn(slice, spokenAt, sayEndedAt)),
+    // Chained like the script does it: each utterance seeded with the run
+    // status the one before it left.
+    summarizeUtterances(
+      events.map((slice) => ({ events: slice, spokenAt, sayEndedAt })),
+    ),
     ev,
     {
       verbose: true,
@@ -321,6 +334,42 @@ describe("voice suite: the fixture", () => {
     expect(
       taskSkips(suite.tasks, { "focus-shortcut": false })["sys-do-not-disturb"],
     ).toBe("SHORTCUT_MISSING");
+    // A probe that could not be read (`shortcuts list` timed out) is a
+    // failed probe, never a pass: the task's cleanup needs the shortcut.
+    const unknown = taskSkips(suite.tasks, {
+      "focus-shortcut": null,
+      "notes-automation": null,
+    });
+    expect(unknown["sys-do-not-disturb"]).toBe("SHORTCUT_UNKNOWN");
+    expect(unknown["dictate-notes-line"]).toBe("NOTES_AUTOMATION_UNKNOWN");
+    expect(SKIP_REMEDY.SHORTCUT_UNKNOWN).toMatch(/shortcuts list/);
+    expect(SKIP_REMEDY.NOTES_AUTOMATION_UNKNOWN).toBeTruthy();
+    // An unprobed thing (undefined) skips nothing.
+    expect(taskSkips(suite.tasks, {})).toEqual({});
+  });
+
+  it("finds and deletes the dictation note by its body, never its name", () => {
+    // Notes names a note after its first line: a line typed above the token
+    // would rename it, error the check (STATE_UNREADABLE) and orphan it.
+    const t = task("dictate-notes-line");
+    const scripts = [
+      ...(t.expect?.state ?? []).map((c) => c.script),
+      ...(t.cleanup ?? []).map((c) => c.script),
+    ].filter((script) => script.includes("{token}"));
+    expect(scripts.length).toBeGreaterThanOrEqual(3);
+    for (const script of scripts) {
+      expect(script).toMatch(/plaintext contains "\{token\}"/);
+      expect(script).not.toMatch(/name contains/);
+    }
+  });
+
+  it("starts the barge-in at SpeechOut requested, over an answer long enough to still be playing", () => {
+    const [question, stop] = turnsOf(task("steer-stop-while-speaking"));
+    expect(stop.after).toEqual({ event: "SpeechOut", plus: 0 });
+    expect(stop.bargeIn).toBe(true);
+    // Wake detection takes 2.2-3 s from say start; a one-word answer is over by then.
+    expect(question.say).toMatch(/planets/);
+    expect(question.heard).toBe("planets");
   });
 
   it("fills placeholders, leaves AppleScript records alone and refuses unknown ones", () => {
@@ -618,8 +667,10 @@ describe("voice grade: summaries and hearing", () => {
       ev(9510, "TurnPlanned", { plan: "pause" }),
       ev(9800, "RunState", { runId: RUN, status: "paused" }),
     ]);
+    // The app writes RunState only on a change (diagnostics.ts dedups by
+    // status), so the resume slice never re-emits `paused`: the status is
+    // carried from the pause utterance.
     const resume = sorted([
-      ev(12_000, "RunState", { runId: RUN, status: "paused" }),
       voice(13_000, "wake_detected"),
       ev(14_500, "Command", { text: `${MARK} continue` }),
       ev(14_510, "TurnPlanned", { plan: "resume" }),
@@ -628,10 +679,19 @@ describe("voice grade: summaries and hearing", () => {
     const turns = turnsOf(task("steer-wait-continue"));
     const paused = summarizeTurn(pause, spokenAt);
     expect(paused.pausedMs).toBe(9800);
+    expect(paused.lastStatus).toBe("paused");
     expect(outcomeMatches(turns[1].expect, paused).ok).toBe(true);
-    const resumed = summarizeTurn(resume, spokenAt);
+    // Read alone the resume is invisible; seeded with the pause it counts.
+    expect(summarizeTurn(resume, spokenAt).resumedMs).toBeNull();
+    const resumed = summarizeTurn(resume, spokenAt, spokenAt, "paused");
     expect(resumed.resumedMs).toBe(14_900);
+    expect(resumed.lastStatus).toBe("acting");
     expect(outcomeMatches(turns[2].expect, resumed).ok).toBe(true);
+    const chained = summarizeUtterances([
+      { events: pause, spokenAt },
+      { events: resume, spokenAt },
+    ]);
+    expect(chained[1].resumedMs).toBe(14_900);
     const first = sorted([
       ...heardPrompt("scroll slowly through the whole page", "start", {
         code: "fast_start",
@@ -645,16 +705,145 @@ describe("voice grade: summaries and hearing", () => {
       ...resume,
       ev(20_000, "RunState", { runId: RUN, status: "cancelled" }),
     ]);
+    const g = grade(
+      task("steer-wait-continue"),
+      [first, pause, ended],
+      {},
+      { stoppedByLoop: true },
+    );
+    expect(g.planMatched).toBe(true);
+    expect(classify(g).pass).toBe(true);
+  });
+
+  it("ends the last turn of a run meant to keep going once its steering outcome has settled", () => {
+    // steer-wait-continue: the run scrolls on after the resume, so a
+    // terminal never comes; without this exit the turn ran to its timeout
+    // and was classed RUN_INCOMPLETE though pause and resume both passed.
+    const turns = turnsOf(task("steer-wait-continue"));
+    const resume = sorted([
+      voice(2500, "wake_detected"),
+      ev(4000, "Command", { text: `${MARK} continue` }),
+      ev(4010, "TurnPlanned", { plan: "resume" }),
+      ev(4400, "RunState", { runId: RUN, status: "acting" }),
+      ev(5000, "ActionExecuted", { runId: RUN, actionType: "scroll" }),
+    ]);
+    const s = summarizeTurn(resume, spokenAt, sayEndedAt, "paused");
+    const facts = {
+      anyRun: true,
+      quietMs: 250,
+      pastUnheardDeadline: false,
+      stopRunAfter: true,
+    };
+    expect(lastTurnDone(turns[2], s, { ...facts, elapsedMs: 5000 })).toBe(
+      false,
+    );
+    expect(lastTurnDone(turns[2], s, { ...facts, elapsedMs: 6500 })).toBe(true);
+    // A run meant to finish waits for its terminal.
     expect(
-      classify(
-        grade(
-          task("steer-wait-continue"),
-          [first, pause, ended],
-          {},
-          { stoppedByLoop: true },
-        ),
-      ).pass,
+      lastTurnDone(turns[2], s, {
+        ...facts,
+        stopRunAfter: false,
+        elapsedMs: 30_000,
+      }),
+    ).toBe(false);
+    // The other exits: a terminal run, a settled answer, nothing heard.
+    const done = summarizeTurn(fastStart(), spokenAt, sayEndedAt);
+    expect(
+      lastTurnDone(turnsOf(task("app-open-notes"))[0], done, {
+        anyRun: true,
+        quietMs: 0,
+        elapsedMs: 9500,
+        pastUnheardDeadline: false,
+      }),
     ).toBe(true);
+    const answered = summarizeTurn(answer(), spokenAt, sayEndedAt);
+    const askTime = turnsOf(task("ask-time"))[0];
+    expect(
+      lastTurnDone(askTime, answered, {
+        anyRun: false,
+        quietMs: 5000,
+        elapsedMs: 14_000,
+        pastUnheardDeadline: false,
+      }),
+    ).toBe(false);
+    expect(
+      lastTurnDone(askTime, answered, {
+        anyRun: false,
+        quietMs: 6500,
+        elapsedMs: 15_000,
+        pastUnheardDeadline: false,
+      }),
+    ).toBe(true);
+    const silent = summarizeTurn(sorted(chatter()), spokenAt, sayEndedAt);
+    expect(
+      lastTurnDone(askTime, silent, {
+        anyRun: false,
+        quietMs: 20_000,
+        elapsedMs: 20_000,
+        pastUnheardDeadline: false,
+      }),
+    ).toBe(false);
+    expect(
+      lastTurnDone(askTime, silent, {
+        anyRun: false,
+        quietMs: 23_000,
+        elapsedMs: 23_000,
+        pastUnheardDeadline: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("names a barge-in the loop started after the reply had ended as the harness's, not the dialog's", () => {
+    const t = task("steer-stop-while-speaking");
+    const question = sorted([
+      ...heardPrompt("what are the planets in order from the sun", "reply", {
+        code: "answer",
+        act: "answer",
+        plan: "reply",
+      }),
+      ev(6300, "SpeechOut", {
+        phase: "requested",
+        engine: "kokoro",
+        priority: "answer",
+        textLength: 80,
+      }),
+    ]);
+    // The stop utterance's slice: speech ended, uninterrupted, before the wake landed.
+    const late = sorted([
+      voice(500, "speech_started", { utteranceId: "u1" }),
+      voice(2100, "speech_finished", { utteranceId: "u1", interrupted: false }),
+      voice(2500, "wake_detected"),
+      voice(4000, "transcript_final", { textLength: 4 }),
+      ev(4010, "Command", { text: `${MARK} stop` }),
+      ev(4020, "TurnPlanned", { plan: "stop" }),
+    ]);
+    expect(classify(grade(t, [question, late]))).toMatchObject({
+      code: "ENV_NOT_READY",
+      subcode: "SPEECH_ENDED_BEFORE_WAKE",
+    });
+    // The wake over the speech, and the speech cut within 1.5 s: a pass.
+    const cut = sorted([
+      voice(500, "speech_started", { utteranceId: "u1" }),
+      voice(2500, "wake_detected"),
+      voice(3200, "speech_finished", { utteranceId: "u1", interrupted: true }),
+      voice(4000, "transcript_final", { textLength: 4 }),
+      ev(4010, "Command", { text: `${MARK} stop` }),
+      ev(4020, "TurnPlanned", { plan: "stop" }),
+    ]);
+    expect(classify(grade(t, [question, cut])).pass).toBe(true);
+    // Speech that played on past the wake is the dialog's failure.
+    const ignored = sorted([
+      voice(500, "speech_started", { utteranceId: "u1" }),
+      voice(2500, "wake_detected"),
+      voice(6000, "speech_finished", { utteranceId: "u1", interrupted: false }),
+      voice(4000, "transcript_final", { textLength: 4 }),
+      ev(4010, "Command", { text: `${MARK} stop` }),
+      ev(4020, "TurnPlanned", { plan: "stop" }),
+    ]);
+    expect(classify(grade(t, [question, ignored]))).toMatchObject({
+      code: "WRONG_PLAN",
+      subcode: "NOT_INTERRUPTED",
+    });
   });
 
   it("hears a follow-up continuation without a wake phrase inside the 3 s window", () => {
@@ -937,6 +1126,225 @@ describe("voice grade: summaries and hearing", () => {
         promptStartedAt: T0,
       }),
     ).toBe(false);
+    // Input just before the prompt (the gate's business) is not this turn's.
+    expect(
+      hidTakeover({ now: T0 + 4000, hidIdleSeconds: 5, promptStartedAt: T0 }),
+    ).toBe(false);
+  });
+
+  it("does not read the app's own typing followed by seconds of thinking as a person", () => {
+    // dictate-textedit-sentence: type_text at prompt+12 s resets HIDIdleTime;
+    // the next poll at +15.5 s reads idle 3.5 s while the model thinks. The
+    // old rule (idle < time since prompt, no action in 3 s) aborted the cycle.
+    expect(
+      hidTakeover({
+        now: T0 + 15_500,
+        hidIdleSeconds: 3.5,
+        promptStartedAt: T0,
+        lastActionAt: T0 + 12_000,
+      }),
+    ).toBe(false);
+    // 4-10 s of thinking after the action: still the app's own reset.
+    for (const gap of [4000, 6000, 8000, 10_000])
+      expect(
+        hidTakeover({
+          now: T0 + 12_000 + gap,
+          hidIdleSeconds: gap / 1000,
+          promptStartedAt: T0,
+          lastActionAt: T0 + 12_000,
+        }),
+        `gap ${gap}`,
+      ).toBe(false);
+    // A person 8 s after the app's last action, though: idle 1 s cannot be the app's.
+    expect(
+      hidTakeover({
+        now: T0 + 20_000,
+        hidIdleSeconds: 1,
+        promptStartedAt: T0,
+        lastActionAt: T0 + 12_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("confirms a HID reset only when the app's ActionExecuted has not explained it a few seconds later", () => {
+    // The helper posts the click at +10.0 s; ActionExecuted lands in the log
+    // at +11.5 s after the settle sampling. A poll in between sees a reset
+    // nothing explains yet.
+    const tracker = new HidTakeoverTracker();
+    const prompt = T0;
+    expect(
+      tracker.observe({
+        now: prompt + 10_200,
+        hidIdleSeconds: 0.2,
+        promptStartedAt: prompt,
+        lastActionAt: prompt + 5000,
+      }),
+    ).toBe(false);
+    expect(tracker.suspectAt).toBe(prompt + 10_200);
+    // Next second: the ActionExecuted has landed and explains the reset.
+    expect(
+      tracker.observe({
+        now: prompt + 11_600,
+        hidIdleSeconds: 1.6,
+        promptStartedAt: prompt,
+        lastActionAt: prompt + 11_500,
+      }),
+    ).toBe(false);
+    expect(tracker.suspectAt).toBeUndefined();
+    // A person: the reset stays unexplained and is confirmed after HID_CONFIRM_MS.
+    const person = new HidTakeoverTracker();
+    const touch = prompt + 20_000;
+    for (let at = touch + 200; at < touch + HID_CONFIRM_MS; at += 1000)
+      expect(
+        person.observe({
+          now: at,
+          hidIdleSeconds: (at - touch) / 1000,
+          promptStartedAt: prompt,
+          lastActionAt: prompt + 5000,
+        }),
+        `at +${at - touch}`,
+      ).toBe(false);
+    expect(
+      person.observe({
+        now: touch + 200 + HID_CONFIRM_MS,
+        hidIdleSeconds: (200 + HID_CONFIRM_MS) / 1000,
+        promptStartedAt: prompt,
+        lastActionAt: prompt + 5000,
+      }),
+    ).toBe(true);
+    // While a run is open the app may be typing: the log explains it only
+    // when the step returns, so the confirmation waits HID_CONFIRM_RUN_MS.
+    const typing = new HidTakeoverTracker();
+    let confirmed = false;
+    for (
+      let at = touch + 200;
+      at <= touch + HID_CONFIRM_RUN_MS - 1000;
+      at += 1000
+    )
+      confirmed ||= typing.observe({
+        now: at,
+        hidIdleSeconds: 0.1,
+        promptStartedAt: prompt,
+        lastActionAt: prompt + 5000,
+        runOpen: true,
+      });
+    expect(confirmed).toBe(false);
+    // The type_text lands: cleared.
+    expect(
+      typing.observe({
+        now: touch + HID_CONFIRM_RUN_MS,
+        hidIdleSeconds: 0.5,
+        promptStartedAt: prompt,
+        lastActionAt: touch + HID_CONFIRM_RUN_MS - 400,
+        runOpen: true,
+      }),
+    ).toBe(false);
+    expect(typing.suspectAt).toBeUndefined();
+  });
+
+  it("counts a takeover only since the current prompt, never one from the session's history", () => {
+    // The loop feeds the log tail since the app's start; the owner nudged the
+    // mouse during a typed run an hour earlier (trial log: 8 manual_input and
+    // 17 NativeUserTakeover rows in 6 h). A latch aborted the first turn.
+    const watch = new AppWatch();
+    const promptAt = T0 + 3_600_000;
+    watch.feed([
+      ev(0, "NativeUserTakeover", {}),
+      ev(1000, "UserTakeoverStarted", {
+        runId: RUN,
+        data: { source: "manual_input" },
+      }),
+      ev(2000, "RunState", { runId: RUN, status: "cancelled" }),
+    ]);
+    expect(watch.takeoverAt).toBe(T0 + 1000);
+    expect(watch.takeoverSince(promptAt)).toBe(false);
+    // A hand-off is the app asking, not a person taking over.
+    watch.feed([
+      ev(3_605_000, "UserTakeoverStarted", {
+        runId: RUN,
+        data: { source: "request_user" },
+      }),
+    ]);
+    expect(watch.takeoverSince(promptAt)).toBe(false);
+    watch.feed([ev(3_610_000, "NativeUserTakeover", {})]);
+    expect(watch.takeoverSince(promptAt)).toBe(true);
+    // The next prompt starts clean without any reset.
+    expect(watch.takeoverSince(T0 + 3_700_000)).toBe(false);
+  });
+
+  it("speaks a follow-up only into a window the app is not about to close for its own ack (trial 05:43 #2)", () => {
+    // The trial's timeline, in ms after the transcript: followup_open 17461,
+    // followup_closed{speaking} 17794, speech_started 17830, speech_finished
+    // 19125, followup_open 20044. The old trigger fired on the first open and
+    // spoke "and make it bold" into a closed microphone.
+    const base = 17_000;
+    const watch = new AppWatch();
+    watch.feed([
+      voice(0, "transcript_final", { textLength: 30 }),
+      ev(10, "TurnPlanned", { plan: "start" }),
+      ev(50, "RunStarted", { runId: RUN }),
+      ev(base, "SpeechOut", { phase: "requested", priority: "ack" }),
+      voice(base + 461, "followup_open", { kind: "continuation" }),
+    ]);
+    // Open, but a reply is pending: not yet.
+    expect(watch.followupOpen).toBe(true);
+    expect(watch.followupReady("continuation", T0 + base + 500)).toBe(false);
+    expect(followupReady(watch.followupFacts(T0 + base + 500))).toBe(false);
+    watch.feed([
+      voice(base + 794, "followup_closed", {
+        kind: "continuation",
+        endReason: "speaking",
+      }),
+      voice(base + 830, "speech_started", { utteranceId: "u1" }),
+    ]);
+    expect(watch.followupReady("continuation", T0 + base + 900)).toBe(false);
+    watch.feed([
+      voice(base + 2125, "speech_finished", {
+        utteranceId: "u1",
+        interrupted: false,
+      }),
+    ]);
+    // Not speaking, but no window either.
+    expect(watch.followupReady("continuation", T0 + base + 2200)).toBe(false);
+    watch.feed([voice(base + 3044, "followup_open", { kind: "continuation" })]);
+    expect(watch.followupReady("continuation", T0 + base + 3100)).toBe(true);
+    // The wrong kind of window is not the trigger's.
+    expect(watch.followupReady("answer", T0 + base + 3100)).toBe(false);
+    expect(watch.followupReady(undefined, T0 + base + 3100)).toBe(true);
+    // A request that never played (empty text) stops blocking after 5 s.
+    expect(
+      followupReady({
+        now: T0 + 10_000,
+        followupOpen: true,
+        speaking: false,
+        speechRequestedAt: T0 + 1000,
+      }),
+    ).toBe(true);
+    expect(
+      followupReady({
+        now: T0 + 3000,
+        followupOpen: true,
+        speaking: false,
+        speechRequestedAt: T0 + 1000,
+      }),
+    ).toBe(false);
+  });
+
+  it("reads the preflight's open runs from the running app's session only", () => {
+    const lines = [
+      JSON.stringify(ev(0, "RunStarted", { runId: "old" })),
+      JSON.stringify(ev(1000, "RunState", { runId: "old", status: "acting" })),
+      "not json at all",
+      JSON.stringify(ev(60_000, "Heartbeat")),
+      JSON.stringify(ev(61_000, "VoiceEvent", { phase: "wake_status" })),
+    ].join("\n");
+    const since = linesSince(lines, T0 + 30_000);
+    expect(since).toBeDefined();
+    expect(since).not.toContain('"old"');
+    expect(since!.split("\n")).toHaveLength(2);
+    expect(linesSince(lines, T0)).toBe(lines);
+    expect(linesSince(lines, T0 + 120_000)).toBeUndefined();
+    expect(linesSince("", T0)).toBeUndefined();
   });
 
   it("applies each check operator over normalized text, never returning a value", () => {
@@ -1126,7 +1534,19 @@ describe("voice gate: pure decisions", () => {
   it("calls the room quiet from the two newest standby levels under a calibrated threshold", () => {
     const threshold = quietThreshold(4, 40);
     expect(threshold).toBeCloseTo(16.6);
-    expect(quietThreshold(10, 5)).toBe(10);
+    // Without a real speech sample the threshold is the floor's own multiple,
+    // never the floor: the standby engine stops emitting levels at
+    // wake_detected, so the say window usually holds only a pre-speech room
+    // sample (trial: floor 2, "speech" 2, threshold 2, then NOISE on rms 3-5).
+    expect(quietThreshold(2)).toBe(6);
+    expect(quietThreshold(2, 2)).toBe(6);
+    expect(quietThreshold(2, 3)).toBe(6);
+    expect(quietThreshold(10, 5)).toBe(30);
+    expect(quietThreshold(2, 28)).toBeCloseTo(11.1);
+    expect(isSpeechSample(2, 4)).toBe(false);
+    expect(isSpeechSample(2, 28)).toBe(true);
+    expect(isSpeechSample(4, 8)).toBe(false);
+    expect(isSpeechSample(4, 9)).toBe(true);
     expect(medianLevel([4, 9, 5])).toBe(5);
     expect(medianLevel([4, 6])).toBe(5);
     expect(medianLevel([])).toBeUndefined();
@@ -1392,8 +1812,8 @@ function record(
   context = {},
   attempt = 1,
 ): TurnRecord {
-  const summaries = events.map((slice) =>
-    summarizeTurn(slice, spokenAt, sayEndedAt),
+  const summaries = summarizeUtterances(
+    events.map((slice) => ({ events: slice, spokenAt, sayEndedAt })),
   );
   const g = gradeTurn(t, summaries, ev, { verbose: true, ...context });
   return {
@@ -1480,11 +1900,20 @@ describe("voice report: results, lanes and the brief", () => {
       "app-open-notes#4",
     ]);
     expect(unheard.contributors).toContain("owner:recognizer/gate");
+    // A soft class counts its passed turns over budget: they are its lane,
+    // and the pass rate never moves for them.
     const soft = results.failureClasses.find(
       (c) => c.code === "SLOW_FIRST_ACTION",
     )!;
-    expect(soft.attempts).toBe(0);
+    expect(soft.attempts).toBe(1);
     expect(soft.passedAttempts).toBe(1);
+    expect(soft.attemptRate).toBeCloseTo(1 / 7);
+    expect(soft.byCategory.app.attempts).toBe(1);
+    expect(results.aggregate.passed).toBe(3);
+    expect(fixBrief(soft, results)).toMatch(/1 of 7 ran turn\(s\)/);
+    expect(renderReport(results)).toMatch(
+      /\*\*SLOW_FIRST_ACTION\*\* \*\(soft\)\* — runner\/policy; 1 passed turn\(s\) over budget/,
+    );
     expect(results.aggregate.latency.p50.firstActionAfterTranscriptMs).toBe(
       1000,
     );
@@ -1662,6 +2091,59 @@ describe("voice loop: the script", () => {
     },
   );
 
+  it(
+    "refuses a numeric flag that is not a number instead of letting NaN pass every gate",
+    { timeout: 90_000 },
+    () => {
+      const result = spawnSync(
+        "node",
+        [
+          join(root, "scripts/voice-loop.mjs"),
+          "--dry-run",
+          "--idle-seconds",
+          "45s",
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: { ...process.env, NODE_OPTIONS: "" },
+        },
+      );
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/--idle-seconds 45s is not a number/);
+      expect(result.stdout).not.toMatch(/Dry run/);
+    },
+  );
+
+  it("declines a hand-off, writes the voice brief apart from the loop's, and stops in order when say fails", () => {
+    // A hand-off (request_user) is declined with stop like a confirmation.
+    expect(source).toMatch(
+      /s\.confirmations > 0 \|\| s\.needClick \|\| s\.handoffSources\.length/,
+    );
+    // lanes/<CODE>.voice.md: never the same file as the fix loop's <code>.md on APFS.
+    expect(source).toMatch(/\$\{cls\.code\}\.voice\.md/);
+    expect(source).not.toMatch(/\$\{cls\.code\}\.md/);
+    // say never rejects into an unhandled crash; a crash still writes results.
+    expect(source).toMatch(/SAY_FAILED/);
+    expect(source).toMatch(/stoppedBecause = "CRASHED"/);
+    expect(source).not.toMatch(/reject\(new Error\(`say exited/);
+    // A takeover is a timestamp since the prompt, never a latch from history.
+    expect(source).toMatch(/watch\.takeoverSince\(promptStartedAt\)/);
+    expect(source).not.toMatch(/watch\.takeover\b(?!Since|At)/);
+    // The HID rule is the tracker, the follow-up rule and the last-turn rule are the grader's.
+    expect(source).toMatch(/new HidTakeoverTracker\(\)/);
+    expect(source).toMatch(/watch\.followupReady\(trigger\.kind\)/);
+    expect(source).toMatch(/lastTurnDone\(turn, s, \{/);
+    // Open runs are counted since the app's start, and the quiet threshold
+    // starts from the floor alone.
+    expect(source).toMatch(/linesSince\(tail\.text, appStart\)/);
+    expect(source).toMatch(/quietThreshold\(facts\.quietFloor\)/);
+    expect(source).toMatch(/isSpeechSample\(facts\.quietFloor, level\)/);
+    // A shortcut probe that could not be read is passed through as unknown, not assumed present.
+    expect(source).toMatch(/"focus-shortcut": facts\.focusShortcut,/);
+    expect(source).not.toMatch(/focusShortcut === null \? true/);
+  });
+
   it("never launches, quits or speaks to the app on its own, and needs the consent flag to run", () => {
     expect(source).toMatch(/--i-know-this-speaks-to-my-mac/);
     expect(source).not.toMatch(/open -a Butler|open", \["-a", "Butler/);
@@ -1691,5 +2173,15 @@ describe("voice loop: the script", () => {
     for (const code of FAILURE_CODES) expect(docs, code).toContain(code);
     expect(docs).toMatch(/never approve/i);
     expect(docs).toMatch(/npm run loop -- --output output\/voice/);
+    expect(docs).toMatch(/lanes\/<CLASS>\.voice\.md/);
+    for (const code of [
+      "SHORTCUT_UNKNOWN",
+      "SAY_FAILED",
+      "SPEECH_ENDED_BEFORE_WAKE",
+      "followupReady",
+      "summarizeUtterances",
+      "lastTurnDone",
+    ])
+      expect(docs, code).toContain(code);
   });
 });

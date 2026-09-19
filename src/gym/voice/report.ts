@@ -375,20 +375,23 @@ function failureClasses(rows: TurnRow[], ran: TurnRow[]): FailureClass[] {
     const hit = rows.filter(
       (row) => row.code === ranked.code || row.softCode === ranked.code,
     );
-    const failedHits = hit.filter((row) => !row.pass && ranIds.has(row.turnId));
-    const attempts = (ENVIRONMENT_CODES as readonly string[]).includes(
+    // What the class counts: every hit for the environment's; for a soft
+    // class the passed turns over budget (they are the lane; soft classes
+    // never move the pass rate); for a hard class the failed ran turns.
+    const counted = (ENVIRONMENT_CODES as readonly string[]).includes(
       ranked.code,
     )
-      ? hit.length
-      : failedHits.length;
+      ? hit
+      : ranked.soft
+        ? hit.filter((row) => ranIds.has(row.turnId))
+        : hit.filter((row) => !row.pass && ranIds.has(row.turnId));
+    const attempts = counted.length;
     const denominator = ran.length || rows.length || 1;
     const rate = attempts / denominator;
     const byCategory: FailureClass["byCategory"] = {};
     for (const category of categories) {
       const inCategory = ran.filter((row) => row.category === category);
-      const count = failedHits.filter(
-        (row) => row.category === category,
-      ).length;
+      const count = counted.filter((row) => row.category === category).length;
       byCategory[category] = {
         attempts: count,
         rate: inCategory.length ? count / inCategory.length : 0,
@@ -399,7 +402,7 @@ function failureClasses(rows: TurnRow[], ran: TurnRow[]): FailureClass[] {
       const inCell = ran.filter(
         (row) => `app:${row.run.providerModel ?? "app"}` === cell,
       );
-      const count = failedHits.filter(
+      const count = counted.filter(
         (row) => `app:${row.run.providerModel ?? "app"}` === cell,
       ).length;
       byModel[cell] = {
@@ -669,7 +672,9 @@ export function renderReport(r: VoiceResults): string {
       .filter(([, v]) => v.attempts > 0)
       .map(([name]) => name);
     lines.push(
-      `${c.rank}. **${c.code}**${isSoft(c.code) ? " *(soft)*" : ""} — ${OWNER[code]}; ${c.attempts} turn(s), ${pct(
+      `${c.rank}. **${c.code}**${isSoft(c.code) ? " *(soft)*" : ""} — ${OWNER[code]}; ${c.attempts} ${
+        isSoft(c.code) ? "passed turn(s) over budget" : "turn(s)"
+      }, ${pct(
         c.attemptRate,
       )} ${interval(c.wilson95)}, weight ${COST_WEIGHT[code]}, ${secondsLost} s lost; categories ${
         categories.join(", ") || "-"
@@ -767,8 +772,12 @@ export function renderReport(r: VoiceResults): string {
 export const SKIP_REMEDY: Record<string, string> = {
   NOTES_AUTOMATION:
     "allow the terminal to control Notes when macOS asks, or run the loop from a terminal that already may",
+  NOTES_AUTOMATION_UNKNOWN:
+    "the Notes probe could not be read at all (osascript failed or timed out); try again",
   SHORTCUT_MISSING:
     'create a Shortcuts shortcut named "Butler Voice Loop: Focus Off" that turns Focus off',
+  SHORTCUT_UNKNOWN:
+    "`shortcuts list` failed or timed out, so the Focus shortcut is not known to exist; open Shortcuts once and try again",
 };
 
 /* ------------------------------------------------------------- the brief */
