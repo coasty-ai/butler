@@ -65,6 +65,27 @@ describe("action boundary", () => {
   ])("rejects invalid input %j", (a) =>
     expect(() => validateAction({ ...a, frame_id: frame.id }, frame)).toThrow(),
   );
+  it("carries a short note on any action, through the single-key rewrite, and refuses a long one", () => {
+    const note = "employees 142";
+    expect(
+      validateAction(
+        { type: "open_app", name: "Notes", note, frame_id: frame.id },
+        frame,
+      ),
+    ).toMatchObject({ type: "open_app", note });
+    expect(
+      validateAction(
+        { type: "hotkey", keys: ["ENTER"], note, frame_id: frame.id },
+        frame,
+      ),
+    ).toEqual({ type: "key", key: "ENTER", frame_id: frame.id, note });
+    expect(() =>
+      validateAction(
+        { type: "capture", note: "x".repeat(201), frame_id: frame.id },
+        frame,
+      ),
+    ).toThrow();
+  });
   it("rejects stale frames and batches", () => {
     expect(() =>
       validateAction({ type: "capture", frame_id: "old" }, frame),

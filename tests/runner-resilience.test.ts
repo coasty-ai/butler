@@ -17,6 +17,7 @@ import {
 import {
   Runner,
   actionSignature,
+  declinedResult,
   nativeAction,
   repetitionPeriod,
   screenChangedResult,
@@ -995,8 +996,7 @@ describe("runner pause, resume and budgets", () => {
     expect(p.observations[1].history.at(-1)).toEqual({
       type: "click",
       action: { type: "click", x: 0.25, y: 0.75 },
-      result:
-        "User declined this action. Choose a different approach or request_user.",
+      result: declinedResult("Send this message?"),
     });
   });
   it("re-enables input for a pending approval without leaving confirmation", async () => {
@@ -1543,6 +1543,157 @@ describe("application switching", () => {
     const results = p.observations.at(-1)!.history.map((h) => h.result);
     expect(results.filter((r) => r.includes(appSwitchWarning))).toHaveLength(1);
     expect(results[5]).toContain(appSwitchWarning);
+  });
+});
+
+/**
+ * STOPPED_WHILE_PAUSED, the denials half (cycle 20260919-0226, five of twelve
+ * runs): every question is declined, the model proposes a step of the same
+ * kind again, and the third decline in a row pauses the run. The pause is
+ * kept; what changes is what the model reads after a decline.
+ */
+describe("declined approvals", () => {
+  const question = "Click “Zeta”?";
+  const zeta = act({ type: "click_control", label: "Zeta" });
+  const asks = () => {
+    policy.evaluate = (a) =>
+      a.type === "click_control"
+        ? { kind: "CONFIRM", reason: question }
+        : { kind: "ALLOW", reason: "Test." };
+  };
+  const declineEach = async (
+    runner: Runner,
+    m: ReturnType<typeof memory>,
+    prompts: number,
+  ) => {
+    for (let asked = 1; asked <= prompts; asked++) {
+      await until(() => m.of("PolicyConfirmationRequested").length === asked);
+      runner.confirm(false);
+    }
+  };
+  it("names the declined question and the honest finish, and still pauses on the third decline in a row", async () => {
+    asks();
+    const m = memory();
+    const c = controller();
+    const p = scripted([zeta, zeta, zeta]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await declineEach(runner, m, 3);
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(runner.snapshot.message).toBe(
+      "You declined several actions. Say continue with a hint when ready.",
+    );
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(m.of("UserTakeoverStarted")).toHaveLength(0);
+    // After the first decline the model reads which question was declined,
+    // that the same kind of step asks again, and the two routes left; it is
+    // never sent to request_user, which would hand the task off.
+    const line = p.observations[1].history.at(-1)!;
+    expect(line).toEqual({
+      type: "click_control",
+      action: { type: "click_control", label: "Zeta" },
+      result: declinedResult(question),
+    });
+    expect(line.result).toContain(question);
+    expect(line.result).toContain("Do not propose this step again");
+    expect(line.result).toContain("fail and say what needed approval");
+    expect(line.result).not.toContain("request_user");
+    runner.stop();
+    await running;
+  });
+  it("resets the count on an executed step between declines and never hands the task off", async () => {
+    asks();
+    const m = memory();
+    const c = controller();
+    const other = act({ type: "click", x: 0.5, y: 0.5 });
+    const p = scripted([zeta, zeta, other, zeta, zeta]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await declineEach(runner, m, 4);
+    await running;
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("UserDenied")).toHaveLength(4);
+    expect(m.of("RunPaused")).toHaveLength(0);
+    expect(m.of("UserTakeoverStarted")).toHaveLength(0);
+    expect(c.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * STOPPED_WHILE_PAUSED, the loops half (six of the seven loop pauses in cycle
+ * 20260919-0226): one open_app a step between the reading and the writing
+ * application, because nothing carried the value the model had just read.
+ */
+describe("the model's note", () => {
+  it("carries a value the model read into its next steps' history", async () => {
+    allowAll();
+    const m = memory();
+    const p = scripted([
+      act({ type: "open_app", name: "Zeta", note: "employees 142" }),
+      act({ type: "click", x: 0.5, y: 0.5 }),
+    ]);
+    const runner = new Runner(controller(), p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(p.observations[1].history[0].action).toMatchObject({
+      type: "open_app",
+      name: "Zeta",
+      note: "employees 142",
+    });
+    expect(p.observations[2].history[0].action).toMatchObject({
+      note: "employees 142",
+    });
+    expect(m.of("ActionFailed")).toHaveLength(0);
+  });
+  it("keeps the note on a step the user declined", async () => {
+    policy.evaluate = (a) =>
+      a.type === "click"
+        ? { kind: "CONFIRM", reason: "Send this message?" }
+        : undefined!;
+    const m = memory();
+    const c = controller();
+    const p = scripted([
+      act({ type: "click", x: 0.25, y: 0.75, note: "total 42" }),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "confirming");
+    runner.confirm(false);
+    await running;
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(p.observations[1].history.at(-1)).toEqual({
+      type: "click",
+      action: { type: "click", x: 0.25, y: 0.75, note: "total 42" },
+      result: declinedResult("Send this message?"),
+    });
+  });
+  it("never hides a repeated cycle from the loop detector", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller();
+    // The same two clicks over and over, each with a fresh note: still a loop.
+    const p = scripted(
+      Array.from({ length: 9 }, (_, i) =>
+        act({
+          type: "click",
+          x: i % 2 ? 0.7 : 0.301,
+          y: 0.5,
+          note: `value ${i}`,
+        }),
+      ),
+    );
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(runner.snapshot.message).toBe(
+      "I seem to be stuck repeating the same steps. Say continue with a hint.",
+    );
+    expect(c.execute).toHaveBeenCalledTimes(8);
+    expect(m.of("ActionLoopDetected").map((e) => e.data)).toEqual([
+      { actionType: "click", period: 2 },
+    ]);
+    runner.stop();
+    await running;
   });
 });
 

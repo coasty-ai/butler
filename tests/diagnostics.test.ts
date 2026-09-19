@@ -109,7 +109,13 @@ describe("local diagnostic stream", () => {
         wall_clock_timestamp: new Date().toISOString(),
         schema_version: 1,
         type: "ActionProposed",
-        data: { action: { type: "type_text", text: "hidden typed text" } },
+        data: {
+          action: {
+            type: "type_text",
+            text: "hidden typed text",
+            note: "hidden note 142",
+          },
+        },
       });
       log.snapshot(snapshot);
       log.snapshot(snapshot);
@@ -123,6 +129,8 @@ describe("local diagnostic stream", () => {
         "RunState",
       ]);
       expect(events[0].data.textLength).toBe(17);
+      // The model's note is a value it read on screen: its length only.
+      expect(events[0].data.noteLength).toBe(15);
       expect(raw).not.toContain("hidden");
     }));
   it("records open_app outcomes without application names or typed text", () =>

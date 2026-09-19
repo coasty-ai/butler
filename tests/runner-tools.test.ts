@@ -18,6 +18,7 @@ import {
   TOOL_UNDO_FAILED_MESSAGE,
   UNDO_MENU_PATH,
   UNDONE_MESSAGE,
+  declinedResult,
   loopWarning,
   noProgressWarning,
   type RunnerExtras,
@@ -400,17 +401,18 @@ describe("a tool step the model proposes", () => {
     });
     const running = h.runner.start(DENTIST_WORDS, voice);
     await until(() => h.runner.snapshot.run?.status === "confirming");
+    const question = h.runner.snapshot.pending!.reason;
     h.runner.confirm(false, "voice");
     await running;
     expect(h.tools!.calls).toEqual([]);
     expect(h.m.of("UserDenied").map((e) => e.data)).toEqual([
       { source: "voice", actionType: "tool_call" },
     ]);
+    // The model hears which question was declined and its two routes left.
     expect(h.provider.observations[1].history.at(-1)).toEqual({
       type: "tool_call",
       action: { type: "tool_call", tool: CALENDAR_ADD.id },
-      result:
-        "User declined this action. Choose a different approach or request_user.",
+      result: declinedResult(question),
     });
     expect(h.runner.snapshot.run).toMatchObject({
       status: "completed",

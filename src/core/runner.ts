@@ -180,6 +180,9 @@ export function echoAction(input: unknown): Record<string, unknown> {
   // The tool's id only: its arguments are the step's content.
   if (a.type === "tool_call" && typeof a.tool === "string")
     echo.tool = bound(a.tool, 170);
+  // The model's own note rides along: a value it read for a later step is
+  // still needed when the step that carried it was rejected or declined.
+  if (typeof a.note === "string") echo.note = bound(a.note, 200);
   return echo;
 }
 const knownType = (input: unknown) => {
@@ -406,7 +409,17 @@ export function repetitionPeriod(signatures: string[]): 0 | 1 | 2 {
 export const loopWarning =
   " Warning: you have repeated the same actions several times without finishing. The last steps did not make progress; re-read the screenshot and context.controls and choose a different approach.";
 export const appSwitchWarning =
-  " Warning: you keep switching between applications. Switching again will not show new information. Read the values you need from the current screenshot and context now, then finish the step in this application.";
+  " Warning: you keep switching between applications. Switching again will not show new information. Read the values you need from the current screenshot and context now and carry them in your next action's note (history keeps it for later steps), then finish the step in this application.";
+/**
+ * The history line for an approval the user declined: the question they said
+ * no to, so the model knows which kind of step asks, and the two routes left
+ * (one that needs no approval, or an honest finish). It never suggests
+ * request_user: the user has just answered, and asking again hands the task
+ * off. Live (cycle 20260919-0226), five runs proposed the same kind of step
+ * three times running after "choose a different approach" and paused.
+ */
+export const declinedResult = (question: string) =>
+  `The user declined: ${question} Do not propose this step again; a step of the same kind asks again. Take a route that needs no approval (a listed control, a menu item from context.menus, the application's own shortcut), or finish: done for what is verified, otherwise fail and say what needed approval.`;
 /**
  * The history result for an open_app that brought a running application to
  * the front with no window, after its own Window menu showed none either
@@ -1340,7 +1353,7 @@ export class Runner {
     if (!yes) {
       this.voiceApproval = false;
       if (this.planPending !== undefined) this.abandonPlan("declined");
-      this.recordDecline(pending.action, source);
+      this.recordDecline(pending.action, source, pending.reason);
       // A run that exists only for a declined undo has nothing left to do.
       if (this.undoRequest?.own) this.stop("Left as it was.");
       else this.pause();
@@ -1505,7 +1518,11 @@ export class Runner {
     );
     return false;
   }
-  private recordDecline(action: Action, source: ApprovalSource) {
+  private recordDecline(
+    action: Action,
+    source: ApprovalSource,
+    question: string,
+  ) {
     this.event("UserDenied", {
       source,
       ...(action.type === "tool_call" ? { actionType: action.type } : {}),
@@ -1513,8 +1530,7 @@ export class Runner {
     this.reject({
       type: action.type,
       action: echoAction(action),
-      result:
-        "User declined this action. Choose a different approach or request_user.",
+      result: declinedResult(question),
     });
     return ++this.declines;
   }
@@ -3536,7 +3552,7 @@ export class Runner {
           this.approvalSource = undefined;
           if (!allowed) {
             planFail("declined");
-            if (this.recordDecline(action, answered) >= 3) {
+            if (this.recordDecline(action, answered, decision.reason) >= 3) {
               this.declines = 0;
               this.pause(
                 "You declined several actions. Say continue with a hint when ready.",

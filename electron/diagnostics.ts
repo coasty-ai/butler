@@ -93,6 +93,7 @@ const fields = new Set([
   "launchedWindows",
   "restoredWindow",
   "nameLength",
+  "noteLength",
   "problem",
   "normalized",
   "exitCode",
@@ -252,6 +253,7 @@ const numberFields = new Set([
   "sampleRate",
   "micLevel",
   "textLength",
+  "noteLength",
   "taskLength",
   "durationMs",
   "ttftMs",
@@ -653,6 +655,11 @@ export class LocalDiagnostics {
               nameLength:
                 action.type === "open_app" && typeof action.name === "string"
                   ? action.name.length
+                  : undefined,
+              // The model's note is a value it read on screen: its length only.
+              noteLength:
+                typeof action.note === "string"
+                  ? action.note.length
                   : undefined,
             }
           : {}),

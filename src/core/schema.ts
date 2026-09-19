@@ -30,7 +30,17 @@ export const supportedKeys = [
   ..."0123456789",
 ] as const;
 const key = z.enum(supportedKeys);
-const base = { frame_id: z.string().min(1).max(100) };
+// Every action names the frame it was proposed on and may carry a short note:
+// a value the model read on this screen for a later step (a number, a name, a
+// date). The model has no memory between steps but its history, and live
+// (cycle 20260919-0226) six of seven loop pauses were a model opening the
+// reading and the writing application in turn, arriving each time without
+// the value. History carries the note whole; the content-free diagnostics
+// log only its length.
+const base = {
+  frame_id: z.string().min(1).max(100),
+  note: z.string().max(200).optional(),
+};
 // A plain application display name, never a path, bundle identifier, URL or
 // document: what open_app launches and what open_file may open an item in.
 // Both resolve it natively against the same allow-listed application folders.
@@ -1253,7 +1263,12 @@ export function validateAction(input: unknown, frame: Frame): Action {
   )
     throw new Error(TOOL_ARGS_TOO_LARGE);
   if (a.type === "hotkey" && a.keys.length === 1)
-    return { type: "key", key: a.keys[0], frame_id: a.frame_id };
+    return {
+      type: "key",
+      key: a.keys[0],
+      frame_id: a.frame_id,
+      ...(a.note !== undefined && { note: a.note }),
+    };
   return a;
 }
 const pointFields = [

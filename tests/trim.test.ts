@@ -493,8 +493,10 @@ describe("what one step costs", () => {
       .system[0].text;
     // 13,924 characters before the action list lost its JSON schema repeats;
     // 14,800 with the tools paragraph (.data/design/mcp-integrated.md §2.3.2);
-    // 15,321 with the two-part context and the left-out screenshot.
-    expect(instruction.length).toBeLessThan(15400);
+    // 15,321 with the two-part context and the left-out screenshot;
+    // 15,981 with the kinds of step that ask, what to do once one is
+    // declined, and the note that carries a value between steps.
+    expect(instruction.length).toBeLessThan(16100);
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
     expect(instruction).not.toContain('{"type":"menu_item"');
