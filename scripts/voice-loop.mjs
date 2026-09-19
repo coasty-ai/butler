@@ -397,6 +397,26 @@ function parseLines(lines) {
         e && typeof e.event === "string" && typeof e.timestamp === "string",
     );
 }
+/**
+ * The ledger's rows: `{at, kind, ...}` per line. Never parseLines, whose
+ * filter wants a diagnostics event's `event` and `timestamp` and dropped
+ * every ledger row, so --report-only re-rendered an empty cycle (no turns,
+ * no gate, no stop) until 2026-09-19 without anyone noticing: the cycle's
+ * own files had been written by the live run.
+ */
+function parseLedger(text) {
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((row) => row && typeof row.kind === "string");
+}
 /** The last `bytes` of the log, as events, for the preflight facts. */
 function readTail(file, bytes = 4 * 1024 * 1024) {
   if (!existsSync(file)) return { text: undefined, events: [] };
@@ -784,7 +804,7 @@ if (values["report-only"]) {
     process.exit(2);
   }
   const stored = JSON.parse(readFileSync(planPath, "utf8"));
-  const rows = parseLines(readFileSync(ledgerPath, "utf8").split("\n"));
+  const rows = parseLedger(readFileSync(ledgerPath, "utf8"));
   const turns = rows.filter((r) => r.kind === "turn").map((r) => r.record);
   const abort = rows.find((r) => r.kind === "abort");
   const stop = rows.find((r) => r.kind === "stop");
@@ -807,14 +827,20 @@ if (values["report-only"]) {
   process.exit(0);
 }
 
-/** Seconds by reason from milliseconds by reason, rounded. */
-const secondsByReason = (byReasonMs) =>
-  Object.fromEntries(
+/**
+ * Seconds by reason from milliseconds by reason, rounded. A declaration,
+ * not a const: --report-only calls gateWaits from the module's top level
+ * before a const here would be initialized (the first run of it crashed
+ * on exactly that).
+ */
+function secondsByReason(byReasonMs) {
+  return Object.fromEntries(
     Object.entries(byReasonMs ?? {}).map(([reason, ms]) => [
       reason,
       Math.round(ms / 1000),
     ]),
   );
+}
 
 /** The cycle's gate account: waits that refused at least once, their time by reason, and the wait that gave up, if one did. */
 function gateWaits(rows) {

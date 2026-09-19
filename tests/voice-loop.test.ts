@@ -1,5 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { emptyLoopState, laneBrief, selectLanes } from "../src/gym/loop";
@@ -2842,6 +2849,103 @@ describe("voice loop: the script", () => {
       expect(result.status).toBe(2);
       expect(result.stderr).toMatch(/--idle-seconds 45s is not a number/);
       expect(result.stdout).not.toMatch(/Dry run/);
+    },
+  );
+
+  it(
+    "re-renders a cycle from its ledger with --report-only, a gate that gave up included (the first run of that path crashed on a const read before its line)",
+    { timeout: 90_000 },
+    () => {
+      const outDir = mkdtempSync(join(tmpdir(), "voice-report-only-"));
+      const cycleId = "20260101-0000-abc1234";
+      const dir = join(outDir, cycleId);
+      mkdirSync(dir);
+      writeFileSync(
+        join(dir, "plan.json"),
+        JSON.stringify({ plan: { ...plan, id: cycleId }, preflight }),
+      );
+      const rows = [
+        {
+          at: at(0),
+          kind: "start",
+          cycle: cycleId,
+          tasks: ["app-open-notes"],
+          repeat: 1,
+        },
+        {
+          at: at(100),
+          kind: "gate",
+          turnId: "app-open-notes#1",
+          waitedMs: 158,
+          polls: 0,
+          refusedMs: 0,
+          reasons: {},
+          byReasonMs: {},
+        },
+        {
+          at: at(9000),
+          kind: "turn",
+          record: record(task("app-open-notes"), [fastStart()], front),
+        },
+        {
+          at: at(609_000),
+          kind: "gate",
+          turnId: "app-switch-safari#1",
+          waitedMs: 600_100,
+          polls: 600,
+          refusedMs: 600_000,
+          reasons: { FOLLOWUP_OPEN: 45, HID_ACTIVE: 555 },
+          byReasonMs: { FOLLOWUP_OPEN: 45_000, HID_ACTIVE: 555_000 },
+          stop: "GATE_CAP",
+          on: "HID_ACTIVE",
+          evidence: null,
+        },
+        { at: at(609_100), kind: "stop", reason: "GATE_CAP" },
+      ];
+      writeFileSync(
+        join(dir, "ledger.jsonl"),
+        rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+      );
+      const result = spawnSync(
+        "node",
+        [
+          join(root, "scripts/voice-loop.mjs"),
+          "--report-only",
+          cycleId,
+          "--out-dir",
+          outDir,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: { ...process.env, NODE_OPTIONS: "" },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const report = readFileSync(join(dir, "report.md"), "utf8");
+      expect(report).toContain(
+        "gate waited 1 time(s), 600 s in all. Stopped early: GATE_CAP (app-switch-safari#1 waited 600 s: HID_ACTIVE 555 s, FOLLOWUP_OPEN 45 s).",
+      );
+      expect(report).toContain(
+        "Gave up at app-switch-safari#1 with GATE_CAP after 600 s: HID_ACTIVE 555 s, FOLLOWUP_OPEN 45 s; a person's input on the Mac",
+      );
+      const results = JSON.parse(
+        readFileSync(join(dir, "results.json"), "utf8"),
+      ) as VoiceResults;
+      expect(results.gate.gaveUp?.code).toBe("GATE_CAP");
+      expect(results.gate.byReasonSeconds).toEqual({
+        FOLLOWUP_OPEN: 45,
+        HID_ACTIVE: 555,
+      });
+      expect(results.aggregate.ran).toBe(1);
+      expect(results.cycle.stoppedBecause).toBe("GATE_CAP");
+      rmSync(outDir, { recursive: true, force: true });
+      // The ledger is read by its own parser: parseLines wants a
+      // diagnostics event's `event` and `timestamp` and dropped every row.
+      expect(source).toMatch(
+        /parseLedger\(readFileSync\(ledgerPath, "utf8"\)\)/,
+      );
+      expect(source).not.toMatch(/parseLines\(readFileSync\(ledgerPath/);
     },
   );
 
