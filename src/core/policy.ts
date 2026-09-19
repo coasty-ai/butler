@@ -951,6 +951,24 @@ export const UNDO_QUESTION = "Undo the last change?";
  * spoken "undo that", or the model correcting its own step. Reversible by
  * definition, so only "ask" asks; every other setting runs and reports it.
  */
+/**
+ * Return, Delete, Backspace or Space on a control the rules did not place:
+ * it may submit a form or change content, so it asks. In "flow" an edit that
+ * can be undone (Delete, Backspace, Space) runs and is reported; Return may
+ * send, so it still asks there. ("Allow everything" removes the asking in
+ * withoutAsking.)
+ */
+function activationDecision(key: string, settings: Settings): Decision {
+  if (settings.autonomy === "flow" && key !== "ENTER")
+    return {
+      kind: "ALLOW",
+      reason: `Press ${key}: an edit that can be undone, reported.`,
+    };
+  return {
+    kind: "CONFIRM",
+    reason: "Activate this control? It may submit or change content.",
+  };
+}
 function undoDecision(title: string, settings: Settings): Decision {
   return settings.autonomy === "ask"
     ? { kind: "CONFIRM", reason: UNDO_QUESTION }
@@ -1105,7 +1123,42 @@ export interface PolicyContext {
 }
 /** The decision reason that marks the one clipboard press native may send. */
 export const PASTE_ALLOWED = "Paste what the user copied, as asked.";
+/**
+ * The policy's answer for one step: the rules in decideAction, then the one
+ * setting that removes asking. "Allow everything", chosen and acknowledged
+ * in Settings, turns every question into a reported step and nothing else:
+ * refusals stand, and so does the question before a protected website,
+ * which that setting promises stays guarded. (Live 2026-09-19: Return in
+ * Calendar's event field and in an editor asked under "all".)
+ */
 export function evaluate(
+  action: Action,
+  surface: Surface,
+  settings: Settings,
+  synthetic: boolean,
+  context: PolicyContext = {},
+): Decision {
+  return withoutAsking(
+    decideAction(action, surface, settings, synthetic, context),
+    settings,
+  );
+}
+const PROTECTED_SITE_QUESTION = "Open a protected website?";
+export function withoutAsking(
+  decision: Decision,
+  settings: Settings,
+): Decision {
+  if (decision.kind !== "CONFIRM") return decision;
+  if (!(settings.autonomy === "all" && settings.autonomyAllAcknowledged))
+    return decision;
+  if (decision.reason === PROTECTED_SITE_QUESTION) return decision;
+  const step = decision.reason.split("?")[0].trim();
+  return {
+    kind: "ALLOW",
+    reason: `${step}: done without asking, as you set. Reported when done.`,
+  };
+}
+function decideAction(
   action: Action,
   surface: Surface,
   settings: Settings,
@@ -1617,7 +1670,7 @@ export function evaluate(
       };
     if (url && ["http:", "https:"].includes(url.protocol))
       return protectedHost(url.hostname, settings)
-        ? { kind: "CONFIRM", reason: "Open a protected website?" }
+        ? { kind: "CONFIRM", reason: PROTECTED_SITE_QUESTION }
         : { kind: "ALLOW", reason: "Follow a web link." };
   }
   const role = surface.targetRole ?? "";
@@ -1732,10 +1785,7 @@ export function evaluate(
     action.type === "key" &&
     ["ENTER", "DELETE", "BACKSPACE", "SPACE"].includes(action.key)
   )
-    return {
-      kind: "CONFIRM",
-      reason: "Activate this control? It may submit or change content.",
-    };
+    return activationDecision(action.key, settings);
   if (action.type === "type_text") {
     // VS Code and its forks keep their tree hidden, and a focus nothing
     // identifies there may be the integrated terminal, where a typed line runs.

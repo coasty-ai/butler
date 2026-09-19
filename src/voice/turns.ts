@@ -790,6 +790,12 @@ export interface VoiceTurnInput {
   turnMs?: number;
   /** The approval captured when listening started still matches. */
   gateMatches: boolean;
+  /**
+   * The autonomy setting trusts a clearly heard "yes" for any question
+   * ("flow", or "all" acknowledged): the follow-up allow-list does not apply.
+   * Live 2026-09-19: "Yes" to Calendar's Return prompt was sent to a click.
+   */
+  approvesAnyByVoice?: boolean;
   now: number;
   run?: VoiceTurnRun;
   fragment?: VoiceFragment;
@@ -1084,7 +1090,11 @@ export function planVoiceTurn(input: VoiceTurnInput): TurnPlan {
     if (!(confidence > 0)) return { kind: "needClick", reason: "confidence" };
     if (!input.gateMatches) return { kind: "needClick", reason: "gate" };
     if (!confident) return { kind: "needClick", reason: "confidence" };
-    if (source === "followup" && !followUpApprovalAllowed(run.pendingReason))
+    if (
+      source === "followup" &&
+      !input.approvesAnyByVoice &&
+      !followUpApprovalAllowed(run.pendingReason)
+    )
       return { kind: "needClick", reason: "restricted" };
     return { kind: "approve" };
   }

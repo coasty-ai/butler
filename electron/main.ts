@@ -833,6 +833,7 @@ async function steerFromRemote(
     now: Date.now(),
     run: planRun(),
     lastRun: lastRunInput(),
+    approvesAnyByVoice: approvesAnyByVoice(settings),
     proposal: assistant.proposal(),
   });
   debug("TurnPlanned", {
@@ -2017,6 +2018,12 @@ function planRun() {
           snapshot.message === TARGET_HANDOFF_MESSAGE)),
   };
 }
+/** Whether the autonomy setting lets a clearly heard "yes" answer any question. */
+function approvesAnyByVoice(s: Settings): boolean {
+  return (
+    s.autonomy === "flow" || (s.autonomy === "all" && s.autonomyAllAcknowledged)
+  );
+}
 function lastRunInput() {
   return lastFinishedAt === undefined ? undefined : { endedAt: lastFinishedAt };
 }
@@ -2067,6 +2074,7 @@ async function planCommand(
     now: Date.now(),
     run: planRun(),
     lastRun: lastRunInput(),
+    approvesAnyByVoice: approvesAnyByVoice(settings),
     proposal: assistant.proposal(),
     ...context,
   });

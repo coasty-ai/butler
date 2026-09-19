@@ -10,6 +10,7 @@ import {
   askedForLabel,
   evaluate,
   reversibleLabel,
+  withoutAsking,
   type PolicyContext,
 } from "../src/core/policy";
 import {
@@ -208,6 +209,67 @@ describe("how often it asks: allow everything", () => {
     ).toBe("CONFIRM");
     expect(
       decideAll(menu("Save"), menuSurface("Save"), unacknowledged).kind,
+    ).toBe("CONFIRM");
+  });
+
+  it("removes every question but the protected website's (live 2026-09-19)", () => {
+    const settings = all();
+    expect(
+      withoutAsking(
+        { kind: "CONFIRM", reason: "Quit this application?" },
+        settings,
+      ),
+    ).toEqual({
+      kind: "ALLOW",
+      reason:
+        "Quit this application: done without asking, as you set. Reported when done.",
+    });
+    expect(
+      withoutAsking(
+        {
+          kind: "CONFIRM",
+          reason: "Activate this control? It may submit or change content.",
+        },
+        settings,
+      ).kind,
+    ).toBe("ALLOW");
+    expect(
+      withoutAsking(
+        { kind: "CONFIRM", reason: "Open a protected website?" },
+        settings,
+      ).kind,
+    ).toBe("CONFIRM");
+    expect(
+      withoutAsking({ kind: "DENY", reason: "refused" }, settings).kind,
+    ).toBe("DENY");
+    expect(
+      withoutAsking(
+        { kind: "CONFIRM", reason: "Quit this application?" },
+        all({ autonomyAllAcknowledged: false }),
+      ).kind,
+    ).toBe("CONFIRM");
+    // Return in Calendar's event field, as it happened.
+    const field = { appId: "com.apple.iCal", focusedRole: "AXTextField" };
+    expect(
+      decideAll(act({ type: "key", key: "ENTER" }), field, settings).kind,
+    ).toBe("ALLOW");
+    expect(
+      decideAll(
+        act({ type: "key", key: "ENTER" }),
+        field,
+        all({ autonomyAllAcknowledged: false }),
+      ).kind,
+    ).toBe("CONFIRM");
+    // "Flow" runs the undoable keys and still asks for Return.
+    const flow = {
+      ...structuredClone(defaultSettings),
+      autonomy: "flow" as const,
+    };
+    expect(
+      decideAll(act({ type: "key", key: "DELETE" }), field, flow).kind,
+    ).toBe("ALLOW");
+    expect(
+      decideAll(act({ type: "key", key: "ENTER" }), field, flow).kind,
     ).toBe("CONFIRM");
   });
 

@@ -819,6 +819,30 @@ describe("turn planning", () => {
         confidence: 0.95,
       }),
     ).toEqual({ kind: "needClick", reason: "restricted" });
+    // The autonomy setting that trusts the voice ("flow", "all" acknowledged)
+    // takes a clearly heard "yes" for any question; an unclear one still not.
+    expect(
+      plan({
+        text: "yes",
+        source: "followup",
+        window: "approval",
+        run: approval(
+          "Activate this control? It may submit or change content.",
+        ),
+        confidence: 0.95,
+        approvesAnyByVoice: true,
+      }),
+    ).toEqual({ kind: "approve" });
+    expect(
+      plan({
+        text: "yes",
+        source: "followup",
+        window: "approval",
+        run: approval("Approve this transaction?"),
+        confidence: 0.6,
+        approvesAnyByVoice: true,
+      }),
+    ).toEqual({ kind: "needClick", reason: "confidence" });
     // Restricted categories still approve with the wake phrase or shortcut.
     expect(
       plan({
