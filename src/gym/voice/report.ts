@@ -14,7 +14,12 @@ import {
   type Classification,
   type FailureCode,
 } from "./classify";
-import { LATENCY, type TurnGrade, type TurnSummary } from "./grade";
+import {
+  GATE_REASON_MEANS,
+  LATENCY,
+  type TurnGrade,
+  type TurnSummary,
+} from "./grade";
 import type { Outcome, Script } from "./suite";
 
 /**
@@ -81,11 +86,40 @@ export interface PreflightFacts {
   skipped: Record<string, string>;
 }
 
+/** The gate wait that ended the cycle: which turn, the code, the time by reason, and what the app was stuck on. */
+export interface GateGaveUp {
+  turnId: string;
+  code: string;
+  waitedSeconds: number;
+  /** The reason that cost the most time. */
+  on: string | null;
+  byReasonSeconds: Record<string, number>;
+  /** Statuses, kinds and milliseconds only (RUN_LEFT_OPEN, WINDOW_STUCK, NOT_LISTENING). */
+  evidence: Record<string, unknown> | null;
+}
+
 export interface GateWaits {
+  /** Waits that refused at least once. */
   count: number;
   totalSeconds: number;
+  /** Refused polls by reason. */
   byReason: Record<string, number>;
+  /** Refused time by reason. */
+  byReasonSeconds: Record<string, number>;
   longestSeconds: number;
+  gaveUp: GateGaveUp | null;
+}
+
+/** `HID_ACTIVE 545 s, FOLLOWUP_OPEN 45 s`, largest first. */
+export function gateReasonList(
+  byReasonSeconds: Record<string, number>,
+): string {
+  return (
+    Object.entries(byReasonSeconds)
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, s]) => `${reason} ${s} s`)
+      .join(", ") || "-"
+  );
 }
 
 export interface TurnGateFacts {
@@ -657,7 +691,13 @@ export function renderReport(r: VoiceResults): string {
     }, quiet ${quiet}, suite ${r.cycle.suiteHash.slice(0, 12)}.`,
     `${r.cycle.startedAt} to ${r.cycle.finishedAt}; gate waited ${r.gate.count} time(s), ${r.gate.totalSeconds} s in all.` +
       (r.cycle.stoppedBecause
-        ? ` Stopped early: ${r.cycle.stoppedBecause}.`
+        ? ` Stopped early: ${r.cycle.stoppedBecause}${
+            r.gate.gaveUp
+              ? ` (${r.gate.gaveUp.turnId} waited ${r.gate.gaveUp.waitedSeconds} s: ${gateReasonList(
+                  r.gate.gaveUp.byReasonSeconds,
+                )})`
+              : ""
+          }.`
         : ""),
     "",
     "## North star",
@@ -800,8 +840,21 @@ export function renderReport(r: VoiceResults): string {
       Object.entries(r.gate.byReason)
         .map(([k, v]) => `${k} ${v}`)
         .join(", ") || "-"
-    }.`,
+    } poll(s); ${gateReasonList(r.gate.byReasonSeconds ?? {})}.`,
   );
+  // The wait that ended the cycle, in words: which turn, how long on what,
+  // what the dominant reason means, and the app's state when it was stuck.
+  const gaveUp = r.gate.gaveUp;
+  if (gaveUp)
+    lines.push(
+      `Gave up at ${gaveUp.turnId} with ${gaveUp.code} after ${gaveUp.waitedSeconds} s: ${gateReasonList(
+        gaveUp.byReasonSeconds,
+      )}${
+        gaveUp.on && gaveUp.on in GATE_REASON_MEANS
+          ? `; ${GATE_REASON_MEANS[gaveUp.on as keyof typeof GATE_REASON_MEANS]}`
+          : ""
+      }${gaveUp.evidence ? `; evidence ${JSON.stringify(gaveUp.evidence)}` : ""}.`,
+    );
   lines.push("", "## Preflight", "");
   lines.push(
     `Codes: ${r.preflight.codes.join(", ") || "none"}. Listening ${r.preflight.listening}; verbose ${

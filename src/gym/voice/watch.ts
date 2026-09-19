@@ -23,7 +23,15 @@ export class AppWatch {
   speechFinishedAt: number | undefined = undefined;
   followupOpen = false;
   followupKind: string | null = null;
+  /** When the open window opened; undefined once closed. */
+  followupOpenedAt: number | undefined = undefined;
+  /** followup_open events seen, a conversation window reopening after every exchange included. */
+  followupOpens = 0;
   runs = new Map<string, string>();
+  /** The last RunStarted/RunState time per run: how long an open run has been silent. */
+  runsAt = new Map<string, number>();
+  /** When the latest wake_status was seen. */
+  listeningAt: number | undefined = undefined;
   lastActionAt: number | undefined = undefined;
   levels: { at: number; rms: number }[] = [];
   heardTextAt: number | undefined = undefined;
@@ -43,7 +51,10 @@ export class AppWatch {
       const at = Date.parse(e.timestamp);
       if (!isChatter(e)) this.lastEventAt = Math.max(this.lastEventAt, at);
       if (e.event === "VoiceEvent") {
-        if (d.phase === "wake_status") this.listening = d.listening === true;
+        if (d.phase === "wake_status") {
+          this.listening = d.listening === true;
+          this.listeningAt = at;
+        }
         if (d.phase === "speech_started") {
           this.speaking = true;
           this.speechStartedAt = at;
@@ -53,11 +64,14 @@ export class AppWatch {
           this.speechFinishedAt = at;
         }
         if (d.phase === "followup_open") {
+          if (!this.followupOpen) this.followupOpenedAt = at;
           this.followupOpen = true;
+          this.followupOpens++;
           this.followupKind = typeof d.kind === "string" ? d.kind : null;
         }
         if (d.phase === "followup_closed") {
           this.followupOpen = false;
+          this.followupOpenedAt = undefined;
           this.followupKind = null;
         }
         if (d.phase === "standby_trace") {
@@ -81,14 +95,18 @@ export class AppWatch {
         e.event === "RunState" &&
         typeof d.runId === "string" &&
         typeof d.status === "string"
-      )
+      ) {
         this.runs.set(d.runId, d.status);
+        this.runsAt.set(d.runId, at);
+      }
       if (
         e.event === "RunStarted" &&
         typeof d.runId === "string" &&
         !this.runs.has(d.runId)
-      )
+      ) {
         this.runs.set(d.runId, "starting");
+        this.runsAt.set(d.runId, at);
+      }
       if (e.event === "ActionExecuted") this.lastActionAt = at;
       if (e.event === "UserTakeoverStarted") {
         const inner = (d.data ?? {}) as Record<string, unknown>;
@@ -105,6 +123,15 @@ export class AppWatch {
     for (const status of this.runs.values())
       if (!TERMINAL.has(status)) return true;
     return false;
+  }
+
+  /** The runs not terminal at `now`: their status and how long since they last changed (the RUN_LEFT_OPEN evidence). */
+  openRuns(now = Date.now()): { status: string; silentMs: number }[] {
+    const out: { status: string; silentMs: number }[] = [];
+    for (const [runId, status] of this.runs)
+      if (!TERMINAL.has(status))
+        out.push({ status, silentMs: now - (this.runsAt.get(runId) ?? now) });
+    return out;
   }
 
   /** A person took over at or after `since` (the current prompt's start). */

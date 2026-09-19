@@ -1100,6 +1100,119 @@ export function voiceGate(f: VoiceGateFacts): VoiceGateDecision {
   return { ok: true, idle: { required, seen } };
 }
 
+/* ------------------------------------------------------------ gate wait */
+
+/** Refused polls may add up to this long before the cycle stops (GATE_CAP). */
+export const GATE_CAP_MS = 10 * 60 * 1000;
+/**
+ * One reason held this long without a break is the app stuck, not the
+ * room: a run that never ends, a follow-up window that never closes (a
+ * conversation window is 45 s, renewed only by an exchange), a helper that
+ * stopped listening. Named after the app's own fault, never GATE_CAP.
+ */
+export const GATE_STUCK_MS = 120_000;
+export type GateStop =
+  "GATE_CAP" | "RUN_LEFT_OPEN" | "WINDOW_STUCK" | "NOT_LISTENING";
+export const STUCK_STOP: Partial<Record<VoiceGateReason, GateStop>> = {
+  RUN_OPEN: "RUN_LEFT_OPEN",
+  FOLLOWUP_OPEN: "WINDOW_STUCK",
+  NOT_LISTENING: "NOT_LISTENING",
+};
+/** What each refusal means, in the report's words. */
+export const GATE_REASON_MEANS: Record<VoiceGateReason, string> = {
+  HID_ACTIVE:
+    "a person's input on the Mac (keyboard, mouse or scroll) kept resetting the idle the loop needs",
+  NOT_LISTENING: "the helper was not listening",
+  SPEAKING: "the app was still speaking (echo guard)",
+  FOLLOWUP_OPEN: "the app's follow-up window was open",
+  RUN_OPEN: "a run was still going",
+  BUSY: "the app was still emitting events",
+  NOISE: "the room was above the quiet threshold",
+  VOLUME: "the output volume was off the loop's level",
+};
+
+export interface GateWaitSummary {
+  polls: number;
+  /** Time spent refused, by every reason together: what the cap counts. */
+  refusedMs: number;
+  byReasonMs: Record<string, number>;
+  byReasonPolls: Record<string, number>;
+  /** The reason that cost the most time, if any poll was refused. */
+  on: VoiceGateReason | null;
+  /** The reason held without a break at the end, and since when. */
+  streak: { reason: VoiceGateReason; sinceMs: number } | null;
+}
+
+/**
+ * The account of one gate wait: every refused poll, the time it cost by
+ * reason, and the verdict. Cycle 3 (2026-09-19 09:07) waited ten minutes,
+ * FOLLOWUP_OPEN for the first 45 s and then HID_ACTIVE (a person at the
+ * Mac, the helper's NativeInputIdle reports every few seconds), and
+ * stopped on the cap; but the wait was never logged, so the report said
+ * "gate waited 1 time(s), 0 s in all. Stopped early: GATE_CAP". The cap
+ * counts refused time only, and a reason held GATE_STUCK_MS without a
+ * break names the app's fault instead of the cap.
+ */
+export class GateWait {
+  polls = 0;
+  refusedMs = 0;
+  byReasonMs: Record<string, number> = {};
+  byReasonPolls: Record<string, number> = {};
+  streak: { reason: VoiceGateReason; sinceMs: number } | null = null;
+  private lastAt: number;
+
+  constructor(readonly startedAt: number) {
+    this.lastAt = startedAt;
+  }
+
+  /** A refused poll at `now`: the time since the previous poll is this reason's. */
+  refuse(reason: VoiceGateReason, now: number): void {
+    const spent = Math.max(0, now - this.lastAt);
+    this.lastAt = now;
+    this.polls++;
+    this.refusedMs += spent;
+    this.byReasonMs[reason] = (this.byReasonMs[reason] ?? 0) + spent;
+    this.byReasonPolls[reason] = (this.byReasonPolls[reason] ?? 0) + 1;
+    if (!this.streak || this.streak.reason !== reason)
+      this.streak = { reason, sinceMs: now };
+  }
+
+  get on(): VoiceGateReason | null {
+    let best: VoiceGateReason | null = null;
+    for (const [reason, ms] of Object.entries(this.byReasonMs))
+      if (best === null || ms > (this.byReasonMs[best] ?? 0))
+        best = reason as VoiceGateReason;
+    return best;
+  }
+
+  /** The stop this wait has earned at `now`, if any: the app's fault first, then the cap. */
+  verdict(
+    now: number,
+    o: { capMs?: number; stuckMs?: number } = {},
+  ): GateStop | undefined {
+    const stuck = this.streak ? STUCK_STOP[this.streak.reason] : undefined;
+    if (
+      stuck &&
+      this.streak &&
+      now - this.streak.sinceMs >= (o.stuckMs ?? GATE_STUCK_MS)
+    )
+      return stuck;
+    if (this.refusedMs >= (o.capMs ?? GATE_CAP_MS)) return "GATE_CAP";
+    return undefined;
+  }
+
+  summary(): GateWaitSummary {
+    return {
+      polls: this.polls,
+      refusedMs: this.refusedMs,
+      byReasonMs: { ...this.byReasonMs },
+      byReasonPolls: { ...this.byReasonPolls },
+      on: this.on,
+      streak: this.streak ? { ...this.streak } : null,
+    };
+  }
+}
+
 /** Without a speech sample the room is quiet under this multiple of its floor. */
 export const QUIET_FLOOR_MULTIPLE = 3;
 /** ...and never under this much above it, so a near-silent floor is not a trap. */

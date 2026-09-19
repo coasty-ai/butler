@@ -16,9 +16,14 @@ import {
   strictVoiceClass,
 } from "../src/gym/voice/classify";
 import {
+  GATE_CAP_MS,
+  GATE_REASON_MEANS,
+  GATE_STUCK_MS,
+  GateWait,
   HID_CONFIRM_MS,
   HID_CONFIRM_RUN_MS,
   HidTakeoverTracker,
+  STUCK_STOP,
   checkHolds,
   followupReady,
   gradeTurn,
@@ -35,6 +40,7 @@ import {
   type DiagnosticEvent,
   type TurnGrade,
   type VoiceGateFacts,
+  type VoiceGateReason,
 } from "../src/gym/voice/grade";
 import {
   SETUP_SAID_CHARS,
@@ -1968,6 +1974,141 @@ function passing(over: Partial<TurnGrade> = {}): TurnGrade {
   };
 }
 
+describe("voice gate: the wait's account", () => {
+  it("accounts every refused poll to its reason, counts only refused time toward the cap, and names the dominant reason (cycle 3: ten minutes on a person at the Mac)", () => {
+    // Cycle 3 (2026-09-19 09:07): app-open-notes passed, the follow-up
+    // window stayed open 45 s, then a person used the Mac until the cap,
+    // and the report said "gate waited 1 time(s), 0 s in all".
+    const wait = new GateWait(T0);
+    let now = T0;
+    for (let i = 0; i < 45; i++) wait.refuse("FOLLOWUP_OPEN", (now += 1000));
+    expect(wait.verdict(now)).toBeUndefined();
+    while (wait.refusedMs < GATE_CAP_MS) {
+      wait.refuse("HID_ACTIVE", (now += 1000));
+      if (now - T0 < GATE_CAP_MS) expect(wait.verdict(now)).toBeUndefined();
+    }
+    expect(wait.verdict(now)).toBe("GATE_CAP");
+    const s = wait.summary();
+    expect(s.polls).toBe(600);
+    expect(s.refusedMs).toBe(GATE_CAP_MS);
+    expect(s.byReasonMs).toEqual({
+      FOLLOWUP_OPEN: 45_000,
+      HID_ACTIVE: 555_000,
+    });
+    expect(s.byReasonPolls).toEqual({ FOLLOWUP_OPEN: 45, HID_ACTIVE: 555 });
+    expect(s.on).toBe("HID_ACTIVE");
+    expect(s.streak).toEqual({ reason: "HID_ACTIVE", sinceMs: T0 + 46_000 });
+    // Time before the first poll (reading the facts) is the first reason's;
+    // a poll that comes back at the same instant costs nothing.
+    const quick = new GateWait(T0);
+    quick.refuse("BUSY", T0 + 300);
+    quick.refuse("BUSY", T0 + 300);
+    expect(quick.summary()).toMatchObject({
+      polls: 2,
+      refusedMs: 300,
+      byReasonMs: { BUSY: 300 },
+    });
+    expect(new GateWait(T0).summary()).toMatchObject({
+      polls: 0,
+      refusedMs: 0,
+      on: null,
+      streak: null,
+    });
+    expect(GATE_REASON_MEANS.HID_ACTIVE).toMatch(/person's input/);
+  });
+
+  it("names the app's own fault when one reason holds two minutes without a break, and the cap otherwise", () => {
+    const held = (reason: VoiceGateReason, seconds: number) => {
+      const wait = new GateWait(T0);
+      let now = T0;
+      for (let i = 0; i < seconds; i++) wait.refuse(reason, (now += 1000));
+      return { wait, now };
+    };
+    for (const [reason, stop] of [
+      ["RUN_OPEN", "RUN_LEFT_OPEN"],
+      ["FOLLOWUP_OPEN", "WINDOW_STUCK"],
+      ["NOT_LISTENING", "NOT_LISTENING"],
+    ] as [VoiceGateReason, string][]) {
+      const short = held(reason, 119);
+      expect(short.wait.verdict(short.now), reason).toBeUndefined();
+      const long = held(reason, 121);
+      expect(long.wait.verdict(long.now), reason).toBe(stop);
+    }
+    expect(STUCK_STOP).toEqual({
+      RUN_OPEN: "RUN_LEFT_OPEN",
+      FOLLOWUP_OPEN: "WINDOW_STUCK",
+      NOT_LISTENING: "NOT_LISTENING",
+    });
+    // The room's reasons never read as the app stuck: they run to the cap.
+    for (const reason of [
+      "HID_ACTIVE",
+      "NOISE",
+      "BUSY",
+      "SPEAKING",
+      "VOLUME",
+    ] as VoiceGateReason[]) {
+      const long = held(reason, 300);
+      expect(long.wait.verdict(long.now), reason).toBeUndefined();
+      expect(long.wait.verdict(long.now, { capMs: 300_000 }), reason).toBe(
+        "GATE_CAP",
+      );
+    }
+    // A break restarts the streak: a window that closed for one poll and
+    // reopened is not stuck yet, however long the two halves add up to.
+    const broken = new GateWait(T0);
+    let now = T0;
+    for (let i = 0; i < 100; i++) broken.refuse("FOLLOWUP_OPEN", (now += 1000));
+    broken.refuse("BUSY", (now += 1000));
+    for (let i = 0; i < 100; i++) broken.refuse("FOLLOWUP_OPEN", (now += 1000));
+    expect(broken.verdict(now)).toBeUndefined();
+    expect(broken.summary().streak).toEqual({
+      reason: "FOLLOWUP_OPEN",
+      sinceMs: T0 + 102_000,
+    });
+    // The stuck bound is checked before the cap, and both are injectable.
+    const both = held("RUN_OPEN", 121);
+    expect(both.wait.verdict(both.now, { capMs: 60_000 })).toBe(
+      "RUN_LEFT_OPEN",
+    );
+    expect(both.wait.verdict(both.now, { stuckMs: 200_000 })).toBeUndefined();
+    expect(GATE_STUCK_MS).toBe(120_000);
+    expect(GATE_CAP_MS).toBe(600_000);
+  });
+
+  it("keeps the timestamps the stuck evidence needs: when the window opened and how often, each run's last change, the last wake_status", () => {
+    const w = new AppWatch();
+    w.feed(
+      sorted([
+        voice(1000, "wake_status", { listening: true }),
+        ev(2000, "RunStarted", { runId: RUN }),
+        ev(2500, "RunState", { runId: RUN, status: "capturing" }),
+        voice(3000, "followup_open", { kind: "continuation" }),
+      ]),
+    );
+    expect(w.listeningAt).toBe(T0 + 1000);
+    expect(w.followupOpenedAt).toBe(T0 + 3000);
+    expect(w.followupOpens).toBe(1);
+    expect(w.openRuns(T0 + 10_000)).toEqual([
+      { status: "capturing", silentMs: 7500 },
+    ]);
+    // A conversation window that closes and reopens counts its opens; the
+    // opened-at is the latest open's.
+    w.feed(
+      sorted([
+        voice(4000, "followup_closed", { kind: "continuation" }),
+        voice(4100, "followup_open", { kind: "continuation" }),
+        ev(5000, "RunState", { runId: RUN, status: "completed" }),
+      ]),
+    );
+    expect(w.followupOpen).toBe(true);
+    expect(w.followupOpenedAt).toBe(T0 + 4100);
+    expect(w.followupOpens).toBe(2);
+    expect(w.openRuns(T0 + 10_000)).toEqual([]);
+    w.feed([voice(6000, "followup_closed", { kind: "continuation" })]);
+    expect(w.followupOpenedAt).toBeUndefined();
+  });
+});
+
 describe("voice classify: precedence, owners and ranking", () => {
   it("decides the class in the design's order, first match wins", () => {
     const everything: Partial<TurnGrade> = {
@@ -2206,7 +2347,9 @@ const gate = {
   count: 2,
   totalSeconds: 30,
   byReason: { HID_ACTIVE: 1, BUSY: 1 },
+  byReasonSeconds: { HID_ACTIVE: 20, BUSY: 10 },
   longestSeconds: 20,
+  gaveUp: null,
 };
 
 function record(
@@ -2389,6 +2532,76 @@ describe("voice report: results, lanes and the brief", () => {
     expect(renderReport(results)).toMatch(
       /\| app-new-window-textedit#1 \| misheard \|.*\| pass \+MISHEARD_DONE \|/,
     );
+  });
+
+  it("says which turn the gate gave up on, how long it waited on what, and what the app was stuck on", () => {
+    const gaveUp = {
+      turnId: "app-switch-safari#1",
+      code: "GATE_CAP",
+      waitedSeconds: 600,
+      on: "HID_ACTIVE",
+      byReasonSeconds: { FOLLOWUP_OPEN: 45, HID_ACTIVE: 555 },
+      evidence: null,
+    };
+    const results = buildResults({
+      plan,
+      turns: [record(task("app-open-notes"), [fastStart()], front)],
+      preflight,
+      gate: {
+        count: 1,
+        totalSeconds: 600,
+        byReason: { FOLLOWUP_OPEN: 45, HID_ACTIVE: 555 },
+        byReasonSeconds: { FOLLOWUP_OPEN: 45, HID_ACTIVE: 555 },
+        longestSeconds: 600,
+        gaveUp,
+      },
+      previous: null,
+      finishedAt: at(700_000),
+      stoppedBecause: "GATE_CAP",
+    });
+    expect(results.gate.gaveUp).toEqual(gaveUp);
+    const report = renderReport(results);
+    expect(report).toContain(
+      "Stopped early: GATE_CAP (app-switch-safari#1 waited 600 s: HID_ACTIVE 555 s, FOLLOWUP_OPEN 45 s).",
+    );
+    expect(report).toContain(
+      "Gave up at app-switch-safari#1 with GATE_CAP after 600 s: HID_ACTIVE 555 s, FOLLOWUP_OPEN 45 s; a person's input on the Mac",
+    );
+    expect(report).toMatch(
+      /By reason: .*poll\(s\); HID_ACTIVE 555 s, FOLLOWUP_OPEN 45 s\./,
+    );
+    // The app's own fault carries its evidence: statuses, kinds and milliseconds.
+    const stuck = buildResults({
+      plan,
+      turns: [],
+      preflight,
+      gate: {
+        count: 1,
+        totalSeconds: 121,
+        byReason: { FOLLOWUP_OPEN: 121 },
+        byReasonSeconds: { FOLLOWUP_OPEN: 121 },
+        longestSeconds: 121,
+        gaveUp: {
+          turnId: "ask-time#1",
+          code: "WINDOW_STUCK",
+          waitedSeconds: 121,
+          on: "FOLLOWUP_OPEN",
+          byReasonSeconds: { FOLLOWUP_OPEN: 121 },
+          evidence: { kind: "continuation", openMs: 125_000, opens: 0 },
+        },
+      },
+      previous: null,
+      finishedAt: at(200_000),
+      aborted: { code: "WINDOW_STUCK", turnId: "ask-time#1", at: at(121_000) },
+      stoppedBecause: "WINDOW_STUCK",
+    });
+    const stuckReport = renderReport(stuck);
+    expect(stuckReport).toContain(
+      'Gave up at ask-time#1 with WINDOW_STUCK after 121 s: FOLLOWUP_OPEN 121 s; the app\'s follow-up window was open; evidence {"kind":"continuation","openMs":125000,"opens":0}.',
+    );
+    expect(stuckReport).toContain("Aborted on WINDOW_STUCK at turn ask-time#1");
+    // No wait gave up: the header and the gate line say nothing of it.
+    expect(renderReport(cycleOf([]))).not.toMatch(/Gave up|waited \d+ s:/);
   });
 
   it("records why a setup failed, content-free, and the report says it under Environment", () => {
@@ -2681,6 +2894,21 @@ describe("voice loop: the script", () => {
     // The terminal's own Accessibility is a preflight fact and a refusal.
     expect(source).toMatch(/TERMINAL_ACCESSIBILITY/);
     expect(source).toMatch(/assistive access/);
+    // A gate wait is accounted by the pure GateWait, logged whether it
+    // opened or gave up, the cap and the stuck bound decided there, and the
+    // app's own fault aborts like a run left open after a turn.
+    expect(source).toMatch(/const wait = new GateWait\(started\)/);
+    expect(source).toMatch(/wait\.refuse\(decision\.reason, Date\.now\(\)\)/);
+    expect(source).toMatch(
+      /wait\.verdict\(Date\.now\(\), \{ capMs: GATE_CAP_MS \}\)/,
+    );
+    expect(source).not.toMatch(/const GATE_CAP_MS =/);
+    expect(source).not.toMatch(/Date\.now\(\) - started > GATE_CAP_MS/);
+    expect(source).toMatch(
+      /ledger\(gateLedgerRow\(turnId, gate\)\);\n  if \(gate\.stop\) return gateOutcome\(gate, turnId\);/,
+    );
+    expect(source).toMatch(/\{ abort: gate\.stop, turnId \}/);
+    expect(source).toMatch(/watch\.openRuns\(now\)/);
     // A rehearsal needs the consent flag, takes the lock, and speaks nothing.
     expect(source).toMatch(/rehearse: \{ type: "boolean"/);
     expect(source).toMatch(/REHEARSAL_CODES\.includes\(code\)/);
@@ -2735,6 +2963,9 @@ describe("voice loop: the script", () => {
       "--rehearse",
       "setup talks to apps only after a window exists",
       "pkill -x Calculator",
+      "GATE_CAP",
+      "WINDOW_STUCK",
+      "GateWait",
     ])
       expect(docs, code).toContain(code);
   });

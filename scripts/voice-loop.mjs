@@ -72,6 +72,8 @@ const {
   voiceToken,
 } = await import("../src/gym/voice/suite.ts");
 const {
+  GATE_CAP_MS,
+  GateWait,
   HidTakeoverTracker,
   SKIP,
   gradeTurn,
@@ -159,7 +161,6 @@ const FRONTMOST_SCRIPT =
   'tell application "System Events" to return bundle identifier of first application process whose frontmost is true';
 const POLL_MS = 250;
 const GATE_POLL_MS = 1000;
-const GATE_CAP_MS = 10 * 60 * 1000;
 const STOP_WAIT_MS = 5000;
 const NOISE_MAX_MS = 25_000;
 
@@ -806,21 +807,46 @@ if (values["report-only"]) {
   process.exit(0);
 }
 
+/** Seconds by reason from milliseconds by reason, rounded. */
+const secondsByReason = (byReasonMs) =>
+  Object.fromEntries(
+    Object.entries(byReasonMs ?? {}).map(([reason, ms]) => [
+      reason,
+      Math.round(ms / 1000),
+    ]),
+  );
+
+/** The cycle's gate account: waits that refused at least once, their time by reason, and the wait that gave up, if one did. */
 function gateWaits(rows) {
   const byReason = {};
+  const byReasonMs = {};
   let total = 0;
   let longest = 0;
+  let gaveUp = null;
   for (const row of rows) {
-    total += row.waitedMs;
-    longest = Math.max(longest, row.waitedMs);
+    total += row.waitedMs ?? 0;
+    longest = Math.max(longest, row.waitedMs ?? 0);
     for (const [reason, n] of Object.entries(row.reasons ?? {}))
       byReason[reason] = (byReason[reason] ?? 0) + n;
+    for (const [reason, ms] of Object.entries(row.byReasonMs ?? {}))
+      byReasonMs[reason] = (byReasonMs[reason] ?? 0) + ms;
+    if (row.stop && !gaveUp)
+      gaveUp = {
+        turnId: row.turnId,
+        code: row.stop,
+        waitedSeconds: Math.round((row.waitedMs ?? 0) / 1000),
+        on: row.on ?? null,
+        byReasonSeconds: secondsByReason(row.byReasonMs),
+        evidence: row.evidence ?? null,
+      };
   }
   return {
-    count: rows.filter((r) => r.waitedMs > 0).length,
+    count: rows.filter((r) => Object.keys(r.reasons ?? {}).length > 0).length,
     totalSeconds: Math.round(total / 1000),
     byReason,
+    byReasonSeconds: secondsByReason(byReasonMs),
     longestSeconds: Math.round(longest / 1000),
+    gaveUp,
   };
 }
 
@@ -1132,11 +1158,46 @@ async function gateFacts() {
  */
 async function waitGate(task, { checkVolume = true } = {}) {
   const started = Date.now();
-  const reasons = {};
+  // Every refused poll is accounted to its reason (grade.ts GateWait): the
+  // cap counts refused time only, one reason held two minutes without a
+  // break is the app's own fault (RUN_LEFT_OPEN, WINDOW_STUCK,
+  // NOT_LISTENING), and the row is logged whether the gate opened or gave
+  // up. Cycle 3 (2026-09-19 09:07) waited ten minutes on a person at the
+  // Mac and the report could not say so.
+  const wait = new GateWait(started);
+  const opensAtStart = watch.followupOpens;
   let idleSeen = null;
   let quietRms = null;
+  const row = (extra = {}) => ({
+    waitedMs: Date.now() - started,
+    ...wait.summary(),
+    reasons: wait.byReasonPolls,
+    idleSeen,
+    quietRms,
+    ...extra,
+  });
+  /** What the app was stuck on, for the ledger: statuses, kinds and milliseconds only. */
+  const evidence = (stop, now) => {
+    if (stop === "RUN_LEFT_OPEN") return { runs: watch.openRuns(now) };
+    if (stop === "WINDOW_STUCK")
+      return {
+        kind: watch.followupKind,
+        openMs:
+          watch.followupOpenedAt === undefined
+            ? null
+            : now - watch.followupOpenedAt,
+        opens: watch.followupOpens - opensAtStart,
+      };
+    if (stop === "NOT_LISTENING")
+      return {
+        listening: watch.listening,
+        sinceMs:
+          watch.listeningAt === undefined ? null : now - watch.listeningAt,
+      };
+    return undefined;
+  };
   for (;;) {
-    if (stopRequested) return { stop: "interrupted" };
+    if (stopRequested) return row({ stop: "interrupted" });
     const f = await gateFacts();
     if (checkVolume) {
       const volume = await readVolume();
@@ -1144,15 +1205,15 @@ async function waitGate(task, { checkVolume = true } = {}) {
         f.volume = { level: volume.level, muted: volume.muted, wanted: V };
     }
     if (f.now + defaultTimeoutMs(task) + 30_000 > deadline)
-      return { stop: "TIME_BOX" };
+      return row({ stop: "TIME_BOX" });
     const decision = voiceGate(f);
     idleSeen = decision.idle?.seen ?? idleSeen;
     quietRms = f.quiet?.levels.at(-1) ?? quietRms;
     if (decision.ok) {
       humanSeenAt = undefined;
-      return { waitedMs: Date.now() - started, reasons, idleSeen, quietRms };
+      return row();
     }
-    reasons[decision.reason] = (reasons[decision.reason] ?? 0) + 1;
+    wait.refuse(decision.reason, Date.now());
     if (
       decision.reason === "HID_ACTIVE" &&
       humanSeenAt === undefined &&
@@ -1172,9 +1233,49 @@ async function waitGate(task, { checkVolume = true } = {}) {
       // A previous task or the owner moved it; the loop needs its own level to be heard.
       await setVolume(V, false);
     }
-    if (Date.now() - started > GATE_CAP_MS) return { stop: "GATE_CAP" };
+    const stop = wait.verdict(Date.now(), { capMs: GATE_CAP_MS });
+    if (stop) {
+      const now = Date.now();
+      console.log(
+        `  gate gave up (${stop}) after ${Math.round((now - started) / 1000)} s: ${Object.entries(
+          wait.byReasonMs,
+        )
+          .map(([reason, ms]) => `${reason} ${Math.round(ms / 1000)} s`)
+          .join(", ")}`,
+      );
+      return row({ stop, evidence: evidence(stop, now) ?? null });
+    }
     await sleep(GATE_POLL_MS);
   }
+}
+
+/** The ledger's gate row: the wait's account, and the stop with its evidence when it gave up. */
+function gateLedgerRow(turnId, gate, phase) {
+  return {
+    kind: "gate",
+    turnId,
+    ...(phase ? { phase } : {}),
+    waitedMs: gate.waitedMs,
+    polls: gate.polls,
+    refusedMs: gate.refusedMs,
+    reasons: gate.reasons,
+    byReasonMs: gate.byReasonMs,
+    ...(gate.stop
+      ? { stop: gate.stop, on: gate.on, evidence: gate.evidence ?? null }
+      : {}),
+  };
+}
+
+/**
+ * A gate that gave up: the cap, the time box and Ctrl-C stop the cycle in
+ * order; the app's own fault (a run left open, a window that never closed,
+ * a helper that stopped listening) aborts it with its own code and the
+ * evidence, as a run left open after a turn does, and nothing more is said.
+ */
+function gateOutcome(gate, turnId) {
+  return ["GATE_CAP", "TIME_BOX", "interrupted"].includes(gate.stop)
+    ? { stop: gate.stop }
+    : { abort: gate.stop, turnId };
 }
 
 /**
@@ -1306,15 +1407,12 @@ async function runTask(task, attempt) {
   let setupFailure = null;
   let setupStderr = null;
 
+  // The wait is logged whether the gate opened or gave up, so the report
+  // says what it waited on and for how long either way.
   const gate = await waitGate(task);
-  if (gate.stop) return { stop: gate.stop };
   gateRows.push({ turnId, ...gate });
-  ledger({
-    kind: "gate",
-    turnId,
-    waitedMs: gate.waitedMs,
-    reasons: gate.reasons,
-  });
+  ledger(gateLedgerRow(turnId, gate));
+  if (gate.stop) return gateOutcome(gate, turnId);
 
   // Setup and cleanup are paired in try/finally: whatever ends the task, a
   // crash included, its window is closed and the speakers are put back.
@@ -1337,7 +1435,11 @@ async function runTask(task, attempt) {
     }
     if (!context.envSubcode) {
       const again = await waitGate(task, { checkVolume: false });
-      if (again.stop) return { stop: again.stop };
+      if (again.polls || again.stop) {
+        gateRows.push({ turnId, phase: "after-setup", ...again });
+        ledger(gateLedgerRow(turnId, again, "after-setup"));
+      }
+      if (again.stop) return gateOutcome(again, turnId);
     }
 
     if (!context.envSubcode) {
