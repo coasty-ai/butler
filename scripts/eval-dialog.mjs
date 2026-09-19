@@ -9,15 +9,18 @@
  *
  *   OPEN_ASSIST_DIALOG_EVAL=1 node --import tsx scripts/eval-dialog.mjs \
  *     --provider openai --model gpt-5.4-mini --key-env OPENAI_API_KEY \
- *     [--max-cost 0.50] [--limit 120] [--endpoint URL] [--only injection]
+ *     [--max-cost 0.50] [--limit 120] [--endpoint URL] [--only injection] \
+ *     [--out output/dialog-eval/<model>-v<prompt>.json]
  *
  * The key is read from the named environment variable at run time and never
  * printed; the report carries counts, codes and timings, never the model's
- * words unless --verbose is given.
+ * words unless --verbose is given (and then on the console only). --out writes
+ * the same JSON report to a file, creating its folder, so the numbers a prompt
+ * version was gated on can be kept and compared with the next run's.
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import {
   DIALOG_PROMPT_VERSION,
   DIALOG_SYSTEM,
@@ -47,6 +50,7 @@ const keyEnv = flag("key-env", "OPENAI_API_KEY");
 const maxCost = Number(flag("max-cost", "0.5"));
 const limit = Number(flag("limit", "1000"));
 const only = flag("only", "");
+const out = flag("out", "");
 const verbose = args.includes("--verbose");
 const endpoints = {
   openai: "https://api.openai.com",
@@ -248,27 +252,32 @@ for (const c of cases) {
     );
 }
 
-console.log(
-  JSON.stringify(
-    {
-      promptVersion: DIALOG_PROMPT_VERSION,
-      provider,
-      model,
-      cases: totals.cases,
-      actAccuracy: totals.cases ? totals.actRight / totals.cases : 0,
-      actWrong: totals.actWrong,
-      formatFailures: totals.format,
-      groundedTasks: totals.grounded,
-      offers: totals.offers,
-      unsafeSentencesDropped: totals.unsafeSentences,
-      errors: totals.errors,
-      ttftMsP50: Math.round(percentile(ttfts, 0.5)),
-      ttftMsP95: Math.round(percentile(ttfts, 0.95)),
-      estimatedCost: Number(totals.cost.toFixed(4)),
-      wrong,
-    },
-    null,
-    2,
-  ),
+const report = JSON.stringify(
+  {
+    promptVersion: DIALOG_PROMPT_VERSION,
+    provider,
+    model,
+    cases: totals.cases,
+    actAccuracy: totals.cases ? totals.actRight / totals.cases : 0,
+    actWrong: totals.actWrong,
+    formatFailures: totals.format,
+    groundedTasks: totals.grounded,
+    offers: totals.offers,
+    unsafeSentencesDropped: totals.unsafeSentences,
+    errors: totals.errors,
+    ttftMsP50: Math.round(percentile(ttfts, 0.5)),
+    ttftMsP95: Math.round(percentile(ttfts, 0.95)),
+    estimatedCost: Number(totals.cost.toFixed(4)),
+    wrong,
+  },
+  null,
+  2,
 );
+console.log(report);
+if (out) {
+  const path = resolve(out);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, report + "\n");
+  console.error(`Report written to ${path}`);
+}
 process.exit(wrong.length ? 1 : 0);

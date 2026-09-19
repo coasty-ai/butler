@@ -231,9 +231,10 @@ export const foregroundHandoff = (app: string) =>
   `Click into ${app} and I’ll continue.`;
 /**
  * The user's hands are in the bound window (design §3). The hold ends on its
- * own once they have left it: the application no longer in front, or their
- * last input outside the window (src/core/resume.ts reads both from the
- * helper's idle report), and the words say exactly that.
+ * own once they have left it: the application no longer in front and their
+ * last press, scroll or key somewhere else (src/core/resume.ts reads both from
+ * the helper's idle report), and the words say exactly that. Settings ›
+ * Working and docs/VOICE_PRODUCT.md quote this sentence as it stands.
  */
 export const targetHold = (app: string) =>
   `Paused — you’re in ${app}. I’ll continue when you switch away.`;

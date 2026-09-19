@@ -7,8 +7,10 @@ export interface InputIdleReport {
   kinds: string[];
   /**
    * With a window bound (design §3): whether its application is frontmost
-   * now, and whether the episode's last input was aimed at the window. Two
-   * flags, no coordinates; absent from a helper that knows no targets.
+   * now, and whether the user's hands are in the window: their last press,
+   * drag or wheel landed on it, or their last input was a key and the
+   * application still has the keyboard (a hover moves neither). Two flags, no
+   * coordinates; absent from a helper that knows no targets.
    */
   target?: { frontmost: boolean; lastInside: boolean };
 }
@@ -19,10 +21,13 @@ export interface InputIdleReport {
  * when the user only moved the pointer or scrolled, and after three seconds
  * when they clicked or typed. A hold in a bound window needs the same
  * stillness and the hands gone from the window: its application no longer in
- * front, or the last input landed outside it; a report that cannot say keeps
- * it held. A "can't find the control" hand-off continues a second after the
- * user clicked. Nothing else may have happened since the hold (voice,
- * approvals, a new pause), and the app must not be listening.
+ * front and the last press, scroll or key somewhere else. Either alone is not
+ * leaving: a scroll in the window while another application is in front keeps
+ * the hands in it, and a click that brought the application forward keeps the
+ * user in it. A report that cannot say keeps it held. A "can't find the
+ * control" hand-off continues a second after the user clicked. Nothing else
+ * may have happened since the hold (voice, approvals, a new pause), and the
+ * app must not be listening.
  */
 export function shouldAutoResume(state: {
   status: string | undefined;
@@ -48,7 +53,8 @@ export function shouldAutoResume(state: {
     message !== undefined &&
     isTargetHold(message) &&
     report.target &&
-    (!report.target.frontmost || !report.target.lastInside)
+    !report.target.frontmost &&
+    !report.target.lastInside
   )
     return "target_hold";
   if (

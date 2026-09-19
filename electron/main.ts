@@ -1717,8 +1717,8 @@ function getNative() {
  * its own once they let go: after about a second of stillness for pointer
  * movement or scrolling, after three seconds when they clicked or typed. A
  * hold in a bound window continues once the same stillness finds their hands
- * gone from it: the application no longer in front, or the last input outside
- * the window, as the helper's report says (design §3). A "can't find the
+ * gone from it: the application no longer in front and the last press, scroll
+ * or key somewhere else, as the helper's report says (design §3). A "can't find the
  * control" hand-off continues a second after the user clicks. Anything else
  * that happened in between (voice, approvals, stop, a new pause) keeps the
  * run held.

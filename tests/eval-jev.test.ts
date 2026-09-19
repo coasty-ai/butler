@@ -167,7 +167,7 @@ describe("the dialog-act question", () => {
     // The start line keeps its screen rule before the TASK sentence: a pointer
     // at what the user sees defines the act (prompt v5), and Jev is told so.
     expect(d.start).toBe(
-      'the user wants something done on the Mac, or information you would have to go and look up. You see the screen only once a task runs, so words that name their object by pointing ("click that", "send this", "delete them", "open the attachment", "read that to me") with nothing in turns they could mean are about what is on the screen in front of the user: start, and the task will find it there. Never ask which one; starting is how you look.',
+      'the user wants something done on the Mac, or information you would have to go and look up. You see the screen only once a task runs, so words that name their object by pointing ("click that", "send this", "close those", "open the attachment", "read that to me") with nothing in turns they could mean are about what is on the screen in front of the user: start, and the task will find it there. Never ask which one; starting is how you look.',
     );
     // The answer line keeps its calendar rule: it defines the act.
     expect(d.answer).toMatch(
@@ -245,10 +245,62 @@ describe("the dialog-act question", () => {
     ).toThrow(/information, never/);
   });
 
-  it("never carries a case's words, in either variant", () => {
-    for (const variant of ["original", "aligned"] as const) {
-      const text = JSON.stringify(dialogActQuestion(variant));
-      for (const c of dialogCases) expect(text).not.toContain(c.user);
+  it("never carries a case's words, in either variant or anywhere in the prompt, the worked examples included", () => {
+    // Whole words, blind to case, punctuation and the shape of a quote, in
+    // both directions: "sure go for it" carries the prompt's "go for it" and
+    // "delete them all" its "delete them" as surely as an exact copy would,
+    // and a case that is a piece of an example ("how's it going" of "how's it
+    // going?") is the example.
+    const normalise = (text: string) =>
+      text
+        .toLowerCase()
+        .replace(/[’‘]/g, "'")
+        .replace(/[^a-z0-9' ]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const carries = (text: string, phrase: string) =>
+      ` ${normalise(text)} `.includes(` ${normalise(phrase)} `);
+    const words = (text: string) => normalise(text).split(" ").length;
+    // Every quoted phrase of the prompt that is not a JSON key: the act
+    // lines' examples, the rules' words and the worked examples' user strings.
+    const phrases = [
+      ...new Set(
+        [...DIALOG_SYSTEM.matchAll(/"([^"\n:]+)"(?!:)/g)]
+          .map((m) => m[1])
+          .filter((p) => normalise(p)),
+      ),
+    ];
+    expect(phrases).toEqual(
+      expect.arrayContaining([
+        "click that",
+        "open the attachment",
+        "wait a minute",
+        "continue",
+        "put on some quiet jazz in Spotify",
+        "lovely, thank you",
+      ]),
+    );
+    expect(phrases).not.toContain("status");
+    expect(phrases.filter((p) => words(p) > 1).length).toBeGreaterThan(20);
+    for (const c of dialogCases) {
+      const user = normalise(c.user);
+      for (const phrase of phrases) {
+        const pair = `${c.id}: ${JSON.stringify(c.user)} / ${JSON.stringify(phrase)}`;
+        if (words(phrase) > 1) {
+          expect(carries(c.user, phrase), pair).toBe(false);
+          expect(carries(phrase, c.user), pair).toBe(false);
+        } else expect(normalise(phrase) === user, pair).toBe(false);
+      }
+      // Nor anywhere else in the prompt (a TASK line, a rule's own words) for
+      // a case of more than one word; a one-word case ("yes", "status?") is
+      // checked against the quoted phrases above and the exact text below.
+      if (words(c.user) > 1)
+        expect(carries(DIALOG_SYSTEM, c.user), c.id).toBe(false);
+      for (const variant of ["original", "aligned"] as const) {
+        const text = JSON.stringify(dialogActQuestion(variant));
+        expect(text, c.id).not.toContain(c.user);
+        if (words(c.user) > 1) expect(carries(text, c.user), c.id).toBe(false);
+      }
     }
   });
 });
@@ -263,6 +315,11 @@ describe("the state Jev is shown", () => {
       res.statusCode = 404;
       res.end("{}");
     });
+    // --out keeps the run's JSON, in a folder it creates, so the numbers a
+    // prompt version was gated on are reproducible; the file is the stdout
+    // report, byte for byte.
+    const dir = mkdtempSync(join(tmpdir(), "dialog-eval-"));
+    const out = join(dir, "kept", "fake-local.json");
     try {
       const run = await runScript(
         "scripts/eval-dialog.mjs",
@@ -273,13 +330,18 @@ describe("the state Jev is shown", () => {
           "fake-local",
           "--endpoint",
           ollama.url,
+          "--out",
+          out,
         ],
         { OPEN_ASSIST_DIALOG_EVAL: "1" },
       );
       expect(run.code, run.err).toBe(0);
       expect(JSON.parse(run.out)).toMatchObject({ cases: 229, errors: 229 });
+      expect(readFileSync(out, "utf8")).toBe(run.out);
+      expect(run.err).toContain(`Report written to ${out}`);
     } finally {
       await ollama.close();
+      rmSync(dir, { recursive: true, force: true });
     }
     expect(dialogCases).toHaveLength(229);
     expect(seen).toHaveLength(dialogCases.length);

@@ -263,19 +263,32 @@ func staleRisk(covered: Bool, appClass: TargetAppClass, webArea: Bool) -> Bool {
 func pointerInsideTarget(_ location: CGPoint, rects: [CGRect]) -> Bool { rects.contains { $0.contains(location) } }
 
 /**
- Whether one unmarked event of the user's own was aimed at the bound window
- (design §3): a pointer event, hovering included, over the part of it no other
- window covers, or a key while the target application is frontmost. Read for
- every event, going or held, so the resume rule knows where the hands went
- last; whether it is also a takeover is takeoverScope's question.
+ Where one unmarked event of the user's own put their hands (design §3), read
+ for every event, going or held, so the resume rule knows where they went last:
+ a press, drag or wheel lands on the part of the bound window no other window
+ covers or elsewhere; a key lands wherever the keyboard focus is, which is a
+ fact about the front at the moment the question is asked, not about the key.
+ A hover, a release or a modifier says nothing about where the hands are, so
+ it never moves the record: the pointer resting over the window is not working
+ in it, and the pointer drifting off it is not leaving.
+ */
+func handsPlacement(type: CGEventType, location: CGPoint, uncovered: [CGRect]) -> HandsPlacement? {
+    switch type {
+    case .keyDown: return .key
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel:
+        return pointerInsideTarget(location, rects: uncovered) ? .pointerInside : .pointerOutside
+    default: return nil
+    }
+}
+/**
+ Whether one unmarked event was aimed at the bound window: a press, drag or
+ wheel over the part no other window covers, or a key while the target
+ application is frontmost. The same question the idle report asks of the last
+ counted input (handsInside), asked here of one event as it arrives; whether
+ it is also a takeover is takeoverScope's question.
  */
 func inputInsideTarget(type: CGEventType, location: CGPoint, uncovered: [CGRect], targetFrontmost: Bool) -> Bool {
-    switch type {
-    case .keyDown: return targetFrontmost
-    case .mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel:
-        return pointerInsideTarget(location, rects: uncovered)
-    default: return false
-    }
+    handsInside(handsPlacement(type: type, location: location, uncovered: uncovered), targetFrontmost: targetFrontmost)
 }
 
 enum TakeoverScope: String { case screen, target }

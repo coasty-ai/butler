@@ -150,12 +150,99 @@ describe("endpoint-report", () => {
     writeFileSync(file, stream + "\n");
   });
 
-  it("prints --help and refuses a missing file", () => {
+  it("prints --help and refuses a missing file or a malformed window", () => {
     expect(run("--help").status).toBe(0);
     expect(run("--help").stdout).toContain("Usage");
+    expect(run("--help").stdout).toContain("--exclude <fromISO>..<toISO>");
     const missing = run(join(root, "no-such-stream.jsonl"));
     expect(missing.status).toBe(2);
     expect(missing.stderr).toContain("No such file");
+    for (const bad of [
+      "2026-09-19T10:00:15Z",
+      "2026-09-19T10:00:30Z..2026-09-19T10:00:15Z",
+      "yesterday..2026-09-19T10:00:30Z",
+      "2026-09-19T10:00:15Z..2026-09-19T10:00:30Z..2026-09-19T10:00:45Z",
+    ]) {
+      const result = run("--exclude", bad, file);
+      expect(result.status, bad).toBe(2);
+      expect(result.stderr).toContain("Bad --exclude window");
+    }
+  });
+
+  it("leaves excluded windows out of the owner's figures and prints the split beside all turns", () => {
+    // Turn B (20 s) is inside the window; turns A, C and D are not.
+    const window = "2026-09-19T10:00:15.000Z..2026-09-19T10:00:30.000Z";
+    const result = run("--json", "--exclude", window, file);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain(SENTINEL);
+    const report = JSON.parse(result.stdout);
+    expect(report.summary.measured).toBe(2);
+    expect(report.summary.cuts["800"]).toMatchObject({
+      reached: 2,
+      laterChange: 1,
+    });
+    expect(report.summary.excluded).toEqual({
+      windows: [window],
+      turns: 1,
+      measured: 1,
+    });
+    expect(report.summary.owner.measured).toBe(1);
+    expect(report.summary.owner.finalSameLengthAsLastText).toBe(1);
+    expect(report.summary.owner.cuts["800"]).toMatchObject({
+      reached: 1,
+      laterChange: 0,
+      lengthDiffers: 0,
+    });
+    expect(report.summary.owner.cuts["800"].savingMs).toMatchObject({
+      n: 1,
+      p50: 1250,
+    });
+    expect(report.summary.owner.stages.lastTextToEndpoint).toMatchObject({
+      n: 1,
+      p50: 2050,
+    });
+    expect(report.turns.map((t: any) => t.excluded)).toEqual([
+      undefined,
+      true,
+      undefined,
+      undefined,
+    ]);
+    // Two windows, both repeatable; the second takes turn A as well.
+    const two = JSON.parse(
+      run(
+        "--json",
+        "--exclude",
+        window,
+        "--exclude",
+        "2026-09-19T09:59:00Z..2026-09-19T10:00:01Z",
+        file,
+      ).stdout,
+    );
+    expect(two.summary.excluded.turns).toBe(2);
+    expect(two.summary.owner.measured).toBe(0);
+    expect(two.summary.owner.cuts["800"].reached).toBe(0);
+    // Without a window the summary carries no split, as before.
+    const plain = JSON.parse(run("--json", file).stdout);
+    expect(plain.summary.excluded).toBeUndefined();
+    expect(plain.summary.owner).toBeUndefined();
+    expect(plain.turns[1].excluded).toBeUndefined();
+
+    const text = run("--exclude", window, file);
+    expect(text.status).toBe(0);
+    expect(text.stdout).not.toContain(SENTINEL);
+    expect(text.stdout).toContain(
+      "2 hands-free with text and an endpoint, 1 of them the owner's (outside 1 excluded window(s), 1 turns inside)",
+    );
+    expect(text.stdout).toContain("#2 10:00:20 wake_detected (excluded)");
+    expect(text.stdout).toContain(", all 2 turns:");
+    expect(text.stdout).toContain(
+      "Earlier cuts, the owner's 1 turns (outside the excluded windows):",
+    );
+    expect(text.stdout).toContain("final same length as last text: 1 of 1;");
+    const ownerTable = text.stdout.slice(
+      text.stdout.indexOf("the owner's 1 turns"),
+    );
+    expect(ownerTable).toContain("800 ms   1        0 (0%)");
   });
 
   it("measures each turn's wait and what a 0.8 s cut would have done, without the text", () => {

@@ -1330,12 +1330,13 @@ func releaseHeldInputAndExit(signal terminating: Int32? = nil) -> Never {
     if let terminating = terminating { signal(terminating,SIG_DFL);kill(getpid(),terminating) }
     _exit(0)
 }
-// Notes one input event of the user's own and whether it was aimed at the
-// bound window; cheap and lock-protected, safe on the event tap path.
-func recordManualInput(_ kind: ManualInputKind?, inTarget: Bool = false) {
+// Notes one input event of the user's own and, for a press, drag, wheel or
+// key, where it put their hands relative to the bound window (a hover moves
+// nothing); cheap and lock-protected, safe on the event tap path.
+func recordManualInput(_ kind: ManualInputKind?, placement: HandsPlacement? = nil) {
     guard let kind = kind else { return }
     let now = ProcessInfo.processInfo.systemUptime
-    idleLock.lock(); manualInputEpisode.observe(kind: kind, at: now, inTarget: inTarget); lastManualInputAt = now; idleLock.unlock()
+    idleLock.lock(); manualInputEpisode.observe(kind: kind, at: now, placement: placement); lastManualInputAt = now; idleLock.unlock()
 }
 // Whether something holds the display awake (conferencing apps sharing the
 // screen, video players, browsers playing media, Keynote, caffeinate). Idle
@@ -1450,8 +1451,9 @@ func startIdleReporting() {
     timer.schedule(deadline: .now() + .milliseconds(150), repeating: .milliseconds(150), leeway: .milliseconds(30))
     timer.setEventHandler {
         // With a target bound the report says whether that application is in
-        // front now, so a hold in its window can end when the user leaves it
-        // (design §3). Read before idleLock: the two locks are never nested.
+        // front now and, read against that, whether the last counted input left
+        // the hands in its window, so a hold there can end when the user leaves
+        // it (design §3). Read before idleLock: the two locks are never nested.
         let frontmost = withState { targetBinding }.map { NSWorkspace.shared.frontmostApplication?.processIdentifier == $0.pid }
         idleLock.lock(); let reports = manualInputEpisode.tick(now: ProcessInfo.processInfo.systemUptime, targetFrontmost: frontmost); idleLock.unlock()
         for report in reports { emit(report.event) }
@@ -1502,8 +1504,10 @@ func installTap() -> Bool {
         // Where the input landed relative to a bound window, read once for the
         // episode (the resume rule) and for the scope of a takeover (design §3).
         let aimed = userInputFacts(type:type, location:event.location)
-        // Already stopped: no takeover to report, so skip per-event app lookups,
-        // but note the input so main learns when the user lets go and where.
+        // Already stopped: no takeover to report (so the facts above skipped
+        // the frontmost lookup a key otherwise costs), but note the input and
+        // where it put the hands, so main learns when the user lets go and
+        // whether they have left the window.
         if isStopped() {
             if escape {
                 let now = ProcessInfo.processInfo.systemUptime
@@ -1513,7 +1517,7 @@ func installTap() -> Bool {
             // Our own Command-Space re-posted by Siri is not the user's input;
             // checked by its deadline alone, without the app lookup.
             let echoed = type == .keyDown && withState { forwardedSpotlightEvent(type:type,keyCode:event.getIntegerValueField(.keyboardEventKeycode),flags:event.flags,systemSiri:true,now:ProcessInfo.processInfo.systemUptime,deadline:forwardedSpotlightDeadline) }
-            if !echoed {recordManualInput(manualInputKind(type:type, marked:marked), inTarget:aimed.inside)}
+            if !echoed {recordManualInput(manualInputKind(type:type, marked:marked), placement:aimed.placement)}
             return Unmanaged.passUnretained(event)
         }
         let source = NSRunningApplication(processIdentifier:pid_t(event.getIntegerValueField(.eventSourceUnixProcessID)))
@@ -1523,7 +1527,7 @@ func installTap() -> Bool {
         if forwarded {forwardedSpotlightDeadline = 0}
         stateLock.unlock()
         if forwarded {emit(["event":"input_forwarded","source":"spotlight"]);return Unmanaged.passUnretained(event)}
-        recordManualInput(manualInputKind(type:type, marked:marked), inTarget:aimed.inside)
+        recordManualInput(manualInputKind(type:type, marked:marked), placement:aimed.placement)
         if escape {latch(true);emit(["event":"emergency_stop"])}
         // The user's own hand ends a spoken scroll before the takeover is reported.
         // With a target bound, only input aimed at that window is a takeover (design §3).
@@ -2563,16 +2567,21 @@ func targetActivated(_ notification: Notification) {
     }
 }
 // What the tap knows about one unmarked event and the bound window: whether a
-// target is bound, whether its announced second in front is under way, and
-// whether the input was aimed at the window, from the hit test against the
-// cached uncovered rectangles and one frontmost compare for a key. No
-// accessibility call here, so a hung target cannot stall the tap; nothing
-// bound reads as nothing aimed.
-func userInputFacts(type: CGEventType, location: CGPoint) -> (bound: Bool, handoff: Bool, inside: Bool) {
+// target is bound, whether its announced second in front is under way, where
+// the input put the user's hands (recorded for the resume rule, going or held;
+// a hover is nil), and whether it was aimed at the window (the scope of a
+// takeover), from the hit test against the cached uncovered rectangles and,
+// for a key while the run is going, one frontmost compare. A held run has no
+// takeover to scope, so a key then costs no lookup: its place is read against
+// the front when the idle report is written. No accessibility call here, so a
+// hung target cannot stall the tap; nothing bound reads as nothing aimed, with
+// the hands recorded wherever they are.
+func userInputFacts(type: CGEventType, location: CGPoint) -> (bound: Bool, handoff: Bool, inside: Bool, placement: HandsPlacement?) {
     let (bound, handoff, uncovered) = withState { (targetBinding, targetHandoff, targetUncovered) }
-    guard let bound else { return (false, false, false) }
-    let frontmost = type == .keyDown && NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid
-    return (true, handoff, inputInsideTarget(type: type, location: location, uncovered: uncovered, targetFrontmost: frontmost))
+    let placement = handsPlacement(type: type, location: location, uncovered: uncovered)
+    guard let bound else { return (false, false, false, placement) }
+    let frontmost = type == .keyDown && !isStopped() && NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid
+    return (true, handoff, handsInside(placement, targetFrontmost: frontmost), placement)
 }
 
 // The bound window's tree, walked as the frontmost window's is. Only a focused

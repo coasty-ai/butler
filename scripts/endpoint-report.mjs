@@ -4,6 +4,12 @@
 //   node scripts/endpoint-report.mjs
 //   node scripts/endpoint-report.mjs --turns 40 .data/diagnostics/current.jsonl.1 .data/diagnostics/current.jsonl
 //   node scripts/endpoint-report.mjs --json output/voice/<cycle>/diagnostics/current.jsonl
+//   node scripts/endpoint-report.mjs --turns 200 --exclude 2026-09-19T01:00:00Z..2026-09-19T03:30:00Z .data/diagnostics/current.jsonl
+//
+// --exclude <fromISO>..<toISO> (repeatable) names a window of synthetic turns
+// (a voice-loop cycle, a trial with the synthetic voice) whose activations fall
+// inside it: those turns are marked and left out of the owner's figures, and
+// the report prints the cut table twice, for all turns and for the owner's.
 //
 // Read-only: it never calls a model, never touches the desktop and never
 // writes to the log. Content-free: of a VoiceEvent row it reads the phase, the
@@ -39,20 +45,43 @@ const { values, positionals } = parseArgs({
   options: {
     turns: { type: "string", default: "20" },
     json: { type: "boolean", default: false },
+    exclude: { type: "string", multiple: true, default: [] },
     help: { type: "boolean", default: false },
   },
 });
 
 if (values.help) {
   console.log(
-    `Usage: node scripts/endpoint-report.mjs [--turns N] [--json] [file...]
+    `Usage: node scripts/endpoint-report.mjs [--turns N] [--json] [--exclude <fromISO>..<toISO>]... [file...]
 
   Defaults to the last 20 turns in .data/diagnostics/current.jsonl. Rotated logs
   (current.jsonl.1 and so on) and a voice cycle's diagnostics/current.jsonl can
-  be passed as extra files, oldest first.`,
+  be passed as extra files, oldest first. --exclude marks the turns activated
+  inside a window (a synthetic trial, a voice-loop cycle) and reports the
+  owner's turns, outside every window, beside all of them.`,
   );
   process.exit(0);
 }
+
+/** Windows of synthetic turns, [from, to) in epoch ms, from --exclude. */
+const excluded = values.exclude.map((spec) => {
+  const [from, to, ...rest] = spec.split("..");
+  const window = { from: Date.parse(from), to: Date.parse(to) };
+  if (
+    rest.length ||
+    !Number.isFinite(window.from) ||
+    !Number.isFinite(window.to) ||
+    window.from >= window.to
+  ) {
+    console.error(
+      `Bad --exclude window: ${spec}; expected <fromISO>..<toISO> with from before to.`,
+    );
+    process.exit(2);
+  }
+  return window;
+});
+const inExcludedWindow = (at) =>
+  excluded.some((w) => at >= w.from && at < w.to);
 
 const files = positionals.length
   ? positionals
@@ -182,6 +211,7 @@ for (const row of rows) {
     turn.speech ??= row.at;
 }
 if (open) turns.push(open);
+for (const turn of turns) turn.excluded = inExcludedWindow(turn.at);
 
 /**
  * When a decider waiting `cut` ms of unchanged text would have ended the turn:
@@ -238,7 +268,10 @@ const defined = (list) => list.filter((v) => v !== undefined);
 
 const recent = turns.slice(-Math.max(1, Number(values.turns) || 20));
 const measured = recent.filter(handsFree);
-const stages = {
+/** The owner's own turns: measured and outside every excluded window. */
+const owned = measured.filter((t) => !t.excluded);
+/** The stage timings over a set of measured turns. */
+const stageTable = (measured) => ({
   activationToFirstText: stats(measured.map((t) => t.changes[0].at - t.at)),
   firstToLastText: stats(
     measured.map((t) => t.changes.at(-1).at - t.changes[0].at),
@@ -270,26 +303,57 @@ const stages = {
     defined(measured.map((t) => t.speech && t.speech - t.outcome.at)),
   ),
   activationToOutcome: stats(measured.map((t) => t.outcome.at - t.at)),
-};
+});
+const stages = stageTable(measured);
 const tally = (list, key) => {
   const out = {};
   for (const item of list)
     out[key(item) ?? "unknown"] = (out[key(item) ?? "unknown"] ?? 0) + 1;
   return out;
 };
-const cuts = {};
-for (const cut of CUTS) {
-  const found = measured.map((t) => earlierCut(t, cut)).filter(Boolean);
-  const same = found.filter((c) => !c.later);
-  cuts[cut] = {
-    reached: found.length,
-    laterChange: found.filter((c) => c.later).length,
-    lengthDiffers: found.filter((c) => c.lengthDiffers === true).length,
-    lengthUnknown: found.filter((c) => c.lengthDiffers === undefined).length,
-    savingMs: stats(found.map((c) => c.savingMs)),
-    savingWhenSameMs: stats(same.map((c) => c.savingMs)),
-  };
-}
+/** What each cut would have done over a set of measured turns. */
+const cutTable = (measured) => {
+  const cuts = {};
+  for (const cut of CUTS) {
+    const found = measured.map((t) => earlierCut(t, cut)).filter(Boolean);
+    const same = found.filter((c) => !c.later);
+    cuts[cut] = {
+      reached: found.length,
+      laterChange: found.filter((c) => c.later).length,
+      lengthDiffers: found.filter((c) => c.lengthDiffers === true).length,
+      lengthUnknown: found.filter((c) => c.lengthDiffers === undefined).length,
+      savingMs: stats(found.map((c) => c.savingMs)),
+      savingWhenSameMs: stats(same.map((c) => c.savingMs)),
+    };
+  }
+  return cuts;
+};
+const cuts = cutTable(measured);
+const sameLength = (measured) =>
+  measured.filter(
+    (t) =>
+      t.outcome.length !== undefined &&
+      t.outcome.length === t.changes.at(-1).length,
+  ).length;
+/** The owner/all split, present only when a window was excluded. */
+const split = excluded.length
+  ? {
+      excluded: {
+        windows: excluded.map(
+          (w) =>
+            `${new Date(w.from).toISOString()}..${new Date(w.to).toISOString()}`,
+        ),
+        turns: recent.filter((t) => t.excluded).length,
+        measured: measured.length - owned.length,
+      },
+      owner: {
+        measured: owned.length,
+        finalSameLengthAsLastText: sameLength(owned),
+        stages: stageTable(owned),
+        cuts: cutTable(owned),
+      },
+    }
+  : {};
 const summary = {
   files,
   turns: turns.length,
@@ -307,13 +371,10 @@ const summary = {
   completeness: tally(measured, (t) => t.endpoint.completeness),
   patience: tally(measured, (t) => t.endpoint.patience),
   changesPerTurn: stats(measured.map((t) => t.changes.length)),
-  finalSameLengthAsLastText: measured.filter(
-    (t) =>
-      t.outcome.length !== undefined &&
-      t.outcome.length === t.changes.at(-1).length,
-  ).length,
+  finalSameLengthAsLastText: sameLength(measured),
   stages,
   cuts,
+  ...split,
 };
 
 if (values.json) {
@@ -321,6 +382,7 @@ if (values.json) {
     at: new Date(t.at).toISOString(),
     activation: t.activation,
     kind: t.kind,
+    excluded: t.excluded || undefined,
     changes: t.changes.length,
     speakingMs: t.changes.length
       ? t.changes.at(-1).at - t.changes[0].at
@@ -363,7 +425,11 @@ const list = (tallied) =>
     .join(", ") || "none";
 
 console.log(
-  `Turns: ${turns.length} in ${files.length} file(s); showing the last ${recent.length}, ${measured.length} hands-free with text and an endpoint.`,
+  `Turns: ${turns.length} in ${files.length} file(s); showing the last ${recent.length}, ${measured.length} hands-free with text and an endpoint${
+    excluded.length
+      ? `, ${owned.length} of them the owner's (outside ${excluded.length} excluded window(s), ${split.excluded.turns} turns inside)`
+      : ""
+  }.`,
 );
 console.log(
   `Activations: ${list(summary.activations)}. Outcomes: ${list(summary.outcomes)}.`,
@@ -376,7 +442,7 @@ console.log(
 );
 console.log();
 for (const [index, t] of recent.entries()) {
-  const head = `#${index + 1} ${new Date(t.at).toISOString().slice(11, 19)} ${t.activation}${t.kind ? `:${t.kind}` : ""}`;
+  const head = `#${index + 1} ${new Date(t.at).toISOString().slice(11, 19)} ${t.activation}${t.kind ? `:${t.kind}` : ""}${t.excluded ? " (excluded)" : ""}`;
   if (!t.endpoint || !t.outcome) {
     console.log(
       `${head}  ${t.outcome ? t.outcome.phase : "no endpoint"}${t.outcome?.code ? `:${t.outcome.code}` : ""}`,
@@ -407,17 +473,30 @@ for (const [name, s] of Object.entries(stages))
 console.log(
   `  final same length as last text: ${summary.finalSameLengthAsLastText} of ${measured.length}`,
 );
-console.log();
-console.log(
-  "Earlier cuts (first moment the text had stood this long before the endpoint):",
-);
-console.log(
-  "  cut      reached  text changed after  final length differs  saving p50 (all / when the text stood)",
-);
-for (const [cut, c] of Object.entries(cuts)) {
-  const pct = (n) =>
-    c.reached ? ` (${((100 * n) / c.reached).toFixed(0)}%)` : "";
+const printCuts = (title, table) => {
+  console.log();
+  console.log(title);
   console.log(
-    `  ${`${cut} ms`.padEnd(8)} ${String(c.reached).padEnd(8)} ${`${c.laterChange}${pct(c.laterChange)}`.padEnd(19)} ${`${c.lengthDiffers}${pct(c.lengthDiffers)}${c.lengthUnknown ? ` +${c.lengthUnknown} unknown` : ""}`.padEnd(21)} ${ms(c.savingMs.p50)} / ${ms(c.savingWhenSameMs.p50)}`,
+    "  cut      reached  text changed after  final length differs  saving p50 (all / when the text stood)",
+  );
+  for (const [cut, c] of Object.entries(table)) {
+    const pct = (n) =>
+      c.reached ? ` (${((100 * n) / c.reached).toFixed(0)}%)` : "";
+    console.log(
+      `  ${`${cut} ms`.padEnd(8)} ${String(c.reached).padEnd(8)} ${`${c.laterChange}${pct(c.laterChange)}`.padEnd(19)} ${`${c.lengthDiffers}${pct(c.lengthDiffers)}${c.lengthUnknown ? ` +${c.lengthUnknown} unknown` : ""}`.padEnd(21)} ${ms(c.savingMs.p50)} / ${ms(c.savingWhenSameMs.p50)}`,
+    );
+  }
+};
+printCuts(
+  `Earlier cuts (first moment the text had stood this long before the endpoint)${excluded.length ? `, all ${measured.length} turns` : ""}:`,
+  cuts,
+);
+if (excluded.length) {
+  printCuts(
+    `Earlier cuts, the owner's ${owned.length} turns (outside the excluded windows):`,
+    split.owner.cuts,
+  );
+  console.log(
+    `  final same length as last text: ${split.owner.finalSameLengthAsLastText} of ${owned.length}; last text -> endpoint ${range(split.owner.stages.lastTextToEndpoint)}; outcome -> first action ${range(split.owner.stages.outcomeToFirstAction)}`,
   );
 }

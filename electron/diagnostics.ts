@@ -87,7 +87,7 @@ const fields = new Set([
   "flags",
   "pointerDistance",
   // NativeInputIdle during a bound run: whether the target application is in
-  // front and whether the last input was aimed at its window (design §3).
+  // front and whether the hands are in its window (design §3).
   "targetFrontmost",
   "lastInsideTarget",
   "launcherStatus",

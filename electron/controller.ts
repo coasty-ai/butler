@@ -729,8 +729,9 @@ export class NativeController implements Controller {
       timeout?: typeof nativeTimeout;
       /**
        * Manual input went idle (after 1 s, then 3 s) with the kinds seen and,
-       * for a bound run, whether the target is in front and the last input
-       * was aimed at its window.
+       * for a bound run, whether the target is in front and the user's hands
+       * are in its window (their last press, scroll or key, read against the
+       * front now).
        */
       inputIdle?: (report: InputIdleReport) => void;
       /** A continuous scroll ended, with why and how many ticks it posted. */

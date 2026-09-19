@@ -165,16 +165,30 @@ func backgroundInputChecks(_ check: (Bool, String) -> Void) {
     check(scope(.keyDown, frontmost: true) == .target, "a key while the target is frontmost is the user typing into it")
     check(scope(.keyDown, frontmost: false) == nil, "a key anywhere else is normal life")
     check(scope(.keyUp) == nil && scope(.flagsChanged, frontmost: true) == nil, "releases and modifiers are never a takeover of the target")
-    // Where the input landed, for the resume rule: hovering counts (the pointer is there), the covered half and elsewhere do not, a key follows the frontmost application.
+    // Where the input put the hands, for the resume rule: a press, drag or wheel lands on the visible part of the window or elsewhere, a key wherever the focus is, and a hover, a release or a modifier says nothing.
     let halfCovered = uncoveredRects(of: CGRect(x: 0, y: 0, width: 500, height: 500), above: [CGRect(x: 250, y: 0, width: 250, height: 500)])
+    func placed(_ type: CGEventType, at point: CGPoint = CGPoint(x: 100, y: 100), rects: [CGRect] = visible) -> HandsPlacement? {
+        handsPlacement(type: type, location: point, uncovered: rects)
+    }
+    check([CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel].allSatisfy { placed($0) == .pointerInside }, "a press, drag or wheel over the visible part of the window puts the hands in it")
+    check(placed(.leftMouseDown, rects: halfCovered) == .pointerInside && placed(.leftMouseDown, at: CGPoint(x: 400, y: 100), rects: halfCovered) == .pointerOutside, "a press on the half another window covers is in that window, not the target")
+    check(placed(.scrollWheel, at: CGPoint(x: 900, y: 900)) == .pointerOutside && placed(.leftMouseDown, rects: []) == .pointerOutside, "a press or wheel elsewhere, or over a window nothing of which is visible, is outside")
+    check(placed(.keyDown) == .key && placed(.keyDown, at: CGPoint(x: 900, y: 900)) == .key, "a key is a key wherever the pointer is: its place is the focus, read when asked")
+    check(placed(.mouseMoved) == nil && placed(.mouseMoved, at: CGPoint(x: 900, y: 900)) == nil && placed(.keyUp) == nil && placed(.flagsChanged) == nil && placed(.leftMouseUp) == nil, "hovering over the window or away from it, releases and modifiers say nothing about where the hands are")
+    // Whether one event is aimed at the window is the same question asked of its placement and the front at that moment.
     func inside(_ type: CGEventType, at point: CGPoint = CGPoint(x: 100, y: 100), rects: [CGRect] = visible, frontmost: Bool = false) -> Bool {
         inputInsideTarget(type: type, location: point, uncovered: rects, targetFrontmost: frontmost)
     }
-    check(inside(.mouseMoved) && inside(.leftMouseDown) && inside(.rightMouseDown) && inside(.scrollWheel) && inside(.leftMouseDragged), "a pointer event over the visible part of the window, hovering included, is aimed at it")
-    check(inside(.leftMouseDown, rects: halfCovered) && !inside(.leftMouseDown, at: CGPoint(x: 400, y: 100), rects: halfCovered), "a press on the half another window covers is aimed at that window, not at the target")
-    check(!inside(.mouseMoved, at: CGPoint(x: 900, y: 900)) && !inside(.leftMouseDown, rects: []), "a pointer elsewhere, or over a window nothing of which is visible, is outside")
+    check(inside(.leftMouseDown) && inside(.rightMouseDown) && inside(.scrollWheel) && inside(.leftMouseDragged), "a press, drag or wheel over the visible part of the window is aimed at it")
+    check(!inside(.mouseMoved) && !inside(.mouseMoved, frontmost: true), "hovering over the window is aimed at nothing, so it never records the hands as inside")
+    check(!inside(.scrollWheel, at: CGPoint(x: 900, y: 900)) && !inside(.leftMouseDown, rects: []), "a pointer elsewhere, or over a window nothing of which is visible, is outside")
     check(inside(.keyDown, frontmost: true) && !inside(.keyDown, frontmost: false) && inside(.keyDown, at: CGPoint(x: 900, y: 900), frontmost: true), "a key is aimed at the target exactly when its application is frontmost, wherever the pointer is")
     check(!inside(.keyUp, frontmost: true) && !inside(.flagsChanged, frontmost: true), "releases and modifiers are aimed at nothing")
+    for type in [CGEventType.mouseMoved, .leftMouseDown, .scrollWheel, .keyDown, .keyUp] {
+        for (point, frontmost) in [(CGPoint(x: 100, y: 100), false), (CGPoint(x: 900, y: 900), false), (CGPoint(x: 100, y: 100), true)] {
+            check(inside(type, at: point, frontmost: frontmost) == handsInside(placed(type, at: point), targetFrontmost: frontmost), "aimed at the window and hands inside agree for event \(type.rawValue) at \(Int(point.x)),\(Int(point.y)) frontmost \(frontmost)")
+        }
+    }
     // The scope from the facts the tap reads once agrees with the scope from the location.
     check(takeoverScope(type: .leftMouseDown, inside: true, bound: true, handoff: false) == .target && takeoverScope(type: .keyDown, inside: true, bound: true, handoff: false) == .target, "a press or key aimed at the target is a takeover of it")
     check(takeoverScope(type: .mouseMoved, inside: true, bound: true, handoff: false) == nil, "hovering aimed at the target is still not working in it")
@@ -268,11 +282,12 @@ func backgroundInputChecks(_ check: (Bool, String) -> Void) {
     // held, the scope comes from the same facts, and Escape is untouched.
     let tap = section("func installTap(", "\n}")
     check(tap.components(separatedBy: "userInputFacts(type:type, location:event.location)").count == 2, "the tap reads where the input landed once per event")
-    check(tap.components(separatedBy: "inTarget:aimed.inside)").count == 3, "every unmarked input, held or going, is recorded with its placement")
+    check(tap.components(separatedBy: "placement:aimed.placement)").count == 3 && !tap.contains("inTarget:"), "every unmarked input, held or going, is recorded with where it put the hands")
     check(tap.contains("takeoverScope(type:type, inside:aimed.inside, bound:aimed.bound, handoff:aimed.handoff)") && tap.contains("\"scope\":scope.rawValue"), "the tap scopes the user's input from the same facts and reports the scope, never a coordinate")
     check(tap.contains("if escape {latch(true);emit([\"event\":\"emergency_stop\"])}") && tap.contains("emergencyEscape(now: now, lastEscapeAt: lastEscapeAt, watching: watching)"), "Escape is the emergency stop before any scope is read, going or held")
     let facts = section("func userInputFacts(", "\n}")
-    check(facts.contains("withState { (targetBinding, targetHandoff, targetUncovered) }") && facts.contains("type == .keyDown && NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid") && !facts.contains("AXUIElement"), "the tap's facts come from the cached rectangles and one frontmost compare for a key, with no accessibility call")
+    check(facts.contains("withState { (targetBinding, targetHandoff, targetUncovered) }") && facts.contains("type == .keyDown && !isStopped() && NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid") && !facts.contains("AXUIElement"), "the tap's facts come from the cached rectangles and one frontmost compare for a key while the run is going, with no accessibility call")
+    check(facts.contains("let placement = handsPlacement(type: type, location: location, uncovered: uncovered)") && facts.contains("return (false, false, false, placement)") && facts.contains("handsInside(placement, targetFrontmost: frontmost), placement)"), "the hands' placement is read from the same hit test, recorded whether or not a target is bound, and the aim is that placement against the front now")
     check(!section("func refreshTargetRects(", "\n}").contains("AXUIElement") && !section("func targetCover(", "\n}").contains("AXUIElement") && section("func targetCover(", "\n}").contains("CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements]"), "the rectangle cache is refreshed from the window server's list alone, so a hung target cannot stall the tap")
     let tracking = section("func startTargetTracking(", "\n}")
     check(tracking.contains(".milliseconds(250), repeating: .milliseconds(250)") && tracking.contains("[kAXWindowMovedNotification, kAXWindowResizedNotification]") && tracking.contains("queue: .global(qos: .utility)"), "the cache is refreshed every 250 ms and when the window moves or resizes, off the tap thread")

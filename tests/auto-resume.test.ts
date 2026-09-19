@@ -79,23 +79,35 @@ describe("a hold in a bound window (design §3)", () => {
       report: { idleMs, kinds, ...(target ? { target } : {}) },
       ...extra,
     });
-  it("continues once the user switched away from the window", () => {
-    expect(hold(3000, ["click"], { frontmost: false, lastInside: true })).toBe(
-      "target_hold",
-    );
+  it("continues once the application is no longer in front and the last press, scroll or key was elsewhere", () => {
     expect(
       hold(3000, ["click", "key"], { frontmost: false, lastInside: false }),
     ).toBe("target_hold");
-  });
-  it("continues when the last input landed outside the window, even with it still in front", () => {
-    expect(hold(3000, ["click"], { frontmost: true, lastInside: false })).toBe(
-      "target_hold",
-    );
+    // A pointer-only episode (a scroll elsewhere, then hovering) needs a second.
     expect(
-      hold(1000, ["mouse_move"], { frontmost: true, lastInside: false }),
+      hold(1000, ["mouse_move", "scroll"], {
+        frontmost: false,
+        lastInside: false,
+      }),
     ).toBe("target_hold");
   });
-  it("stays held while the hands are in the window, however long", () => {
+  it("stays held while the hands are still in the window behind: a scroll there with another application in front", () => {
+    expect(
+      hold(1000, ["scroll"], { frontmost: false, lastInside: true }),
+    ).toBeUndefined();
+    expect(
+      hold(3000, ["click", "scroll"], { frontmost: false, lastInside: true }),
+    ).toBeUndefined();
+  });
+  it("stays held while the application is in front, whatever the last input was", () => {
+    // A click on its Dock icon or a Command-Tab into it: the last input was
+    // outside the window, and the user is in the application now.
+    expect(
+      hold(3000, ["click"], { frontmost: true, lastInside: false }),
+    ).toBeUndefined();
+    expect(
+      hold(1000, ["mouse_move"], { frontmost: true, lastInside: false }),
+    ).toBeUndefined();
     expect(
       hold(3000, ["click"], { frontmost: true, lastInside: true }),
     ).toBeUndefined();

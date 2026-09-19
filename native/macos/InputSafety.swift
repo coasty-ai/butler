@@ -73,10 +73,33 @@ func manualInputKind(type: CGEventType, marked: Bool) -> ManualInputKind? {
     }
 }
 
+// Where the last counted input of the user's own landed, for the resume rule
+// (design §3): a press, drag or wheel on the part of the bound window no other
+// window covers, or elsewhere; or a key, whose place is wherever the keyboard
+// focus is when the question is asked. A hover, a release or a modifier is
+// not counted and moves nothing (handsPlacement in BackgroundInput.swift).
+enum HandsPlacement: Equatable { case pointerInside, pointerOutside, key }
+// Whether the hands are in the bound window, given where the last counted
+// input landed and whether the target application is frontmost now: the last
+// press, drag or wheel was on the window, or the last input was a key and the
+// application still has the keyboard. Asked of one event as it arrives (is it
+// aimed at the window) and again of the last counted input when the idle
+// report is written, so a scroll in a window behind another keeps reading as
+// inside however the front changes, and a key stops reading as inside the
+// moment the user switches away.
+func handsInside(_ placement: HandsPlacement?, targetFrontmost: Bool) -> Bool {
+    switch placement {
+    case .pointerInside: return true
+    case .key: return targetFrontmost
+    case .pointerOutside, nil: return false
+    }
+}
+
 // Where the user's hands are relative to a bound window when its run is held
 // (design §3): whether the target application is frontmost now, and whether
-// the episode's last input was aimed at the window. Two flags, so main can
-// tell "still in Slack" from "switched away" without a coordinate.
+// the hands are in the window (handsInside of the last counted input). Two
+// flags, so main can tell "still in Slack" from "switched away" without a
+// coordinate; the run continues only when both say the hands are gone.
 struct TargetIdle: Equatable {
     let frontmost: Bool
     let lastInside: Bool
@@ -98,18 +121,21 @@ struct IdleReport: Equatable {
 // closes. Input before the 3 s report restarts the timing (both reports are due
 // again) and adds its kind; kinds reset only when the episode closes. Times are
 // monotonic seconds. A late tick past both thresholds reports both, in order.
-// Each input also says whether it was aimed at the bound window; the latest
-// one's answer rides on the report when a target is bound (targetFrontmost
-// given), so the resume rule sees where the hands went last.
+// A counted input (a press, drag, wheel or key) also says where it put the
+// hands; the latest placement is read against the front when a target is bound
+// (targetFrontmost given) and rides on the report, so the resume rule sees
+// where the hands went last. The placement outlives the episode: the hands
+// stay where they went until a counted input takes them somewhere else, so an
+// episode of hovering after a scroll in the window still reads as inside.
 struct ManualInputEpisode {
     static let thresholds: [(seconds: TimeInterval, idleMs: Int)] = [(1.0, 1000), (3.0, 3000)]
     private(set) var lastInputAt: TimeInterval? = nil
     private(set) var kinds = Set<ManualInputKind>()
-    private(set) var lastInTarget = false
+    private(set) var placement: HandsPlacement? = nil
     private var reported = 0
     var isOpen: Bool { lastInputAt != nil }
-    mutating func observe(kind: ManualInputKind, at time: TimeInterval, inTarget: Bool = false) {
-        if time >= lastInputAt ?? time { lastInTarget = inTarget }
+    mutating func observe(kind: ManualInputKind, at time: TimeInterval, placement: HandsPlacement? = nil) {
+        if let placement, time >= lastInputAt ?? time { self.placement = placement }
         lastInputAt = max(lastInputAt ?? time, time)
         kinds.insert(kind)
         reported = 0
@@ -117,13 +143,13 @@ struct ManualInputEpisode {
     mutating func tick(now: TimeInterval, targetFrontmost: Bool? = nil) -> [IdleReport] {
         guard let last = lastInputAt else { return [] }
         let thresholds = ManualInputEpisode.thresholds
-        let target = targetFrontmost.map { TargetIdle(frontmost: $0, lastInside: lastInTarget) }
+        let target = targetFrontmost.map { TargetIdle(frontmost: $0, lastInside: handsInside(placement, targetFrontmost: $0)) }
         var reports = [IdleReport]()
         while reported < thresholds.count && now - last >= thresholds[reported].seconds {
             reports.append(IdleReport(idleMs: thresholds[reported].idleMs, kinds: kinds.map { $0.rawValue }.sorted(), target: target))
             reported += 1
         }
-        if reported == thresholds.count { self = ManualInputEpisode() }
+        if reported == thresholds.count { lastInputAt = nil; kinds = []; reported = 0 }
         return reports
     }
 }

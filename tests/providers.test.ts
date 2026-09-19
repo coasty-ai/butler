@@ -180,7 +180,7 @@ describe("provider-neutral adapters", () => {
     }).body;
     expect(c.messages[0].content[0]).toEqual(workspace);
   });
-  it("teaches a bound run its window in one paragraph after the shared prefix, on every provider", () => {
+  it("teaches a bound run its window in one paragraph after the plain instruction, on every provider", () => {
     const window = {
       appName: "Slack",
       title: "general",
@@ -218,26 +218,39 @@ describe("provider-neutral adapters", () => {
       "compatible",
       "ollama",
     ] as const) {
-      const plain = instructionOf(
-        provider,
-        buildRequest(s(provider), "K", o).body,
-      );
+      const plainBody = buildRequest(s(provider), "K", o).body;
+      const plain = instructionOf(provider, plainBody);
       const request = buildRequest(s(provider), "K", bound).body;
-      const withWindow = instructionOf(provider, request);
       expect(plain).not.toContain("context.background");
-      // One insertion between the core and the provider's format line: every
-      // byte before and after it is the plain instruction's, so the shared
-      // prefix is the same entry in the provider's cache.
-      let at = 0;
-      while (plain[at] === withWindow[at]) at++;
-      const added = withWindow.slice(at, at + withWindow.length - plain.length);
-      expect(
-        withWindow.slice(0, at) + withWindow.slice(at + added.length),
-      ).toBe(plain);
-      expect(added).toMatch(/^\nThe target window is in the background/);
-      expect(plain.slice(at)).toMatch(
-        /^ (Return exactly one action|Reply with only the JSON action object)/,
+      expect(plain).toMatch(
+        / (Return exactly one action|Reply with only the JSON action object)[^\n]*$/,
       );
+      let added: string;
+      if (provider === "anthropic") {
+        // A second system block after the core block, which keeps its own
+        // breakpoint and stays byte-identical to the plain run's, so bound
+        // and plain runs share the core's cache entry; the paragraph carries
+        // no breakpoint of its own (the workspace one below covers it).
+        expect(request.system).toHaveLength(2);
+        expect(request.system[0]).toEqual(plainBody.system[0]);
+        expect(request.system[0]).toMatchObject({
+          cache_control: { type: "ephemeral" },
+        });
+        expect(Object.keys(request.system[1]).sort()).toEqual(["text", "type"]);
+        expect(request.system[1].type).toBe("text");
+        added = request.system[1].text;
+        expect(added).toMatch(/^The target window is in the background/);
+        expect(JSON.stringify(request.tools)).toBe(
+          JSON.stringify(plainBody.tools),
+        );
+      } else {
+        // Appended after the plain instruction: every byte before it is the
+        // plain run's, so the cached prefix is the same entry for both.
+        const withWindow = instructionOf(provider, request);
+        expect(withWindow.startsWith(plain)).toBe(true);
+        added = withWindow.slice(plain.length);
+        expect(added).toMatch(/^\nThe target window is in the background/);
+      }
       for (const phrase of [
         "fractions of this window image",
         "cursor is not available",

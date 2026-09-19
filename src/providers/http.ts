@@ -83,10 +83,12 @@ context.memory, when present, is local memory from earlier tasks on this Mac. co
 Actions (each is a JSON object with type and frame_id plus only the listed fields): capture; click(x,y,button='left'|'right'); double_click(x,y,button='left'); right_click(x,y); move(x,y); drag(start_x,start_y,end_x,end_y,duration_ms 100-2000); scroll(delta_x,delta_y integers -1000..1000); type_text(text); key(key); hotkey(keys[] of 1-4 keys); open_app(name); open_file(path); menu_item(path[] of 2-3 menu titles); click_control(label, optional role, optional x,y); wait(milliseconds 0-5000); monitor(reason, every_s 5-60, max_min 1-180, until 'done'|'input'|'change'); tool_call(tool, args object, finish=false); request_user(reason); done(summary); fail(reason). Use key for a single key and hotkey for modifier chords, for example {"type":"hotkey","frame_id":"<frame_id>","keys":["CMD","L"]}. Keys are uppercase: ENTER TAB ESC BACKSPACE DELETE SPACE UP DOWN LEFT RIGHT HOME END PAGEUP PAGEDOWN CMD CTRL ALT SHIFT A-Z 0-9. Any action may add note (at most 200 characters): a value read on this screen that a later step must type or compare, such as a number, a name or a date; history carries it to your next steps, which otherwise have no memory of what you read. It is for values, never for reasoning. Do not include reasoning or chain-of-thought in the output.`;
 // A run bound to a window the user is not looking at (design §2.4,
 // .data/design/background-actuation.md) reads one more paragraph, after the
-// core and before the format line, so the shared prefix above is byte-identical
-// to every other run's and the paragraph is the same on every step of the run.
-// It names only fixed lines the runner and policy write (src/core/background.ts,
-// backgroundRefusal in src/core/policy.ts), never per-request data.
+// plain instruction (the core and the format line), so every byte before it is
+// the plain run's: OpenAI's prefix cache and Anthropic's breakpoint on the core
+// block serve bound and plain runs from the same entry, and the paragraph is
+// the same on every step of the run. It names only fixed lines the runner and
+// policy write (src/core/background.ts, backgroundRefusal in
+// src/core/policy.ts), never per-request data.
 const background = `The target window is in the background: context.background names its application and title. The screenshot is that window alone, captured while the user works in another window; the user's cursor is not available, and nothing you do changes what the user sees in front. Coordinates are fractions of this window image. Prefer click_control, menu_item and type_text into a listed field: they act on the window directly. click(x,y) is delivered to the window, not through the mouse, and some applications ignore it; move does nothing here, and monitor is not available. Do not switch applications, use open_app or open_file, or press CMD+TAB: the window you are working in is already the one in the screenshot, and a browser behind another window needs no switching here. A drag, or a modifier chord that is not one of the application's menu shortcuts, has no route to a background window: use menu_item with the command's name from context.menus, or a listed control. If context.background.covered is true the picture may be stale; trust context.controls and context.visibleText over pixels. Each result line says how the step reached the window (by accessibility, by events posted to the application, or with the application in front for a second) and whether the window changed; "nothing changed" means the application ignores that route, so take a listed control, the menu or the keyboard instead. When every route is ignored, the app brings the window in front for one step on its own and then gives the user their application back; a line beginning "No input was sent" names a step the window cannot take in the background. An application that keeps ignoring background input is finished in front, after which these rules no longer apply and the screenshot is the whole screen again.`;
 const toolFormat =
   " Return exactly one action per response by calling coarena_action once with action_json set to the JSON-encoded action object.";
@@ -97,9 +99,23 @@ const objectToolFormat =
   ' Return exactly one action per response by calling coarena_action once with action set to the action object itself, never as JSON text; in a tool_call, args_json holds the tool\'s arguments as one JSON-encoded object ("{}" when it takes none).';
 const jsonFormat =
   " Reply with only the JSON action object, without prose, wrappers or code fences.";
-/** The instruction for one request: the core, the background paragraph for a bound run, the provider's format line. */
+/** The instruction for one request: the core and the provider's format line, then the background paragraph for a bound run. */
 const instruction = (format: string, bound: boolean) =>
-  core + (bound ? "\n" + background : "") + format;
+  core + format + (bound ? "\n" + background : "");
+/**
+ * Anthropic's system blocks: the plain instruction with the breakpoint that
+ * caches it (with the tools) for every run, and for a bound run the paragraph
+ * as a second block, which the workspace breakpoint below then covers for the
+ * steps of that run.
+ */
+const systemBlocks = (format: string, bound: boolean) => [
+  {
+    type: "text",
+    text: instruction(format, false),
+    cache_control: { type: "ephemeral" },
+  },
+  ...(bound ? [{ type: "text", text: background }] : []),
+];
 
 const actionJson = {
   type: "string",
@@ -412,16 +428,11 @@ export function buildRequest(
             settings.model,
           ) && { output_config: { effort: "low" } }),
           // Anthropic caches only at an explicit breakpoint. This one covers
-          // the tools and the instruction, which are identical on every step;
-          // the second, on the workspace part below, covers what stays the
-          // same across the steps in one application.
-          system: [
-            {
-              type: "text",
-              text: instruction(toolFormat, bound),
-              cache_control: { type: "ephemeral" },
-            },
-          ],
+          // the tools and the instruction, which are identical on every step
+          // and every run, bound or not (a bound run's paragraph is its own
+          // block after it); the second, on the workspace part below, covers
+          // what stays the same across the steps in one application.
+          system: systemBlocks(toolFormat, bound),
           tools: [
             {
               name: "coarena_action",
