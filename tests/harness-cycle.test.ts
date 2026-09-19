@@ -46,11 +46,14 @@ import {
   harnessProcesses,
   idleRequired,
   parseAssertions,
+  parseBundleId,
   parseConsoleLocked,
   parseHidIdle,
   parseScreensaverIdle,
+  parseSecureInputPid,
   preflight,
   readGate,
+  readSecureInput,
   readSystem,
   releaseDesktopLock,
   unsettledRuns,
@@ -58,6 +61,7 @@ import {
   type PreflightInput,
   type PresenceReport,
   type PresenceSource,
+  type SurfaceRead,
 } from "../src/gym/bench/presence";
 import {
   AUTONOMY_MODES,
@@ -152,6 +156,7 @@ import {
   agendaSetupError,
   appsOpen,
   appsToWatch,
+  benchOwnBrowser,
   chooseBrowser,
   ideBlind,
   installedApps,
@@ -1347,6 +1352,7 @@ const report = (over: Partial<GateReport> = {}): GateReport => ({
   harnessProcesses: 0,
   unsettledAppRuns: 0,
   unreadable: false,
+  secureInput: false,
   source: "helper",
   ...over,
 });
@@ -2321,6 +2327,7 @@ function loop(
     skipFor?: (entry: QueueEntry, gateCalls: number) => string | undefined;
     observe?: (row: AttemptResult) => void;
     afterGate?: (pass: { first: boolean; sawInput: boolean }) => Promise<void>;
+    remedy?: (report: GateReport) => Promise<number | undefined>;
   } = {},
 ) {
   let clock = 1_000_000;
@@ -2408,6 +2415,7 @@ function loop(
       : {}),
     ...(over.observe ? { observe: over.observe } : {}),
     ...(over.afterGate ? { afterGate: over.afterGate } : {}),
+    ...(over.remedy ? { remedy: over.remedy } : {}),
   });
   return { run, lines, ran, state, clockAt: () => clock };
 }
@@ -3951,6 +3959,7 @@ describe("task-level preflight", () => {
       "DISPLAY_HELD_BY_OTHER",
       "APP_RUN_ACTIVE",
       "PRESENCE_UNKNOWN",
+      "SECURE_INPUT",
       "MISSING_KEY",
       "NOTHING_TO_RUN",
       ...TASK_SKIPS,
@@ -6124,9 +6133,7 @@ describe("harness-cycle.mjs with the suites", () => {
     expect(attempt.slice(leftAt)).toContain(
       "attemptDocuments.push(...left.documents);",
     );
-    expect(attempt.slice(leftAt)).toContain(
-      "return withWindowFields(result, left, home);",
-    );
+    expect(attempt.slice(leftAt)).toContain("return withWindowFields(");
   });
 
   it("gives bench.mjs the cycle's task preflight and final sweep for the long suite", () => {
@@ -6167,5 +6174,531 @@ describe("harness-cycle.mjs with the suites", () => {
     );
     expect(bench).toContain("remainingLeftovers(results, swept)");
     expect(bench).toContain("tokens: tokenLedger,");
+  });
+});
+
+/* ------------------------------------------------------- secure input */
+
+describe("secure event input at the gate", () => {
+  const SAFARI = "com.apple.Safari";
+  const CHROME = "com.google.Chrome";
+  const TERMINAL = "com.apple.Terminal";
+  const caps = {
+    now: 1_000_000,
+    deadline: 1_000_000 + 3600_000,
+    taskSeconds: 60,
+    cooldownSeconds: 8,
+  };
+  const session = (users: Record<string, unknown>[]) =>
+    JSON.stringify({ IOConsoleUsers: users });
+  const ON = session([
+    { kCGSSessionOnConsoleKey: true, kCGSSessionSecureInputPID: 254 },
+  ]);
+  const OFF = session([{ kCGSSessionOnConsoleKey: true }]);
+  const lsappinfo = (id: string) => `"CFBundleIdentifier"="${id}"\n`;
+
+  it("reads the holder's pid from the console session, the on-console user first, and a bundle id from lsappinfo", () => {
+    expect(
+      parseSecureInputPid({
+        IOConsoleUsers: [
+          { kCGSSessionOnConsoleKey: true, kCGSSessionSecureInputPID: 254 },
+          { kCGSSessionSecureInputPID: 900 },
+        ],
+      }),
+    ).toBe(254);
+    // Another session's holder counts when the console user has none.
+    expect(
+      parseSecureInputPid({
+        IOConsoleUsers: [
+          { kCGSSessionOnConsoleKey: true },
+          { kCGSSessionSecureInputPID: 900 },
+        ],
+      }),
+    ).toBe(900);
+    expect(
+      parseSecureInputPid({
+        IOConsoleUsers: [{ kCGSSessionOnConsoleKey: true }],
+      }),
+    ).toBeUndefined();
+    // Only a positive whole number is a pid.
+    expect(
+      parseSecureInputPid({
+        IOConsoleUsers: [
+          { kCGSSessionSecureInputPID: "254" },
+          { kCGSSessionSecureInputPID: 0 },
+          { kCGSSessionSecureInputPID: -1 },
+          { kCGSSessionSecureInputPID: 1.5 },
+          null,
+        ],
+      }),
+    ).toBeUndefined();
+    expect(parseSecureInputPid({})).toBeUndefined();
+    expect(parseSecureInputPid(undefined)).toBeUndefined();
+    expect(parseSecureInputPid("text")).toBeUndefined();
+    expect(parseBundleId(lsappinfo(SAFARI))).toBe(SAFARI);
+    expect(parseBundleId('"CFBundleIdentifier" = "com.apple.Terminal"')).toBe(
+      TERMINAL,
+    );
+    expect(
+      parseBundleId('"CFBundleIdentifier"="not a bundle id"'),
+    ).toBeUndefined();
+    expect(parseBundleId("")).toBeUndefined();
+    expect(parseBundleId(undefined)).toBeUndefined();
+  });
+
+  it("names the holder by lsappinfo from the session's pid, or by the surface's frontmost application for a focused secure field", async () => {
+    const calls: string[][] = [];
+    const exec =
+      (answers: { root?: string; lsappinfo?: string }) =>
+      async (command: string, args: string[]) => {
+        calls.push([command, ...args]);
+        if (command === "sh") return answers.root;
+        if (command === "lsappinfo") return answers.lsappinfo;
+        return "";
+      };
+    // The session names the pid; lsappinfo the bundle id, asked by pid.
+    expect(
+      await readSecureInput(exec({ root: ON, lsappinfo: lsappinfo(SAFARI) })),
+    ).toEqual({ on: true, pid: 254, owner: SAFARI });
+    expect(calls.find((call) => call[0] === "lsappinfo")).toEqual([
+      "lsappinfo",
+      "info",
+      "-only",
+      "bundleid",
+      "-pid",
+      "254",
+    ]);
+    expect(calls.find((call) => call[0] === "sh")?.[2]).toContain(
+      "ioreg -n Root -d1 -a",
+    );
+    // lsappinfo silent (a process that is no application): on, no owner.
+    expect(await readSecureInput(exec({ root: ON }))).toEqual({
+      on: true,
+      pid: 254,
+    });
+    // Off in the session, and the helper's surface not flagging: off, and
+    // lsappinfo is never asked.
+    const before = calls.length;
+    const quiet: SurfaceRead = { secureInput: false, appId: SAFARI };
+    expect(
+      await readSecureInput(exec({ root: OFF }), async () => quiet),
+    ).toEqual({ on: false });
+    expect(calls.slice(before).some((call) => call[0] === "lsappinfo")).toBe(
+      false,
+    );
+    // The surface flags a focused secure field the session does not name:
+    // the frontmost application, which holds the field, is the holder.
+    const flagged: SurfaceRead = { secureInput: true, appId: SAFARI };
+    expect(
+      await readSecureInput(exec({ root: OFF }), async () => flagged),
+    ).toEqual({ on: true, owner: SAFARI });
+    // The helper could not name the application: on, no owner.
+    expect(
+      await readSecureInput(exec({ root: OFF }), async () => ({
+        secureInput: true,
+        appId: "unknown",
+        unknown: true,
+      })),
+    ).toEqual({ on: true });
+    // A surface that throws (the helper gone) leaves the session's word.
+    expect(
+      await readSecureInput(
+        exec({ root: ON, lsappinfo: lsappinfo(TERMINAL) }),
+        async () => {
+          throw new Error("gone");
+        },
+      ),
+    ).toEqual({ on: true, pid: 254, owner: TERMINAL });
+    // Both say on: the session's pid names the owner.
+    expect(
+      await readSecureInput(
+        exec({ root: ON, lsappinfo: lsappinfo(TERMINAL) }),
+        async () => flagged,
+      ),
+    ).toEqual({ on: true, pid: 254, owner: TERMINAL });
+    // An unreadable session with a quiet surface is off: nothing said on.
+    expect(await readSecureInput(exec({}), async () => quiet)).toEqual({
+      on: false,
+    });
+    expect(await readSecureInput(exec({ root: "not json" }))).toEqual({
+      on: false,
+    });
+  });
+
+  it("puts secure input on the gate report and the system facts", async () => {
+    const exec = async (command: string, args: string[]) => {
+      if (command === "sh") return ON;
+      if (command === "lsappinfo") return lsappinfo(SAFARI);
+      if (command === "ioreg") return '"HIDIdleTime" = 900000000000';
+      if (command === "defaults") return "0";
+      return "";
+    };
+    const base: PresenceSource = {
+      exec,
+      ownPids: () => [],
+      roots: ["/Users/nobody"],
+      pid: 1,
+      appDiagnostics: () => undefined,
+      presence: async () => ({
+        hidIdleSeconds: 999,
+        tapIdleSeconds: 999,
+        locked: false,
+        displayAsleep: false,
+        displayHeldAwake: true,
+      }),
+      surface: async () => ({ secureInput: true, appId: SAFARI }),
+    };
+    const gate = await readGate(base);
+    expect(gate).toMatchObject({
+      secureInput: true,
+      secureInputOwner: SAFARI,
+      source: "helper",
+    });
+    expect(gateDecision(gate, { idleSeconds: 300 }, caps)).toMatchObject({
+      ok: false,
+      reason: "SECURE_INPUT",
+    });
+    expect((await readSystem(base)).secureInput).toEqual({
+      on: true,
+      pid: 254,
+      owner: SAFARI,
+    });
+    // Without a helper the session alone answers.
+    const noHelper = await readGate({
+      ...base,
+      presence: undefined,
+      surface: undefined,
+    });
+    expect(noHelper).toMatchObject({
+      source: "system",
+      secureInput: true,
+      secureInputOwner: SAFARI,
+    });
+    // Off: the report says so, no owner is named, and the gate passes.
+    const offExec = async (command: string, args: string[]) =>
+      command === "sh" ? OFF : exec(command, args);
+    const off = await readGate({
+      ...base,
+      exec: offExec,
+      surface: async () => ({ secureInput: false, appId: SAFARI }),
+    });
+    expect(off.secureInput).toBe(false);
+    expect(off).not.toHaveProperty("secureInputOwner");
+    expect(gateDecision(off, { idleSeconds: 300 }, caps).ok).toBe(true);
+    expect((await readSystem({ ...base, exec: offExec })).secureInput).toEqual({
+      on: false,
+    });
+  });
+
+  it("is refused after every other reason (a person typing a password is a person), and refused up front as the person's field", () => {
+    expect(
+      gateDecision(
+        report({ secureInput: true, secureInputOwner: SAFARI }),
+        { idleSeconds: 300 },
+        caps,
+      ),
+    ).toEqual({
+      ok: false,
+      reason: "SECURE_INPUT",
+      idle: { required: 300, seen: 999 },
+    });
+    expect(
+      gateDecision(
+        report({ secureInput: true, tapIdleSeconds: 10 }),
+        { idleSeconds: 300 },
+        caps,
+      ),
+    ).toMatchObject({ reason: "HID_ACTIVE" });
+    expect(
+      gateDecision(
+        report({ secureInput: true, locked: true }),
+        { idleSeconds: 300 },
+        caps,
+      ),
+    ).toMatchObject({ reason: "LOCKED" });
+    expect(
+      gateDecision(
+        report({ secureInput: true, appProcesses: 1 }),
+        { idleSeconds: 300 },
+        caps,
+      ),
+    ).toMatchObject({ reason: "APP_RUNNING" });
+    expect(
+      gateDecision(
+        report({ secureInput: true, unreadable: true }),
+        { idleSeconds: 300 },
+        caps,
+      ),
+    ).toMatchObject({ reason: "PRESENCE_UNKNOWN" });
+    // The preflight refuses a field of the person's with its remedy; whether
+    // the holder is the benchmark's own browser is harness-cycle.mjs's call.
+    const input: PreflightInput = {
+      appPids: [],
+      allowAppRunning: false,
+      displayHolders: 0,
+      screensaverIdleSeconds: 0,
+      timeBoxSeconds: 3600,
+      locked: false,
+      displayAsleep: false,
+    };
+    expect(preflight({ ...input, secureInput: true })).toEqual([
+      "SECURE_INPUT",
+    ]);
+    expect(preflight({ ...input, secureInput: false })).toEqual([]);
+    expect(preflight(input)).toEqual([]);
+    expect(REMEDY.SECURE_INPUT).toMatch(/password field/);
+    expect(REMEDY.SECURE_INPUT).toMatch(/about:blank/);
+  });
+
+  it("tells the benchmark's own browser from the person's by the one rule chooseBrowser picks by", () => {
+    // Not running: the attempt launches it, so its windows are the fixture's.
+    expect(benchOwnBrowser(SAFARI, {})).toBe(true);
+    expect(benchOwnBrowser(SAFARI, { running: new Set([CHROME]) })).toBe(true);
+    // Running with its windows not read (a dry run, a refused query): the person's.
+    expect(benchOwnBrowser(SAFARI, { running: new Set([SAFARI]) })).toBe(false);
+    expect(
+      benchOwnBrowser(SAFARI, {
+        running: new Set([SAFARI]),
+        windows: { [SAFARI]: undefined },
+      }),
+    ).toBe(false);
+    // Running with no window, or only fixture pages: the benchmark's.
+    expect(
+      benchOwnBrowser(SAFARI, {
+        running: new Set([SAFARI]),
+        windows: { [SAFARI]: { windows: 0, foreign: 0 } },
+      }),
+    ).toBe(true);
+    expect(
+      benchOwnBrowser(SAFARI, {
+        running: new Set([SAFARI]),
+        windows: { [SAFARI]: { windows: 2, foreign: 0 } },
+      }),
+    ).toBe(true);
+    // One window of the person's: theirs.
+    expect(
+      benchOwnBrowser(SAFARI, {
+        running: new Set([SAFARI]),
+        windows: { [SAFARI]: { windows: 2, foreign: 1 } },
+      }),
+    ).toBe(false);
+    // chooseBrowser picks exactly such a browser, and never the other.
+    const task = byTaskId("browser-nav-chain");
+    const facts = {
+      installed: new Set(["com.apple.finder", SAFARI, CHROME]),
+      running: new Set([SAFARI, CHROME]),
+      windows: {
+        [SAFARI]: { windows: 1, foreign: 1 },
+        [CHROME]: { windows: 1, foreign: 0 },
+      },
+    };
+    expect(chooseBrowser(task, facts)?.id).toBe(CHROME);
+    expect(benchOwnBrowser(CHROME, facts)).toBe(true);
+    expect(benchOwnBrowser(SAFARI, facts)).toBe(false);
+  });
+
+  it("asks the loop's remedy once per wait, reads again at once when a tab was reset, and writes the holder and the reset to the gate line", async () => {
+    // The harness's own browser holds it: the remedy clears it (2 tabs).
+    let asked = 0;
+    let secure = true;
+    const cleared = loop({
+      gate: () => ({
+        secureInput: secure,
+        ...(secure ? { secureInputOwner: SAFARI } : {}),
+      }),
+      remedy: async (gateReport) => {
+        asked++;
+        expect(gateReport.secureInputOwner).toBe(SAFARI);
+        secure = false;
+        return 2;
+      },
+    });
+    const outcome = await cleared.run;
+    expect(asked).toBe(1);
+    expect(cleared.ran).toHaveLength(4);
+    // No poll slept: the gate was read again the moment the tabs were reset.
+    expect(cleared.ran[0].wait).toBe(0);
+    const gates = cleared.lines.filter((line) => line.kind === "gate");
+    expect(gates).toEqual([
+      {
+        kind: "gate",
+        at: expect.any(String),
+        reason: "SECURE_INPUT",
+        reasons: ["SECURE_INPUT"],
+        waitedSeconds: 0,
+        secureInputOwner: SAFARI,
+        browserReset: 2,
+      },
+    ]);
+    expect(outcome.gateWaits.byReason).toEqual({ SECURE_INPUT: 1 });
+
+    // A field of the person's (the remedy answers nothing): waited on like
+    // any reason, the remedy asked once though the gate refused three
+    // times, the holder named, no reset on the line.
+    asked = 0;
+    const theirs = loop({
+      gate: (_now, calls) =>
+        calls < 3 ? { secureInput: true, secureInputOwner: TERMINAL } : {},
+      remedy: async () => {
+        asked++;
+        return undefined;
+      },
+    });
+    await theirs.run;
+    expect(asked).toBe(1);
+    const held = theirs.lines.filter((line) => line.kind === "gate");
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({
+      reason: "SECURE_INPUT",
+      waitedSeconds: 45,
+      secureInputOwner: TERMINAL,
+    });
+    expect(held[0]).not.toHaveProperty("browserReset");
+    expect(theirs.ran[0].wait).toBe(45);
+
+    // The browser answered but had no fixture tab (0): recorded, and the
+    // poll slept rather than reading again.
+    const none = loop({
+      gate: (_now, calls) =>
+        calls < 1 ? { secureInput: true, secureInputOwner: SAFARI } : {},
+      remedy: async () => 0,
+    });
+    await none.run;
+    expect(none.lines.filter((line) => line.kind === "gate")[0]).toMatchObject({
+      reason: "SECURE_INPUT",
+      waitedSeconds: 15,
+      browserReset: 0,
+    });
+
+    // Without a remedy hook the reason waits like any other, and the line
+    // carries neither a holder nor a reset.
+    const plain = loop({
+      gate: (_now, calls) => (calls < 2 ? { secureInput: true } : {}),
+    });
+    const plainOutcome = await plain.run;
+    const plainGates = plain.lines.filter((line) => line.kind === "gate");
+    expect(plainGates[0]).toMatchObject({
+      reason: "SECURE_INPUT",
+      waitedSeconds: 30,
+    });
+    expect(plainGates[0]).not.toHaveProperty("secureInputOwner");
+    expect(plainGates[0]).not.toHaveProperty("browserReset");
+    expect(plainOutcome.gateWaits.byReason.SECURE_INPUT).toBe(1);
+    // The ledger's totals read the new fields past.
+    expect(gateWaitsOf(gates).byReason).toEqual({ SECURE_INPUT: 1 });
+  });
+
+  it("keeps a reset's count and code on the row, and nothing else, and sums them in the report", () => {
+    expect(
+      contentFree(row({ browserReset: { tabs: 2 } })).browserReset,
+    ).toEqual({ tabs: 2 });
+    expect(
+      contentFree(row({ browserReset: { tabs: 0, code: "NOT_RUNNING" } }))
+        .browserReset,
+    ).toEqual({ tabs: 0, code: "NOT_RUNNING" });
+    expect(
+      contentFree(
+        row({ browserReset: { tabs: 1, code: "http://127.0.0.1:47831/x" } }),
+      ).browserReset,
+    ).toBeUndefined();
+    expect(
+      contentFree(row({ browserReset: { tabs: Number.NaN } })).browserReset,
+    ).toBeUndefined();
+    expect(
+      contentFree(row({ browserReset: { tabs: -1 } })).browserReset,
+    ).toBeUndefined();
+    expect(contentFree(row({})).browserReset).toBeUndefined();
+    const text = renderCycleReport(
+      buildCycleResults({
+        cycle: info(),
+        results: [
+          row({ browserReset: { tabs: 2 } }),
+          row({ planIndex: 1, browserReset: { tabs: 0, code: "UNREAD" } }),
+          row({ planIndex: 2 }),
+        ],
+        analysis: analyze(parseDiagnostics("").lines),
+      }),
+    );
+    expect(text).toContain(
+      "Fixture tabs pointed at about:blank after the attempts, in the browser chosen for each: 2 in 2 attempt(s); not looked at in 1 (UNREAD)",
+    );
+    expect(
+      renderCycleReport(
+        buildCycleResults({
+          cycle: info(),
+          results: [row({})],
+          analysis: analyze(parseDiagnostics("").lines),
+        }),
+      ),
+    ).not.toContain("Fixture tabs pointed at about:blank");
+  });
+
+  it("reads secure input through the helper's surface at the gate, resets the browser's fixture tabs after each attempt and as the gate's remedy, and asks the preflight after the start facts", () => {
+    const cycle = readFileSync(join(root, "scripts/harness-cycle.mjs"), "utf8");
+    // The gate's surface read is the runner's own, beside presence.
+    const gateAt = cycle.indexOf("readGate: () =>");
+    expect(gateAt).toBeGreaterThan(0);
+    expect(cycle.slice(gateAt, gateAt + 200)).toMatch(
+      /presence: \(\) => controller\.presence\(\),\s+surface: \(\) => controller\.surface\(\),/,
+    );
+    // The remedy: only the benchmark's own browser, by the preflight's rule,
+    // and only its fixture tabs; anything else is named and returns nothing.
+    const remedy = cycle.slice(
+      cycle.indexOf("remedy: async (report) => {"),
+      cycle.indexOf("afterGate: async (pass) => {"),
+    );
+    expect(remedy).toContain(
+      "owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);",
+    );
+    expect(remedy).toContain("if (!ours) {");
+    expect(remedy.indexOf("return undefined;")).toBeLessThan(
+      remedy.indexOf("resetFixtureTabs(run, owner, fixtureUrl())"),
+    );
+    expect(remedy).toContain("return reset?.tabs;");
+    expect(remedy).toContain("gate: secure event input is on");
+    // After each attempt: after the window accounting, before the row, and
+    // never after real input or a stop.
+    const attempt = cycle.slice(
+      cycle.indexOf("attempt: async (entry, maxCost, gateWaitSeconds)"),
+      cycle.indexOf("skipped: (entry, reason) => {"),
+    );
+    const resetAt = attempt.search(
+      /browserReset = await resetFixtureTabs\(\s+run,\s+browser\.browser\.id,\s+fixtureUrl\(\),\s+\);/,
+    );
+    expect(resetAt).toBeGreaterThan(
+      attempt.indexOf("const left = attemptWindows("),
+    );
+    expect(resetAt).toBeLessThan(attempt.indexOf("return withWindowFields("));
+    expect(attempt).toMatch(
+      /browser\.browser &&\s+!result\.manualTakeover &&\s+result\.reason !== "MANUAL_INPUT_UNSEEN" &&\s+!state\.stopped/,
+    );
+    expect(attempt).toContain(
+      "{ ...result, ...(browserReset ? { browserReset } : {}) },",
+    );
+    // The origin is the fixture's, running or not (a tab an earlier cycle left).
+    expect(cycle).toMatch(
+      /const fixtureUrl = \(\) =>\s+fixture\?\.url \?\? `http:\/\/\$\{FIXTURE_HOST\}:\$\{FIXTURE_PORT\}`;/,
+    );
+    // The preflight's refusal reads the browsers' windows, so it comes after
+    // the start facts, and a running browser with only fixture windows is
+    // not the person's.
+    expect(cycle.indexOf("const codes = preflight({")).toBeGreaterThan(
+      cycle.indexOf("const facts = await readStartFacts(tasks, {"),
+    );
+    expect(cycle).toContain(
+      "  secureInput: personsSecureInput(system.secureInput),\n});",
+    );
+    expect(cycle).toMatch(
+      /const personsSecureInput = \(secure\) =>\s+secure\.on &&\s+!\(\s+secure\.owner &&\s+BROWSER_APPS\.includes\(secure\.owner\) &&\s+benchOwnBrowser\(secure\.owner, facts\)\s+\);/,
+    );
+    expect(cycle).toContain(", secure input ${");
+    // bench.mjs resets the same way after each attempt.
+    const bench = readFileSync(join(root, "scripts/bench.mjs"), "utf8");
+    expect(bench).toMatch(
+      /result\.browserReset = await resetFixtureTabs\(\s+run,\s+browser\.id,\s+fixture\?\.url \?\? `http:\/\/\$\{FIXTURE_HOST\}:\$\{FIXTURE_PORT\}`,\s+\);/,
+    );
+    expect(bench).toMatch(
+      /browser &&\s+!result\.manualTakeover &&\s+result\.reason !== "MANUAL_INPUT_UNSEEN" &&\s+!state\.stopped/,
+    );
   });
 });

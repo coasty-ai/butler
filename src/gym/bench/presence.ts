@@ -37,6 +37,18 @@ export interface GateReport extends PresenceReport {
    * absence: an empty read is not an empty desktop.
    */
   unreadable: boolean;
+  /**
+   * Secure event input is on: a password field has the keyboard somewhere
+   * (a sign-in page in a browser, Terminal at a sudo prompt, a password
+   * manager). The helper's surface reports it the way the runner reads it
+   * before every step (IsSecureEventInputEnabled and the focused secure
+   * field), and the policy turns it into a takeover, so every attempt
+   * started now would hand off with no action (cycle 20260919-0957: 14 of
+   * 15 attempts, after a sign-in fixture left its field focused in Safari).
+   */
+  secureInput: boolean;
+  /** The bundle id of the application holding it, when it could be told. */
+  secureInputOwner?: string;
   /** Where the idle numbers came from. */
   source: "helper" | "system";
 }
@@ -65,6 +77,51 @@ export function parseConsoleLocked(json: unknown): boolean {
   );
   if (!onConsole.length) return true;
   return onConsole.every((user) => user.CGSSessionScreenIsLocked === true);
+}
+
+/**
+ * The pid holding secure event input, from the same `ioreg -n Root -d1 -a`
+ * JSON the lock is read from: WindowServer writes kCGSSessionSecureInputPID
+ * into the console session while a password field has the keyboard, and
+ * removes it when the field lets go (`ioreg -l -w 0 | grep
+ * kCGSSessionSecureInputPID` is the folk one-liner; the key lives in the
+ * IOConsoleUsers entries). The session on console is read first; undefined
+ * when no session carries a positive pid.
+ */
+export function parseSecureInputPid(json: unknown): number | undefined {
+  if (!json || typeof json !== "object") return undefined;
+  const root = json as Record<string, unknown>;
+  const users = Array.isArray(root.IOConsoleUsers)
+    ? (root.IOConsoleUsers as Record<string, unknown>[]).filter(
+        (user) => user && typeof user === "object",
+      )
+    : [];
+  const pidOf = (user: Record<string, unknown>) => {
+    const value = user.kCGSSessionSecureInputPID;
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+      ? value
+      : undefined;
+  };
+  const onConsole = users.filter(
+    (user) => user.kCGSSessionOnConsoleKey === true,
+  );
+  for (const user of [...onConsole, ...users]) {
+    const pid = pidOf(user);
+    if (pid !== undefined) return pid;
+  }
+  return undefined;
+}
+
+const BUNDLE_ID = /^[A-Za-z0-9.-]{1,120}$/;
+
+/**
+ * The bundle id in `lsappinfo info -only bundleid -pid <pid>`'s answer
+ * (`"CFBundleIdentifier"="com.apple.Safari"`); undefined for a process that
+ * is no application, or for anything that is not shaped like a bundle id.
+ */
+export function parseBundleId(stdout: string | undefined): string | undefined {
+  const match = /"CFBundleIdentifier"\s*=\s*"([^"]{1,120})"/.exec(stdout ?? "");
+  return match && BUNDLE_ID.test(match[1]) ? match[1] : undefined;
 }
 
 /** The screensaver idle time in seconds from `defaults -currentHost read com.apple.screensaver idleTime`; 0 means never. */
@@ -241,6 +298,7 @@ export type GateReason =
   | "HARNESS_RUNNING"
   | "APP_RUNNING"
   | "APP_RUN_ACTIVE"
+  | "SECURE_INPUT"
   | "TIME_BOX";
 
 export interface GateDecision {
@@ -305,6 +363,15 @@ export function gateDecision(
     : report.hidIdleSeconds;
   if (seen < required)
     return { ok: false, reason: "HID_ACTIVE", idle: { required, seen } };
+  // A password field has the keyboard somewhere, and nobody has touched the
+  // Mac for --idle: the runner's first surface read would hand off at once
+  // ("Sensitive input is active"), so the attempt waits. After idle, so a
+  // person typing a password is reported as a person (HID_ACTIVE), and the
+  // loop's remedy (a fixture sign-in tab left in the harness's own browser,
+  // pointed at about:blank) never acts while anyone is there; a field of the
+  // person's is only named and waited on.
+  if (report.secureInput)
+    return { ok: false, reason: "SECURE_INPUT", idle: { required, seen } };
   return { ok: true, idle: { required, seen } };
 }
 
@@ -323,7 +390,8 @@ export type PreflightCode =
   | "DISPLAY_OFF"
   | "DISPLAY_HELD_BY_OTHER"
   | "APP_RUN_ACTIVE"
-  | "PRESENCE_UNKNOWN";
+  | "PRESENCE_UNKNOWN"
+  | "SECURE_INPUT";
 
 export interface PreflightInput {
   appPids: number[];
@@ -341,6 +409,14 @@ export interface PreflightInput {
   displayAsleep: boolean;
   /** undefined when the app's diagnostics log does not exist. */
   unsettledAppRuns?: number;
+  /**
+   * Secure event input is on in an application that is not the benchmark's
+   * own browser (harness-cycle.mjs decides that from the owner and the
+   * window facts): a password field of the person's has the keyboard, and
+   * the gate would wait on it all night. A fixture tab in the harness's own
+   * browser is not this: the gate clears that itself.
+   */
+  secureInput?: boolean;
 }
 
 /**
@@ -369,6 +445,10 @@ export function preflight(input: PreflightInput): PreflightCode[] {
   // of an app that is not running was cut off by a crash and never ends.
   if ((input.unsettledAppRuns ?? 0) > 0 && input.appPids.length)
     codes.push("APP_RUN_ACTIVE");
+  // A password field left focused (a password manager, a sudo prompt) holds
+  // secure event input until it lets go, and the gate would wait on it all
+  // night: every attempt started under it hands off with no action.
+  if (input.secureInput) codes.push("SECURE_INPUT");
   return codes;
 }
 
@@ -383,9 +463,25 @@ export type Exec = (
   args: string[],
 ) => Promise<string | undefined>;
 
+/** As much of the helper's surface as the gate reads. */
+export interface SurfaceRead {
+  secureInput: boolean;
+  /** The frontmost application, which holds the focused field the flag is about. */
+  appId: string;
+  /** The helper could not name the frontmost application. */
+  unknown?: boolean;
+}
+
 export interface PresenceSource {
   /** The native controller, when the cycle has one. */
   presence?: () => Promise<PresenceReport>;
+  /**
+   * The helper's surface read, the one the runner makes before every step
+   * (Controller.swift surface(): IsSecureEventInputEnabled or a focused
+   * AXSecureTextField). Answered while the helper is latched, so the gate
+   * never resumes it to ask.
+   */
+  surface?: () => Promise<SurfaceRead>;
   exec: Exec;
   /** Pids whose display-sleep assertions are ours (the caffeinate child). */
   ownPids: () => number[];
@@ -424,16 +520,91 @@ export interface SystemFacts {
   harnessPids: number[];
   /** ps or pmset could not be read. */
   unreadable: boolean;
+  /** Secure event input, from the console session (no helper here). */
+  secureInput: SecureInputFacts;
 }
 
-/** Read-only probes: ioreg, plutil, defaults, pmset and ps. */
+/** Whether a password field has the keyboard, and whose. */
+export interface SecureInputFacts {
+  on: boolean;
+  /** The console session's holder, from ioreg. */
+  pid?: number;
+  /** Its bundle id (lsappinfo), or the frontmost application the helper's surface flagged. */
+  owner?: string;
+}
+
+/** The console session as JSON: the lock and the secure-input holder live here. */
+const ROOT_JSON = ["-c", "ioreg -n Root -d1 -a | plutil -convert json -o - -"];
+function parseJson(text: string | undefined): unknown {
+  try {
+    return JSON.parse(text ?? "");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Secure event input from the session's JSON and, when the cycle has a
+ * helper, its surface read. The session names the pid, which lsappinfo maps
+ * to a bundle id (one more read, only while it is on); the surface also
+ * flags a focused secure field the session does not name, whose application
+ * is the frontmost one the surface describes. Either source saying "on" is
+ * on: the runner reads the surface, and a run would hand off on its word.
+ */
+export async function secureInputFacts(
+  rootJson: unknown,
+  exec: Exec,
+  surface?: () => Promise<SurfaceRead>,
+): Promise<SecureInputFacts> {
+  const pid = parseSecureInputPid(rootJson);
+  let read: SurfaceRead | undefined;
+  if (surface) {
+    try {
+      read = await surface();
+    } catch {
+      read = undefined;
+    }
+  }
+  const flagged = read?.secureInput === true;
+  if (pid === undefined && !flagged) return { on: false };
+  let owner: string | undefined;
+  if (pid !== undefined)
+    owner = parseBundleId(
+      await exec("lsappinfo", ["info", "-only", "bundleid", "-pid", `${pid}`]),
+    );
+  if (
+    !owner &&
+    flagged &&
+    read &&
+    !read.unknown &&
+    read.appId !== "unknown" &&
+    BUNDLE_ID.test(read.appId)
+  )
+    owner = read.appId;
+  return {
+    on: true,
+    ...(pid !== undefined ? { pid } : {}),
+    ...(owner ? { owner } : {}),
+  };
+}
+
+/** One read of the session and the helper: for the gate, which has no other reason to read the root. */
+export async function readSecureInput(
+  exec: Exec,
+  surface?: () => Promise<SurfaceRead>,
+): Promise<SecureInputFacts> {
+  return secureInputFacts(
+    parseJson(await exec("sh", ROOT_JSON)),
+    exec,
+    surface,
+  );
+}
+
+/** Read-only probes: ioreg, plutil, defaults, pmset, ps and, while a password field has the keyboard, lsappinfo. */
 export async function readSystem(source: PresenceSource): Promise<SystemFacts> {
   const [idle, root, hostSaver, userSaver, assertions, ps] = await Promise.all([
     source.exec("ioreg", ["-c", "IOHIDSystem", "-d", "4"]),
-    source.exec("sh", [
-      "-c",
-      "ioreg -n Root -d1 -a | plutil -convert json -o - -",
-    ]),
+    source.exec("sh", ROOT_JSON),
     source.exec("defaults", [
       "-currentHost",
       "read",
@@ -449,12 +620,7 @@ export async function readSystem(source: PresenceSource): Promise<SystemFacts> {
   const saver =
     parseScreensaverIdle(hostSaver ?? "") ??
     parseScreensaverIdle(userSaver ?? "");
-  let json: unknown;
-  try {
-    json = JSON.parse(root ?? "");
-  } catch {
-    json = undefined;
-  }
+  const json = parseJson(root);
   const holders = parseAssertions(assertions ?? "", {
     ownPids: source.ownPids(),
   });
@@ -470,6 +636,7 @@ export async function readSystem(source: PresenceSource): Promise<SystemFacts> {
     appPids: appProcesses(ps ?? "", source.roots, source.pid),
     harnessPids: harnessProcesses(ps ?? "", source.pid),
     unreadable: assertions === undefined || ps === undefined,
+    secureInput: await secureInputFacts(json, source.exec),
   };
 }
 
@@ -488,9 +655,10 @@ export async function readGate(source: PresenceSource): Promise<GateReport> {
       base = undefined;
     }
   }
-  const [assertions, ps] = await Promise.all([
+  const [assertions, ps, secure] = await Promise.all([
     source.exec("pmset", ["-g", "assertions"]),
     source.exec("ps", ["-axo", "pid=,command="]),
+    readSecureInput(source.exec, source.surface),
   ]);
   let from: GateReport["source"] = "helper";
   if (!base) {
@@ -516,6 +684,8 @@ export async function readGate(source: PresenceSource): Promise<GateReport> {
     harnessProcesses: harnessProcesses(ps ?? "", source.pid).length,
     unsettledAppRuns: log === undefined ? 0 : unsettledRuns(log),
     unreadable: assertions === undefined || ps === undefined,
+    secureInput: secure.on,
+    ...(secure.owner ? { secureInputOwner: secure.owner } : {}),
     source: from,
   };
 }

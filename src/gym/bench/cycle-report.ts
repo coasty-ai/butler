@@ -568,6 +568,17 @@ export function contentFree(row: AttemptResult): AttemptResult {
       )
     : undefined;
   const approvalCodes = row.approvalCodes && talliesOnly(row.approvalCodes);
+  // A count and, at most, a fixed code: never a URL or a title.
+  const browserReset =
+    row.browserReset &&
+    Number.isSafeInteger(row.browserReset.tabs) &&
+    row.browserReset.tabs >= 0 &&
+    (row.browserReset.code === undefined || CODE.test(row.browserReset.code))
+      ? {
+          tabs: row.browserReset.tabs,
+          ...(row.browserReset.code ? { code: row.browserReset.code } : {}),
+        }
+      : undefined;
   const {
     reason: _r,
     pausedAfter: _p,
@@ -577,6 +588,7 @@ export function contentFree(row: AttemptResult): AttemptResult {
     strayDocuments: _s,
     leftoverWindows: _w,
     approvalCodes: _c,
+    browserReset: _b,
     ...rest
   } = row;
   return {
@@ -590,6 +602,7 @@ export function contentFree(row: AttemptResult): AttemptResult {
     ...(leftoverWindows && Object.keys(leftoverWindows).length
       ? { leftoverWindows }
       : {}),
+    ...(browserReset ? { browserReset } : {}),
     ...(approvalCodes && Object.keys(approvalCodes).length
       ? { approvalCodes }
       : {}),
@@ -1168,6 +1181,24 @@ export function renderCycleReport(cycle: CycleResults): string {
           ", ",
         )}. The final sweep closes a TextEdit document under ~/OpenAssistBench, or one an attempt saved, when it has no unsaved changes, and a Finder window on ~/OpenAssistBench; anything else stays open (docs/BENCHMARK.md, Cleanup).`,
     );
+  // The browser's fixture tabs after each attempt: how many were pointed at
+  // about:blank, and how often the browser could not be asked (by code).
+  const resets = results.map((row) => row.browserReset).filter(Boolean);
+  if (resets.length) {
+    const tabs = resets.reduce((sum, reset) => sum + (reset?.tabs ?? 0), 0);
+    const codes: Record<string, number> = {};
+    for (const reset of resets)
+      if (reset?.code) codes[reset.code] = (codes[reset.code] ?? 0) + 1;
+    out.push(
+      `\nFixture tabs pointed at about:blank after the attempts, in the browser chosen for each: ${tabs} in ${resets.length} attempt(s)` +
+        (Object.keys(codes).length
+          ? `; not looked at in ${Object.entries(codes)
+              .map(([code, n]) => `${n} (${code})`)
+              .join(", ")}`
+          : "") +
+        " (docs/BENCHMARK.md, Cleanup, step 7).",
+    );
+  }
   if (totals.attempts && totals.handoffs.manual / totals.attempts > 0.1)
     out.push(
       "\n**Warning:** manual takeovers in more than 10% of attempts: this cycle ran in a noisy environment.",

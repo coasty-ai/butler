@@ -53,6 +53,8 @@ export const REMEDY: Record<RemedyCode, string> = {
     "The running app's log shows a run still in flight; let it finish or quit the app.",
   PRESENCE_UNKNOWN:
     "ps or pmset could not be read, so nothing can say whether another agent or a watched screen is here; try again.",
+  SECURE_INPUT:
+    "Secure event input is on: a password field has the keyboard (the gate line names the application when it can), and every attempt would hand off at once. Click somewhere else or close that window. A sign-in fixture page left in the benchmark's own browser is not this: the gate points its fixture tabs at about:blank itself.",
   MISSING_KEY:
     "Put the cell's key in .env under the name the app reads (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY or GOOGLE_API_KEY), or drop the cell from --matrix.",
   NOTHING_TO_RUN:
@@ -382,10 +384,30 @@ export function chooseBrowser(
   const candidates = BROWSER_PREFERENCE.filter(
     (id) => task.apps.includes(id) && known.has(id),
   );
+  // One not running first (its windows will all be the fixture's), then one
+  // the benchmark's by its windows: both are benchOwnBrowser, the rule the
+  // fixture-tab reset acts under too.
   const id =
     candidates.find((candidate) => !facts.running?.has(candidate)) ??
-    candidates.find((candidate) => safeOpen(candidate, facts));
+    candidates.find((candidate) => benchOwnBrowser(candidate, facts));
   return id ? { id, name: BROWSER_NAMES[id] } : undefined;
+}
+
+/**
+ * Whether a browser is the benchmark's own, to use and to reset: not
+ * running (the attempt launches it, so every window it gets is the
+ * fixture's), or running with no window of the person's (safeOpen: none, or
+ * only titles carrying a token). The one rule chooseBrowser picks by and
+ * browser-reset.ts navigates under; a browser this refuses is the person's,
+ * and nothing of the harness ever touches a tab of it. `running` is the
+ * start's reading plus what the person opened since (openedByPerson), so a
+ * browser an attempt launched stays the benchmark's for the night.
+ */
+export function benchOwnBrowser(
+  id: string,
+  facts: Pick<StartFacts, "running" | "windows">,
+): boolean {
+  return !facts.running?.has(id) || safeOpen(id, facts);
 }
 
 /* -------------------------------------------------------------- the agenda */

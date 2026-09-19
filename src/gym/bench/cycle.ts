@@ -458,6 +458,10 @@ export type LedgerLine =
       waitedSeconds: number;
       /** The wait passed --idle x 12 with someone at the Mac. */
       userPresentLong?: boolean;
+      /** SECURE_INPUT: the bundle id of the application holding secure event input, when it could be told. */
+      secureInputOwner?: string;
+      /** SECURE_INPUT: fixture tabs the harness pointed at about:blank in its own browser before waiting on (the remedy). */
+      browserReset?: number;
     }
   | ({ kind: "attempt"; at: string } & AttemptResult)
   | { kind: "requeue"; at: string; planIndex: number; requeued: number }
@@ -643,6 +647,18 @@ export interface CycleLoopDeps {
    * applications here, since the start's reading can be hours old.
    */
   afterGate?: (pass: { first: boolean; sawInput: boolean }) => Promise<void>;
+  /**
+   * The harness's answer to a SECURE_INPUT refusal, asked once per wait the
+   * first time the gate names it, with that report: it says on the terminal
+   * what holds the keyboard and where, and when the holder is the
+   * benchmark's own browser it points that browser's fixture tabs at
+   * about:blank (browser-reset.ts) and answers how many. One or more tabs
+   * reset means the gate is read again at once, without a poll's sleep;
+   * anything else waits like any reason. Whether the holder is the
+   * harness's to touch is the hook's rule (preflight.ts benchOwnBrowser);
+   * the loop only carries its answer to the ledger.
+   */
+  remedy?: (report: GateReport) => Promise<number | undefined>;
   /** Every row the loop records, for rules that learn from results (IDE_BLIND). */
   observe?: (row: AttemptResult) => void;
   /** Appends one ledger line. */
@@ -711,6 +727,10 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
     const reasons = new Set<string>();
     let last: string | undefined;
     let longNoted = false;
+    /** SECURE_INPUT: the first holder named, and what the remedy did. */
+    let secureInputOwner: string | undefined;
+    let browserReset: number | undefined;
+    let remedied = false;
     const close = () => {
       const seconds = (d.now() - started) / 1000;
       if (!reasons.size) return seconds;
@@ -726,6 +746,8 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
         reasons: [...reasons],
         waitedSeconds: Math.round(seconds),
         ...(longNoted ? { userPresentLong: true } : {}),
+        ...(secureInputOwner ? { secureInputOwner } : {}),
+        ...(browserReset !== undefined ? { browserReset } : {}),
       });
       return seconds;
     };
@@ -751,6 +773,18 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
       if (decision.reason) reasons.add(decision.reason);
       if (decision.stop)
         return { seconds: close(), stop: "time box", sawInput: sawInput() };
+      // A password field has the keyboard with nobody at the Mac. Once per
+      // wait the harness may clear the one case it made itself (a fixture
+      // sign-in tab in its own browser); a tab reset is read again at once,
+      // and a field of the person's is waited on like anything else.
+      if (decision.reason === "SECURE_INPUT") {
+        secureInputOwner ??= report.secureInputOwner;
+        if (!remedied && d.remedy) {
+          remedied = true;
+          browserReset = await d.remedy(report);
+          if (browserReset) continue;
+        }
+      }
       // A refusal for input needs no "person seen" flag: the tap's clock
       // then trails the time since the agent's last step for good, so the
       // rule keeps refusing until that clock reaches the full --idle.

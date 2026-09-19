@@ -58,7 +58,9 @@ register();
 const { selectTasks } = await import("../src/gym/bench/catalogue.ts");
 const { catalogueFor, categoriesFor, longHorizon, selectSuite, suiteOf } =
   await import("../src/gym/bench/suites.ts");
-const { FIXTURE_PORT } = await import("../src/gym/bench/graders.ts");
+const { BROWSER_APPS, FIXTURE_HOST, FIXTURE_PORT } =
+  await import("../src/gym/bench/graders.ts");
+const { resetFixtureTabs } = await import("../src/gym/bench/browser-reset.ts");
 const {
   CYCLE_ID,
   DEFAULT_AUTONOMY,
@@ -100,6 +102,7 @@ const {
   REMEDY,
   agendaSetupError,
   appsToWatch,
+  benchOwnBrowser,
   chooseBrowser,
   missingKey,
   openedByPerson,
@@ -792,19 +795,6 @@ const unsettled = (() => {
   if (log === undefined) return undefined;
   return analyze(parseDiagnostics(log).lines).runs.byOutcome.unsettled ?? 0;
 })();
-const codes = preflight({
-  appPids: system.appPids,
-  allowAppRunning: values["allow-app-running"],
-  harnessPids: system.harnessPids,
-  unreadable: system.unreadable,
-  displayHolders: system.displayHolders.length,
-  screensaverIdleSeconds: system.screensaverIdleSeconds,
-  timeBoxSeconds,
-  locked: system.locked,
-  displayAsleep: false,
-  unsettledAppRuns: unsettled,
-});
-
 // What tonight can run, task by task, from read-only reads: the agenda
 // helper's `status` (never `setup`, which writes, and runs only at the real
 // start), Spotlight, ps, a bind on the fixture port, the bench root and the
@@ -822,6 +812,36 @@ const facts = await readStartFacts(tasks, {
   ...(existsSync(AGENDA_BINARY) ? { agendaBinary: AGENDA_BINARY } : {}),
   fixture: fixturePortFree,
   appleEvents: !values["dry-run"],
+});
+/**
+ * Whether secure event input is the person's to clear: on, and held by
+ * anything but a browser that is the benchmark's own (not running, or with
+ * no window of the person's), whose fixture tabs the gate points at
+ * about:blank itself (the remedy below). A holder that could not be named is
+ * the person's, since nothing could be reset for it.
+ */
+const personsSecureInput = (secure) =>
+  secure.on &&
+  !(
+    secure.owner &&
+    BROWSER_APPS.includes(secure.owner) &&
+    benchOwnBrowser(secure.owner, facts)
+  );
+// After the start facts: the secure-input refusal reads the browsers'
+// windows, which a dry run does not ask for (every running browser then
+// counts as the person's, as with APPS_OPEN).
+const codes = preflight({
+  appPids: system.appPids,
+  allowAppRunning: values["allow-app-running"],
+  harnessPids: system.harnessPids,
+  unreadable: system.unreadable,
+  displayHolders: system.displayHolders.length,
+  screensaverIdleSeconds: system.screensaverIdleSeconds,
+  timeBoxSeconds,
+  locked: system.locked,
+  displayAsleep: false,
+  unsettledAppRuns: unsettled,
+  secureInput: personsSecureInput(system.secureInput),
 });
 /** The document applications and browsers running now; undefined when ps failed. */
 const readRunning = async () => {
@@ -871,6 +891,7 @@ function printGate() {
         : "") +
       `, app processes ${system.appPids.length}` +
       `, other harnesses ${system.harnessPids.length}` +
+      `, secure input ${system.secureInput.on ? `on (${system.secureInput.owner ?? "holder unknown"}${personsSecureInput(system.secureInput) ? "" : ", the benchmark's browser: the gate resets its fixture tabs"})` : "off"}` +
       `, app log ${appLog ? (unsettled ? `${unsettled} run(s) unsettled` : "settled") : "absent"}` +
       (facts.agendaAccess && runnable().some((task) => agendaKinds(task).length)
         ? ", agenda local source checked at the start (setup)"
@@ -1303,6 +1324,13 @@ if (!values["no-keep-awake"]) {
 // prompt, which must never sit on screen during an unattended night.
 const readers = createReaders({ music: process.env[MUSIC_READER_ENV] === "1" });
 let fixture;
+/**
+ * The fixture server's URL, for the tab reset's origin: the running server's
+ * or, before one runs tonight (a tab an earlier cycle left), the port every
+ * fixture server binds. Nothing else is ever an origin the reset compares.
+ */
+const fixtureUrl = () =>
+  fixture?.url ?? `http://${FIXTURE_HOST}:${FIXTURE_PORT}`;
 const deps = {
   controller,
   clients,
@@ -1393,8 +1421,43 @@ try {
     prior,
     deadline,
     state,
+    // The surface is the runner's own read of secure input (a password
+    // field with the keyboard), answered while the helper is latched.
     readGate: () =>
-      readGate({ ...source, presence: () => controller.presence() }),
+      readGate({
+        ...source,
+        presence: () => controller.presence(),
+        surface: () => controller.surface(),
+      }),
+    // SECURE_INPUT with nobody at the Mac: a password field has the
+    // keyboard, so the runner's first surface read would hand off at once
+    // (cycle 20260919-0957: the sign-in fixture's field, left focused in
+    // Safari, cost 14 of 15 attempts). Said once per wait. When the holder
+    // is the benchmark's own browser, its fixture tabs are pointed at
+    // about:blank and the gate reads again; a field of the person's
+    // (Terminal at a sudo prompt, a password manager, their own browser) is
+    // never touched, only named, and the gate waits.
+    remedy: async (report) => {
+      const owner = report.secureInputOwner;
+      const ours =
+        owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);
+      if (!ours) {
+        console.warn(
+          `gate: secure event input is on${owner ? ` in ${owner}` : " (holder unknown)"}: a password field has the keyboard, and every attempt would hand off at once. Waiting; click somewhere else or close it.`,
+        );
+        return undefined;
+      }
+      let reset;
+      try {
+        reset = await resetFixtureTabs(run, owner, fixtureUrl());
+      } catch {
+        reset = undefined;
+      }
+      console.warn(
+        `gate: secure event input is on in ${owner}, the benchmark's own browser: ${reset ? `${reset.tabs} fixture tab(s) pointed at about:blank${reset.code ? ` (${reset.code})` : ""}` : "the reset failed"}.`,
+      );
+      return reset?.tabs;
+    },
     // The start read ps once, and the gate may then wait for hours while
     // the person keeps working: a document they opened meanwhile may hold
     // unsaved work a long task would type into. Read again at the first
@@ -1461,7 +1524,36 @@ try {
         await readWindowSnapshot(run, watched, runningAfterLast),
       );
       attemptDocuments.push(...left.documents);
-      return withWindowFields(result, left, home);
+      // The fixture tab the attempt leaves may hold a focused password field
+      // (the sign-in fixture), which keeps secure event input on for the
+      // whole session and hands every later attempt off at once (cycle
+      // 20260919-0957, 14 of 15 attempts): the browser chosen for the
+      // attempt, the benchmark's own by chooseBrowser's rule, has its
+      // fixture-host tabs pointed at about:blank, and no other tab. Not after
+      // real input or a stop: the person asked for nothing more to happen,
+      // and the gate's remedy clears it once the Mac is idle again.
+      let browserReset;
+      if (
+        browser.browser &&
+        !result.manualTakeover &&
+        result.reason !== "MANUAL_INPUT_UNSEEN" &&
+        !state.stopped
+      ) {
+        try {
+          browserReset = await resetFixtureTabs(
+            run,
+            browser.browser.id,
+            fixtureUrl(),
+          );
+        } catch {
+          browserReset = undefined;
+        }
+      }
+      return withWindowFields(
+        { ...result, ...(browserReset ? { browserReset } : {}) },
+        left,
+        home,
+      );
     },
     skipped: (entry, reason) => {
       const row = neverRan(

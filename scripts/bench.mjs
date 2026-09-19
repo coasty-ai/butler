@@ -259,7 +259,9 @@ const {
   startSkips,
   taskGate,
 } = await import("../src/gym/bench/preflight.ts");
-const { FIXTURE_PORT } = await import("../src/gym/bench/graders.ts");
+const { FIXTURE_HOST, FIXTURE_PORT } =
+  await import("../src/gym/bench/graders.ts");
+const { resetFixtureTabs } = await import("../src/gym/bench/browser-reset.ts");
 const home = homedir();
 // So `npm run cycle -- --cleanup-only` finds what a crashed run left.
 const tokenLedger = fileTokenLedger(tokenLedgerDir(home));
@@ -438,6 +440,28 @@ try {
       planIndex,
       ...(browser ? { browser } : {}),
     });
+    // The fixture tab the attempt leaves may hold a focused password field
+    // (the sign-in fixture), which keeps secure event input on for the whole
+    // session and hands the next attempt off at once: the browser chosen for
+    // the attempt, the benchmark's own by chooseBrowser's rule, has its
+    // fixture-host tabs pointed at about:blank, and no other tab (as the
+    // cycle does; browser-reset.ts). Not after real input or a stop.
+    if (
+      browser &&
+      !result.manualTakeover &&
+      result.reason !== "MANUAL_INPUT_UNSEEN" &&
+      !state.stopped
+    ) {
+      try {
+        result.browserReset = await resetFixtureTabs(
+          run,
+          browser.id,
+          fixture?.url ?? `http://${FIXTURE_HOST}:${FIXTURE_PORT}`,
+        );
+      } catch {
+        // A wiring fault in the origin: nothing was asked.
+      }
+    }
     results.push(result);
     gate.observe(result);
     console.log(

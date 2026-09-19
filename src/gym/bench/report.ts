@@ -112,6 +112,14 @@ export interface AttemptResult {
    * (windows.ts). The final sweep closes the ones that hold nothing.
    */
   leftoverWindows?: Record<string, number>;
+  /**
+   * Fixture tabs the harness pointed at about:blank in the browser it chose
+   * for the attempt, after it (browser-reset.ts): a sign-in page's focused
+   * password field would otherwise hold secure event input for the whole
+   * session and hand every later attempt off at once. `code` says why none
+   * could be looked at. Absent for an attempt without a browser.
+   */
+  browserReset?: { tabs: number; code?: string };
   /** The task's declared [minimum, maximum] competent step count. */
   expectedSteps?: [number, number];
   /** Seconds the presence gate held this attempt back; 0 without a gate. */
