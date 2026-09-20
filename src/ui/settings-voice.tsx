@@ -300,7 +300,7 @@ export function VoiceSettings({
             <input
               type="text"
               value={s.addressAs}
-              placeholder="Optional, e.g. Sir or Nitish"
+              placeholder="Optional, e.g. Sir or Alex"
               maxLength={40}
               aria-describedby={`${ids}-address`}
               onChange={(e) => set("addressAs", e.target.value)}

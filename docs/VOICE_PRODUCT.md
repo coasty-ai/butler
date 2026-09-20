@@ -1,6 +1,6 @@
 # Voice product contract
 
-The subsequent Butler MVP specification narrows the user-facing product from the strategy PDF to the primary interaction: **hold a key → speak → release → watch the computer work**. Butler is the consumer app; CoArena is the intelligence/evaluation layer, and CoArena Gym packages reviewed workflows into environments and evaluations.
+The subsequent Butler MVP specification narrows the user-facing product from the product strategy to the primary interaction: **hold a key → speak → release → watch the computer work**. Butler is the consumer app; CoArena is the intelligence/evaluation layer, and CoArena Gym packages reviewed workflows into environments and evaluations.
 
 The app lives in the macOS menu bar. It shows a compact floating pill only while listening, working, paused, asking for approval, or briefly confirming completion. There is no dashboard, chat sidebar, model picker on the main surface, task builder, agent page, integration marketplace or prompt history on the main screen. Small settings and optional local review remain accessible through the tray. The browser page is an interactive preview, not the desktop's main screen.
 

@@ -1079,7 +1079,7 @@ export interface ScreenContext {
   openApps?: string[];
   /**
    * Notifications that arrived while the assistant was running, oldest first
-   * ("Slack, 4m ago: Nitish — can you look at this?"). Only while the user
+   * ("Slack, 4m ago: Alex — can you look at this?"). Only while the user
    * has them switched on, never from a protected application (docs/PRIVACY.md).
    */
   notifications?: string[];

@@ -1,14 +1,16 @@
 # Butler
 
-_Formerly Open Assist._
+_Formerly Open Assist. Open source under the MIT license; see the status below before relying on it._
 
 **Press a key. Tell your computer what to do.**
 
-A macOS voice assistant built from the supplied 39-page strategy PDF and the subsequent Butler MVP specification. Hold **Option + Space**, speak, and release. A floating pill shows Listening → Working in your app → Needs approval → Done, then disappears. Hold again to pause and steer the same task. Tap for a text command. Settings and optional local-run review live in the menu bar. To launch directly into hands-free listening with diagnostics, run `npm run debug:local -- --hands-free` (`--no-hands-free` disables it). For hands-free use, select **Say “Hey Butler”** under **Talk to Butler** in Settings and save, or enable it from the menu bar. Say “Hey Butler, open Notes,” or just “Butler, open Notes,” then pause; say the wake phrase again to interrupt. The menu bar can turn off its microphone at any time.
+A macOS voice assistant that operates your Mac for you. Hold **Option + Space**, speak, and release. A floating pill shows Listening → Working in your app → Needs approval → Done, then disappears. Hold again to pause and steer the same task. Tap for a text command. Settings and optional local-run review live in the menu bar. To launch directly into hands-free listening with diagnostics, run `npm run debug:local -- --hands-free` (`--no-hands-free` disables it). For hands-free use, select **Say “Hey Butler”** under **Talk to Butler** in Settings and save, or enable it from the menu bar. Say “Hey Butler, open Notes,” or just “Butler, open Notes,” then pause; say the wake phrase again to interrupt. The menu bar can turn off its microphone at any time.
 
 Butler is the consumer product. CoArena is the intelligence/evaluation layer; CoArena Gym is the environment and evaluation product. Contributions connect them only after per-run review and consent.
 
 **Status: development alpha.** Native push-to-talk, optional on-device wake-phrase listening, on-device speech, screen capture/input, correction handling, approval, encrypted local trajectories and opt-in contribution are implemented. Offline checks use synthetic tasks and mocked providers; GPT-5.4 mini has also completed a generated-screen task through the live API and a few real Calculator/Safari tasks through the terminal live harness. Live speech accuracy, arbitrary desktop reliability and shortcut latency still need device testing. See [validation](docs/VALIDATION.md), [implementation status](docs/IMPLEMENTATION.md) and [resources required](docs/RESOURCES.md).
+
+**Measured status (2026-09-20).** On the repository's own market benchmark (35 everyday tasks in email, files, research, business forms, shopping and smart-home fixtures, driven live on a Mac under the owner regime that never asks and allows everything) the current cell model, `gpt-5.4-mini`, passes about 45 to 53% of attempts, and between a quarter and two fifths of its "done" claims are wrong. The mechanics (finding and pressing controls, reading pages, typing, closing stray menus, staying in its own browser) are in good shape; planning and judgment on multi-page work are bounded by the cell model, and the done audit that catches wrong claims is strongest with a stronger auditing model (`--audit-model`, see docs/BENCHMARK.md). Treat it as an experimental agent you watch, not an assistant you trust unattended.
 
 ## Download and start (Apple Silicon Mac)
 
