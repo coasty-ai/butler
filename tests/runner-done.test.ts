@@ -28,10 +28,13 @@ import {
 } from "../src/core/deliverables";
 import {
   auditApplies,
+  DONE_AUDIT_DEADLINE_MS,
+  DONE_AUDIT_MAX_OUTPUT_TOKENS,
   DONE_AUDIT_MAX_REQUIREMENTS,
   DONE_AUDIT_MIN_ACTIONS,
   DONE_AUDIT_PROMPT,
   DONE_AUDIT_REMINDER,
+  doneAuditCall,
   doneAuditInput,
   multiClause,
   parseDoneAudit,
@@ -829,10 +832,13 @@ const ALL_MET = reply([
   met("open the listings page", "1 click", "open"),
   met("search for the two dates", "2 type_text", "enter"),
 ]);
+/** A scripted reply with its own code (a reply the cap cut, then a whole one). */
+type AuditReply =
+  string | Error | { text: string; code: ProviderTextReply["code"] };
 /** The scripted provider given the text path: every audit reply scripted, the calls kept. */
 function auditing(
   p: ReturnType<typeof scripted>,
-  replies: (string | Error)[],
+  replies: AuditReply[],
   code: ProviderTextReply["code"] = "ok",
 ) {
   const calls: ProviderTextCall[] = [];
@@ -844,11 +850,18 @@ function auditing(
       calls.push(structuredClone(call));
       const next = replies[Math.min(calls.length - 1, replies.length - 1)];
       if (next instanceof Error) throw next;
+      if (typeof next === "object")
+        return { text: next.text, usage: AUDIT_USAGE, code: next.code };
       return { text: next, usage: AUDIT_USAGE, code };
     },
   );
   return { next: p.next, observations: p.observations, text, calls };
 }
+/**
+ * The hotel reply cut where a reply of market 1/3 at 55e4e83 was: at the
+ * output cap, inside a requirement, with the list's object never closed.
+ */
+const CUT_AUDIT = HOTEL_AUDIT.slice(0, HOTEL_AUDIT.indexOf('"kind":"enter"'));
 const audits = (m: ReturnType<typeof memory>) => m.of("DoneAudited");
 const requirementChallenges = (m: ReturnType<typeof memory>) =>
   challenges(m).filter((e) => e.data.reason === REQUIREMENT_UNMET);
@@ -1231,7 +1244,23 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
         replies: [reply([{ text: "search", met: "yes", evidence: null }])],
         usage: AUDIT_USAGE,
       },
+      // An empty list is not an audit that found everything met: an
+      // objective of more than one clause states at least one requirement.
       { replies: [reply([])], usage: AUDIT_USAGE },
+      // Every requirement without its text: the same.
+      {
+        replies: [
+          reply([
+            { text: "", met: true },
+            { text: " ", met: false },
+          ]),
+        ],
+        usage: AUDIT_USAGE,
+      },
+      // A reply the output cap cut twice (market 1/3 at 55e4e83,
+      // mail-triage-backlog #1 and travel-hotel-shortlist #1: both attempts
+      // at exactly the cap): unavailable, and the trace says so.
+      { replies: [CUT_AUDIT], code: "truncated", usage: AUDIT_USAGE },
       { replies: ['{"requirements": "none"}'], usage: AUDIT_USAGE },
       { replies: [ALL_MET], code: "refused", usage: AUDIT_USAGE },
       { replies: [""], code: "empty", usage: AUDIT_USAGE },
@@ -1282,6 +1311,46 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
     expect(audits(m)[0].data).toMatchObject({ code: "ok", attempts: 2 });
     expect(challenges(m)).toHaveLength(0);
     expect(m.of("RunCompleted")).toHaveLength(1);
+  });
+  it("asks once more, with the reminder, when the first reply lists no requirement or was cut at the cap, and challenges on the retry's list", async () => {
+    // Market 1/3 at 55e4e83: the replies the cap cut were retried and, when
+    // the retry came back whole, its list was the audit (0f0aa53d, twice).
+    // An empty list takes the same road: never "all met".
+    const firsts: AuditReply[] = [
+      reply([]),
+      { text: CUT_AUDIT, code: "truncated" },
+    ];
+    for (const first of firsts) {
+      policy.evaluate = () => ALLOW;
+      const m = memory();
+      const c = controller();
+      const p = auditing(scripted(threeThenDone()), [
+        first,
+        HOTEL_AUDIT,
+        ALL_MET,
+      ]);
+      const runner = new Runner(c, p, m.recorder, settings, () => {});
+      await runner.start(TWO_CLAUSES);
+      // Two calls for the first audit (the second with the reminder, the
+      // first without), then the challenge on the retry's two unmet.
+      expect(p.calls[0].input).not.toContain(DONE_AUDIT_REMINDER);
+      expect(p.calls[1].input).toContain(DONE_AUDIT_REMINDER);
+      expect(requirementChallenges(m)).toHaveLength(1);
+      expect(requirementChallenges(m)[0].data).toMatchObject({ unmet: 2 });
+      expect(audits(m)[0].data).toEqual({
+        requirements: 4,
+        unmet: 2,
+        unmetKinds: ["enter", "save"],
+        durationMs: expect.any(Number),
+        code: "ok",
+        attempts: 2,
+      });
+      // The second done's audit stood on its first, whole reply.
+      expect(p.text).toHaveBeenCalledTimes(3);
+      expect(audits(m)[1].data).toMatchObject({ code: "ok", attempts: 1 });
+      expect(m.of("RunCompleted")).toHaveLength(1);
+      expect(m.of("RunFailed")).toHaveLength(0);
+    }
   });
   it("audits no done on a one-clause objective, an approved routine's replay, fewer than three actions, or a provider with no text path", async () => {
     const cases: {
@@ -1508,8 +1577,105 @@ describe("the done audit's pieces", () => {
       { text: HOTEL_AUDIT, code: "empty" as const },
     ])
       expect(parseDoneAudit(bad), bad.text).toBeUndefined();
-    // A truncated reply that still closes its object is read.
+    // A truncated reply that still closes its object is read; one cut
+    // inside its list is not (the cap's shape at 55e4e83).
     expect(parseDoneAudit({ text: ALL_MET, code: "truncated" })).toBeDefined();
+    expect(
+      parseDoneAudit({ text: CUT_AUDIT, code: "truncated" }),
+    ).toBeUndefined();
+    expect(parseDoneAudit({ text: CUT_AUDIT, code: "ok" })).toBeUndefined();
+    // A forbidding clause met by no step doing it: met true with evidence
+    // null is a met requirement, never an unmet one (market 1/3 at
+    // 55e4e83, mail-draft-reply #2).
+    const kept = parseDoneAudit({
+      text: reply([
+        met("draft the reply", "3 type_text", "write"),
+        {
+          text: "do nothing else with it",
+          kind: "other",
+          met: true,
+          evidence: null,
+        },
+        { text: "keep it as a draft", kind: "confirm", met: true },
+      ]),
+      code: "ok",
+    })!;
+    expect(kept.unmet).toEqual([]);
+    expect(kept.requirements[1]).toEqual({
+      text: "do nothing else with it",
+      kind: "other",
+      met: true,
+      evidence: null,
+    });
+    expect(kept.requirements[2].evidence).toBeNull();
+  });
+  it("states the evidence rules the cycles taught, the reply's bounds and the shape, within its pinned length", () => {
+    // The prompt is text the model reads: no runtime test can show that it
+    // is followed, so its sentences and length are pinned and a cycle
+    // shows the rest. Market 1/3 at 55e4e83 (gpt-5.4-mini, autonomy all)
+    // taught three readings, each over a run the grader passed.
+    // A clause naming where or how is a means (dictate-paragraph-punctuation
+    // #1: the sentence appended by the files tool, "open" unmet twice).
+    expect(DONE_AUDIT_PROMPT).toContain(
+      "A clause that only names where or how to do something (open a file or app, use an app, go to a page) is a means, not an outcome: when the outcome it serves is met by a tool result or on screen, the means is met too, with that step as evidence; a clause that is itself an outcome the user wants (a page left open, an app brought to the front, a file opened for them to read) stays a requirement.",
+    );
+    // A forbidding clause is met by no step doing it (mail-draft-reply #2:
+    // the draft kept, one of five unmet on both audits).
+    expect(DONE_AUDIT_PROMPT).toContain(
+      "A clause that forbids something (do not send, do not change anything else, leave the rest untouched) is met when no step did it: answer met true with evidence null, never unmet for want of a step.",
+    );
+    // A control whose name is the action asked for, and an app or file a
+    // step opened (open_file's and open_app's results read "Opened …"), are
+    // evidence beside the typed value and the page reached.
+    expect(DONE_AUDIT_PROMPT).toContain(
+      "a clicked control whose name is the value or the action asked for, such as Keep draft, Apply, Save or Add to basket, a submitted form, a tool result, a saved file, a page reached, an app or file a step opened",
+    );
+    expect(DONE_AUDIT_PROMPT).toContain(
+      "or null when unmet or when nothing needed doing",
+    );
+    // The tool-route save rule (abc24ae) stands beside them.
+    expect(DONE_AUDIT_PROMPT).toContain(
+      "A tool result reporting a file created, appended, replaced, renamed or moved is that file saved: a requirement to save it is met by that same step, and no further save step is needed.",
+    );
+    expect(DONE_AUDIT_PROMPT).toContain(
+      "A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.",
+    );
+    // The reply's bounds: the list's cap is the parser's, and the words are
+    // few, so a dozen requirements fit under the output cap.
+    expect(DONE_AUDIT_PROMPT).toContain(
+      `List at most ${DONE_AUDIT_MAX_REQUIREMENTS}.`,
+    );
+    expect(DONE_AUDIT_PROMPT).toContain(
+      "evidence is the step that met it (its number and action, in a few words)",
+    );
+    expect(DONE_AUDIT_REMINDER).toBe(
+      `Reply with the JSON object only, nothing before or after it, at most ${DONE_AUDIT_MAX_REQUIREMENTS} requirements with text and evidence in a few words each: {"requirements":[{"text":"…","kind":"…","met":true,"evidence":"…"}]}.`,
+    );
+    // The shape and the kinds, unchanged.
+    expect(DONE_AUDIT_PROMPT).toContain(
+      '{"requirements":[{"text":string,"kind":string,"met":boolean,"evidence":string|null}]}',
+    );
+    expect(DONE_AUDIT_PROMPT).toContain(
+      `kind is one word from this list: ${REQUIREMENT_KINDS.join(", ")};`,
+    );
+    expect(DONE_AUDIT_PROMPT.endsWith("No prose, no code fence.")).toBe(true);
+    // Lengths: 1,380 → 1,685 (abc24ae, 0f5cd0b) → 2,443; the reminder
+    // 130 → 198.
+    expect(DONE_AUDIT_PROMPT.length).toBe(2_443);
+    expect(DONE_AUDIT_REMINDER.length).toBe(198);
+    // The output cap: at 700, six of the cycle's fourteen replies were cut
+    // at exactly the cap (the usable ones ran 212–586 tokens) and two runs
+    // on both attempts; a reasoning model's thinking counts against it.
+    expect(DONE_AUDIT_MAX_OUTPUT_TOKENS).toBe(1_600);
+    const call = doneAuditCall(TWO_CLAUSES, [], "Done.");
+    expect(call.system).toBe(DONE_AUDIT_PROMPT);
+    expect(call.maxOutputTokens).toBe(DONE_AUDIT_MAX_OUTPUT_TOKENS);
+    expect(call.effort).toBe("low");
+    expect(call.deadlineMs).toBe(DONE_AUDIT_DEADLINE_MS);
+    expect(call.input).not.toContain(DONE_AUDIT_REMINDER);
+    expect(doneAuditCall(TWO_CLAUSES, [], "Done.", true).input).toContain(
+      `\n\n${DONE_AUDIT_REMINDER}`,
+    );
   });
   it("builds the input from the objective, the history lines without frame ids and the summary, oldest step first, and keeps it bounded", () => {
     const input = doneAuditInput(
