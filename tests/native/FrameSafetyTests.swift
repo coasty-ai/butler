@@ -38,6 +38,7 @@ import CoreGraphics
         controlRoleChecks(check)
         hitCoverChecks(check)
         fieldClickChecks(check)
+        eventFlagsChecks(check)
         listNameChecks(check)
         observerChecks(check)
         webTextChecks(check)

@@ -14,7 +14,7 @@ import { redactSecrets, sanitizeText, scanText } from "../src/core/sanitize";
 import { approvalCode } from "../src/core/approval-codes";
 import { allowedCode, deniedCode, retryCode } from "../src/core/decision-codes";
 import { REQUIREMENT_KINDS } from "../src/core/done-audit";
-import type { Snapshot } from "../src/core/schema";
+import { MODIFIER_WORDS, type Snapshot } from "../src/core/schema";
 import type { DiagnosticSink } from "../src/core/diagnostics";
 
 const fields = new Set([
@@ -64,6 +64,10 @@ const fields = new Set([
   "textMs",
   // FrameCaptured: which walk produced the text (page | window).
   "textWalk",
+  // FrameCaptured: the modifiers the session reported held at capture, a
+  // list of fixed words (MODIFIER_WORDS); a stuck key beside the typing it
+  // swallowed (live 2026-09-20, Fn).
+  "modifiers",
   "actionType",
   "targetRole",
   "focusedRole",
@@ -809,9 +813,13 @@ function menuTop(action: {
  * dropped, and anything but an array is dropped whole. The done audit's
  * unmetKinds (src/core/done-audit.ts REQUIREMENT_KINDS): which kind of
  * requirement the audit failed on (save, enter, write, …), never its words.
+ * FrameCaptured's modifiers (src/core/schema.ts MODIFIER_WORDS): which
+ * modifiers the session reported held at capture, never a key's name beyond
+ * the six.
  */
 const codeListFields = new Map<string, ReadonlySet<string>>([
   ["unmetKinds", new Set<string>(REQUIREMENT_KINDS)],
+  ["modifiers", new Set<string>(MODIFIER_WORDS)],
 ]);
 const codeList = (value: unknown, allowed: ReadonlySet<string>) =>
   Array.isArray(value)
@@ -851,6 +859,7 @@ const journalEvents = new Map<string, Set<string>>([
       "textNodes",
       "textMs",
       "textWalk",
+      "modifiers",
     ]),
   ],
   ["TransitionSettled", new Set(["kind"])],
@@ -1435,6 +1444,11 @@ export class LocalDiagnostics {
           textNodes: count(e.data.textNodes),
           textMs: count(e.data.textMs),
           textWalk: code(e.data.textWalk),
+          // FrameCaptured: the held modifiers as a list of the fixed words.
+          modifiers: codeList(
+            e.data.modifiers,
+            codeListFields.get("modifiers")!,
+          ),
           synthetic: s.run.synthetic,
           actionType: e.data.actionType,
           appId: e.data.appId,

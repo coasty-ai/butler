@@ -980,6 +980,23 @@ export type VisibleTextTruncation = "time" | "nodes" | "chars";
  */
 export const VISIBLE_TEXT_CUT_MARKER =
   "[page continues below; scroll to read more]";
+/**
+ * The modifiers a frame or surface may report held, as the helper's fixed
+ * words (native/macos/InputSafety.swift modifierWords): the session's
+ * modifier state read at capture, never a key of this run's. Live
+ * 2026-09-20: a Fn the system believed held rode on every typed character
+ * and click for seven hours (checkin 3/3 -> 0/4, booking 3/3 -> 0/4) and no
+ * frame said so.
+ */
+export const MODIFIER_WORDS = [
+  "fn",
+  "command",
+  "shift",
+  "option",
+  "control",
+  "capslock",
+] as const;
+export type ModifierWord = (typeof MODIFIER_WORDS)[number];
 export interface ScreenContext {
   appName: string;
   windowTitle: string;
@@ -989,6 +1006,13 @@ export interface ScreenContext {
    * the screenshot shows whatever is behind it. A count only, never titles.
    */
   windowCount?: number;
+  /**
+   * The modifiers the session reported held when the frame was captured
+   * (MODIFIER_WORDS), empty when none: the keyboard's state, the system's
+   * account of it, not this run's doing. The runner tells the model once per
+   * set (modifierHint) and the trace carries it on FrameCaptured.
+   */
+  modifiers?: ModifierWord[];
   documentName?: string;
   selectedText?: string;
   launcher?: { query: string; selectedResult?: string };
@@ -1212,6 +1236,8 @@ export interface Surface {
    * open_app and for a click on a Dock application. 0 means open with no window.
    */
   windowCount?: number;
+  /** The modifiers the session reports held (MODIFIER_WORDS), as the frame context carries them. */
+  modifiers?: ModifierWord[];
   /** open_app resolution produced natively by surface(action). */
   launcherName?: string;
   launcherStatus?: "resolved" | "unresolved" | "ambiguous" | "refused";

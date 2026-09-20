@@ -2896,6 +2896,65 @@ describe("the journal's content-free rows", () => {
         undefined,
       ]);
     }));
+  it("keeps a frame's held modifiers as a list of the fixed words, drops a word off the list and anything that is not a list", () =>
+    fixture((log) => {
+      // Live 2026-09-20: a Fn the system believed held rode on every typed
+      // character for seven hours and no trace row said so. The row keeps
+      // the helper's fixed words alone (MODIFIER_WORDS), never a key's name
+      // beyond them, and nothing when the frame reported none.
+      const s = journal([
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0b1",
+            sha256: "s",
+            geometry: {},
+            modifiers: ["fn"],
+          },
+        },
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0b2",
+            sha256: "s",
+            geometry: {},
+            modifiers: ["command", MARK, "shift", "Globe key", "capslock"],
+          },
+        },
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0b3",
+            sha256: "s",
+            geometry: {},
+            modifiers: `${MARK} fn held down`,
+          },
+        },
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0b4",
+            sha256: "s",
+            geometry: {},
+          },
+        },
+      ]);
+      log.snapshot(s);
+      const written = rows(log).filter((r) => r.event === "FrameCaptured");
+      expect(written.map((r) => r.data.modifiers)).toEqual([
+        ["fn"],
+        ["command", "shift", "capslock"],
+        undefined,
+        undefined,
+      ]);
+      expect(written[3].data).toEqual({
+        ...base(s, 4),
+        frameId: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0b4",
+        geometry: {},
+      });
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      expect(readFileSync(log.file, "utf8")).not.toContain("Globe");
+    }));
   it("never carries a frame's browser address, wherever the payload holds it", () =>
     fixture((log) => {
       // The page's URL is in the frame context for the model and the web

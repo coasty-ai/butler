@@ -364,6 +364,48 @@ func typingInterruption(secureInput: Bool, focusUnchanged: Bool, secureField: Bo
     return focusUnchanged ? nil : .focusChanged
 }
 
+// MARK: The flags a posted event carries
+
+/// The modifier bits a chord may name (CMD, CTRL, ALT, SHIFT in `keys`): the
+/// only bits an event the helper posts ever carries.
+let requestableModifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
+/**
+ The flags an event goes out with: exactly the modifiers the action asked for,
+ and nothing the event was created with. A `CGEvent(keyboardEventSource: nil,
+ …)` or `CGEvent(mouseEventSource: nil, …)` copies the session's modifier
+ state into its flags at creation, so a key the person holds — or one the
+ system believes they hold — rides on every event the helper posts unless the
+ flags are set. Live 2026-09-20: from 05:37 PT every `type_text` into a Safari
+ field lost its text (the page's text nodes never grew, forms posted empty;
+ checkin-flight-seat 3/3 → 0/4, booking-table-pause-before-confirm 3/3 → 0/4)
+ while the click that focused the field read `focused` and the per-character
+ focus check stayed silent; at 12:15 PT `CGEventSource.flagsState` for the
+ combined session and the HID system both read Fn (`maskSecondaryFn`, raw
+ 0x20800000) held, the owner away from the keyboard since 05:36, so each typed
+ character had gone out as Globe+<char> — a system shortcut or nothing, never
+ text — and each pointer click as an Fn-click. One synthetic release of Fn
+ cleared the state and the next typing landed. `created` is the event's own
+ flags at the call (the session's copy); it is replaced, never merged, and an
+ intended bit outside the four chord modifiers is not posted either.
+ */
+func postedFlags(intended: CGEventFlags, created: CGEventFlags) -> CGEventFlags {
+    intended.intersection(requestableModifiers)
+}
+/// The modifier words a frame reports, in this order, each from one flag bit.
+let modifierWordOrder: [(flag: CGEventFlags, word: String)] = [
+    (.maskSecondaryFn, "fn"), (.maskCommand, "command"), (.maskShift, "shift"),
+    (.maskAlternate, "option"), (.maskControl, "control"), (.maskAlphaShift, "capslock"),
+]
+/**
+ The session's modifier state as a fixed word list (ScreenContext.modifiers,
+ Surface.modifiers): one word per held modifier from `modifierWordOrder`,
+ empty when none is held. Content-free by construction: the words are the
+ six above and no other, whatever bits the flags carry.
+ */
+func modifierWords(_ flags: CGEventFlags) -> [String] {
+    modifierWordOrder.filter { flags.contains($0.flag) }.map { $0.word }
+}
+
 // Synthetic buttons and keys the helper has pressed and not yet released, so
 // every exit path can release them before the process disappears. Input posted
 // to a bound process (a background run) is released to that same process;

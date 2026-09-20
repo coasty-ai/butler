@@ -1502,6 +1502,7 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     if terminalFocus {result["terminalFocus"] = true}
     result["addressBar"] = addressBar
     if addressBar {result["focusedValue"] = focusedValue}
+    result["modifiers"] = sessionModifierWords()
     if app.bundleIdentifier == "com.apple.Spotlight" {result["launcher"] = spotlightState(element)}
     if let control = hitAncestor {
         for (key, value) in targetElementFacts(control, names: [elementText(control)] + targetNames(control)) { result[key] = value }
@@ -1914,6 +1915,7 @@ func screenContext() -> [String:Any] {
         }
     }
     result["recentWindows"]=windows;result["recentFiles"]=recentFiles
+    result["modifiers"]=sessionModifierWords()
     // The rest of the picture: what else is open, and what has arrived.
     let open=openAppLines(openApplications())
     if !open.isEmpty {result["openApps"]=open}
@@ -1935,8 +1937,14 @@ func screenContext() -> [String:Any] {
     return result
 }
 let pointerEventTypes:[CGEventType] = [.mouseMoved,.leftMouseDragged,.rightMouseDragged,.leftMouseDown,.rightMouseDown,.otherMouseDown,.leftMouseUp,.rightMouseUp]
-func postInput(_ event:CGEvent?) {
+// The one place an event bound for the HID stream gets its flags: exactly the
+// modifiers the caller asked for (a chord's; none by default), never the
+// session's state the event was created with (postedFlags, InputSafety.swift:
+// the stuck Fn of 2026-09-20 rode on every typed character and click). A
+// caller sets no flags of its own; it passes them here.
+func postInput(_ event:CGEvent?, flags intended:CGEventFlags = []) {
     guard let event = event else {return}
+    event.flags = postedFlags(intended: intended, created: event.flags)
     stateLock.lock()
     lastInputTime = ProcessInfo.processInfo.systemUptime
     if event.type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) == 49 && event.flags.intersection([.maskCommand,.maskControl,.maskAlternate,.maskShift]) == .maskCommand {
@@ -1951,6 +1959,13 @@ func postInput(_ event:CGEvent?) {
     event.setIntegerValueField(.eventSourceUserData,value:inputMarker);event.post(tap:.cghidEventTap)
     stateLock.unlock()
 }
+// The modifiers the session reports held, as the fixed words (modifierWords):
+// a read of the combined session state, no event and no release. A key the
+// system believes held (the Fn of 2026-09-20) shows in every frame and surface
+// so a trace can tell dropped keystrokes from a page that did not change.
+func sessionModifierWords() -> [String] {
+    modifierWords(CGEventSource.flagsState(.combinedSessionState))
+}
 // Releases anything still pressed and ends the process without unlocking, so
 // no request thread can post input afterwards. With a signal, the default
 // action is re-raised so the parent still observes that signal. Input posted
@@ -1960,6 +1975,7 @@ func releaseHeldInputAndExit(signal terminating: Int32? = nil) -> Never {
     stopped = true
     let held = heldInput; heldInput = HeldInput()
     func post(_ event: CGEvent?) {
+        event?.flags = postedFlags(intended: [], created: event?.flags ?? [])
         event?.setIntegerValueField(.eventSourceUserData,value:inputMarker)
         if let pid = held.targetPid { event?.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(pid)); event?.postToPid(pid) } else { event?.post(tap:.cghidEventTap) }
     }
@@ -2497,8 +2513,8 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> [Strin
             let applied = attribute(target, kAXSelectedTextRangeAttribute).map { AXValueGetValue($0 as! AXValue, .cfRange, &selected) } ?? false
             if !(applied && selected.location == 0 && selected.length == length) {
                 try ensureRunning()
-                let down = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:true); down?.flags = .maskCommand; postInput(down)
-                let up = CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:false); up?.flags = .maskCommand; postInput(up)
+                postInput(CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:true), flags: .maskCommand)
+                postInput(CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:false), flags: .maskCommand)
                 Thread.sleep(forTimeInterval: 0.05)
             }
             replaced = true
@@ -2566,8 +2582,8 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> [Strin
         // greyed-out item is reported, and its keys are never posted instead.
         if action["type"] as? String == "hotkey", let path = menuRoute { try pressMenuPath(path, chord: normalizeChord(names)); return ["via": "menu"] }
         var flags:CGEventFlags = [];for name in names {if name == "CMD"{flags.insert(.maskCommand)};if name == "CTRL"{flags.insert(.maskControl)};if name == "ALT"{flags.insert(.maskAlternate)};if name == "SHIFT"{flags.insert(.maskShift)}}
-        var pressed:[CGKeyCode] = [];defer {for code in pressed.reversed(){postInput(CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:false))}}
-        for name in names {try ensureRunning();let code = keys[name]!;let e = CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:true);e?.flags = flags;postInput(e);pressed.append(code)}
+        var pressed:[CGKeyCode] = [];defer {for code in pressed.reversed(){postInput(CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:false), flags: flags)}}
+        for name in names {try ensureRunning();let code = keys[name]!;postInput(CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:true), flags: flags);pressed.append(code)}
         return action["type"] as? String == "hotkey" ? ["via": "keys"] : [:]
     default: throw ControlError("Unknown native action.")
     }
@@ -3393,8 +3409,11 @@ func writeText(_ text: String, into field: AXUIElement, replacing: Bool, bound: 
  nothing here moves the cursor or activates anything. A release is posted even
  once the latch is on, so nothing stays pressed.
  */
-func postToTarget(_ bound: TargetBinding, _ event: CGEvent?) throws {
+func postToTarget(_ bound: TargetBinding, _ event: CGEvent?, flags intended: CGEventFlags = []) throws {
     guard let event else { throw ControlError("Input event failed.") }
+    // Exactly the caller's modifiers, as postInput: the session's state the
+    // event was created with is the person's, never this run's.
+    event.flags = postedFlags(intended: intended, created: event.flags)
     if ![.leftMouseUp, .rightMouseUp, .keyUp].contains(event.type) { try ensureRunning() }
     let running = NSRunningApplication(processIdentifier: bound.pid).flatMap { $0.isTerminated ? nil : runningIdentity($0) }
     guard targetLive(bound: bound.identity, running: running, windowOwner: windowInfo(bound.windowID)?.owner) else { throw targetGone(bound) }
@@ -3428,19 +3447,15 @@ func postClick(_ bound: TargetBinding, at point: CGPoint, right: Bool, double: B
     }
 }
 func postKey(_ bound: TargetBinding, code: CGKeyCode, flags: CGEventFlags, down: Bool) throws {
-    let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)
-    event?.flags = flags
-    try postToTarget(bound, event)
+    try postToTarget(bound, CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down), flags: flags)
 }
 // One character as cua posts it: keycode 0 with the Unicode string, no flags.
 func postCharacter(_ bound: TargetBinding, _ character: Character) throws {
     let utf16 = Array(String(character).utf16)
     let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
-    down?.flags = []; down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+    down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
     try postToTarget(bound, down)
-    let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-    up?.flags = []
-    try postToTarget(bound, up)
+    try postToTarget(bound, CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false))
 }
 // Rung 1: the route that names the thing, with no event at all.
 func deliverByAccessibility(_ bound: TargetBinding, _ action: [String:Any], control: ControlEntry?, point: CGPoint?, field: AXUIElement?, replacing: Bool, menuRoute: [String]?) throws -> TargetDelivery {
@@ -3628,6 +3643,7 @@ func targetContext(_ bound: TargetBinding, state: WindowState, frame: CGRect, fa
            let selection = attribute(focused, kAXSelectedTextAttribute) as? String { result["selectedText"] = String(selection.prefix(2000)) }
     }
     result["windowCount"] = min(onScreenWindowCount(bound.pid), 99)
+    result["modifiers"] = sessionModifierWords()
     let open = openAppLines(openApplications())
     if !open.isEmpty { result["openApps"] = open }
     if let level = accessibilityLevel(window: bound.window, focusedRole: focusedRole, hitTarget: false) { result["accessibility"] = level.rawValue }

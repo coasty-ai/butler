@@ -41,6 +41,7 @@ const build = spawnSync(
     "tests/native/ControlRoleTests.swift",
     "tests/native/HitCoverTests.swift",
     "tests/native/FieldClickTests.swift",
+    "tests/native/EventFlagsTests.swift",
     "tests/native/ListNameTests.swift",
     "tests/native/FrameSafetyTests.swift",
     "tests/native/ObserverTests.swift",

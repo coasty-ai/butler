@@ -20,6 +20,7 @@ import type {
   Surface,
   ScreenshotUse,
   MemoryContext,
+  ModifierWord,
   TargetSpec,
   TaskSource,
   Usage,
@@ -36,6 +37,7 @@ import type {
   TrajectoryStep,
 } from "./memory";
 import {
+  MODIFIER_WORDS,
   actionSchema,
   validateAction,
   sameGeometry,
@@ -774,6 +776,50 @@ export function clickEffectNote(
  */
 export const DOWNLOAD_HINT =
   " A link that changes nothing may have downloaded its file to the Downloads folder: list it with list_directory and move it with move_file to the destination instead of clicking again.";
+/**
+ * The modifiers in a frame's report that change what a posted key or click
+ * does, in the fixed order and each once: every word but capslock, a toggle
+ * that changes no event the helper posts (a typed character goes out as its
+ * Unicode string, a click as a click).
+ */
+export function heldModifiers(modifiers: readonly string[]): ModifierWord[] {
+  return MODIFIER_WORDS.filter(
+    (word) => word !== "capslock" && modifiers.includes(word),
+  );
+}
+/** The input steps whose events a held modifier would ride on. */
+export const MODIFIER_HINT_ACTIONS: ReadonlySet<string> = new Set([
+  "type_text",
+  "key",
+  "click",
+  "click_control",
+  "double_click",
+  "right_click",
+]);
+/**
+ * The sentence an input step gets when the frame it ran on reported a
+ * modifier held (ScreenContext.modifiers), once per held set a run. Live
+ * 2026-09-20: from 05:37 PT every type_text into a Safari field lost its
+ * text while the field's click read focused and the per-character focus
+ * check stayed silent — checkin-flight-seat 3/3 -> 0/4, booking 3/3 -> 0/4 —
+ * and at 12:15 PT the session's flags state read Fn held with the owner
+ * away, so each nil-source key event had gone out as Globe+<char>. The
+ * helper now posts every event with explicit flags (postedFlags), so its
+ * own keys and clicks are clean whatever the session holds; the sentence
+ * tells the model the state is the person's, and the runner never releases
+ * a key the person may be holding. Empty for no held modifier (capslock
+ * alone included). Under 160 characters for one word: it rides the executed
+ * line with the loop warning under MODEL_RESULT_CHARS.
+ */
+export function modifierHint(modifiers: readonly string[]): string {
+  const held = heldModifiers(modifiers);
+  if (!held.length) return "";
+  const list =
+    held.length === 1
+      ? held[0]
+      : `${held.slice(0, -1).join(", ")} and ${held[held.length - 1]}`;
+  return ` The keyboard reports ${list} held down (the system, not this run); if typing or clicks misbehave, ask the user to press and release ${held.length === 1 ? "that key" : "those keys"}.`;
+}
 /**
  * Whether an executed click was on a link (the surface's target role: AXLink,
  * or a resolved control's "link") in a browser (the surface's application in
@@ -1741,6 +1787,8 @@ export class Runner {
   private noEffectClicks = new Map<string, number>();
   /** Link clicks in a browser that read as no page change and were given DOWNLOAD_HINT, by step signature (once per control a run). */
   private downloadHinted = new Set<string>();
+  /** Held modifier sets (heldModifiers, joined) an input step was already told about with modifierHint (once per set a run). */
+  private modifierHinted = new Set<string>();
   /** The transition the last executed step began; the capture after it waits. */
   private settleBefore?: "launched" | "navigated";
   /** The host the streamed prelude's last open_url sent the browser to, for the first capture to wait on. */
@@ -4216,6 +4264,11 @@ export class Runner {
       }),
       ...(c?.visibleTextMs !== undefined && { textMs: c.visibleTextMs }),
       ...(c?.visibleTextWalk && { textWalk: c.visibleTextWalk }),
+      // The modifiers the session reported held at capture (fixed words):
+      // a stuck key shows in the trace beside the typing it swallowed.
+      ...(c?.modifiers && c.modifiers.length > 0
+        ? { modifiers: c.modifiers }
+        : {}),
     });
     return frame;
   }
@@ -4554,6 +4607,7 @@ export class Runner {
                     : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
         clickEffectNote(action, outcome) +
         (downloadHint ? DOWNLOAD_HINT : "") +
+        this.modifierNote(action, executionFrame) +
         this.pageToolNote(action, executionFrame) +
         (o.reaimed ? reaimNote : "") +
         (loop === "warn" ? loopWarning : "") +
@@ -4585,6 +4639,21 @@ export class Runner {
     if (this.downloadHinted.has(key)) return false;
     this.downloadHinted.add(key);
     return true;
+  }
+  /**
+   * modifierHint for the first input step (MODIFIER_HINT_ACTIONS) in the run
+   * under a given held modifier set — the frame the step ran on reporting
+   * the session's state at capture — so a key the person holds all run is
+   * named once, not on every step. No release is posted: the key is theirs.
+   */
+  private modifierNote(action: Action, frame: Frame): string {
+    if (!MODIFIER_HINT_ACTIONS.has(action.type)) return "";
+    const held = heldModifiers(frame.context?.modifiers ?? []);
+    if (!held.length) return "";
+    const key = held.join(",");
+    if (this.modifierHinted.has(key)) return "";
+    this.modifierHinted.add(key);
+    return modifierHint(held);
   }
   /**
    * On the second consecutive capture: PAGE_TOOL_NOTE on a browser page
@@ -4623,6 +4692,7 @@ export class Runner {
     this.loopEpisodes = 0;
     this.noEffectClicks = new Map();
     this.downloadHinted = new Set();
+    this.modifierHinted = new Set();
     this.readCalls = 0;
     this.wroteByTool = false;
     this.written = [];

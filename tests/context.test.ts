@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { cleanScreenContext, trimScreenContext } from "../src/core/context";
+import { MODIFIER_WORDS } from "../src/core/schema";
 describe("bounded screen context", () => {
   it("retains references while removing detected credentials", () => {
     const result = cleanScreenContext({
@@ -36,6 +37,45 @@ describe("bounded screen context", () => {
     expect(result?.visibleText).toContain("MFA: enabled.");
     expect(result?.visibleText).toContain("[Sensitive text omitted] Continue");
     expect(result?.visibleText).not.toContain("fixtureSECRET");
+  });
+  it("keeps the held modifiers as the fixed words in their fixed order, drops a word off the list and not the context, and leaves them out of the model's copy", () => {
+    // The helper's read of the session's modifier state at capture (live
+    // 2026-09-20: a Fn the system believed held for seven hours); the order
+    // is the fixed one whatever the helper sent, a word is kept once, and a
+    // word that is not one of the six goes without taking the context.
+    const held = cleanScreenContext({
+      appName: "Safari",
+      windowTitle: "Form",
+      modifiers: ["shift", "fn", "Globe", "fn", "Shift"],
+    });
+    expect(held?.modifiers).toEqual(["fn", "shift"]);
+    expect(held?.appName).toBe("Safari");
+    expect(
+      cleanScreenContext({ appName: "x", windowTitle: "x", modifiers: [] })
+        ?.modifiers,
+    ).toEqual([]);
+    expect(
+      cleanScreenContext({
+        appName: "x",
+        windowTitle: "x",
+        modifiers: [...MODIFIER_WORDS].reverse(),
+      })?.modifiers,
+    ).toEqual([...MODIFIER_WORDS]);
+    expect(
+      cleanScreenContext({ appName: "x", windowTitle: "x" }),
+    ).not.toHaveProperty("modifiers");
+    // The model's copy carries none: the runner's history line speaks for it.
+    expect(
+      trimScreenContext({ appName: "x", windowTitle: "x", modifiers: ["fn"] }),
+    ).not.toHaveProperty("modifiers");
+    expect(MODIFIER_WORDS).toEqual([
+      "fn",
+      "command",
+      "shift",
+      "option",
+      "control",
+      "capslock",
+    ]);
   });
   it("parses the page-text walk's stop and counts, and rejects a stop that is not one of its codes", () => {
     const cut = cleanScreenContext({

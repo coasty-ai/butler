@@ -24,6 +24,7 @@ import {
   LOOP_STUCK_MESSAGE,
   LOOP_WINDOW,
   MODEL_RESULT_CHARS,
+  MODIFIER_HINT_ACTIONS,
   PAGE_SWITCHES,
   PAGE_TOOL_NOTE,
   PAGE_WINDOW,
@@ -33,7 +34,9 @@ import {
   TRANSITION_SETTLE_MS,
   actionSignature,
   downloadableClick,
+  heldModifiers,
   loopWarning,
+  modifierHint,
   moveKey,
   pageKey,
   pageSwitchWarning,
@@ -1744,6 +1747,168 @@ describe("a link click in a browser that changed nothing on the page", () => {
  * controls. Every page here is a synthetic title on a loopback address;
  * every label a fixed word.
  */
+/**
+ * A modifier the session reports held (ScreenContext.modifiers: the helper's
+ * read of the keyboard's state at capture). Live 2026-09-20: from 05:37 PT
+ * every type_text into a Safari field lost its text while the field's click
+ * read focused and the per-character focus check stayed silent
+ * (checkin-flight-seat 3/3 -> 0/4, booking 3/3 -> 0/4); at 12:15 PT the
+ * session's flags state read Fn held with the owner away, so each nil-source
+ * key event had gone out as Globe+<char>. The helper now posts every event
+ * with explicit flags; the runner tells the model once per held set, on the
+ * first type_text, key or click under it, and never releases a key. Fixed
+ * words only.
+ */
+describe("a frame that reports a modifier held", () => {
+  const typing = act({ type: "type_text", text: "ab12" });
+  const click = act({ type: "click", x: 0.5, y: 0.5 });
+  const scroll = act({
+    type: "scroll",
+    x: 0.5,
+    y: 0.5,
+    delta_x: 0,
+    delta_y: 100,
+  });
+  /** A frame whose context reports the given modifiers held (none when undefined). */
+  const reporting =
+    (held: (capture: number) => ScreenContext["modifiers"]) =>
+    (capture: number) => ({
+      context: {
+        appName: "Safari",
+        windowTitle: "Form",
+        ...(held(capture) ? { modifiers: held(capture) } : {}),
+      },
+    });
+  const runnerFor = (
+    c: Controller,
+    p: ReturnType<typeof scripted>,
+    m: ReturnType<typeof memory>,
+  ) =>
+    new Runner(
+      c,
+      p,
+      m.recorder,
+      unattendedAll,
+      () => {},
+      [],
+      undefined,
+      settle,
+    );
+  const fnLine = modifierHint(["fn"]);
+  const results = (p: ReturnType<typeof scripted>) =>
+    p.observations.map((o) => o.history.at(-1)?.result ?? "");
+  it("adds the sentence once to the first input step under a held fn, not to the key or click after it, and journals the frame's modifiers", async () => {
+    allowAll();
+    const c = controller(
+      {},
+      reporting(() => ["fn"]),
+    );
+    const m = memory();
+    const provider = scripted([typing, enter, click]);
+    await runnerFor(c, provider, m).start("task", bench);
+    const lines = results(provider);
+    expect(lines[1].endsWith(fnLine)).toBe(true);
+    expect(lines[1].startsWith("Executed")).toBe(true);
+    expect(lines[2]).not.toContain(fnLine.trim());
+    expect(lines[3]).not.toContain(fnLine.trim());
+    expect(
+      provider.observations
+        .at(-1)!
+        .history.filter((h) => h.result.includes(fnLine.trim())),
+    ).toHaveLength(1);
+    expect(m.of("FrameCaptured").map((e) => e.data.modifiers)).toEqual(
+      m.of("FrameCaptured").map(() => ["fn"]),
+    );
+    expect(m.of("FrameCaptured").length).toBeGreaterThanOrEqual(3);
+    // The runner hands the provider the frame whole; the model's copy loses
+    // the list in trimScreenContext (tests/context.test.ts): the line speaks.
+    for (const o of provider.observations)
+      expect(o.frame.context?.modifiers).toEqual(["fn"]);
+    expect(m.getRun().status).toBe("completed");
+    expect(fnLine).toBe(
+      " The keyboard reports fn held down (the system, not this run); if typing or clicks misbehave, ask the user to press and release that key.",
+    );
+  });
+  it("says nothing when the frame reports none held or Caps Lock alone; an empty report puts nothing on the row, Caps Lock still shows there", async () => {
+    allowAll();
+    for (const held of [undefined, [], ["capslock"]] as const) {
+      const c = controller(
+        {},
+        reporting(() => (held ? [...held] : undefined)),
+      );
+      const m = memory();
+      const provider = scripted([typing, enter]);
+      await runnerFor(c, provider, m).start("task", bench);
+      for (const line of results(provider))
+        expect(line).not.toContain("held down");
+      // A toggle that changes no posted event earns no line, but the trace
+      // keeps the reading; no report and an empty one put nothing there.
+      for (const e of m.of("FrameCaptured"))
+        if (held?.length) expect(e.data.modifiers).toEqual([...held]);
+        else expect(e.data).not.toHaveProperty("modifiers");
+      expect(m.getRun().status).toBe("completed");
+    }
+  });
+  it("names a second held set once in its own words, leaves a scroll alone, and keeps the line under the model's cap", async () => {
+    allowAll();
+    // Captures 1 and 2 report fn; from the third the session also holds
+    // Shift: a new set, told once; the fourth typing under it reads plain.
+    const c = controller(
+      {},
+      reporting((n) => (n <= 2 ? ["fn"] : ["shift", "fn"])),
+    );
+    const m = memory();
+    const provider = scripted([typing, scroll, typing, typing]);
+    await runnerFor(c, provider, m).start("task", bench);
+    const lines = results(provider);
+    const both = modifierHint(["fn", "shift"]);
+    expect(lines[1].endsWith(fnLine)).toBe(true);
+    expect(lines[2]).not.toContain("held down");
+    expect(lines[3].endsWith(both)).toBe(true);
+    expect(lines[4]).not.toContain("held down");
+    expect(both).toContain("fn and shift held down");
+    expect(both.endsWith("those keys.")).toBe(true);
+    expect(m.of("FrameCaptured").map((e) => e.data.modifiers)).toEqual([
+      ["fn"],
+      ["fn"],
+      ["shift", "fn"],
+      ["shift", "fn"],
+      ["shift", "fn"],
+    ]);
+    // The bound: the sentence under 160 for one word, and the typed step's
+    // line with it and the loop warning within the model's 640.
+    expect(fnLine.startsWith(" ")).toBe(true);
+    expect(fnLine.trim().length).toBeLessThanOrEqual(160);
+    expect(lines[1].length + loopWarning.length).toBeLessThanOrEqual(
+      MODEL_RESULT_CHARS,
+    );
+    expect(m.getRun().status).toBe("completed");
+  });
+  it("reads the held set in the fixed order, once each, without Caps Lock, and hints the six input steps alone", () => {
+    expect(heldModifiers(["capslock", "shift", "fn", "fn", "Globe"])).toEqual([
+      "fn",
+      "shift",
+    ]);
+    expect(heldModifiers([])).toEqual([]);
+    expect(heldModifiers(["capslock"])).toEqual([]);
+    expect(modifierHint([])).toBe("");
+    expect(modifierHint(["capslock"])).toBe("");
+    expect(modifierHint(["control", "command", "option"])).toContain(
+      "command, option and control held down",
+    );
+    for (const type of [
+      "type_text",
+      "key",
+      "click",
+      "click_control",
+      "double_click",
+      "right_click",
+    ])
+      expect(MODIFIER_HINT_ACTIONS.has(type)).toBe(true);
+    for (const type of ["scroll", "hotkey", "capture", "done", "open_app"])
+      expect(MODIFIER_HINT_ACTIONS.has(type)).toBe(false);
+  });
+});
 describe("the page-switch rule", () => {
   const page = (name: string): ScreenContext => ({
     appName: "Browser",

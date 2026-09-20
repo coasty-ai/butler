@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ScreenContext } from "./schema";
+import { MODIFIER_WORDS, type ScreenContext } from "./schema";
 import { redactSecrets } from "./sanitize";
 import { normalizeLabel, normalizeRole } from "./labels";
 // Truncate rather than reject: a single long title or label must not drop the
@@ -13,6 +13,10 @@ const contextSchema = z
     windowTitle: short,
     // A count, never titles: 0 is an application open with no window.
     windowCount: z.number().int().min(0).max(99).optional(),
+    // The modifiers the session reported held at capture: the helper's fixed
+    // words (MODIFIER_WORDS); a word off the list is dropped below, never the
+    // context, and the list's order is the fixed one whatever the helper sent.
+    modifiers: z.array(z.string().max(20)).max(12).optional(),
     documentName: short.optional(),
     selectedText: z.string().max(2000).optional(),
     browserAddress: z.string().max(2000).optional(),
@@ -101,6 +105,9 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
     appName: clean(c.appName),
     windowTitle: clean(c.windowTitle),
     ...(c.windowCount !== undefined && { windowCount: c.windowCount }),
+    ...(c.modifiers && {
+      modifiers: MODIFIER_WORDS.filter((word) => c.modifiers!.includes(word)),
+    }),
     ...(c.documentName !== undefined && {
       documentName: clean(c.documentName),
     }),
@@ -208,7 +215,10 @@ const textEntryRoles = new Set([
  * screen; the first entry keeps its position). Windows that context.openApps
  * already lists leave recentWindows, and the page-text walk's counts
  * (visibleTextNodes, visibleTextMs) are diagnostics the model has no use for;
- * its stop code stays beside the marker line. Only the provider calls this:
+ * its stop code stays beside the marker line. The held modifiers go too: the
+ * runner's history line (modifierHint) says what they mean, once, and a bare
+ * word list would invite a mini model to release a key that is the person's
+ * to release. Only the provider calls this:
  * the runner resolves named targets and replays against the full control list.
  */
 export function trimScreenContext(
@@ -260,6 +270,7 @@ export function trimScreenContext(
     visibleTextNodes: _visibleTextNodes,
     visibleTextMs: _visibleTextMs,
     visibleTextWalk: _visibleTextWalk,
+    modifiers: _modifiers,
     ...rest
   } = screen;
   return {
