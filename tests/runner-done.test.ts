@@ -1608,6 +1608,58 @@ describe("the done audit's pieces", () => {
       evidence: null,
     });
     expect(kept.requirements[2].evidence).toBeNull();
+    // Evidence as the prompt now asks, the step's number: a reply of
+    // DONE_AUDIT_MAX_REQUIREMENTS requirements with numbers and nulls
+    // parses whole, the numbers kept as numbers; a string is still read
+    // (bounded) and a fraction or zero is a number like any other, never a
+    // reason to reject.
+    const numbered = parseDoneAudit({
+      text: reply(
+        Array.from({ length: DONE_AUDIT_MAX_REQUIREMENTS }, (_, i) => ({
+          text: `requirement ${i}`,
+          kind: "enter",
+          met: i % 3 !== 2,
+          evidence: i % 3 === 2 ? null : i + 1,
+        })),
+      ),
+      code: "ok",
+    })!;
+    expect(numbered.requirements).toHaveLength(DONE_AUDIT_MAX_REQUIREMENTS);
+    expect(numbered.unmet).toHaveLength(4);
+    expect(numbered.requirements[0].evidence).toBe(1);
+    expect(numbered.requirements[2].evidence).toBeNull();
+    expect(numbered.requirements[10].evidence).toBe(11);
+    expect(numbered.requirements[11].evidence).toBeNull();
+    const mixed = parseDoneAudit({
+      text: reply([
+        { text: "a", met: true, evidence: 3 },
+        { text: "b", met: true, evidence: "3 click" },
+        { text: "c", met: true, evidence: "s".repeat(400) },
+        { text: "d", met: true, evidence: 0 },
+        { text: "e", met: false, evidence: 2.5 },
+      ]),
+      code: "ok",
+    })!;
+    expect(mixed.requirements.map((r) => r.evidence)).toEqual([
+      3,
+      "3 click",
+      "s".repeat(199) + "…",
+      0,
+      2.5,
+    ]);
+    // A boolean or an object as evidence is not the shape.
+    expect(
+      parseDoneAudit({
+        text: reply([{ text: "a", met: true, evidence: true }]),
+        code: "ok",
+      }),
+    ).toBeUndefined();
+    expect(
+      parseDoneAudit({
+        text: reply([{ text: "a", met: true, evidence: { step: 1 } }]),
+        code: "ok",
+      }),
+    ).toBeUndefined();
   });
   it("states the evidence rules the cycles taught, the reply's bounds and the shape, within its pinned length", () => {
     // The prompt is text the model reads: no runtime test can show that it
@@ -1645,28 +1697,36 @@ describe("the done audit's pieces", () => {
     expect(DONE_AUDIT_PROMPT).toContain(
       `List at most ${DONE_AUDIT_MAX_REQUIREMENTS}.`,
     );
+    // Evidence is the step's number alone: a sentence of evidence made a
+    // requirement about 90 tokens, a dozen about 1,080.
     expect(DONE_AUDIT_PROMPT).toContain(
-      "evidence is the step that met it (its number and action, in a few words)",
+      "evidence is the number of the step that met it (an integer, nothing else), or null when unmet or when nothing needed doing.",
     );
     expect(DONE_AUDIT_REMINDER).toBe(
-      `Reply with the JSON object only, nothing before or after it, at most ${DONE_AUDIT_MAX_REQUIREMENTS} requirements with text and evidence in a few words each: {"requirements":[{"text":"…","kind":"…","met":true,"evidence":"…"}]}.`,
+      `Reply with the JSON object only, nothing before or after it, at most ${DONE_AUDIT_MAX_REQUIREMENTS} requirements, text in a few words and evidence the step's number: {"requirements":[{"text":"…","kind":"…","met":true,"evidence":1}]}.`,
     );
-    // The shape and the kinds, unchanged.
+    // The shape (evidence now a number or null) and the kinds, unchanged.
     expect(DONE_AUDIT_PROMPT).toContain(
-      '{"requirements":[{"text":string,"kind":string,"met":boolean,"evidence":string|null}]}',
+      '{"requirements":[{"text":string,"kind":string,"met":boolean,"evidence":number|null}]}',
     );
+    expect(DONE_AUDIT_PROMPT).not.toContain('"evidence":string');
     expect(DONE_AUDIT_PROMPT).toContain(
       `kind is one word from this list: ${REQUIREMENT_KINDS.join(", ")};`,
     );
     expect(DONE_AUDIT_PROMPT.endsWith("No prose, no code fence.")).toBe(true);
-    // Lengths: 1,380 → 1,685 (abc24ae, 0f5cd0b) → 2,443; the reminder
-    // 130 → 198.
-    expect(DONE_AUDIT_PROMPT.length).toBe(2_443);
-    expect(DONE_AUDIT_REMINDER.length).toBe(198);
+    // Lengths: 1,380 → 1,685 (abc24ae, 0f5cd0b) → 2,443 (5e119c1) →
+    // 2,445; the reminder 130 → 198 → 205.
+    expect(DONE_AUDIT_PROMPT.length).toBe(2_445);
+    expect(DONE_AUDIT_REMINDER.length).toBe(205);
     // The output cap: at 700, six of the cycle's fourteen replies were cut
     // at exactly the cap (the usable ones ran 212–586 tokens) and two runs
-    // on both attempts; a reasoning model's thinking counts against it.
-    expect(DONE_AUDIT_MAX_OUTPUT_TOKENS).toBe(1_600);
+    // on both attempts (4 unavailable in 15 audits, against 1 in 17 and 1
+    // in 13 the two cycles before); a reasoning model's thinking counts
+    // against it. About 90 tokens a requirement with a sentence of evidence
+    // times 12, plus the object and the thinking: 1,400. The deadline is
+    // the same 30 s.
+    expect(DONE_AUDIT_MAX_OUTPUT_TOKENS).toBe(1_400);
+    expect(DONE_AUDIT_DEADLINE_MS).toBe(30_000);
     const call = doneAuditCall(TWO_CLAUSES, [], "Done.");
     expect(call.system).toBe(DONE_AUDIT_PROMPT);
     expect(call.maxOutputTokens).toBe(DONE_AUDIT_MAX_OUTPUT_TOKENS);

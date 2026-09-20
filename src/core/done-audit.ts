@@ -46,8 +46,9 @@
  * and two false dones stood. The prompt now states the means rule, the
  * forbidding-clause rule, the control whose name is the action asked for
  * and the app or file a step opened as evidence, and asks for at most
- * DONE_AUDIT_MAX_REQUIREMENTS requirements in a few words each; the cap is
- * DONE_AUDIT_MAX_OUTPUT_TOKENS, and the retry's reminder asks for brevity.
+ * DONE_AUDIT_MAX_REQUIREMENTS requirements, text in a few words and
+ * evidence the step's number alone; the cap is DONE_AUDIT_MAX_OUTPUT_TOKENS,
+ * and the retry's reminder asks for the same bounds.
  *
  * Content: the requirements' words travel to the model and into the
  * history line the encrypted journal keeps; the trace (DoneAudited) carries
@@ -66,14 +67,19 @@ import type {
 /** Below this many executed actions a done is not audited: nothing to read. */
 export const DONE_AUDIT_MIN_ACTIONS = 3;
 /**
- * Room for a dozen requirements with a line of evidence each, and for a
- * reasoning model's thinking, which OpenAI and Gemini count against this
- * cap. At 700, market 1/3 at 55e4e83 (gpt-5.4-mini, effort low) cut six of
- * fourteen audit replies at exactly the cap while the usable ones ran
- * 212–586 tokens; two runs were cut on both attempts and their false dones
- * stood as "unavailable".
+ * Room for the reply: a requirement written as {"text","kind","met",
+ * "evidence"} with a sentence of evidence is about 90 tokens, so twelve
+ * (DONE_AUDIT_MAX_REQUIREMENTS) are about 1,080, plus the object's own
+ * words and a reasoning model's thinking, which OpenAI and Gemini count
+ * against this cap. At 700, market 1/3 at 55e4e83 (gpt-5.4-mini, effort
+ * low; the first cycle with `kind` in the shape) cut six of fourteen audit
+ * replies at exactly the cap while the usable ones ran 212–586 tokens; two
+ * runs were cut on both attempts and their false dones stood as
+ * "unavailable" (abc24ae had 1 unavailable in 17, c8c9e10 1 in 13, this
+ * cycle 4 in 15). With evidence the step's number a requirement is nearer
+ * 40 tokens, so a dozen fit in 500 and the rest is thinking room.
  */
-export const DONE_AUDIT_MAX_OUTPUT_TOKENS = 1_600;
+export const DONE_AUDIT_MAX_OUTPUT_TOKENS = 1_400;
 /** The whole call, retries included; the run's clock keeps running. */
 export const DONE_AUDIT_DEADLINE_MS = 30_000;
 /** Requirements past this many are dropped from the reading and the line. */
@@ -315,7 +321,7 @@ export function auditApplies(scope: DoneAuditScope): boolean {
 export const DONE_AUDIT_PROMPT = `You audit whether a computer-use run on a Mac finished its objective. You are given the objective, the run's steps in order (each as the model proposed it, with the result the runner reported) and the model's own summary at done.
 List every requirement the objective states: each distinct outcome or step it asks for (a page or app to open, a value to enter, search or select, a fact to write, a file to save, a message to send, a condition to satisfy). Split a sentence that asks for several things into one requirement each; a fact the objective names is its own requirement. List at most ${DONE_AUDIT_MAX_REQUIREMENTS}.
 For each requirement decide from the steps and the screen at done whether the run met it. met is true only when a step shows it happened (a typed or selected value, a clicked control whose name is the value or the action asked for, such as Keep draft, Apply, Save or Add to basket, a submitted form, a tool result, a saved file, a page reached, an app or file a step opened) or the screen at done shows its outcome (a confirmation, the value in place). A tool result reporting a file created, appended, replaced, renamed or moved is that file saved: a requirement to save it is met by that same step, and no further save step is needed. A clause that only names where or how to do something (open a file or app, use an app, go to a page) is a means, not an outcome: when the outcome it serves is met by a tool result or on screen, the means is met too, with that step as evidence; a clause that is itself an outcome the user wants (a page left open, an app brought to the front, a file opened for them to read) stays a requirement. A clause that forbids something (do not send, do not change anything else, leave the rest untouched) is met when no step did it: answer met true with evidence null, never unmet for want of a step. A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
-Reply with strict JSON and nothing else, in this exact shape: {"requirements":[{"text":string,"kind":string,"met":boolean,"evidence":string|null}]}. text is the requirement in a few words from the objective; kind is one word from this list: open, navigate, read, enter, select, write, save, send, confirm, other; evidence is the step that met it (its number and action, in a few words) or null when unmet or when nothing needed doing. No prose, no code fence.`;
+Reply with strict JSON and nothing else, in this exact shape: {"requirements":[{"text":string,"kind":string,"met":boolean,"evidence":number|null}]}. text is the requirement in a few words from the objective; kind is one word from this list: open, navigate, read, enter, select, write, save, send, confirm, other; evidence is the number of the step that met it (an integer, nothing else), or null when unmet or when nothing needed doing. No prose, no code fence.`;
 
 const historyLine = (entry: History[number], index: number): string => {
   const { frame_id: _frame, ...action } = entry.action ?? {};
@@ -388,9 +394,10 @@ export function doneAuditInput(
  * the first audit answered nothing usable and the done stood with the
  * dates never searched. It asks for brevity too: at 55e4e83 the replies the
  * cap cut were retried at the same cap and cut again (two runs, both
- * attempts), so the retry names the bound and asks for a few words each.
+ * attempts), so the retry names the bound, a few words of text and the
+ * step's number as evidence.
  */
-export const DONE_AUDIT_REMINDER = `Reply with the JSON object only, nothing before or after it, at most ${DONE_AUDIT_MAX_REQUIREMENTS} requirements with text and evidence in a few words each: {"requirements":[{"text":"…","kind":"…","met":true,"evidence":"…"}]}.`;
+export const DONE_AUDIT_REMINDER = `Reply with the JSON object only, nothing before or after it, at most ${DONE_AUDIT_MAX_REQUIREMENTS} requirements, text in a few words and evidence the step's number: {"requirements":[{"text":"…","kind":"…","met":true,"evidence":1}]}.`;
 export function doneAuditCall(
   objective: string,
   history: History,
@@ -414,7 +421,13 @@ export interface Requirement {
   /** One of REQUIREMENT_KINDS; "other" when the reply gave none or one off the list. */
   kind: RequirementKind;
   met: boolean;
-  evidence: string | null;
+  /**
+   * The number of the step that met it, as the prompt asks; a short string
+   * when the model wrote one anyway (bounded, never rejected); null when
+   * unmet or when nothing needed doing. Nothing reads it but the reply's
+   * own shape: the trace never carried it.
+   */
+  evidence: number | string | null;
 }
 export interface DoneAudit {
   requirements: Requirement[];
@@ -426,8 +439,9 @@ const requirementSchema = z.object({
   // Any value or none: read as a kind below, never a reason to reject.
   kind: z.unknown().optional(),
   met: z.boolean(),
+  // A step number as asked, or a short string when the model wrote one.
   evidence: z
-    .string()
+    .union([z.number(), z.string()])
     .nullable()
     .optional()
     .transform((value) => value ?? null),
@@ -477,7 +491,8 @@ export function parseDoneAudit(
       text: bound(r.text, 200),
       kind: requirementKind(r.kind),
       met: r.met,
-      evidence: r.evidence === null ? null : bound(r.evidence, 200),
+      evidence:
+        typeof r.evidence === "string" ? bound(r.evidence, 200) : r.evidence,
     }));
   return { requirements, unmet: requirements.filter((r) => !r.met) };
 }
