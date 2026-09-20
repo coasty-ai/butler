@@ -1244,6 +1244,66 @@ describe("a tool step that finishes the run", () => {
     expect(none).not.toHaveBeenCalled();
     expect(single.m.of("RunCompleted")).toHaveLength(1);
   });
+  it("audits a one-clause finish when the settings put the audit on a stronger model, and not when the dialog model is the run's own", async () => {
+    // Sweep B 2/3 at 2308fd9 (cycle 20260920-1049, gpt-5.4-mini cell, the
+    // audit on gpt-5.4 through --audit-model), files-rename-receipts #1: a
+    // list, four reads and three renames, the third marked finish,
+    // fourteen tool steps on a one-sentence objective, RunCompleted with
+    // no DoneAudited row, and the three files renamed to the wrong names.
+    // The dentist words are one clause too; the dialog model is a name.
+    expect(settings.model).not.toBe("gpt-5.4");
+    const strong = harness({
+      replies: [look, look, finishing],
+      settings: { ...all, dialogModel: "gpt-5.4" },
+    });
+    const text = auditing(strong, [
+      { text: "add the dentist appointment", met: true, evidence: "3" },
+    ]);
+    await strong.runner.start(DENTIST_WORDS, voice);
+    expect(text).toHaveBeenCalledTimes(1);
+    expect(strong.m.of("DoneAudited")).toHaveLength(1);
+    expect(strong.m.of("DoneAudited")[0].data).toMatchObject({
+      requirements: 1,
+      unmet: 0,
+      unmetKinds: [],
+      code: "ok",
+    });
+    expect(strong.m.of("ActionFailed")).toHaveLength(0);
+    expect(strong.tools!.calls).toHaveLength(1);
+    expect(strong.m.of("RunCompleted")).toHaveLength(1);
+    expect(strong.runner.snapshot.run?.status).toBe("completed");
+    // And sent back when unmet, like a done: the next finish is audited
+    // once more and stands.
+    const challenged = harness({
+      replies: [look, look, finishing, finishing],
+      settings: { ...all, dialogModel: "gpt-5.4" },
+    });
+    const again = auditing(
+      challenged,
+      [{ text: "add the dentist appointment", met: false, evidence: null }],
+      [{ text: "add the dentist appointment", met: true, evidence: "4" }],
+    );
+    await challenged.runner.start(DENTIST_WORDS, voice);
+    expect(again).toHaveBeenCalledTimes(2);
+    expect(
+      challenged.m
+        .of("ActionFailed")
+        .filter((e) => e.data.reason === REQUIREMENT_UNMET),
+    ).toHaveLength(1);
+    expect(challenged.m.of("DoneAudited")).toHaveLength(2);
+    expect(challenged.m.of("RunCompleted")).toHaveLength(1);
+    // The run's own model named as the dialog model is no stronger
+    // auditor: the one-clause finish stands unaudited, as above.
+    const same = harness({
+      replies: [look, look, finishing],
+      settings: { ...all, dialogModel: settings.model },
+    });
+    const none = auditing(same, []);
+    await same.runner.start(DENTIST_WORDS, voice);
+    expect(none).not.toHaveBeenCalled();
+    expect(same.m.of("DoneAudited")).toHaveLength(0);
+    expect(same.m.of("RunCompleted")).toHaveLength(1);
+  });
 });
 
 describe("looking again at a browser page", () => {

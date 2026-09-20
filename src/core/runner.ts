@@ -84,6 +84,7 @@ import {
   parseDoneAudit,
   requirementChallenge,
   REQUIREMENT_UNMET,
+  strongAuditorConfigured,
   type DoneAudit,
   type DoneDeliverable,
   type DoneEvidence,
@@ -3459,6 +3460,7 @@ export class Runner {
           synthetic: run.synthetic,
           actions: run.actions,
           hasText: typeof this.provider.text === "function",
+          strongAuditor: strongAuditorConfigured(this.settings),
         })
       ) {
         this.doneAudited = true;
@@ -5881,6 +5883,7 @@ export class Runner {
               synthetic: run.synthetic,
               actions: run.actions,
               hasText: typeof this.provider.text === "function",
+              strongAuditor: strongAuditorConfigured(this.settings),
             })
           ) {
             this.doneAudited = true;

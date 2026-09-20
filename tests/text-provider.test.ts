@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultSettings, type Settings } from "../src/core/schema";
+import { strongAuditorConfigured } from "../src/core/done-audit";
 import { HttpProvider, anthropicCacheRates } from "../src/providers/http";
 import { LocalDiagnostics } from "../electron/diagnostics";
 import {
@@ -258,6 +259,38 @@ describe("text request building", () => {
     expect(textSettings({ ...base, dialogModel: "" }).model).toBe("gpt-5.4");
     expect(textSettings(base).model).toBe("gpt-5.4");
     expect(textSettings({ ...base, dialogModel: "x" }).provider).toBe("openai");
+  });
+  it("strongAuditorConfigured reads a dialog model that is not the run model as a stronger auditor, and nothing else", () => {
+    // The done audit's gate (src/core/done-audit.ts auditApplies) widens to
+    // one-clause objectives on this flag: sweep B 2/3 at 2308fd9,
+    // files-rename-receipts #1, fourteen actions under --audit-model and
+    // no audit made. It is true exactly when textSettings would route the
+    // text call to another model than the run's.
+    const base = s("openai", "gpt-5.4-mini");
+    expect(base.dialogModel).toBe(""); // defaultSettings: unset
+    expect(strongAuditorConfigured(base)).toBe(false);
+    expect(strongAuditorConfigured({ ...base, dialogModel: "" })).toBe(false);
+    expect(
+      strongAuditorConfigured({ ...base, dialogModel: "gpt-5.4-mini" }),
+    ).toBe(false);
+    expect(strongAuditorConfigured({ ...base, dialogModel: "gpt-5.4" })).toBe(
+      true,
+    );
+    // A settings value from before the field, or one without a string.
+    const { dialogModel: _unset, ...without } = base;
+    expect(strongAuditorConfigured(without)).toBe(false);
+    expect(
+      strongAuditorConfigured({
+        model: "gpt-5.4-mini",
+        dialogModel: undefined,
+      }),
+    ).toBe(false);
+    for (const dialog of ["", "gpt-5.4-mini", "gpt-5.4", "claude-opus-5"]) {
+      const configured = { ...base, dialogModel: dialog };
+      expect(strongAuditorConfigured(configured), dialog).toBe(
+        textSettings(configured).model !== base.model,
+      );
+    }
   });
   it("routes a text call to the dialog model, keeping the provider, endpoint, key and rates (the harness's --audit-model)", async () => {
     const mini = s("openai", "gpt-5.4-mini");

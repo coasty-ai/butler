@@ -66,6 +66,7 @@ import {
   REQUIREMENT_KINDS,
   REQUIREMENT_UNMET,
   SCREEN_CHARS,
+  strongAuditorConfigured,
   type RequirementKind,
 } from "../src/core/done-audit";
 import type { ProviderTextCall, ProviderTextReply } from "../src/core/schema";
@@ -1418,6 +1419,96 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
       expect(m.of("UsageAdded")).toHaveLength(0);
     }
   });
+  it("audits a one-clause objective too when the settings put the audit on a stronger model, and keeps the rest of the gate (sweep B 2/3 at 2308fd9, files-rename-receipts #1)", async () => {
+    // Cycle 20260920-1049-2308fd9 (gpt-5.4-mini cell, the audit on gpt-5.4
+    // through --audit-model, so dialogModel set): a list, four reads and
+    // three renames, the third marked finish, fourteen actions, and
+    // RunCompleted with no DoneAudited row — "rename the receipts in
+    // {folder} to <a pattern>" is one sentence with no join, so the gate
+    // skipped the claim, and the grader read the three files renamed to
+    // the wrong names. The dialog model below is a name, never called.
+    const strong: Settings = { ...settings, dialogModel: "gpt-5.4" };
+    expect(strong.dialogModel).not.toBe(strong.model);
+    // The one-clause objective and three steps the case above leaves
+    // unaudited: one audit, the claim standing on its word, one row, the
+    // audit's usage tagged, no challenge.
+    {
+      policy.evaluate = () => ALLOW;
+      const m = memory();
+      const c = controller();
+      const p = auditing(scripted(threeThenDone()), [ALL_MET]);
+      const runner = new Runner(c, p, m.recorder, strong, () => {});
+      await runner.start(ONE_CLAUSE);
+      expect(p.text).toHaveBeenCalledTimes(1);
+      expect(p.calls[0].system).toBe(DONE_AUDIT_PROMPT);
+      expect(p.calls[0].input).toContain(ONE_CLAUSE);
+      expect(audits(m)).toHaveLength(1);
+      expect(audits(m)[0].data).toMatchObject({
+        requirements: 2,
+        unmet: 0,
+        unmetKinds: [],
+        code: "ok",
+        attempts: 1,
+      });
+      expect(challenges(m)).toHaveLength(0);
+      expect(m.of("UsageAdded")).toHaveLength(1);
+      expect(m.of("UsageAdded")[0].data.purpose).toBe("audit");
+      expect(m.of("RunCompleted")).toHaveLength(1);
+      expect(runner.snapshot.run?.status).toBe("completed");
+    }
+    // Challenged like any other claim: an unmet requirement sends the done
+    // back once, the next claim is audited once more and stands when met.
+    {
+      policy.evaluate = () => ALLOW;
+      const m = memory();
+      const c = controller();
+      const p = auditing(scripted(threeThenDone()), [HOTEL_AUDIT, ALL_MET]);
+      const runner = new Runner(c, p, m.recorder, strong, () => {});
+      await runner.start(ONE_CLAUSE);
+      expect(p.text).toHaveBeenCalledTimes(2);
+      expect(requirementChallenges(m)).toHaveLength(1);
+      expect(audits(m)).toHaveLength(2);
+      expect(m.of("RunCompleted")).toHaveLength(1);
+    }
+    // The rest of the gate stands under a strong auditor — fewer than
+    // three actions, a routine's replay, a synthetic run (the tutorial's
+    // controller), no text path — and a dialog model that is the run's
+    // own or empty is no stronger auditor: the one-clause rule as before.
+    const notAudited: {
+      settings: Settings;
+      steps: ReturnType<typeof act>[];
+      origin?: "routine";
+      text?: boolean;
+      kind?: Controller["kind"];
+    }[] = [
+      { settings: strong, steps: [click, typed, done("Done.")] },
+      { settings: strong, steps: threeThenDone(), origin: "routine" },
+      { settings: strong, steps: threeThenDone(), kind: "tutorial" },
+      { settings: strong, steps: threeThenDone(), text: false },
+      {
+        settings: { ...settings, dialogModel: settings.model },
+        steps: threeThenDone(),
+      },
+      { settings: { ...settings, dialogModel: "" }, steps: threeThenDone() },
+    ];
+    for (const item of notAudited) {
+      policy.evaluate = () => ALLOW;
+      const m = memory();
+      const c = { ...controller(), ...(item.kind ? { kind: item.kind } : {}) };
+      const base = scripted(item.steps);
+      const p = item.text === false ? base : auditing(base, [HOTEL_AUDIT]);
+      const runner = new Runner(c, p, m.recorder, item.settings, () => {});
+      await runner.start(
+        ONE_CLAUSE,
+        item.origin ? { origin: item.origin } : {},
+      );
+      if ("text" in p) expect(p.text).not.toHaveBeenCalled();
+      expect(audits(m)).toHaveLength(0);
+      expect(challenges(m)).toHaveLength(0);
+      expect(m.of("RunCompleted")).toHaveLength(1);
+      expect(m.of("UsageAdded")).toHaveLength(0);
+    }
+  });
   it("runs under every autonomy regime and for bench, voice and typed runs alike: a check, not a question", async () => {
     const regimes: Settings[] = [
       settings,
@@ -1522,12 +1613,13 @@ describe("the done audit's pieces", () => {
     ])
       expect(multiClause(more), more).toBe(true);
   });
-  it("applies to a real run of three or more actions with a text path, never to a synthetic run, a routine replay or a one-clause objective", () => {
+  it("applies to a real run of three or more actions with a text path, never to a synthetic run, a routine replay or a one-clause objective — unless a stronger auditor is configured, when a one-clause objective is audited too", () => {
     const scope = {
       objective: TWO_CLAUSES,
       synthetic: false,
       actions: DONE_AUDIT_MIN_ACTIONS,
       hasText: true,
+      strongAuditor: false,
     };
     expect(auditApplies(scope)).toBe(true);
     expect(auditApplies({ ...scope, origin: "bench" })).toBe(true);
@@ -1541,6 +1633,31 @@ describe("the done audit's pieces", () => {
     expect(auditApplies({ ...scope, objective: ONE_CLAUSE })).toBe(false);
     expect(auditApplies({ ...scope, hasText: false })).toBe(false);
     expect(DONE_AUDIT_MIN_ACTIONS).toBe(3);
+    // Sweep B 2/3 at 2308fd9, files-rename-receipts #1: fourteen actions on
+    // a one-sentence objective, the audit on gpt-5.4 configured, and no
+    // audit made. With a strong auditor the clause count no longer gates;
+    // the action floor, the routine and synthetic rules and the text path
+    // still do.
+    const strong = { ...scope, strongAuditor: true, objective: ONE_CLAUSE };
+    expect(auditApplies(strong)).toBe(true);
+    expect(auditApplies({ ...strong, objective: TWO_CLAUSES })).toBe(true);
+    expect(auditApplies({ ...strong, origin: "bench" })).toBe(true);
+    expect(
+      auditApplies({ ...strong, actions: DONE_AUDIT_MIN_ACTIONS - 1 }),
+    ).toBe(false);
+    expect(auditApplies({ ...strong, actions: 0 })).toBe(false);
+    expect(auditApplies({ ...strong, origin: "routine" })).toBe(false);
+    expect(auditApplies({ ...strong, synthetic: true })).toBe(false);
+    expect(auditApplies({ ...strong, hasText: false })).toBe(false);
+    // The flag is read from the settings: a dialog model that is not the
+    // run model, and nothing else (the text-provider tests pin its cases).
+    expect(strongAuditorConfigured(settings)).toBe(false);
+    expect(
+      strongAuditorConfigured({ ...settings, dialogModel: "gpt-5.4" }),
+    ).toBe(true);
+    expect(
+      strongAuditorConfigured({ ...settings, dialogModel: settings.model }),
+    ).toBe(false);
   });
   it("parses the reply strictly and reads anything else as unavailable", () => {
     const ok = parseDoneAudit({ text: HOTEL_AUDIT, code: "ok" })!;

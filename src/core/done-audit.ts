@@ -74,6 +74,23 @@
  * (never under HISTORY_MIN_CHARS), then the page read. The prompt says a
  * fact absent from the deliverable is unmet whatever the summary says.
  *
+ * Which claims are audited (auditApplies): never a synthetic run, a
+ * routine's replay or a run of fewer than DONE_AUDIT_MIN_ACTIONS actions;
+ * beyond that, an objective of more than one clause by structure
+ * (multiClause), or any objective when a stronger auditor is configured
+ * (strongAuditorConfigured: a dialogModel that is not the run model — the
+ * cycle's --audit-model, or an owner's dialog model in the app). The
+ * one-clause gate spares a trivial task ("open Safari") a model call and
+ * a weak auditor's false challenge, and it cost a real one: sweep B 2/3 at
+ * 2308fd9 (cycle 20260920-1049-2308fd9, gpt-5.4-mini cell, the audit on
+ * gpt-5.4), files-rename-receipts #1 — a list, four reads and three
+ * renames, the third marked finish, fourteen actions — ended RunCompleted
+ * with no DoneAudited row, since "rename the receipts in {folder} to
+ * <a pattern>" is one sentence with no join, and the grader read the three
+ * files renamed to the wrong names. With a strong auditor the call costs
+ * about $0.02 and its judgment is worth having on every claim that did
+ * real work; with none, the gate stands as before.
+ *
  * Content: the requirements' words travel to the model and into the
  * history line the encrypted journal keeps; a deliverable's content and the
  * page's text travel to the model only, as the history lines do; the trace
@@ -375,20 +392,48 @@ export interface DoneAuditScope {
   actions: number;
   /** Whether the run's provider has a text path at all (Provider.text). */
   hasText: boolean;
+  /**
+   * Whether the audit runs on a stronger model than the run's
+   * (strongAuditorConfigured over the run's settings): then a one-clause
+   * objective is audited too.
+   */
+  strongAuditor: boolean;
+}
+
+/**
+ * Whether the settings put the audit on a model of its own: a dialogModel
+ * that is a non-empty string and not the run model (the text path resolves
+ * dialogModel || model, src/providers/text.ts textSettings; the cycle's
+ * --audit-model sets it, and so does an owner's dialog model in the app).
+ * Pure; reads two fields and nothing else.
+ */
+export function strongAuditorConfigured(settings: {
+  model: string;
+  dialogModel?: string;
+}): boolean {
+  const dialog = settings.dialogModel;
+  return (
+    typeof dialog === "string" && dialog !== "" && dialog !== settings.model
+  );
 }
 
 /**
  * The audit runs in every autonomy mode and for bench, voice and typed runs
  * alike: it is a check, not a question. It is skipped for a synthetic run,
  * for an approved routine's replay (origin "routine": its steps are known),
- * for a run of fewer than DONE_AUDIT_MIN_ACTIONS executed actions, for a
- * one-clause objective, and when the provider has no text path.
+ * for a run of fewer than DONE_AUDIT_MIN_ACTIONS executed actions, and when
+ * the provider has no text path. Past those, every objective is audited
+ * when a stronger auditor is configured (strongAuditor), and otherwise only
+ * one of more than one clause (multiClause): the one-clause gate is there
+ * to spare a trivial task a call and a weak auditor's false challenge, and
+ * at 2308fd9 it let a fourteen-action rename run stand unaudited with its
+ * files renamed wrong (the module header).
  */
 export function auditApplies(scope: DoneAuditScope): boolean {
   if (scope.synthetic || !scope.hasText) return false;
   if (scope.origin === "routine") return false;
   if (scope.actions < DONE_AUDIT_MIN_ACTIONS) return false;
-  return multiClause(scope.objective);
+  return scope.strongAuditor || multiClause(scope.objective);
 }
 
 export const DONE_AUDIT_PROMPT = `You audit whether a computer-use run on a Mac finished its objective. You are given the objective, the run's steps in order (each as the model proposed it, with the result the runner reported) and the model's own summary at done.
@@ -628,8 +673,9 @@ const requirementSchema = z.object({
     .transform((value) => value ?? null),
 });
 export const doneAuditSchema = z.object({
-  // An objective that passes multiClause states at least one requirement,
-  // so an empty list is not an audit ("all met" by saying nothing) but an
+  // Any objective audited states at least one requirement (a one-clause
+  // one, audited under a strong auditor, no fewer), so an empty list is
+  // not an audit ("all met" by saying nothing) but an
   // unusable reply, retried once with the reminder and then unavailable;
   // a requirement with no text fails the shape the same way.
   requirements: z.array(requirementSchema).min(1),
