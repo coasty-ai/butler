@@ -622,6 +622,15 @@ export function clickEffectNote(
 export const reflectionNote =
   " Stop and change course: the last steps repeated the same actions from the same screen without progress, and nobody is here to give a hint. This step is the one chance to change: read the fresh screenshot for what has changed since the repeats began, then take a route not tried yet (a tool from context.tools, a menu item from context.menus, a keyboard path from context.playbook, a control by name from context.controls), or fail with what blocks; request_user only for a step only the user can do. Repeating the same steps ends the run as stuck.";
 /**
+ * The line a second consecutive capture on a browser page gets when a web
+ * read tool is listed: probe 20260920-0158-f594550, research-paginated-
+ * listing #1 captured the same listing five times running to the spin rule
+ * with web__read_page_text listed and never called; the instruction names
+ * the tool once, the moment of looking again is where the model reads it.
+ */
+export const PAGE_TOOL_NOTE =
+  " Looking again shows the same page. Its visible text is already in context.visibleText; to read all of it, or a linked page, call web__read_current_page or web__read_page_text and carry the values in your note.";
+/**
  * How long the capture after a transition waits for the screen it moved to:
  * a page sent for with open_url (the browser is told and answers at once), a
  * cold launch whose window is on its way, or an application or page a click
@@ -1495,6 +1504,8 @@ export class Runner {
   private executed: Action[] = [];
   /** The tools this run may call, listed once and frozen; unset without the tool layer. */
   private toolList?: ToolList;
+  /** Consecutive capture steps executed; the second on a browser page gets PAGE_TOOL_NOTE. */
+  private looksInARow = 0;
   /**
    * The clock line the frozen list is shown with, taken when the list is:
    * context.tools rides in the request's cacheable workspace part, so it
@@ -1665,6 +1676,7 @@ export class Runner {
     // The user may have changed the screen: the next step sees all of it.
     this.shown = undefined;
     this.lastStep = undefined;
+    this.looksInARow = 0;
     this.resetProgress();
   }
   private resetProgress() {
@@ -2858,9 +2870,16 @@ export class Runner {
       // searched, and eight of ten completed runs never proposed a done
       // at all, so the audit at the done path saw one run in twenty-three.
       // A claim repeated after the audit's challenge with nothing but looks
-      // executed since is a false done the run ends on honestly.
-      if (this.challengedUnmet && !this.actedSinceChallenge)
-        throw new RequirementsUnmetError(this.challengedUnmet);
+      // executed since gets one hearing: the audit reads the new summary
+      // against the same steps, and a requirement still unmet ends the run
+      // honestly (a check-in the grader scored complete was failed here
+      // once on the first audit's word alone, probe 20260920-0158).
+      if (this.challengedUnmet && !this.actedSinceChallenge) {
+        const again = await this.auditDone(run, this.history, summary);
+        if (this.held || epoch !== this.epoch) return "continue";
+        if (again?.unmet.length) throw new RequirementsUnmetError(again.unmet);
+        this.challengedUnmet = undefined;
+      }
       if (
         !this.doneAudited &&
         auditApplies({
@@ -3889,6 +3908,7 @@ export class Runner {
       type: action.type,
       probe: progressProbe(executionFrame, this.lastSurface),
     };
+    this.looksInARow = action.type === "capture" ? this.looksInARow + 1 : 0;
     this.history.push({
       type: action.type,
       action: executedAction,
@@ -3914,11 +3934,22 @@ export class Runner {
                   ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
                   : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
         clickEffectNote(action, outcome) +
+        this.pageToolNote(action, executionFrame) +
         (o.reaimed ? reaimNote : "") +
         (loop === "warn" ? loopWarning : "") +
         (thrashing ? appSwitchWarning : ""),
     });
     if (loop === "stuck") this.stuck(this.history.at(-1));
+  }
+  /** PAGE_TOOL_NOTE on the second consecutive capture of a browser page when a web read tool is listed. */
+  private pageToolNote(action: Action, frame: Frame): string {
+    if (action.type !== "capture" || this.looksInARow < 2) return "";
+    if (!hostOf(frame)) return "";
+    const listed = this.toolList?.tools.some(
+      (t) =>
+        t.id === "web__read_current_page" || t.id === "web__read_page_text",
+    );
+    return listed ? PAGE_TOOL_NOTE : "";
   }
   /** The state every run (and every preparation) begins from. */
   private resetState(undo?: boolean) {
@@ -5132,9 +5163,19 @@ export class Runner {
           // three named facts absent). Any unmet, the claim is sent back
           // once with them in the audit's words; the next done stands.
           // A claim repeated after the audit's challenge with nothing but
-          // looks executed since is a false done the run ends on honestly.
-          if (this.challengedUnmet && !this.actedSinceChallenge)
-            throw new RequirementsUnmetError(this.challengedUnmet);
+          // looks executed since gets one hearing: the audit reads the new
+          // summary against the same steps, and a requirement still unmet
+          // ends the run honestly.
+          if (this.challengedUnmet && !this.actedSinceChallenge) {
+            const again = await this.auditDone(run, history, action.summary);
+            if (this.held || epoch !== this.epoch) {
+              planFail("interrupted");
+              continue;
+            }
+            if (again?.unmet.length)
+              throw new RequirementsUnmetError(again.unmet);
+            this.challengedUnmet = undefined;
+          }
           if (
             !this.doneAudited &&
             auditApplies({

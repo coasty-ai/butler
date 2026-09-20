@@ -24,6 +24,7 @@ import {
   type RunnerExtras,
 } from "../src/core/runner";
 import { TOOL_ALLOWED } from "../src/core/tool-policy";
+import { PAGE_TOOL_NOTE } from "../src/core/runner";
 import {
   REQUIREMENT_UNMET,
   requirementChallenge,
@@ -44,6 +45,7 @@ import {
   REMINDERS_LIST,
   SCRATCH_DELETE,
   fakeTools,
+  WEB_TOOLS_FAKE,
   failed,
   ok,
 } from "./tool-fakes";
@@ -1164,5 +1166,59 @@ describe("a tool step that finishes the run", () => {
     await single.runner.start(DENTIST_WORDS, voice);
     expect(none).not.toHaveBeenCalled();
     expect(single.m.of("RunCompleted")).toHaveLength(1);
+  });
+});
+
+describe("looking again at a browser page", () => {
+  const all = { autonomy: "all" as const, autonomyAllAcknowledged: true };
+  const look = act({ type: "capture" });
+  const page = (): Frame => ({
+    ...frameOf(),
+    context: {
+      appName: "Safari",
+      windowTitle: "Listing",
+      browserAddress: "http://127.0.0.1:47831/t/listings",
+    },
+  });
+  it("points the second consecutive capture at the page tool when one is listed, and not the first", async () => {
+    // Probe 20260920-0158-f594550, research-paginated-listing #1: five
+    // captures of one listing to the spin rule with web__read_page_text
+    // listed and never called.
+    const c = controller({ capture: vi.fn(async () => page()) });
+    const h = harness({
+      replies: [look, look, look, act({ type: "done", summary: "Read." })],
+      settings: all,
+      controller: c,
+      tools: fakeTools({ tools: WEB_TOOLS_FAKE }),
+    });
+    await h.runner.start("count the listings and note the cheapest", voice);
+    const lines = h.provider.observations.map(
+      (o) => o.history.at(-1)?.result ?? "",
+    );
+    // After the first capture: no note. After the second and third: the note.
+    expect(lines[1]).not.toContain(PAGE_TOOL_NOTE.trim());
+    expect(lines[2]).toContain(PAGE_TOOL_NOTE.trim());
+    expect(lines[3]).toContain(PAGE_TOOL_NOTE.trim());
+  });
+  it("says nothing when no web read tool is listed, or the frame is not a page", async () => {
+    const c = controller({ capture: vi.fn(async () => page()) });
+    const noWeb = harness({
+      replies: [look, look, act({ type: "done", summary: "Read." })],
+      settings: all,
+      controller: c,
+    });
+    await noWeb.runner.start("count the listings and note the cheapest", voice);
+    expect(
+      noWeb.provider.observations.map((o) => o.history.at(-1)?.result ?? ""),
+    ).not.toContainEqual(expect.stringContaining(PAGE_TOOL_NOTE.trim()));
+    const notes = harness({
+      replies: [look, look, act({ type: "done", summary: "Read." })],
+      settings: all,
+      tools: fakeTools({ tools: WEB_TOOLS_FAKE }),
+    });
+    await notes.runner.start("count the notes", voice);
+    expect(
+      notes.provider.observations.map((o) => o.history.at(-1)?.result ?? ""),
+    ).not.toContainEqual(expect.stringContaining(PAGE_TOOL_NOTE.trim()));
   });
 });

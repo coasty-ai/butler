@@ -955,7 +955,10 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
     );
     const runner = new Runner(c, p, m.recorder, settings, () => {});
     await runner.start(TWO_CLAUSES);
-    expect(p.text).toHaveBeenCalledTimes(1);
+    // The repeated claim got one hearing: a second audit over the new
+    // summary, which found the same two unmet; then the run failed.
+    expect(p.text).toHaveBeenCalledTimes(2);
+    expect(audits(m)).toHaveLength(2);
     expect(requirementChallenges(m)).toHaveLength(1);
     expect(m.of("RunCompleted")).toHaveLength(0);
     expect(m.of("RunFailed")).toHaveLength(1);
@@ -989,6 +992,30 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
     expect(m2.of("RunFailed").map((e) => e.data.code)).toEqual([
       "REQUIREMENTS_UNMET",
     ]);
+    // The hearing can clear the claim: a second audit that finds every
+    // requirement met (the new summary named the evidence) lets the done
+    // stand, with no third call and no failure — a check-in the grader
+    // scored complete was failed on the first audit's word alone before.
+    const c3 = controller();
+    const m3 = memory();
+    const p3 = auditing(
+      scripted([
+        click,
+        typed,
+        enter,
+        done("Found the room and noted it."),
+        act({ type: "capture" }),
+        done("Searched the dates (step 2), noted the room, saved (step 3)."),
+      ]),
+      [HOTEL_AUDIT, ALL_MET],
+    );
+    await new Runner(c3, p3, m3.recorder, settings, () => {}).start(
+      TWO_CLAUSES,
+    );
+    expect(p3.text).toHaveBeenCalledTimes(2);
+    expect(m3.of("RunFailed")).toHaveLength(0);
+    expect(m3.of("RunCompleted")).toHaveLength(1);
+    expect(audits(m3).map((e) => e.data.unmet)).toEqual([2, 0]);
   });
   it("accepts a done the audit finds complete, with one call and no challenge", async () => {
     policy.evaluate = () => ALLOW;
