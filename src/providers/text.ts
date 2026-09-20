@@ -26,7 +26,7 @@ export interface TextCall {
    * provider default; a model that rejects the option with HTTP 400 loses it
    * for the rest of the process, once a request without it gets through.
    */
-  effort?: "none" | "minimal" | "low";
+  effort?: "none" | "minimal" | "low" | "medium";
 }
 export interface TextOutcome {
   usage: Usage;

@@ -901,7 +901,7 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
     expect(call.input).toContain("Found the room and noted it.");
     expect(call.input).not.toContain("frame_id");
     expect(call.input).not.toContain("image");
-    expect(call.effort).toBe("low");
+    expect(call.effort).toBe("medium");
     expect(call.deadlineMs).toBeGreaterThan(0);
     expect(call.maxOutputTokens).toBeGreaterThan(0);
     // The done was sent back once with its code, reason and the count.
@@ -1730,7 +1730,7 @@ describe("the done audit's pieces", () => {
     const call = doneAuditCall(TWO_CLAUSES, [], "Done.");
     expect(call.system).toBe(DONE_AUDIT_PROMPT);
     expect(call.maxOutputTokens).toBe(DONE_AUDIT_MAX_OUTPUT_TOKENS);
-    expect(call.effort).toBe("low");
+    expect(call.effort).toBe("medium");
     expect(call.deadlineMs).toBe(DONE_AUDIT_DEADLINE_MS);
     expect(call.input).not.toContain(DONE_AUDIT_REMINDER);
     expect(doneAuditCall(TWO_CLAUSES, [], "Done.", true).input).toContain(

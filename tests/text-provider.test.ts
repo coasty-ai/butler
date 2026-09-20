@@ -233,6 +233,23 @@ describe("text request building", () => {
         .generationConfig.thinkingConfig,
     ).toBeUndefined();
   });
+  it("passes a medium effort through to OpenAI and keeps Claude at low", () => {
+    // The done audit asks for medium (src/core/done-audit.ts DONE_AUDIT_EFFORT):
+    // OpenAI reasoning models take the word as is; the Claude mapping stays
+    // at its lowest level; Gemini keeps its default thinking budget.
+    const medium = { ...call, effort: "medium" as const };
+    expect(
+      buildTextRequest(s("openai", "gpt-5.4-mini"), "k", medium).body.reasoning,
+    ).toEqual({ effort: "medium" });
+    expect(
+      buildTextRequest(s("anthropic", "claude-sonnet-5"), "k", medium).body
+        .output_config,
+    ).toEqual({ effort: "low" });
+    expect(
+      buildTextRequest(s("google"), "k", medium).body.generationConfig
+        .thinkingConfig,
+    ).toBeUndefined();
+  });
   it("textSettings runs on the dialog model when one is set", () => {
     const base = s("openai", "gpt-5.4");
     expect(textSettings({ ...base, dialogModel: "gpt-5.4-mini" }).model).toBe(

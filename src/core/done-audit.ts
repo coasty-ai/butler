@@ -82,6 +82,8 @@ export const DONE_AUDIT_MIN_ACTIONS = 3;
 export const DONE_AUDIT_MAX_OUTPUT_TOKENS = 1_400;
 /** The whole call, retries included; the run's clock keeps running. */
 export const DONE_AUDIT_DEADLINE_MS = 30_000;
+/** The auditor's reasoning effort; see doneAuditCall for why not low. */
+export const DONE_AUDIT_EFFORT = "medium" as const;
 /** Requirements past this many are dropped from the reading and the line. */
 export const DONE_AUDIT_MAX_REQUIREMENTS = 12;
 /** The history the audit reads, in characters; oldest lines drop first. */
@@ -411,7 +413,12 @@ export function doneAuditCall(
       doneAuditInput(objective, history, summary, screen) +
       (retry ? `\n\n${DONE_AUDIT_REMINDER}` : ""),
     maxOutputTokens: DONE_AUDIT_MAX_OUTPUT_TOKENS,
-    effort: "low",
+    // Medium, not low: at low effort the auditor read a hotel search whose
+    // dates were never entered as five requirements all met (market 2/3 at
+    // f926928, travel-hotel-shortlist #1, 634 output tokens) where the same
+    // model at abc24ae had listed the dates unmet; one call a run, so the
+    // extra thinking costs little and the cap leaves room for it.
+    effort: DONE_AUDIT_EFFORT,
     deadlineMs: DONE_AUDIT_DEADLINE_MS,
   };
 }

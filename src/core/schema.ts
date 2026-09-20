@@ -1396,7 +1396,7 @@ export interface ProviderTextCall {
   input: string;
   maxOutputTokens: number;
   /** How much a reasoning model may think; omitted keeps the provider default. */
-  effort?: "none" | "minimal" | "low";
+  effort?: "none" | "minimal" | "low" | "medium";
   /** The whole call, retries included, in ms; the text path's default when absent. */
   deadlineMs?: number;
 }
