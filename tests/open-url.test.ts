@@ -205,7 +205,7 @@ describe("NativeController.execute for open_url", () => {
     );
     expect(
       execute.indexOf(
-        'if (action.type === "open_url") return this.openUrl(action);',
+        'if (action.type === "open_url")\n      return this.openUrl(action, options?.browser);',
       ),
     ).toBeLessThan(
       execute.indexOf('await this.request("execute", { action })'),
@@ -215,9 +215,13 @@ describe("NativeController.execute for open_url", () => {
       controller.indexOf("  async revalidate("),
     );
     expect(openUrl).toContain("if (!this.urlRoute)");
-    expect(openUrl).toContain("return this.openUrlByLaunchServices(action);");
+    expect(openUrl).toContain(
+      "return this.openUrlByLaunchServices(action, browser);",
+    );
     expect(openUrl).not.toContain("this.request(");
-    expect(openUrl).toContain("const navigated = await this.urlRoute(action);");
+    expect(openUrl).toContain(
+      "const navigated = await this.urlRoute(action, browser);",
+    );
     expect(openUrl).toContain("return navigated ? { navigated } : {};");
     // The hook is the first way in, and the prototype has the method.
     expect(typeof NativeController.prototype.openUrl).toBe("function");
@@ -257,10 +261,102 @@ describe("NativeController.execute for open_url", () => {
       [action.url],
     ]);
   });
-  it("is what main wires with the browser the early step would open", () => {
+  it("without a hook, sends a pinned run's address to the pinned browser by bundle id, whatever is in front", async () => {
+    // Cycle 20260920-0415, home-dashboard-lights #1: Safari named, the model
+    // opened Chrome, and LaunchServices loaded the fixture in the browser in
+    // front, the person's own. The bench's controller has no hook.
+    const launches: string[][] = [];
+    const surfaces: number[] = [];
+    const c = new NativeController(
+      "/nonexistent/helper",
+      () => {},
+      () => {},
+      undefined,
+      { launch: async (args) => void launches.push(args) },
+    );
+    (c as unknown as { surface: () => Promise<{ appId: string }> }).surface =
+      async () => {
+        surfaces.push(1);
+        return { appId: CHROME.bundleId };
+      };
+    const action = {
+      type: "open_url" as const,
+      url: "https://example.test/panel",
+      frame_id: "f",
+    };
+    const frame = {} as Parameters<NativeController["execute"]>[1];
+    const signal = new AbortController().signal;
+    expect(await c.execute(action, frame, signal, { browser: SAFARI })).toEqual(
+      {
+        navigated: {
+          host: "example.test",
+          appId: SAFARI.bundleId,
+          via: "open",
+        },
+      },
+    );
+    // The browser in front is not even asked for.
+    expect(surfaces).toEqual([]);
+    // Unpinned, the browser in front takes it as before.
+    expect(await c.execute(action, frame, signal)).toEqual({
+      navigated: { host: "example.test", appId: CHROME.bundleId, via: "open" },
+    });
+    expect(surfaces).toEqual([1]);
+    expect(launches).toEqual([
+      ["-b", SAFARI.bundleId, action.url],
+      ["-b", CHROME.bundleId, action.url],
+    ]);
+  });
+  it("with a hook, hands it the run's pinned browser, and nothing for an unpinned run", async () => {
+    const hook = vi.fn(
+      async (
+        action: { url: string },
+        browser?: { name: string; bundleId: string },
+      ) => ({
+        host: new URL(action.url).hostname,
+        appId: browser?.bundleId ?? FIREFOX.bundleId,
+        via: "open" as const,
+      }),
+    );
+    const c = new NativeController(
+      "/nonexistent/helper",
+      () => {},
+      () => {},
+      undefined,
+      { openUrl: hook, launch: async () => {} },
+    );
+    const action = {
+      type: "open_url" as const,
+      url: "https://example.test/panel",
+      frame_id: "f",
+    };
+    const frame = {} as Parameters<NativeController["execute"]>[1];
+    const signal = new AbortController().signal;
+    expect(await c.execute(action, frame, signal, { browser: SAFARI })).toEqual(
+      {
+        navigated: {
+          host: "example.test",
+          appId: SAFARI.bundleId,
+          via: "open",
+        },
+      },
+    );
+    expect(await c.execute(action, frame, signal)).toEqual({
+      navigated: {
+        host: "example.test",
+        appId: FIREFOX.bundleId,
+        via: "open",
+      },
+    });
+    expect(hook.mock.calls).toEqual([
+      [action, SAFARI],
+      [action, undefined],
+    ]);
+  });
+  it("is what main wires: the run's pinned browser, else the browser the early step would open", () => {
     const main = source("electron/main.ts");
     expect(main).toMatch(
-      /openUrl: \(action\) =>\s*urlOpener\.open\(\s*action\.url,\s*preferredBrowser\(installedApps, memory\?\.data\(\)\),\s*\),/,
+      /openUrl: \(action, browser\) =>\s*urlOpener\.open\(\s*action\.url,\s*browser \?\? preferredBrowser\(installedApps, memory\?\.data\(\)\),\s*\),/,
     );
     expect(main).toContain("const urlOpener = new UrlOpener();");
   });

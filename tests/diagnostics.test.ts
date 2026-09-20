@@ -1992,6 +1992,71 @@ describe("dialog and streamed-speech fields", () => {
       const lines = readFileSync(log.file, "utf8").trim().split("\n");
       expect(JSON.parse(lines.at(-1)!).data).toEqual({});
     }));
+  it("logs the browser an open_url's address went to as a bundle id, and nothing that is not one", () =>
+    fixture((log) => {
+      // A pinned run that still drove another browser shows here (cycle
+      // 20260920-0415, home-dashboard-lights #1); the address and its host
+      // never do.
+      const id = crypto.randomUUID();
+      const row = (sequence: number, navigated: unknown) => ({
+        event_id: crypto.randomUUID(),
+        run_id: id,
+        sequence_number: sequence,
+        monotonic_timestamp: 0,
+        wall_clock_timestamp: new Date().toISOString(),
+        schema_version: 1 as const,
+        type: "ActionExecuted",
+        data: {
+          action: {
+            type: "open_url",
+            url: "https://panel.example.test/secret-path",
+            frame_id: "f",
+          },
+          frame_id: "f",
+          navigated,
+        },
+      });
+      const snapshot: Snapshot = {
+        run: {
+          id,
+          task: "open the panel",
+          createdAt: new Date().toISOString(),
+          status: "executing",
+          privacy: "PRIVATE_LOCAL",
+          provider: "openai",
+          model: "fixture",
+          synthetic: false,
+          actions: 4,
+          frames: 4,
+          usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          summary: "",
+          browser: { name: "Safari", bundleId: "com.apple.Safari" },
+        },
+        frame: null,
+        message: "",
+        events: [
+          row(1, { appId: "com.google.Chrome", host: "panel.example.test" }),
+          row(2, { appId: "Safari the browser" }),
+          row(3, { appId: 42 }),
+          row(4, undefined),
+        ],
+      };
+      log.snapshot(snapshot);
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toMatch(/example\.test|secret-path|Safari the browser/);
+      const [first, second, third, fourth] = raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).data);
+      expect(first).toMatchObject({
+        actionType: "open_url",
+        appId: "com.google.Chrome",
+      });
+      expect(second.actionType).toBe("open_url");
+      expect(second.appId).toBeUndefined();
+      expect(third.appId).toBeUndefined();
+      expect(fourth.appId).toBeUndefined();
+    }));
 });
 
 describe("acting while the user speaks", () => {

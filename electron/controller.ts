@@ -29,11 +29,13 @@ import {
 import type {
   Action,
   Controller,
+  ExecuteOptions,
   ExecutionResult,
   Frame,
   OcrLine,
   ProbeResult,
   Region,
+  RunBrowser,
   Rung,
   RunTarget,
   Settings,
@@ -1161,6 +1163,7 @@ export class NativeController implements Controller {
   private slowLimit: typeof nativeSlowLimit;
   private urlRoute?: (
     action: Extract<Action, { type: "open_url" }>,
+    browser?: RunBrowser,
   ) => Promise<ExecutionResult["navigated"]>;
   /** LaunchServices `open` with these arguments (a test passes a fake). */
   private launch: (args: string[]) => Promise<void>;
@@ -1201,10 +1204,13 @@ export class NativeController implements Controller {
       /**
        * The open_url route (electron/open-url.ts): the browser is told the
        * address by Apple Event or LaunchServices, never through the helper.
-       * Without it open_url fails as a step no route can take.
+       * Without it open_url fails as a step no route can take. The run's
+       * pinned browser (ExecuteOptions.browser) is the one to tell when set;
+       * otherwise the route picks (electron/main.ts: the most-used one).
        */
       openUrl?: (
         action: Extract<Action, { type: "open_url" }>,
+        browser?: RunBrowser,
       ) => Promise<ExecutionResult["navigated"]>;
       /** Tests: in place of LaunchServices `open`. */
       launch?: (args: string[]) => Promise<void>;
@@ -1443,10 +1449,12 @@ export class NativeController implements Controller {
     action: Action,
     _frame: Frame,
     signal: AbortSignal,
+    options?: ExecuteOptions,
   ): Promise<void | ExecutionResult> {
     signal.throwIfAborted();
     // A web address never reaches the helper: the browser is told it.
-    if (action.type === "open_url") return this.openUrl(action);
+    if (action.type === "open_url")
+      return this.openUrl(action, options?.browser);
     const stop = () => this.stop();
     signal.addEventListener("abort", stop, { once: true });
     try {
@@ -1473,31 +1481,41 @@ export class NativeController implements Controller {
    * Loads a web address in the chosen browser (electron/open-url.ts), by
    * Apple Event on the app's own front tab or by LaunchServices; no key,
    * no click, and no request to the helper, whose stop latch stays as it
-   * is. The result names the host and the browser.
+   * is. The result names the host and the browser. A run pinned to a
+   * browser (the bench's named one) names it here, and the address goes to
+   * it on either route, whatever browser is in front.
    */
   async openUrl(
     action: Extract<Action, { type: "open_url" }>,
+    browser?: RunBrowser,
   ): Promise<ExecutionResult> {
-    if (!this.urlRoute) return this.openUrlByLaunchServices(action);
-    const navigated = await this.urlRoute(action);
+    if (!this.urlRoute) return this.openUrlByLaunchServices(action, browser);
+    const navigated = await this.urlRoute(action, browser);
     return navigated ? { navigated } : {};
   }
   /**
    * No route wired (the benchmark's controller, a bare embedder): LaunchServices
-   * opens the address in the browser in front, else in the default browser. No
-   * key, no click, nothing through the helper. Before this, a model's open_url
-   * in a bench run threw and ended the run as RUN_ERROR (cycle 20260919-1351).
+   * opens the address in the run's pinned browser when it has one, else in the
+   * browser in front, else in the default browser. No key, no click, nothing
+   * through the helper. Before this, a model's open_url in a bench run threw
+   * and ended the run as RUN_ERROR (cycle 20260919-1351); before the pin, the
+   * browser in front was the one the model had opened, the person's Chrome
+   * (cycle 20260920-0415, home-dashboard-lights #1).
    */
   private async openUrlByLaunchServices(
     action: Extract<Action, { type: "open_url" }>,
+    browser?: RunBrowser,
   ): Promise<ExecutionResult> {
     let appId: string | undefined;
-    try {
-      appId = (await this.surface()).appId;
-    } catch {
-      appId = undefined;
-    }
-    const bundle = appId && browsers.includes(appId) ? appId : undefined;
+    if (browser) appId = browser.bundleId;
+    else
+      try {
+        appId = (await this.surface()).appId;
+      } catch {
+        appId = undefined;
+      }
+    const bundle =
+      appId && (browser || browsers.includes(appId)) ? appId : undefined;
     await this.launch(bundle ? ["-b", bundle, action.url] : [action.url]);
     return {
       navigated: {

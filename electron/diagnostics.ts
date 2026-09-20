@@ -840,6 +840,8 @@ const journalEvents = new Map<string, Set<string>>([
       "restoredWindow",
       "openedKind",
       "openedAppId",
+      // An open_url's browser: the bundle id the address went to.
+      "appId",
     ]),
   ],
   [
@@ -1205,6 +1207,7 @@ export class LocalDiagnostics {
       const action = e.data.action as Record<string, unknown> | undefined;
       const launched = e.data.launched as Record<string, unknown> | undefined;
       const opened = e.data.opened as Record<string, unknown> | undefined;
+      const navigated = e.data.navigated as Record<string, unknown> | undefined;
       this.write(
         e.type,
         this.journalRow(e.type, {
@@ -1439,6 +1442,11 @@ export class LocalDiagnostics {
           // An opened file is logged by kind and handling app, never its path.
           ...(e.type === "ActionExecuted" && opened
             ? { openedKind: code(opened.kind), openedAppId: opened.appId }
+            : {}),
+          // An open_url's browser, as a bundle id or nothing (a pinned run
+          // that still drove another browser shows here); never the address.
+          ...(e.type === "ActionExecuted" && navigated
+            ? { appId: bundleId(navigated.appId) }
             : {}),
           ...(action
             ? {

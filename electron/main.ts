@@ -2162,12 +2162,13 @@ function getNative() {
         // The observe stream's frames and actions (design §2) go to the
         // work log; the helper excluded what must never be written.
         observed: (event) => observer?.observed(event),
-        // open_url: the browser the early step would bring forward is told
-        // the address (electron/open-url.ts); the helper is never asked.
-        openUrl: (action) =>
+        // open_url: the run's pinned browser when the task names one, else
+        // the browser the early step would bring forward, is told the
+        // address (electron/open-url.ts); the helper is never asked.
+        openUrl: (action, browser) =>
           urlOpener.open(
             action.url,
-            preferredBrowser(installedApps, memory?.data()),
+            browser ?? preferredBrowser(installedApps, memory?.data()),
           ),
         targetSelfActivated: () => runner?.targetSelfActivated(),
         targetGone: (_token, code) => runner?.targetGone(code),

@@ -1241,8 +1241,10 @@ describe("streaming execution: main.ts wiring", () => {
   });
   it("routes open_url through the browser opener on the native controller, and the fast scroll through the helper's own scroll with nothing restored", () => {
     const native = fn("getNative");
+    // The run's pinned browser (a bench task's named one) first, else the
+    // browser the early step would open.
     expect(native).toMatch(
-      /openUrl: \(action\) =>\s*urlOpener\.open\(\s*action\.url,\s*preferredBrowser\(installedApps, memory\?\.data\(\)\),\s*\),/,
+      /openUrl: \(action, browser\) =>\s*urlOpener\.open\(\s*action\.url,\s*browser \?\? preferredBrowser\(installedApps, memory\?\.data\(\)\),\s*\),/,
     );
     const scroll = fn("streamScroll");
     expect(scroll).toContain(

@@ -1094,6 +1094,60 @@ describe("the settle after a transition", () => {
     expect(after[0].t - executed.t).toBeGreaterThanOrEqual(55);
     expect(ctl.captures()).toBe(2);
   });
+  it("tells the controller a pinned run's browser on execute, and nothing on any other run", async () => {
+    // Cycle 20260920-0415, home-dashboard-lights #1: the task named Safari
+    // and the address went to the browser in front, the person's Chrome. A
+    // run started with a browser carries it (Run.browser) and hands it to
+    // execute as a fourth argument; every other run's call is unchanged.
+    const safari = { name: "Safari", bundleId: "com.apple.Safari" };
+    for (const browser of [safari, undefined]) {
+      allowAll();
+      const m = memory();
+      const ctl = controller({
+        execute: vi.fn(
+          async (action: Action): Promise<void | ExecutionResult> =>
+            action.type === "open_url"
+              ? {
+                  navigated: {
+                    host: "example.test",
+                    appId: safari.bundleId,
+                    via: "open",
+                  },
+                }
+              : undefined,
+        ),
+      });
+      const p = scripted([
+        act({ type: "open_url", url: "https://example.test/panel" }),
+      ]);
+      const runner = new Runner(
+        ctl,
+        p,
+        m.recorder,
+        settings,
+        () => {},
+        [],
+        undefined,
+        { transitionSettleMs: 1 },
+      );
+      await runner.start("test", {
+        ...bench,
+        ...(browser ? { browser } : {}),
+      });
+      expect(runner.snapshot.run?.status).toBe("completed");
+      expect(runner.snapshot.run?.browser).toEqual(browser);
+      const calls = vi.mocked(ctl.execute).mock.calls;
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0].type).toBe("open_url");
+      expect(calls[0].length).toBe(browser ? 4 : 3);
+      expect(calls[0][3]).toEqual(browser ? { browser } : undefined);
+      // The executed row names the browser the address went to (a bundle
+      // id, for the diagnostics' appId), never the address or its host.
+      const executed = m.of("ActionExecuted");
+      expect(executed).toHaveLength(1);
+      expect(executed[0].data.navigated).toEqual({ appId: safari.bundleId });
+    }
+  });
   it("waits after a cold launch whose window is on its way, not after a warm one", async () => {
     for (const [launched, kinds] of [
       [

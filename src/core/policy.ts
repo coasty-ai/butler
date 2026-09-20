@@ -1,4 +1,10 @@
-import { webAddress, type Action, type Settings, type Surface } from "./schema";
+import {
+  webAddress,
+  type Action,
+  type RunBrowser,
+  type Settings,
+  type Surface,
+} from "./schema";
 import { KNOWN_FOLDERS } from "./places";
 import { scanText } from "./sanitize";
 import type { ToolClock, ToolPrepared, ToolSpec } from "./tools";
@@ -847,6 +853,42 @@ function openAppDecision(
     reason: `No input was sent. No installed application matches "${quote(action.name)}" exactly.${candidates ? ` Candidates: ${candidates}.` : ""} Use one of them, or request_user if it is not installed.`,
   };
 }
+/**
+ * The floor of a run pinned to a browser (PolicyContext.browser, the task's
+ * own): a launch the helper resolved to another browser on the fixed list is
+ * answered RETRY naming the pinned one, whatever the autonomy setting (a
+ * RETRY is never a question, so nothing relaxes it). A denial or a hand-off
+ * keeps its own reason and the counter behind it; the pinned browser itself,
+ * a non-browser application and an unpinned run are judged as before. Cycle
+ * 20260920-0415, home-dashboard-lights #1: the task named Safari and the
+ * model's first step opened Chrome, the person's own browser, which then
+ * took the address and six clicks.
+ */
+function pinnedBrowserRefusal(
+  decision: Decision,
+  surface: Surface,
+  context: PolicyContext,
+  consulted = true,
+): Decision {
+  const pinned = context.browser;
+  if (!pinned || !consulted) return decision;
+  if (decision.kind === "DENY" || decision.kind === "USER_TAKEOVER")
+    return decision;
+  const resolved =
+    surface.launcherStatus === "resolved"
+      ? surface.launcherAppId?.toLowerCase()
+      : undefined;
+  if (
+    !resolved ||
+    resolved === pinned.bundleId.toLowerCase() ||
+    !browsers.some((id) => id.toLowerCase() === resolved)
+  )
+    return decision;
+  return {
+    kind: "RETRY",
+    reason: `No input was sent. This task runs in ${pinned.name}; open ${pinned.name} instead.`,
+  };
+}
 /** The refusal for a web address on a protected host: a floor, never a question. */
 export const PROTECTED_SITE_REFUSAL =
   "That website is protected. Ask the user to open it with request_user.";
@@ -1397,6 +1439,14 @@ export interface PolicyContext {
    * floors are unchanged.
    */
   speaking?: boolean;
+  /**
+   * The browser the run is pinned to (Run.browser: the one a bench task
+   * names). An open_app, or an open_file naming an application, that
+   * resolves to another browser on the fixed list is RETRY (BROWSER_PINNED),
+   * a floor no autonomy setting relaxes; the pinned browser itself and every
+   * other application are judged as before.
+   */
+  browser?: RunBrowser;
 }
 /** Every step but navigation, while the user is still speaking. */
 export const SPEAKING_RETRY = "Waiting for the end of the sentence.";
@@ -1592,9 +1642,19 @@ function decideAction(
     };
   // Before the synthetic ALLOW: the tutorial must never launch real apps.
   if (action.type === "open_app")
-    return openAppDecision(action, surface, settings, synthetic);
+    return pinnedBrowserRefusal(
+      openAppDecision(action, surface, settings, synthetic),
+      surface,
+      context,
+    );
   if (action.type === "open_file")
-    return openFileDecision(action, surface, settings, synthetic, context);
+    return pinnedBrowserRefusal(
+      openFileDecision(action, surface, settings, synthetic, context),
+      surface,
+      context,
+      // Without `app` the launcher fields were never consulted.
+      action.app !== undefined,
+    );
   if (action.type === "open_url")
     return openUrlDecision(action, settings, synthetic);
   if (synthetic)

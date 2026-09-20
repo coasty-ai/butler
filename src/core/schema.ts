@@ -1460,6 +1460,22 @@ export interface ExecutionResult {
   rung?: Rung;
   effect?: "changed" | "focused" | "none" | "unverifiable";
 }
+/**
+ * The browser a run is pinned to: the one the task names (a bench attempt's
+ * `{browser}`, src/gym/bench/preflight.ts chooseBrowser). open_url is sent to
+ * it and never to the browser in front or the most-used one, and open_app of
+ * another browser is refused by policy (BROWSER_PINNED). Both fields come
+ * from a fixed list, never from the screen.
+ */
+export interface RunBrowser {
+  name: string;
+  bundleId: string;
+}
+/** What a step's execution is told about its run beyond the action and frame. */
+export interface ExecuteOptions {
+  /** The run's pinned browser (Run.browser), for open_url's route. */
+  browser?: RunBrowser;
+}
 export interface Controller {
   kind: "tutorial" | "native";
   surface(action?: Action): Promise<Surface>;
@@ -1468,6 +1484,7 @@ export interface Controller {
     action: Action,
     frame: Frame,
     signal: AbortSignal,
+    options?: ExecuteOptions,
   ): Promise<void | ExecutionResult>;
   stop(): void;
   resume(): Promise<void>;
@@ -1579,6 +1596,11 @@ export interface Run {
    * took the screen as before.
    */
   target?: RunTarget & { background: boolean };
+  /**
+   * The browser this run is pinned to (StartOptions.browser): set by the
+   * bench for a task that names one. Absent on every other run.
+   */
+  browser?: RunBrowser;
 }
 export interface Snapshot {
   run: Run | null;

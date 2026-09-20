@@ -1915,6 +1915,28 @@ describe("bench.mjs harness rules", () => {
     expect(start).not.toContain("background");
     expect(attempt).not.toContain("background: true");
   });
+  it("pins the run to the browser the instruction names, and to nothing else", () => {
+    // Cycle 20260920-0415, home-dashboard-lights #1: Safari named, the model
+    // opened Chrome (the person's) and open_url followed it there. The
+    // harness's choice (caps.browser, chooseBrowser) is the run's browser
+    // under the same gate as the instruction's {browser}: only for a task
+    // that names one. StartOptions.browser takes the name and the bundle id.
+    const attempt = readFileSync(
+      join(root, "src/gym/bench/attempt.ts"),
+      "utf8",
+    );
+    expect(attempt).toContain(
+      "caps.browser && namesBrowser(task) ? caps.browser : undefined",
+    );
+    expect(attempt).toContain("[BROWSER_PARAM]: pinnedBrowser.name,");
+    expect(attempt).toContain("[BROWSER_ID_PARAM]: pinnedBrowser.id,");
+    const at = attempt.indexOf("await runner.start(");
+    const start = attempt.slice(at, attempt.indexOf(");", at));
+    expect(start).toContain("...(pinnedBrowser");
+    expect(start).toContain("name: pinnedBrowser.name,");
+    expect(start).toContain("bundleId: pinnedBrowser.id,");
+    expect(start).not.toContain("caps.browser");
+  });
   it("stops the benchmark on real input whatever the flags", () => {
     const loop = source.slice(
       source.indexOf("const result = await runAttempt("),

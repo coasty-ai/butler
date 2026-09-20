@@ -262,6 +262,16 @@ describe("decision codes", () => {
         'No input was sent. No installed application matches "SECRETWORD" exactly. Use one of them, or request_user if it is not installed.',
       ),
     ).toBe("APP_UNRESOLVED");
+    expect(
+      retryCode(
+        "No input was sent. This task runs in SECRETWORD; open SECRETWORD instead.",
+      ),
+    ).toBe("BROWSER_PINNED");
+    expect(
+      retryCode(
+        "No input was sent. This task runs in Google Chrome; open Google Chrome instead.",
+      ),
+    ).toBe("BROWSER_PINNED");
     expect(retryCode(TOOL_REFUSALS.bad_path)).toBe("TOOL_BAD_PATH");
     expect(
       deniedCode(

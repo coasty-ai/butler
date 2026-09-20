@@ -15,6 +15,7 @@ import {
   isInstallerName,
   PASTE_ALLOWED,
   type Decision,
+  type PolicyContext,
 } from "../src/core/policy";
 import { allowedCode, retryCode } from "../src/core/decision-codes";
 import { pasteRequested } from "../src/core/runner";
@@ -1550,6 +1551,142 @@ describe("open_app policy", () => {
         actionSchema.safeParse({ type: "open_app", frame_id: "f", name })
           .success,
       ).toBe(true);
+  });
+});
+
+describe("a run pinned to a browser", () => {
+  // Cycle 20260920-0415, home-dashboard-lights #1: the task named Safari (the
+  // bench's browser), the model's first step opened Google Chrome (the
+  // person's), and the address and six clicks landed there. A run started
+  // with a browser (StartOptions.browser, PolicyContext.browser) refuses a
+  // launch the helper resolved to another browser on the fixed list.
+  const pinned = { browser: { name: "Safari", bundleId: "com.apple.Safari" } };
+  const PINNED_RETRY =
+    "No input was sent. This task runs in Safari; open Safari instead.";
+  const launcher = (appId: string, name: string): Partial<Surface> => ({
+    appId: "com.apple.finder",
+    launcherStatus: "resolved",
+    launcherAppId: appId,
+    launcherName: name,
+  });
+  const chrome = launcher("com.google.Chrome", "Google Chrome");
+  const judge = (
+    action: Action,
+    surface: Partial<Surface>,
+    context: PolicyContext = pinned,
+    s = settings,
+  ) => evaluate(action, { ...base, ...surface }, s, false, context);
+  it("refuses open_app of another browser with the pinned browser's name, whatever the autonomy setting", () => {
+    expect(judge(openApp("Google Chrome"), chrome)).toEqual({
+      kind: "RETRY",
+      reason: PINNED_RETRY,
+    });
+    expect(retryCode(PINNED_RETRY)).toBe("BROWSER_PINNED");
+    // A floor: "allow everything" removes questions, and this is no question.
+    expect(
+      judge(openApp("Google Chrome"), chrome, pinned, {
+        ...settings,
+        autonomy: "all",
+        autonomyAllAcknowledged: true,
+      }),
+    ).toEqual({ kind: "RETRY", reason: PINNED_RETRY });
+    // Even when that browser is already in front (the frontmost refusal
+    // would send the model on to work in it).
+    expect(
+      judge(openApp("Google Chrome"), {
+        ...chrome,
+        appId: "com.google.Chrome",
+        windowCount: 2,
+      }).reason,
+    ).toBe(PINNED_RETRY);
+    // The helper's casing of the bundle id does not matter.
+    expect(
+      judge(openApp("Google Chrome"), {
+        ...chrome,
+        launcherAppId: "com.google.chrome",
+      }).reason,
+    ).toBe(PINNED_RETRY);
+    // Firefox, Brave, Edge: every browser on the fixed list but the pinned one.
+    for (const [id, name] of [
+      ["org.mozilla.firefox", "Firefox"],
+      ["com.brave.Browser", "Brave Browser"],
+      ["com.microsoft.edgemac", "Microsoft Edge"],
+    ])
+      expect(judge(openApp(name), launcher(id, name)).reason).toBe(
+        PINNED_RETRY,
+      );
+  });
+  it("lets the pinned browser, a non-browser application and an unpinned run through as before", () => {
+    expect(
+      judge(openApp("Safari"), launcher("com.apple.Safari", "Safari")),
+    ).toEqual({
+      kind: "ALLOW",
+      reason: "Open a verified installed application.",
+    });
+    expect(
+      judge(openApp("Safari"), launcher("com.apple.safari", "Safari")).kind,
+    ).toBe("ALLOW");
+    expect(
+      judge(openApp("Notes"), launcher("com.apple.Notes", "Notes")),
+    ).toEqual({
+      kind: "ALLOW",
+      reason: "Open a verified installed application.",
+    });
+    // No pin: Chrome opens as it always did.
+    expect(judge(openApp("Google Chrome"), chrome, {})).toEqual({
+      kind: "ALLOW",
+      reason: "Open a verified installed application.",
+    });
+    expect(decide(openApp("Google Chrome"), chrome).kind).toBe("ALLOW");
+    // A browser the helper did not resolve is judged by its own rule: nothing
+    // would launch, and the sentence would name the wrong problem.
+    const unresolved = judge(openApp("Chrome"), {
+      appId: "com.apple.finder",
+      launcherStatus: "unresolved",
+      launcherCandidates: ["Google Chrome", "Chrome Remote Desktop Host"],
+    });
+    expect(unresolved.kind).toBe("RETRY");
+    expect(unresolved.reason).toMatch(/No installed application matches/);
+    expect(unresolved.reason).not.toBe(PINNED_RETRY);
+  });
+  it("keeps a denial ahead of the pin, and pins an open_file naming another browser", () => {
+    // A protected Chrome stays DENY: the denial counter, not a retry.
+    const denied = judge(openApp("Google Chrome"), chrome, pinned, {
+      ...settings,
+      protectedApps: [...settings.protectedApps, "com.google.chrome"],
+    });
+    expect(denied.kind).toBe("DENY");
+    expect(denied.reason).not.toBe(PINNED_RETRY);
+    expect(
+      judge(openApp("Chrome Installer"), {
+        ...chrome,
+        launcherName: "Chrome Installer",
+      }).kind,
+    ).toBe("DENY");
+    // open_file with an application resolves it through the same launcher
+    // fields: another browser is the pin's refusal, the pinned one opens.
+    const document: Partial<Surface> = {
+      fileStatus: "resolved",
+      fileKind: "document",
+      fileName: "receipt.pdf",
+    };
+    const openFile = (app?: string) =>
+      act({ type: "open_file", path: "~/Documents/receipt.pdf", app });
+    expect(
+      judge(openFile("Google Chrome"), { ...chrome, ...document }),
+    ).toEqual({ kind: "RETRY", reason: PINNED_RETRY });
+    expect(
+      judge(openFile("Safari"), {
+        ...launcher("com.apple.Safari", "Safari"),
+        ...document,
+      }).kind,
+    ).toBe("ALLOW");
+    // Without an application the launcher fields were never consulted, so a
+    // stale Chrome resolution on the surface means nothing.
+    expect(judge(openFile(), { ...chrome, ...document })).toEqual({
+      kind: "ALLOW",
+      reason: "Open a document or folder from the local index.",
+    });
   });
 });
 

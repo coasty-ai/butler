@@ -102,6 +102,8 @@ export const RETRY_CODES = [
   "APP_AMBIGUOUS",
   "APP_UNRESOLVED",
   "APP_UNIDENTIFIED",
+  // A run pinned to a browser (the bench's named one) asked to open another.
+  "BROWSER_PINNED",
   "WINDOWLESS",
   "WINDOWLESS_REPEAT",
   "DOCK_CLICK",
@@ -407,6 +409,10 @@ const RETRY: Table<RetryCode> = {
     [
       /^No input was sent\. No installed application matches ".*" exactly\..* Use one of them, or (?:request_user if it is not installed|open the item with open_file alone)\.$/su,
       "APP_UNRESOLVED",
+    ],
+    [
+      /^No input was sent\. This task runs in .+; open .+ instead\.$/su,
+      "BROWSER_PINNED",
     ],
     [
       /^No input was sent\. The text in .+ was edited after it was typed, so what ENTER would open or run there cannot be named\. Press ESC, open it again and type the whole .+, then press ENTER\.$/su,

@@ -662,12 +662,15 @@ export async function runAttempt(
       parameters = resolved;
     }
     // The browser is the harness's choice, never the model's: the one not in
-    // the person's use, named in the instruction and held to by the graders.
-    if (caps.browser && namesBrowser(task))
+    // the person's use, named in the instruction, held to by the graders and
+    // pinned on the run (StartOptions.browser below).
+    const pinnedBrowser =
+      caps.browser && namesBrowser(task) ? caps.browser : undefined;
+    if (pinnedBrowser)
       parameters = {
         ...parameters,
-        [BROWSER_PARAM]: caps.browser.name,
-        [BROWSER_ID_PARAM]: caps.browser.id,
+        [BROWSER_PARAM]: pinnedBrowser.name,
+        [BROWSER_ID_PARAM]: pinnedBrowser.id,
       };
     // An Escape or Ctrl-C during the settle or prepare found no run to stop:
     // the previous runner was already terminal. Starting now would resume the
@@ -853,9 +856,20 @@ export async function runAttempt(
       // policy's "task" setting reads it as their words (a typed command
       // starts the same way in electron/main.ts); without it every undoable
       // step the words asked for asked anyway (cycle 20260919-0739).
+      // The named browser is the run's: open_url goes to it and open_app of
+      // another browser is refused (cycle 20260920-0415, home-dashboard-lights
+      // #1 drove the person's Chrome with Safari named).
       await runner.start(fillInstruction(task.instruction, parameters), {
         origin: "bench",
         taskSource: "user_words",
+        ...(pinnedBrowser
+          ? {
+              browser: {
+                name: pinnedBrowser.name,
+                bundleId: pinnedBrowser.id,
+              },
+            }
+          : {}),
       });
     } catch {
       // A thrown start is already recorded in the run status; keep going.

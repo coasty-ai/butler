@@ -1,12 +1,14 @@
 import type {
   Action,
   Controller,
+  ExecuteOptions,
   ExecutionResult,
   Frame,
   Provider,
   ProviderResult,
   Recorder,
   Run,
+  RunBrowser,
   RunOrigin,
   RunStatus,
   RunTarget,
@@ -1334,6 +1336,16 @@ const taskWords = (text: string) =>
 export interface StartOptions {
   origin?: RunOrigin;
   taskSource?: TaskSource;
+  /**
+   * The browser the task names, from a fixed list (the bench attempt's
+   * `{browser}`, src/gym/bench/attempt.ts): open_url is sent to it whatever
+   * browser is in front or most used, and open_app of another browser is
+   * refused (policy BROWSER_PINNED, a floor no autonomy setting relaxes).
+   * Cycle 20260920-0415, home-dashboard-lights #1: the task named Safari,
+   * the model opened Chrome, the person's own browser, and the address,
+   * two clicks by name and four by position landed in it.
+   */
+  browser?: RunBrowser;
   /** Set on a run a detached watch woke (electron/watch.ts). */
   watch?: WatchContext;
   /** The chain that watch belongs to, for a watch this run starts. */
@@ -4010,6 +4022,9 @@ export class Runner {
         ? { effect: outcome.effect }
         : {}),
       ...(opened ? { opened: { kind: opened.kind } } : {}),
+      // The browser an open_url's address went to (a bundle id, for the
+      // diagnostics row's appId); never the address or its host.
+      ...(navigated?.appId ? { navigated: { appId: navigated.appId } } : {}),
       ...(launched
         ? {
             launched: {
@@ -4150,6 +4165,7 @@ export class Runner {
       summary: "",
       origin: options.origin ?? "typed",
       ...(options.taskSource ? { taskSource: options.taskSource } : {}),
+      ...(options.browser ? { browser: options.browser } : {}),
     };
   }
   /**
@@ -4947,6 +4963,8 @@ export class Runner {
             ),
             ...(userWords ? { userWords } : {}),
             ...toolContext,
+            // The task's browser: opening another one is refused.
+            ...(run.browser ? { browser: run.browser } : {}),
             // The same rules, on the bound window's surface, plus the one
             // refusal a bound run adds: input goes to that process alone.
             ...(boundWindow
@@ -5444,12 +5462,19 @@ export class Runner {
               continue;
             }
             outcome = delivered.outcome;
-          } else
+          } else {
+            // A pinned run tells the controller its browser, so open_url goes
+            // there; every other run's execute is the three-argument call.
+            const pinned: [] | [ExecuteOptions] = run.browser
+              ? [{ browser: run.browser }]
+              : [];
             outcome = await this.controller.execute(
               native,
               executionFrame,
               this.abort.signal,
+              ...pinned,
             );
+          }
         } catch (e) {
           if (!this.active()) break;
           if (this.held || epoch !== this.epoch) {
