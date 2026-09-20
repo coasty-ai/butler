@@ -73,6 +73,25 @@ try {
       unknown: surface.unknown,
     }),
   );
+  const pageAddressFacts = (address) => {
+    if (typeof address !== "string" || !address) return { present: false };
+    try {
+      const url = new URL(address);
+      const host = url.hostname;
+      const kind = /^(127\.|localhost$|\[?::1)/.test(host)
+        ? "loopback"
+        : "other";
+      return {
+        present: true,
+        scheme: url.protocol.replace(":", ""),
+        host: kind,
+        hasPort: !!url.port,
+        hasPath: url.pathname.length > 1,
+      };
+    } catch {
+      return { present: true, parses: false, length: address.length };
+    }
+  };
   const frame = await controller.capture();
   const context = frame.context ?? {};
   const controls = context.controls ?? [];
@@ -88,6 +107,10 @@ try {
         .length,
       disabled: controls.filter((c) => c.enabled === false).length,
       roles: tally(controls.map((c) => c.role)),
+      // The page address the web tools read (frame.context.browserAddress):
+      // present or not, its host class and whether it carries a path — never
+      // the address itself.
+      pageAddress: pageAddressFacts(context.browserAddress),
       visibleTextChars: (context.visibleText ?? "").length,
       screenTextChars: (context.screenText ?? "").length,
       menus: (context.menus ?? []).length,
