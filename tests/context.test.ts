@@ -37,6 +37,54 @@ describe("bounded screen context", () => {
     expect(result?.visibleText).toContain("[Sensitive text omitted] Continue");
     expect(result?.visibleText).not.toContain("fixtureSECRET");
   });
+  it("parses the page-text walk's stop and counts, and rejects a stop that is not one of its codes", () => {
+    const cut = cleanScreenContext({
+      appName: "Safari",
+      windowTitle: "Site chat",
+      visibleText: "a\n[page continues below; scroll to read more]",
+      visibleTextTruncated: "chars",
+      visibleTextNodes: 4000,
+      visibleTextMs: 412,
+    });
+    expect(cut).toMatchObject({
+      visibleTextTruncated: "chars",
+      visibleTextNodes: 4000,
+      visibleTextMs: 412,
+    });
+    for (const truncated of ["time", "nodes"])
+      expect(
+        cleanScreenContext({
+          appName: "x",
+          windowTitle: "x",
+          visibleTextTruncated: truncated,
+        })?.visibleTextTruncated,
+      ).toBe(truncated);
+    // The code is one of three fixed words; a sentence or a number is not.
+    expect(
+      cleanScreenContext({
+        appName: "x",
+        windowTitle: "x",
+        visibleTextTruncated: "the walk ran out of time",
+      }),
+    ).toBeUndefined();
+    expect(
+      cleanScreenContext({
+        appName: "x",
+        windowTitle: "x",
+        visibleTextNodes: -1,
+      }),
+    ).toBeUndefined();
+    expect(
+      cleanScreenContext({
+        appName: "x",
+        windowTitle: "x",
+        visibleTextMs: 1.5,
+      }),
+    ).toBeUndefined();
+    const plain = cleanScreenContext({ appName: "x", windowTitle: "x" })!;
+    expect("visibleTextTruncated" in plain).toBe(false);
+    expect("visibleTextNodes" in plain).toBe(false);
+  });
   it("rejects unbounded context and unknown capability fields", () => {
     expect(
       cleanScreenContext({ appName: "x", windowTitle: "x", shell: "ls" }),

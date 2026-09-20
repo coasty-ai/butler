@@ -960,6 +960,15 @@ export interface Frame {
    */
   preview?: { image: string; width: number; height: number };
 }
+/** Why a frame's page text was cut short: native/macos/WebText.swift TextWalkBudget. */
+export type VisibleTextTruncation = "time" | "nodes" | "chars";
+/**
+ * The last line of a page text the helper cut short (TextWalkBudget.marker),
+ * quoted to the model by the instruction so it scrolls instead of concluding
+ * that what it has not seen is not on the page.
+ */
+export const VISIBLE_TEXT_CUT_MARKER =
+  "[page continues below; scroll to read more]";
 export interface ScreenContext {
   appName: string;
   windowTitle: string;
@@ -974,6 +983,20 @@ export interface ScreenContext {
   launcher?: { query: string; selectedResult?: string };
   browserAddress?: string;
   visibleText?: string;
+  /**
+   * Why the page text stopped short of what is on screen (a browser window):
+   * the helper's wall-time budget for the walk, its node budget, or the
+   * 4,200-character cap. The text then ends with VISIBLE_TEXT_CUT_MARKER as
+   * its last line. Absent when the walk finished or no page was read.
+   */
+  visibleTextTruncated?: VisibleTextTruncation;
+  /**
+   * The page-text walk's account of itself: nodes visited and wall time in
+   * ms. Diagnostics (FrameCaptured textNodes, textMs); left out of the
+   * model's copy (trimScreenContext).
+   */
+  visibleTextNodes?: number;
+  visibleTextMs?: number;
   recentWindows?: { appName: string; title: string }[];
   recentFiles?: string[];
   recentTasks?: { task: string; status: string }[];

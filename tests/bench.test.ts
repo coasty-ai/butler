@@ -95,6 +95,7 @@ import {
   ownerOf,
   parseDiagnostics,
   renderAnalysis,
+  TEXT_TRUNCATED_PREFIX,
 } from "../src/gym/bench/analyze";
 import type {
   BenchTask,
@@ -1718,6 +1719,36 @@ describe("pause cause from a real run", () => {
     expect(noteFor("CLICK_NO_EFFECT")).toMatch(/300 ms/);
     expect(noteFor("CLICK_NO_EFFECT")).toMatch(/loop at once/);
     expect(ownerOf("CLICK_NO_EFFECT")).toBe("agent");
+  });
+  it("counts a frame whose page text the helper cut short, by the helper's reason", () => {
+    // FrameCaptured carries the stop as a fixed code (electron/diagnostics.ts
+    // textTruncated, from ScreenContext.visibleTextTruncated); the pattern is
+    // the code upper-cased behind TEXT_TRUNCATED_. A frame read whole, or a
+    // sentence in the field, adds nothing.
+    expect(TEXT_TRUNCATED_PREFIX).toBe("TEXT_TRUNCATED_");
+    for (const [reason, pattern] of [
+      ["time", "TEXT_TRUNCATED_TIME"],
+      ["nodes", "TEXT_TRUNCATED_NODES"],
+      ["chars", "TEXT_TRUNCATED_CHARS"],
+    ])
+      expect(
+        frictionCodes({
+          event: "FrameCaptured",
+          data: { frameId: "f", textTruncated: reason, textNodes: 4000 },
+        }),
+      ).toEqual([pattern]);
+    expect(
+      frictionCodes({ event: "FrameCaptured", data: { frameId: "f" } }),
+    ).toEqual([]);
+    expect(
+      frictionCodes({
+        event: "FrameCaptured",
+        data: { textTruncated: "the walk ran out of time" },
+      }),
+    ).toEqual([]);
+    expect(noteFor("TEXT_TRUNCATED_TIME")).toMatch(/wall-time budget/);
+    expect(noteFor("TEXT_TRUNCATED_CHARS")).toMatch(/4,200-character cap/);
+    expect(ownerOf("TEXT_TRUNCATED_TIME")).toBe("agent");
   });
 });
 

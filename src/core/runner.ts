@@ -3398,11 +3398,21 @@ export class Runner {
     // The PNG is the frame of record; the model's reduced rendition is not kept.
     const { preview: _preview, ...stored } = frame;
     this.recorder.frame(this.snapshot.run!.id, stored);
+    // The page text's stop and the walk's counts (ScreenContext), so the
+    // trace says how often a browser frame's text was cut, and where.
+    const c = frame.context;
     this.event("FrameCaptured", {
       frame_id: frame.id,
       sha256: frame.sha256,
       geometry: frame.geometry,
       ...(frame.timings && { timings: frame.timings }),
+      ...(c?.visibleTextTruncated && {
+        textTruncated: c.visibleTextTruncated,
+      }),
+      ...(c?.visibleTextNodes !== undefined && {
+        textNodes: c.visibleTextNodes,
+      }),
+      ...(c?.visibleTextMs !== undefined && { textMs: c.visibleTextMs }),
     });
     return frame;
   }

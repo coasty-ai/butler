@@ -150,37 +150,84 @@ func webControlEntries(_ window: AXUIElement, display: CGRect, limit: Int = 45) 
     return result
 }
 /**
- The text a person can read in a browser page right now, in reading order.
- Web pages nest their text far deeper than the generic window walk goes, so a
- research task used to see only the title and had to guess from pixels. Depth
- first so the order is the page's own, pruned to the visible part of the
- window, bounded in nodes, characters and time, and never reading a secure
- field.
+ Where the page-text walk starts: the outermost web area over the centre of
+ the visible rect when that point is in this window's page (one hit test and
+ a climb to the window, some twenty attribute reads, where the window's chrome
+ costs hundreds), else the first web area under the window in tree order
+ (visitWebAreas), else the window itself. The climb ends at the window and
+ compares it, so a sheet, a popover or another of the application's windows
+ over the centre (a bound window may be covered) never lends its page.
  */
-func webVisibleText(_ window: AXUIElement, display: CGRect, limit: Int = 4200) -> String {
+func webTextRoot(_ window: AXUIElement, visible: CGRect) -> (root: AXUIElement, web: Bool) {
+    var pid: pid_t = 0
+    if AXUIElementGetPid(window, &pid) == .success {
+        var hit: AXUIElement?
+        if AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(pid), Float(visible.midX), Float(visible.midY), &hit) == .success {
+            var node = hit, area: AXUIElement? = nil
+            for _ in 0..<40 {
+                guard let current = node else { break }
+                let role = attribute(current, kAXRoleAttribute) as? String ?? ""
+                if role == "AXWebArea" { area = current }
+                if role == "AXWindow" { if let area, CFEqual(current, window) { return (area, true) }; break }
+                node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+            }
+        }
+    }
+    var found: AXUIElement? = nil
+    visitWebAreas(window) { area in found = area; return true }
+    if let found { return (found, true) }
+    return (window, false)
+}
+/**
+ The text a person can read in a browser page right now, in reading order,
+ with the walk's account of itself (WebText: why it stopped early, its node
+ count, its wall time). Web pages nest their text far deeper than the generic
+ window walk goes, so a research task used to see only the title and had to
+ guess from pixels. Depth first from the page (webTextRoot) so the order is
+ the page's own; a child's frame is read before anything else about it and a
+ child off-screen is left unvisited (two reads, not four); a run of siblings
+ below the fold ends its parent's list; under a node the visible rect
+ contains whole no frame is read at all; bounded in nodes, characters and
+ wall time by TextWalkBudget (WebText.swift), whose marker line ends a text
+ that was cut; and never reading a secure field.
+ */
+func webVisibleText(_ window: AXUIElement, display: CGRect, limit: Int = 4200, seconds: Double = TextWalkBudget.webSeconds) -> WebText {
     let started = ProcessInfo.processInfo.systemUptime
     let visible = (elementRect(window) ?? display).intersection(display)
-    var parts = [String](), characters = 0, nodes = 0
-    func visit(_ node: AXUIElement, _ depth: Int) {
-        guard depth < 60, nodes < 4000, characters < limit,
-              ProcessInfo.processInfo.systemUptime - started < 0.3 else { return }
-        nodes += 1
-        if attribute(node, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole { return }
-        if depth > 2, let rect = elementRect(node), rect.width > 0, rect.height > 0, !rect.intersects(visible) { return }
-        if attribute(node, kAXRoleAttribute) as? String == "AXStaticText",
-           let value = attribute(node, kAXValueAttribute) as? String {
-            let text = value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-            if !text.isEmpty {
-                let bounded = String(text.prefix(min(600, limit - characters)))
-                parts.append(bounded); characters += bounded.count + 1
-            }
+    var budget = TextWalkBudget(seconds: seconds, maxNodes: TextWalkBudget.nodeCap, maxCharacters: limit)
+    let start = webTextRoot(window, visible: visible)
+    // Frames are read from the page's children down; under a bare window the
+    // top two levels are chrome whose frames say nothing about the text.
+    let pruneDepth = start.web ? 1 : 3
+    var parts = [String]()
+    func visit(_ node: AXUIElement, _ depth: Int, _ contained: Bool) {
+        guard depth < 60, budget.admit(elapsed: ProcessInfo.processInfo.systemUptime - started) else { return }
+        let role = attribute(node, kAXRoleAttribute) as? String ?? ""
+        if role == "AXStaticText" {
+            if let value = attribute(node, kAXValueAttribute) as? String, let bounded = budget.take(value) { parts.append(bounded) }
             return
         }
-        let children = (attribute(node, "AXVisibleChildren") ?? attribute(node, kAXChildrenAttribute)) as? [AXUIElement] ?? []
-        for child in children.prefix(200) { visit(child, depth + 1) }
+        // A secure field publishes no static text, and nothing under it is read either.
+        if role == "AXTextField", attribute(node, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole { return }
+        let children = (attribute(node, TextWalkBudget.childrenAttribute(role: role)) ?? attribute(node, kAXChildrenAttribute)) as? [AXUIElement] ?? []
+        var below = 0
+        for child in children.prefix(200) {
+            guard budget.truncated == nil else { return }
+            var inside = contained
+            if depth + 1 >= pruneDepth, !contained {
+                switch TextWalkBudget.place(elementRect(child), in: visible) {
+                case .visible(let whole): inside = whole
+                case .above, .aside: below = 0; continue
+                case .below: below += 1; if below >= TextWalkBudget.belowStreak { return }; continue
+                }
+            }
+            below = 0
+            visit(child, depth + 1, inside)
+        }
     }
-    visit(window, 0)
-    return parts.joined(separator: "\n")
+    visit(start.root, 0, false)
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+    return WebText(text: budget.finish(parts), truncated: budget.truncated, nodes: budget.nodes, elapsedMs: Int((elapsed * 1000).rounded()), characters: budget.characters)
 }
 /**
  Text read from the screenshot itself, inside the frontmost window, top to
@@ -1380,7 +1427,10 @@ func screenContext() -> [String:Any] {
     if browserAppIDs.contains(app.bundleIdentifier ?? ""),
        let main=attribute(element,kAXMainWindowAttribute) ?? attribute(element,kAXFocusedWindowAttribute) {
         let page=webVisibleText(main as! AXUIElement, display: CGDisplayBounds(displayID))
-        if page.count > (result["visibleText"] as? String ?? "").count {result["visibleText"]=String(page.prefix(4200))}
+        if page.text.count > (result["visibleText"] as? String ?? "").count {result["visibleText"]=String(page.text.prefix(4200))}
+        // The walk's account, whichever text won: a cut page is a fact of the frame.
+        if let truncated = page.truncated {result["visibleTextTruncated"]=truncated}
+        result["visibleTextNodes"]=page.nodes;result["visibleTextMs"]=page.elapsedMs
     }
     if let raw=attribute(element,kAXFocusedUIElementAttribute) {
         let focused=raw as! AXUIElement
@@ -3073,7 +3123,9 @@ func targetContext(_ bound: TargetBinding, state: WindowState, frame: CGRect, fa
     var text = windowVisibleText(bound.window)
     if bound.appClass.web {
         let page = webVisibleText(bound.window, display: frame)
-        if page.count > text.count { text = String(page.prefix(4200)) }
+        if page.text.count > text.count { text = String(page.text.prefix(4200)) }
+        if let truncated = page.truncated { result["visibleTextTruncated"] = truncated }
+        result["visibleTextNodes"] = page.nodes; result["visibleTextMs"] = page.elapsedMs
     }
     result["visibleText"] = text
     // The field an accessibility write would go to is the surface's
@@ -3844,7 +3896,7 @@ func observerFullReadings(_ front: ObserveFront, tier: ObserveTier) async -> Obs
         var text = ""
         if tier >= .text {
             text = windowVisibleText(window)
-            if front.browser { let page = webVisibleText(window, display: display); if page.count > text.count { text = page } }
+            if front.browser { let page = webVisibleText(window, display: display).text; if page.count > text.count { text = page } }
         }
         return (named, text)
     }

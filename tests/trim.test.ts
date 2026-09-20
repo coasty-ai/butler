@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildRequest } from "../src/providers/http";
 import { cleanScreenContext, trimScreenContext } from "../src/core/context";
+import { VISIBLE_TEXT_CUT_MARKER } from "../src/core/schema";
 import {
   MODEL_HISTORY_FULL,
   MODEL_RESULT_CHARS,
@@ -516,9 +517,20 @@ describe("what one step costs", () => {
     // rename_file or move_file, one call per file, never the Finder (cycle
     // 20260919-2044: files-rename-receipts #2 listed and read through the
     // tool, found nothing that renames, and fell back to Finder clicks and
-    // keys until the loop rule ended it), 112 characters the pin moved for.
+    // keys until the loop rule ended it), 112 characters the pin moved for;
+    // 17,383 with the sentence that names the marker line a cut page text
+    // ends with and says to scroll on before concluding (cycles 20260919-2044
+    // and -2144: msg-group-chat-digest and memory-link-to-note scrolled and
+    // captured to the loop rule with every fact missing, the helper's 0.3 s
+    // walk returning the top of the viewport or nothing; native/macos/
+    // WebText.swift), 206 characters the pin moved for.
 
-    expect(instruction.length).toBeLessThan(17200);
+    expect(instruction.length).toBeLessThan(17400);
+    // The marker line the helper appends to a cut page text is quoted as is.
+    expect(instruction).toContain(`"${VISIBLE_TEXT_CUT_MARKER}"`);
+    expect(VISIBLE_TEXT_CUT_MARKER).toBe(
+      "[page continues below; scroll to read more]",
+    );
 
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
@@ -549,7 +561,8 @@ describe("what one step costs", () => {
     expect(paragraph.length).toBeLessThan(1900);
     // 18,738 with the three sentences the instruction gained on 2026-09-19.
     // 18,964 with the rename/move sentence above (the pin moved with it).
-    expect(instruction.length + paragraph.length).toBeLessThan(19000);
+    // 19,170 with the cut-marker sentence above (the pin moved with it).
+    expect(instruction.length + paragraph.length).toBeLessThan(19200);
     expect(instruction.indexOf(" Return exactly one action")).toBeGreaterThan(
       15000,
     );
@@ -559,6 +572,35 @@ describe("what one step costs", () => {
 describe("screen context the model sees", () => {
   const clean = cleanScreenContext(notesContext)!;
   const trimmed = trimScreenContext(clean)!;
+  it("keeps a cut page text's stop code beside the marker and drops the walk's counts", () => {
+    const cut = cleanScreenContext({
+      appName: "Safari",
+      windowTitle: "Site chat",
+      visibleText: `line one\nline two\n${VISIBLE_TEXT_CUT_MARKER}`,
+      visibleTextTruncated: "time",
+      visibleTextNodes: 212,
+      visibleTextMs: 803,
+    })!;
+    expect(cut).toMatchObject({
+      visibleTextTruncated: "time",
+      visibleTextNodes: 212,
+      visibleTextMs: 803,
+    });
+    const shown = trimScreenContext(cut)!;
+    expect(shown.visibleTextTruncated).toBe("time");
+    expect(shown.visibleText?.endsWith(VISIBLE_TEXT_CUT_MARKER)).toBe(true);
+    expect("visibleTextNodes" in shown).toBe(false);
+    expect("visibleTextMs" in shown).toBe(false);
+    // A finished walk leaves no such keys at all.
+    const whole = trimScreenContext(
+      cleanScreenContext({
+        appName: "Safari",
+        windowTitle: "Site chat",
+        visibleText: "line one",
+      })!,
+    )!;
+    expect("visibleTextTruncated" in whole).toBe(false);
+  });
   it("drops recognized lines the accessibility text, title or a control already carries", () => {
     const before = clean.screenText!.split("\n");
     const after = trimmed.screenText!.split("\n");

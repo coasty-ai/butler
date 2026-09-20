@@ -198,6 +198,56 @@ const unattendedAll: Settings = {
 const reflected = (o: Observation) =>
   o.history.filter((h) => h.result.includes(reflectionNote.trim())).length;
 
+describe("a frame whose page text the helper cut short", () => {
+  it("journals the stop code and the walk's counts on FrameCaptured, and nothing on a frame read whole", async () => {
+    allowAll();
+    const m = memory();
+    const p = scripted([a]);
+    // The first capture's page text was cut by wall time (the helper's
+    // ScreenContext keys); the second was read whole.
+    const ctl = controller({}, (n) =>
+      n === 1
+        ? {
+            context: {
+              appName: "Safari",
+              windowTitle: "Site chat",
+              visibleText: "line\n[page continues below; scroll to read more]",
+              visibleTextTruncated: "time",
+              visibleTextNodes: 212,
+              visibleTextMs: 803,
+            },
+          }
+        : {},
+    );
+    const runner = new Runner(
+      ctl,
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      settle,
+    );
+    await runner.start("test", bench);
+    expect(runner.snapshot.run?.status).toBe("completed");
+    const captured = m.of("FrameCaptured").map((e) => e.data);
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).toMatchObject({
+      frame_id: "frame-1",
+      textTruncated: "time",
+      textNodes: 212,
+      textMs: 803,
+    });
+    expect(captured[1].frame_id).toBe("frame-2");
+    for (const key of ["textTruncated", "textNodes", "textMs"])
+      expect(key in captured[1]).toBe(false);
+    // The model's copy keeps the code beside the marker; the counts are not its business.
+    const seen = p.observations[0].frame.context!;
+    expect(seen.visibleTextTruncated).toBe("time");
+  });
+});
+
 describe("the loop breaker when nobody can say continue", () => {
   it("gives a bench run one reflection step instead of pausing", async () => {
     allowAll();

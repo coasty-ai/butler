@@ -51,6 +51,11 @@ const fields = new Set([
   // (fixed codes from src/core/vision.ts).
   "screenshot",
   "screenshotReason",
+  // FrameCaptured: why a browser frame's page text was cut (a fixed code
+  // from native/macos/WebText.swift) and the walk's node count and wall time.
+  "textTruncated",
+  "textNodes",
+  "textMs",
   "actionType",
   "targetRole",
   "focusedRole",
@@ -392,6 +397,8 @@ const countFields = new Set([
   // A correction's place in the run and a search route's length.
   "after_action",
   "depth",
+  // FrameCaptured: nodes the page-text walk visited.
+  "textNodes",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
@@ -430,6 +437,8 @@ const numberFields = new Set([
   "issueMs",
   // How long a policy decision's reason or question was; never the words.
   "reasonLength",
+  // FrameCaptured: the page-text walk's wall time.
+  "textMs",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
@@ -536,6 +545,8 @@ const codeFields = new Set([
   // travel as reasonCode (src/core/decision-codes.ts) and approvalCode.
   "reason",
   "reasonCode",
+  // FrameCaptured: why the page text was cut (time, nodes or chars).
+  "textTruncated",
   // A run's origin and privacy, a background rung step's from and to.
   "origin",
   "privacy",
@@ -695,7 +706,10 @@ const journalEvents = new Map<string, Set<string>>([
   ["RunCancelled", new Set()],
   ["TaskAmended", new Set(["taskLength"])],
   ["UsageAdded", new Set(["usage"])],
-  ["FrameCaptured", new Set(["frameId", "geometry"])],
+  [
+    "FrameCaptured",
+    new Set(["frameId", "geometry", "textTruncated", "textNodes", "textMs"]),
+  ],
   ["TransitionSettled", new Set(["kind"])],
   ["ModelRequestStarted", new Set(["screenshot", "screenshotReason", "early"])],
   ["ModelResponseReceived", new Set(["usage"])],
@@ -1180,6 +1194,10 @@ export class LocalDiagnostics {
           screenshotReason: e.data.screenshotReason,
           frameId: e.data.frame_id,
           geometry: e.data.geometry,
+          // FrameCaptured: the page text's stop as a code and the walk's counts.
+          textTruncated: code(e.data.textTruncated),
+          textNodes: count(e.data.textNodes),
+          textMs: count(e.data.textMs),
           synthetic: s.run.synthetic,
           actionType: e.data.actionType,
           appId: e.data.appId,

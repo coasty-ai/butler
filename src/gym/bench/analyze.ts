@@ -38,6 +38,13 @@ export const APPROVAL_DECLINED_PREFIX = "APPROVAL_DECLINED_";
 export const RETRY_PREFIX = "RETRY_";
 export const POLICY_DENIED_PREFIX = "POLICY_DENIED_";
 /**
+ * A frame whose page text the helper cut short, by the helper's reason
+ * (FrameCaptured textTruncated: time, nodes or chars, native/macos/WebText.swift):
+ * TEXT_TRUNCATED_TIME. Counted per frame, so a run that scrolled through a
+ * long page shows how many of its readings were partial.
+ */
+export const TEXT_TRUNCATED_PREFIX = "TEXT_TRUNCATED_";
+/**
  * The retry codes that name a cause other than an unidentified target, and
  * the class each is: a wait for the end of the user's sentence, an
  * application that did not resolve or has no window, a refused address, a
@@ -214,6 +221,11 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       return failed === "DELIVERABLE_MISSING" || failed === "MODEL_FAILED"
         ? [failed]
         : [];
+    }
+    // A browser frame whose page text the helper cut short, by its reason.
+    case "FrameCaptured": {
+      const cut = code(d.textTruncated);
+      return cut ? [`${TEXT_TRUNCATED_PREFIX}${cut.toUpperCase()}`] : [];
     }
     case "ActionLoopDetected":
       // The app-switch rule's event carries period 0 and no revisit count; a
@@ -638,6 +650,8 @@ export function noteFor(code: string): string {
     return `A policy denial; the suffix is the policy's reason as a code (src/core/decision-codes.ts deniedCode): a protected application or site, a credential, a terminal, an installer.`;
   if (code.startsWith(APPROVAL_DECLINED_PREFIX))
     return `An approval was declined; the suffix is the policy's question as a code (src/core/approval-codes.ts). Declined on a task that lists no such approval, it is the task's design; asked and declined attempt after attempt for a control the policy should have classified (CLICK_CONTROL, ACTIVATE_CONTROL), it is a policy false positive.`;
+  if (code.startsWith(TEXT_TRUNCATED_PREFIX))
+    return `A browser frame's page text stopped short of what was on screen; the suffix is the helper's reason (native/macos/WebText.swift TextWalkBudget): TIME its wall-time budget for the walk, NODES its node budget, CHARS the 4,200-character cap. The text ends with the marker line and the instruction tells the model to scroll on. Counted per frame; many TIME cuts on one task mean a page too slow to read whole within the budget, not a model that failed to scroll.`;
   return NOTE.UNCLASSIFIED;
 }
 

@@ -2335,6 +2335,72 @@ describe("the journal's content-free rows", () => {
       });
     }));
 
+  it("writes a frame's page-text stop as a code and the walk's counts, never the text", () =>
+    fixture((log) => {
+      const s = journal([
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0c9",
+            sha256: `${MARK}hash`,
+            geometry: { width: 1440, height: 900 },
+            timings: { total: 900 },
+            textTruncated: "time",
+            textNodes: 212,
+            textMs: 803,
+          },
+        },
+        // A frame whose text was read whole carries none of the three.
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0c8",
+            sha256: "s",
+            geometry: {},
+          },
+        },
+        // The stop is one of three fixed words; a sentence in the field goes.
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0c7",
+            sha256: "s",
+            geometry: {},
+            textTruncated: `${MARK} ran out of time`,
+            textNodes: "many",
+            textMs: 12,
+          },
+        },
+      ]);
+      log.snapshot(s);
+      const written = rows(log);
+      expect(written[0]).toMatchObject({
+        event: "FrameCaptured",
+        data: {
+          ...base(s, 1),
+          frameId: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0c9",
+          geometry: { width: 1440, height: 900 },
+          textTruncated: "time",
+          textNodes: 212,
+          textMs: 803,
+        },
+      });
+      expect(written[0].data.sha256).toBeUndefined();
+      expect(written[0].data.timings).toBeUndefined();
+      expect(written[1].data).toEqual({
+        ...base(s, 2),
+        frameId: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0c8",
+        geometry: {},
+      });
+      expect(written[2].data).toEqual({
+        ...base(s, 3),
+        frameId: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0c7",
+        geometry: {},
+        textMs: 12,
+      });
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+    }));
+
   it("drops the whole payload of a journal event its table does not know", () =>
     fixture((log) => {
       const s = journal([

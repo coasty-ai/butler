@@ -21,6 +21,10 @@ const contextSchema = z
       .strict()
       .optional(),
     visibleText: z.string().max(4200).optional(),
+    // The page-text walk's stop and its counts (native/macos/WebText.swift).
+    visibleTextTruncated: z.enum(["time", "nodes", "chars"]).optional(),
+    visibleTextNodes: z.number().int().min(0).max(100000).optional(),
+    visibleTextMs: z.number().int().min(0).max(600000).optional(),
     recentWindows: z
       .array(z.object({ appName: short, title: short }).strict())
       .max(12)
@@ -111,6 +115,13 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
       },
     }),
     ...(c.visibleText !== undefined && { visibleText: clean(c.visibleText) }),
+    ...(c.visibleTextTruncated !== undefined && {
+      visibleTextTruncated: c.visibleTextTruncated,
+    }),
+    ...(c.visibleTextNodes !== undefined && {
+      visibleTextNodes: c.visibleTextNodes,
+    }),
+    ...(c.visibleTextMs !== undefined && { visibleTextMs: c.visibleTextMs }),
     recentWindows: c.recentWindows?.map((w) => ({
       appName: clean(w.appName),
       title: clean(w.title),
@@ -183,8 +194,10 @@ const textEntryRoles = new Set([
  * text-entry roles (nothing can target them by name) and a second control
  * with the same role and name (click_control resolves the name against the
  * screen; the first entry keeps its position). Windows that context.openApps
- * already lists leave recentWindows. Only the provider calls this: the runner
- * resolves named targets and replays against the full control list.
+ * already lists leave recentWindows, and the page-text walk's counts
+ * (visibleTextNodes, visibleTextMs) are diagnostics the model has no use for;
+ * its stop code stays beside the marker line. Only the provider calls this:
+ * the runner resolves named targets and replays against the full control list.
  */
 export function trimScreenContext(
   screen: ScreenContext | undefined,
@@ -232,6 +245,8 @@ export function trimScreenContext(
     controls: _controls,
     screenText: _screenText,
     recentWindows: _recentWindows,
+    visibleTextNodes: _visibleTextNodes,
+    visibleTextMs: _visibleTextMs,
     ...rest
   } = screen;
   return {
