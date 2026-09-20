@@ -13,6 +13,16 @@ import type { FixtureEvidence, FixtureHandle } from "./types";
  * Titles are "<Page> · <token>" so a window-title check works in any
  * browser. Numbers on a page are drawn per attempt: a remembered answer
  * cannot pass.
+ *
+ * A form post is answered with a 303 to a page of the token's own: the
+ * form's confirmation when the task registered one under `thanks/<the form's
+ * path>` (`thanksKey`), else the token's `thanks` page. A confirmation is a
+ * static page like any other, rendered at prepare time from what was drawn,
+ * so a flow whose forms share one thanks page reads its own next step there,
+ * and a flow's final submit lands on a page that says it is done and offers
+ * nothing to submit again (checkin-flight-seat, cycles 20260919-2257 to
+ * 20260920-0055: the shared page told the model to complete check-in after
+ * it had, and four runs passed the grader while looping on it).
  */
 
 // Defined beside the port in graders.ts, which the approval rule reads too.
@@ -394,6 +404,13 @@ export function isSideRequest(headers: FixtureRequest["headers"]): boolean {
   return !(accept.includes("text/html") || accept.includes("*/*"));
 }
 
+/**
+ * The key a form's own confirmation is registered under: a POST to
+ * `/<token>/checkin/done` redirects to `/<token>/thanks/checkin/done` when the
+ * token registered that key, else to `/<token>/thanks`.
+ */
+export const thanksKey = (formKey: string) => `thanks/${formKey}`;
+
 /** "/<token>/orders/ORD-1" -> { token, path: "/<token>/orders/ORD-1", key: "orders/ORD-1" }. */
 export function routeOf(
   url: string,
@@ -521,11 +538,14 @@ export function createFixtureStore(port: number = FIXTURE_PORT): FixtureStore {
           path: route.path,
           fields: parseForm(request.body),
         });
-        // A redirect, so the thanks page is a visit of its own and a reload
-        // cannot submit twice.
+        // A redirect, so the page after the post is a visit of its own and a
+        // reload cannot submit twice: the form's own confirmation when the
+        // token registered one, else the shared thanks page.
+        const own = thanksKey(route.key);
+        const next = Object.hasOwn(entry.pages, own) ? own : "thanks";
         return {
           status: 303,
-          headers: { ...FIXTURE_HEADERS, Location: `/${route.token}/thanks` },
+          headers: { ...FIXTURE_HEADERS, Location: `/${route.token}/${next}` },
           body: "",
         };
       }

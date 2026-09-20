@@ -66,6 +66,7 @@ import {
   pages,
   parseForm,
   routeOf,
+  thanksKey,
   type FixtureStore,
 } from "../src/gym/bench/fixtures";
 import {
@@ -1971,6 +1972,54 @@ describe("fixture store", () => {
       store.respond({ method: "PUT", url: `/${token}/contact`, headers: html })
         .status,
     ).toBe(405);
+  });
+
+  it("redirects a post to the form's own confirmation when one is registered, else to the thanks page", () => {
+    // checkin-flight-seat, cycles 20260919-2257 to 20260920-0055: every post
+    // of the flow landed on one shared thanks page that read as a further
+    // step, and four runs that had passed looped on it. A task may register
+    // the page a form lands on under thanks/<the form's path>.
+    expect(thanksKey("checkin/done")).toBe("thanks/checkin/done");
+    const store = createFixtureStore(FIXTURE_PORT);
+    store.register(token, {
+      contact: pages.contact(token),
+      [thanksKey("contact")]: "<p>your message</p>",
+      orders: "<p>orders</p>",
+      thanks: pages.thanks(token),
+    });
+    const own = store.respond({
+      method: "POST",
+      url: `/${token}/contact`,
+      headers: html,
+      body: "name=x",
+    });
+    expect(own.status).toBe(303);
+    expect(own.headers.Location).toBe(`/${token}/thanks/contact`);
+    // The target is a page of its own: served by key, and a visit in the log.
+    const landing = store.respond({
+      method: "GET",
+      url: own.headers.Location,
+      headers: html,
+    });
+    expect(landing.status).toBe(200);
+    expect(landing.body).toBe("<p>your message</p>");
+    // A form without one lands on the shared thanks page as before.
+    const shared = store.respond({
+      method: "POST",
+      url: `/${token}/orders`,
+      headers: html,
+      body: "a=1",
+    });
+    expect(shared.status).toBe(303);
+    expect(shared.headers.Location).toBe(`/${token}/thanks`);
+    expect(store.read(token)).toEqual({
+      port: FIXTURE_PORT,
+      visits: [`/${token}/thanks/contact`],
+      submissions: [
+        { path: `/${token}/contact`, fields: { name: "x" } },
+        { path: `/${token}/orders`, fields: { a: "1" } },
+      ],
+    });
   });
 
   it("parses form fields as data, never as the object's prototype", () => {
