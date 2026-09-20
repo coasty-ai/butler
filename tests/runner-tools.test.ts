@@ -1122,6 +1122,29 @@ describe("a tool step that finishes the run", () => {
       code: "ok",
     });
   });
+  it("fails the run when a done follows the finishing step's challenge with only a look between", async () => {
+    const h = harness({
+      replies: [
+        look,
+        look,
+        finishing,
+        look,
+        act({ type: "done", summary: "Added it." }),
+      ],
+      settings: all,
+    });
+    auditing(h, [
+      { text: "open the calendar page", met: true, evidence: "1" },
+      { text: "tell me the time", met: false, evidence: null },
+    ]);
+    await h.runner.start(OBJECTIVE, voice);
+    expect(h.m.of("RunCompleted")).toHaveLength(0);
+    expect(h.m.of("RunFailed").map((e) => e.data.code)).toEqual([
+      "REQUIREMENTS_UNMET",
+    ]);
+    expect(h.runner.snapshot.run?.status).toBe("failed");
+    expect(h.runner.snapshot.run?.summary).toMatch(/^Not done: 1 requirement /);
+  });
   it("completes at once when the audit finds every requirement met, and audits no one-clause objective", async () => {
     const met = harness({ replies: [look, look, finishing], settings: all });
     const text = auditing(met, [

@@ -3074,6 +3074,33 @@ describe("per-fact checks: helpers, grade, row and report", () => {
   });
 });
 
+describe("a done repeated after the audit's challenge", () => {
+  it("is the runner's own ending REQUIREMENTS_UNMET, read from RunFailed's code, behind the budgets and beside DELIVERABLE_MISSING", () => {
+    expect(
+      frictionCodes({
+        event: "RunFailed",
+        data: { code: "REQUIREMENTS_UNMET" },
+      }),
+    ).toEqual(["REQUIREMENTS_UNMET"]);
+    expect(
+      endingCode({
+        runStatus: "failed",
+        message:
+          "Not done: 2 requirements of the objective were still not met after the check.",
+        manualTakeover: false,
+        agentHandoffs: 0,
+        paused: false,
+        emergencyStop: false,
+        interrupted: false,
+        modelFailed: false,
+        requirementsUnmet: true,
+      }),
+    ).toBe("REQUIREMENTS_UNMET");
+    expect(noteFor("REQUIREMENTS_UNMET")).toMatch(/honest failure/);
+    expect(ownerOf("REQUIREMENTS_UNMET")).toBe("agent");
+  });
+});
+
 describe("clicks by name with no effect in the results", () => {
   it("are summed over the attempts and become a friction class per attempt that did not pass", () => {
     expect(

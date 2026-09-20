@@ -35,6 +35,7 @@ import {
   multiClause,
   parseDoneAudit,
   requirementChallenge,
+  requirementsUnmet,
   REQUIREMENT_UNMET,
 } from "../src/core/done-audit";
 import type { ProviderTextCall, ProviderTextReply } from "../src/core/schema";
@@ -831,12 +832,17 @@ function auditing(
 const audits = (m: ReturnType<typeof memory>) => m.of("DoneAudited");
 const requirementChallenges = (m: ReturnType<typeof memory>) =>
   challenges(m).filter((e) => e.data.reason === REQUIREMENT_UNMET);
-/** Three executed steps, then done (and a second done, in case of a challenge). */
+/**
+ * Three executed steps, then done — and, in case of a challenge, one real
+ * step and a second done (a done repeated with nothing but looks since the
+ * challenge fails the run: REQUIREMENTS_UNMET).
+ */
 const threeThenDone = (first = "Found the room and noted it.") => [
   click,
   typed,
   enter,
   done(first),
+  click,
   done("Searched the dates, noted the room, saved."),
 ];
 
@@ -848,7 +854,8 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
     const p = auditing(scripted(threeThenDone()), [HOTEL_AUDIT]);
     const runner = new Runner(c, p, m.recorder, settings, () => {});
     await runner.start(TWO_CLAUSES);
-    expect(c.execute).toHaveBeenCalledTimes(3);
+    // Three steps, the challenged done, one real step, the done that stood.
+    expect(c.execute).toHaveBeenCalledTimes(4);
     // Exactly one audit call: the prompt, the objective, the compact
     // history lines (no screenshot) and the claimed summary, as text.
     expect(p.text).toHaveBeenCalledTimes(1);
@@ -877,7 +884,7 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
     expect(challenges(m)).toHaveLength(1);
     // The model read the unmet requirements in the audit's own words on
     // its next step, with both routes and the once-only rule.
-    expect(p.observations).toHaveLength(5);
+    expect(p.observations).toHaveLength(6);
     const after = p.observations[4];
     expect(after.history.at(-1)).toEqual({
       type: "rejected",
@@ -926,6 +933,62 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
     expect(traced).not.toContain("listings");
     expect(traced).not.toContain("dates");
     expect(traced).not.toContain("save");
+  });
+  it("fails the run when the done is repeated after the challenge with nothing but a look between: REQUIREMENTS_UNMET, not a second claim", async () => {
+    // Probe 20260920-0055-a897a04, travel-hotel-shortlist #1: the audit
+    // found two of seven requirements unmet, the claim went back, the model
+    // captured once and said done again, and the second done stood — graded
+    // DATES_NOT_SEARCHED. The runner ends that run honestly now.
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const c = controller();
+    const p = auditing(
+      scripted([
+        click,
+        typed,
+        enter,
+        done("Found the room and noted it."),
+        act({ type: "capture" }),
+        done("Searched the dates, noted the room, saved."),
+      ]),
+      [HOTEL_AUDIT],
+    );
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start(TWO_CLAUSES);
+    expect(p.text).toHaveBeenCalledTimes(1);
+    expect(requirementChallenges(m)).toHaveLength(1);
+    expect(m.of("RunCompleted")).toHaveLength(0);
+    expect(m.of("RunFailed")).toHaveLength(1);
+    expect(m.of("RunFailed")[0].data).toEqual({ code: "REQUIREMENTS_UNMET" });
+    expect(runner.snapshot.run?.status).toBe("failed");
+    expect(runner.snapshot.run?.summary).toBe(
+      requirementsUnmet([
+        unmet("search for the two dates"),
+        unmet("save the notes"),
+      ]),
+    );
+    expect(runner.snapshot.run?.summary).toMatch(/^Not done: 2 requirements/);
+    // A wait is a look too; a real step between (the main case above) lets
+    // the second done stand.
+    const c2 = controller();
+    const m2 = memory();
+    const p2 = auditing(
+      scripted([
+        click,
+        typed,
+        enter,
+        done("Found the room and noted it."),
+        act({ type: "wait", ms: 200 }),
+        done("Searched the dates, noted the room, saved."),
+      ]),
+      [HOTEL_AUDIT],
+    );
+    await new Runner(c2, p2, m2.recorder, settings, () => {}).start(
+      TWO_CLAUSES,
+    );
+    expect(m2.of("RunFailed").map((e) => e.data.code)).toEqual([
+      "REQUIREMENTS_UNMET",
+    ]);
   });
   it("accepts a done the audit finds complete, with one call and no challenge", async () => {
     policy.evaluate = () => ALLOW;
@@ -1047,6 +1110,7 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
         click,
         done("Done."), // the refusal check
         done("Done."), // the audit
+        click, // a real step since the challenge
         done("Done, and saved."), // stands
       ]),
       [HOTEL_AUDIT],
@@ -1077,6 +1141,7 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
         typed,
         enter,
         done("Second run done."),
+        click, // a real step since the challenge
         done("Second run done, saved."),
       ]),
       [HOTEL_AUDIT],

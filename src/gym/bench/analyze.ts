@@ -223,7 +223,9 @@ export function frictionCodes(line: DiagnosticLine): string[] {
     // RunFailed is read from the status.
     case "RunFailed": {
       const failed = code(d.code);
-      return failed === "DELIVERABLE_MISSING" || failed === "MODEL_FAILED"
+      return failed === "DELIVERABLE_MISSING" ||
+        failed === "REQUIREMENTS_UNMET" ||
+        failed === "MODEL_FAILED"
         ? [failed]
         : [];
     }
@@ -626,6 +628,8 @@ const NOTE: Record<string, string> = {
     "The model said done on an objective of more than one clause after three or more actions, and one text call to the same model (the done audit, src/core/done-audit.ts) read the objective's requirements against the run's steps and found at least one unmet: a value never entered, a form never submitted, a named fact absent from what was written. The claim was sent back once with the unmet requirements in the audit's words; the next done stands on the model's word and is graded as any. A malformed audit reply leaves the done standing (DoneAudited code unavailable). The trace carries counts only.",
   DELIVERABLE_MISSING:
     "The model said done a second time with the task's named file still unchanged since the run began, and the runner failed the run itself: a false done turned into an honest failure. The grader's own reason names what the file lacked.",
+  REQUIREMENTS_UNMET:
+    "The model said done again after the done audit sent its claim back with the objective's unmet requirements, having executed nothing but looks since, and the runner failed the run itself: a false done turned into an honest failure.",
   MODEL_FAILED:
     "The model gave up honestly with fail instead of claiming done.",
   FALSE_DONE:
@@ -678,6 +682,7 @@ export function endingCode(run: RunState): string {
     if (run.budget) return run.budget;
     if (has("EMERGENCY_STOP")) return "EMERGENCY_STOP";
     if (has("DELIVERABLE_MISSING")) return "DELIVERABLE_MISSING";
+    if (has("REQUIREMENTS_UNMET")) return "REQUIREMENTS_UNMET";
     if (has("MODEL_FAILED")) return "MODEL_FAILED";
     const tail = run.tail.map((entry) => entry.code);
     for (const entry of tail.slice(-6).reverse()) {

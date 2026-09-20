@@ -81,6 +81,8 @@ import {
   requirementChallenge,
   REQUIREMENT_UNMET,
   type DoneAudit,
+  RequirementsUnmetError,
+  type Requirement,
 } from "./done-audit";
 import {
   evaluate,
@@ -1407,6 +1409,14 @@ export class Runner {
    * the challenge stands on the model's word, so no run loops on the audit.
    */
   private doneAudited = false;
+  /**
+   * The requirements the done audit found unmet when it sent a claim back,
+   * and whether any step but a look (capture, wait) has executed since. A
+   * claim repeated with none fails the run (RequirementsUnmetError); one
+   * after a real step stands on the model's word, as before.
+   */
+  private challengedUnmet?: Requirement[];
+  private actedSinceChallenge = false;
   /** Applications whose search route the runner already took this run. */
   private searchRoutes = new Set<string>();
   private stateChanges = 0;
@@ -1862,6 +1872,11 @@ export class Runner {
     this.emit(structuredClone(this.snapshot));
   }
   private event(type: string, data: Record<string, unknown> = {}) {
+    if (type === "ActionExecuted") {
+      const kind = (data.action as { type?: unknown } | undefined)?.type;
+      if (kind !== "capture" && kind !== "wait")
+        this.actedSinceChallenge = true;
+    }
     if (this.deferring) {
       this.deferring.push({ type, data });
       return;
@@ -2842,6 +2857,10 @@ export class Runner {
       // append marked finish after five actions with the dates never
       // searched, and eight of ten completed runs never proposed a done
       // at all, so the audit at the done path saw one run in twenty-three.
+      // A claim repeated after the audit's challenge with nothing but looks
+      // executed since is a false done the run ends on honestly.
+      if (this.challengedUnmet && !this.actedSinceChallenge)
+        throw new RequirementsUnmetError(this.challengedUnmet);
       if (
         !this.doneAudited &&
         auditApplies({
@@ -2867,6 +2886,8 @@ export class Runner {
             action: echoAction(action),
             result: requirementChallenge(audit.unmet),
           });
+          this.challengedUnmet = audit.unmet;
+          this.actedSinceChallenge = false;
           return "continue";
         }
       }
@@ -3914,6 +3935,8 @@ export class Runner {
     this.deliverables = undefined;
     this.deliverableChecked = false;
     this.doneAudited = false;
+    this.challengedUnmet = undefined;
+    this.actedSinceChallenge = false;
     this.resetCounters();
     this.resetLoop();
     this.cycle = [];
@@ -4229,6 +4252,8 @@ export class Runner {
     // shares the run's task, so the read is the same; never for the tutorial.
     this.deliverableChecked = false;
     this.doneAudited = false;
+    this.challengedUnmet = undefined;
+    this.actedSinceChallenge = false;
     this.deliverables = run.synthetic
       ? undefined
       : this.watchDeliverables(task);
@@ -5106,6 +5131,10 @@ export class Runner {
           // actions with the search never filled, a digest with two of
           // three named facts absent). Any unmet, the claim is sent back
           // once with them in the audit's words; the next done stands.
+          // A claim repeated after the audit's challenge with nothing but
+          // looks executed since is a false done the run ends on honestly.
+          if (this.challengedUnmet && !this.actedSinceChallenge)
+            throw new RequirementsUnmetError(this.challengedUnmet);
           if (
             !this.doneAudited &&
             auditApplies({
@@ -5134,6 +5163,8 @@ export class Runner {
                 action: echoAction(action),
                 result: requirementChallenge(audit.unmet),
               });
+              this.challengedUnmet = audit.unmet;
+              this.actedSinceChallenge = false;
               continue;
             }
           }

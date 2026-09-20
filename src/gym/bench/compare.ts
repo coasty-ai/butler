@@ -536,6 +536,10 @@ export const SUPERSEDES: Readonly<Record<string, readonly string[]>> = {
   // run as DELIVERABLE_MISSING; the same run was COMPLETED and graded wrong
   // (FALSE_DONE) before.
   DELIVERABLE_MISSING: ["FALSE_DONE"],
+  // (done-audit.ts REQUIREMENTS_UNMET): a done repeated after the audit's
+  // challenge with nothing but looks since fails the run; the same run was
+  // COMPLETED and graded wrong (FALSE_DONE) before.
+  REQUIREMENTS_UNMET: ["FALSE_DONE"],
   // 5b453c7: the model's honest fail ends as MODEL_FAILED, which landed in
   // RUN_ERROR beside real crashes; 0fb99c8: a done sent back with the file
   // unchanged and withdrawn is MODEL_FAILED where it was a FALSE_DONE.

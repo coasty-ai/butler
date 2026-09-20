@@ -319,6 +319,12 @@ export interface Ending {
    * asks to write still unchanged (RunFailed DELIVERABLE_MISSING).
    */
   deliverableMissing?: boolean;
+  /**
+   * The runner failed the run itself: a done repeated after the done audit's
+   * challenge with nothing but looks executed since (RunFailed
+   * REQUIREMENTS_UNMET).
+   */
+  requirementsUnmet?: boolean;
 }
 
 /**
@@ -345,9 +351,11 @@ export function endingCode(ending: Ending): string {
       budget ??
       (ending.deliverableMissing
         ? "DELIVERABLE_MISSING"
-        : ending.modelFailed
-          ? "MODEL_FAILED"
-          : "RUN_ERROR")
+        : ending.requirementsUnmet
+          ? "REQUIREMENTS_UNMET"
+          : ending.modelFailed
+            ? "MODEL_FAILED"
+            : "RUN_ERROR")
     );
   if (ending.runStatus === "cancelled") {
     if (budget) return budget;

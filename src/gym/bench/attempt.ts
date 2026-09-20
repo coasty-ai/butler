@@ -878,6 +878,7 @@ export async function runAttempt(
         interrupted: state.stopped,
         modelFailed: counters.modelFailed,
         deliverableMissing: counters.runFailedCode === "DELIVERABLE_MISSING",
+        requirementsUnmet: counters.runFailedCode === "REQUIREMENTS_UNMET",
       });
     // A stop from the terminal (SIGTERM, or Ctrl-C with no touch on this
     // Mac) cut the run short and nothing else explains the ending: the model

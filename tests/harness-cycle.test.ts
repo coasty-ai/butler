@@ -5975,6 +5975,7 @@ describe("probe verdicts", () => {
     expect(Object.keys(SUPERSEDES).sort()).toEqual([
       "DELIVERABLE_MISSING",
       "MODEL_FAILED",
+      "REQUIREMENTS_UNMET",
       "STUCK_LOOP",
     ]);
     for (const [successor, predecessors] of Object.entries(SUPERSEDES)) {
@@ -5988,6 +5989,7 @@ describe("probe verdicts", () => {
     }
     // The successors are endings report.ts derives from the harness's counters.
     expect(ending({ message: LOOP_STUCK_MESSAGE })).toBe("STUCK_LOOP");
+    expect(ending({ requirementsUnmet: true })).toBe("REQUIREMENTS_UNMET");
     expect(budgetCode(LOOP_STUCK_MESSAGE)).toBe("STUCK_LOOP");
     expect(ending({ deliverableMissing: true })).toBe("DELIVERABLE_MISSING");
     expect(ending({ modelFailed: true })).toBe("MODEL_FAILED");

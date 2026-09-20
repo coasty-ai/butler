@@ -386,3 +386,31 @@ export function requirementChallenge(unmet: Requirement[]): string {
   const several = unmet.length > 1;
   return `Not accepted yet. The objective's requirements were read against this run's steps and ${unmet.length} ${several ? "were" : "was"} not met: ${names}. If ${several ? "they are" : "it is"} still to do, continue: do ${several ? "them" : "it"} (enter, select or write what the objective names, then save or submit) and say done with a summary that names the step that met each. If ${several ? "one" : "it"} cannot be done, say fail and name what blocks it. This check is made once; the next done stands on your word.`;
 }
+
+/**
+ * The runner's own ending for a claim repeated after a requirement
+ * challenge with nothing but looks executed since: the model was told what
+ * the objective still asked for, did nothing about it, and said done again.
+ * Probe 20260920-0055-a897a04, travel-hotel-shortlist #1: the audit read
+ * seven requirements with two unmet (the dates were never searched), the
+ * claim was sent back, the model captured once and said done again, and
+ * the second done stood — graded DATES_NOT_SEARCHED. A false done becomes
+ * an honest fail; a done after a real step since the challenge stands as
+ * before, on the model's word.
+ */
+export const REQUIREMENTS_UNMET = "REQUIREMENTS_UNMET";
+export function requirementsUnmet(unmet: Requirement[]): string {
+  const names = bound(
+    unmet.map((r) => `“${bound(r.text, REQUIREMENT_CHARS)}”`).join("; "),
+    LIST_CHARS,
+  );
+  const several = unmet.length > 1;
+  return `Not done: ${unmet.length} requirement${several ? "s" : ""} of the objective ${several ? "were" : "was"} still not met after the check: ${names}.`;
+}
+export class RequirementsUnmetError extends Error {
+  readonly code = REQUIREMENTS_UNMET;
+  constructor(readonly unmet: Requirement[]) {
+    super(requirementsUnmet(unmet));
+    this.name = "RequirementsUnmetError";
+  }
+}
