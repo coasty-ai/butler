@@ -1697,7 +1697,12 @@ describe("pause cause from a real run", () => {
     expect(
       frictionCodes({
         event: "ActionLoopDetected",
-        data: { actionType: "click_control", period: 0, pages: 2 },
+        data: {
+          actionType: "click_control",
+          period: 0,
+          pages: 2,
+          repeatedMoves: 1,
+        },
       }),
     ).toEqual(["PAGE_SWITCH_THRASH"]);
     expect(

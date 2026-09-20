@@ -158,8 +158,10 @@ const fields = new Set([
   // episode number on ActionLoopBroken (its outcome is a code).
   "revisits",
   "episode",
-  // The page-switch rule's count of distinct pages on ActionLoopDetected.
+  // The page-switch rule's count of distinct pages on ActionLoopDetected,
+  // and how many of its moves retraced a control already used for one.
   "pages",
+  "repeatedMoves",
   // The done audit (DoneAudited): how many requirements the model listed
   // and how many it found unmet; the unmet count on the challenge too; the
   // unmet requirements' kinds as a list of fixed codes (REQUIREMENT_KINDS),
@@ -373,6 +375,7 @@ const countFields = new Set([
   "revisits",
   "episode",
   "pages",
+  "repeatedMoves",
   "rejected",
   "tokens",
   "routines",
@@ -891,7 +894,14 @@ const journalEvents = new Map<string, Set<string>>([
   ],
   [
     "ActionLoopDetected",
-    new Set(["actionType", "period", "revisits", "noEffect", "pages"]),
+    new Set([
+      "actionType",
+      "period",
+      "revisits",
+      "noEffect",
+      "pages",
+      "repeatedMoves",
+    ]),
   ],
   ["ActionLoopBroken", new Set(["episode", "outcome"])],
   ["NoProgressDetected", new Set(["actionType"])],
@@ -1384,6 +1394,9 @@ export class LocalDiagnostics {
           // The page-switch rule: how many distinct pages the run bounced
           // between (a count); the pages themselves are never journaled.
           pages: e.data.pages,
+          // How many of the bounce's moves retraced a control already used
+          // for one (a count); the controls themselves are never journaled.
+          repeatedMoves: e.data.repeatedMoves,
           // A click by name with no effect, repeated from one screen (a flag).
           noEffect: e.data.noEffect,
           // The loop breaker's decision (ActionLoopBroken): which episode and

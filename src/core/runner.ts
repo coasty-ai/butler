@@ -514,10 +514,17 @@ export const appSwitchWarning =
  * by its screen, so each page read as progress (paging with Next is not a
  * loop), and the app-switch rule counts open_app alone. Of the last
  * PAGE_WINDOW executed steps' pages (pageKey), PAGE_SWITCHES or more moves
- * between two or three pages, two of them visited twice or more, is the
- * bounce (A B A B is four steps and three moves: the second arrival on a
- * page from the same other page). Short: the sentence may share a capture's
- * line with PAGE_TOOL_NOTE and loopWarning under MODEL_RESULT_CHARS.
+ * between two or three pages, two of them visited twice or more, every way
+ * between two pages taken by one control and one control used for a move
+ * twice (retracedMoves), is the bounce (A B A B is four steps and three
+ * moves: the second arrival on a page from the same other page by the same
+ * control). Market 1/3 at 55e4e83, shop-cart-within-budget #1 (64 actions,
+ * the budget): the shop, its "Added" page and the basket round and round,
+ * each time by another row's "Add to basket" from the shop and the same
+ * "Back to the shop" from the other two, was warned twice (pages 3, then 2)
+ * for the returns alone; a move by a control not used for one before is
+ * work, however often the pages recur. Short: the sentence may share a
+ * capture's line with PAGE_TOOL_NOTE and loopWarning under MODEL_RESULT_CHARS.
  */
 export const PAGE_WINDOW = 8;
 export const PAGE_SWITCHES = 3;
@@ -537,6 +544,60 @@ export function pageKey(frame: Frame): string {
     title: c?.windowTitle ?? "",
     page: address ? `${address.hostname}${address.pathname}` : "",
   });
+}
+/**
+ * The control a step acted on, for the page-switch rule: the loop rule's
+ * signature (actionSignature) with the pointer's position kept, rounded as
+ * there, so two "Add to basket" buttons in different rows of one shop page
+ * are two controls where the loop rule reads them as one by their shared
+ * name (a click_control's x and y are the model's own hint telling identical
+ * names apart; a click's are where it landed). In memory only, never
+ * journaled.
+ */
+export function moveKey(
+  action: Action,
+  target?: { role?: string; label?: string },
+): string {
+  const a = action as Record<string, unknown>;
+  const at =
+    typeof a.x === "number" && typeof a.y === "number"
+      ? `@${Math.round(a.x * 100) / 100},${Math.round(a.y * 100) / 100}`
+      : "";
+  return actionSignature(action, target) + at;
+}
+/** An executed step in the page-switch rule's window: its page (pageKey), whether it only looked, and the control it acted on (moveKey) when it was a screen step that could move the page. */
+export type PageStep = { page: string; look: boolean; by?: string };
+/**
+ * How many of the window's moves (each step whose page is not the step
+ * before's) retrace a control already used for a move in the window, each
+ * move put down to the last acting screen step of the visit it left (a look
+ * after a click is the click's page still loading; a tool step moves
+ * nothing). 0 when the moves are no retrace: some way between two pages was
+ * taken by two different controls (the shop: another row's "Add to basket"
+ * from the shop page each time, the same "Back to the shop" from the basket),
+ * a move has no step of its visit to its name (the step fell out of the
+ * window, or the page moved on its own), or no control was used twice.
+ */
+export function retracedMoves(steps: PageStep[]): number {
+  /** The one control each way (from one page to another) was taken by. */
+  const ways = new Map<string, string>();
+  const controls = new Set<string>();
+  let moves = 0;
+  let visit = 0;
+  for (let i = 1; i < steps.length; i++) {
+    if (steps[i].page === steps[i - 1].page) continue;
+    let by: string | undefined;
+    for (let j = i - 1; j >= visit && !by; j--) by = steps[j].by;
+    visit = i;
+    if (!by) return 0;
+    const way = `${steps[i - 1].page}\u0000${steps[i].page}`;
+    const before = ways.get(way);
+    if (before !== undefined && before !== by) return 0;
+    ways.set(way, by);
+    controls.add(by);
+    moves++;
+  }
+  return moves - controls.size;
 }
 /**
  * The revisit rule beside repetitionPeriod: the same step (its signature)
@@ -1537,8 +1598,8 @@ export class Runner {
   /** The app the last executed open_app left frontmost with no window. */
   private windowlessApp?: { appId: string; name: string };
   private switchWarned = false;
-  /** The last PAGE_WINDOW executed steps' pages (pageKey), each with whether it was a look, for the page-switch rule. */
-  private pages: { page: string; look: boolean }[] = [];
+  /** The last PAGE_WINDOW executed steps for the page-switch rule: each one's page (pageKey), whether it was a look, and the control it acted on (moveKey). */
+  private pages: PageStep[] = [];
   private pageWarned = false;
   private loopWarned = false;
   private sinceLoopWarning = 0;
@@ -2044,21 +2105,39 @@ export class Runner {
     return true;
   }
   /**
-   * Record the page an executed step ran on (pageKey of its frame) and, on a
-   * screen step, return true once when the last PAGE_WINDOW steps bounced
-   * between the same pages: PAGE_SWITCHES or more moves between two or three
-   * distinct pages, at least two of them visited twice or more (A B A B;
-   * A B B A A B with a look between; A B C A B; never A B C D, which is
-   * paging, nor A B A C A D, a listing and its items). A tool step records
-   * its page alone, so the sentence rides on a screen step's line. Once
-   * warned, two acting steps running on one page end the bounce (a look
-   * after a move is not a stay: READ_KEEPING_TYPES): the window starts over
-   * from them, and a fresh bounce is warned about again.
+   * Record the page an executed step ran on (pageKey of its frame) and the
+   * control it acted on (moveKey, for a screen step that could move the
+   * page) and, on a screen step, return true once when the last PAGE_WINDOW
+   * steps bounced between the same pages by the same controls: PAGE_SWITCHES
+   * or more moves between two or three distinct pages, at least two of them
+   * visited twice or more, every way between two pages by one control and a
+   * control used for a move twice (retracedMoves): A B A B by X from A and Y
+   * from B; the same with a look between each move; A B C A B by X, Y, Z and
+   * X again; never A B C D, which is paging, nor A B A C A D, a listing and
+   * its items, nor the shop's A B A B A by another row's "Add" from A each
+   * time and the same "Back" from B, however long it goes on. On the fourth
+   * step a bounce's third move is the first control's second, over one
+   * return: X Y1 X is warned like X Y X, and returns already known to differ
+   * (Y1 X Y2 X) are not. A tool step records its page alone, so the sentence
+   * rides on a screen step's line. Once warned, two acting steps running on
+   * one page end the bounce (a look after a move is not a stay:
+   * READ_KEEPING_TYPES): the window starts over from them, and a fresh
+   * bounce is warned about again.
    */
-  private trackPageSwitch(frame: Frame, action: Action, screen: boolean) {
+  private trackPageSwitch(
+    frame: Frame,
+    action: Action,
+    screen: boolean,
+    target?: { role?: string; label?: string },
+  ) {
+    const look = READ_KEEPING_TYPES.has(action.type);
     this.pages = [
       ...this.pages.slice(-(PAGE_WINDOW - 1)),
-      { page: pageKey(frame), look: READ_KEEPING_TYPES.has(action.type) },
+      {
+        page: pageKey(frame),
+        look,
+        ...(screen && !look ? { by: moveKey(action, target) } : {}),
+      },
     ];
     const n = this.pages.length;
     if (this.pageWarned) {
@@ -2080,11 +2159,15 @@ export class Runner {
       (p) => seq.filter((q) => q === p).length >= 2,
     ).length;
     if (revisited < 2) return false;
+    const repeatedMoves = retracedMoves(this.pages);
+    if (repeatedMoves < 1) return false;
     this.pageWarned = true;
     this.event("ActionLoopDetected", {
       actionType: action.type,
       period: 0,
       pages: distinct.size,
+      // How many moves retraced a control already used for one (a count).
+      repeatedMoves,
     });
     return true;
   }
@@ -4131,14 +4214,18 @@ export class Runner {
           }
         : {}),
     });
+    const target = {
+      role: actionSurface.targetRole,
+      label: actionSurface.targetLabel,
+    };
     const loop = this.trackLoop(
       action,
-      { role: actionSurface.targetRole, label: actionSurface.targetLabel },
+      target,
       { frame: executionFrame, surface: actionSurface },
       clickEffect === "none",
     );
     const thrashing = this.trackAppSwitch(action, launched?.appId);
-    const bouncing = this.trackPageSwitch(executionFrame, action, true);
+    const bouncing = this.trackPageSwitch(executionFrame, action, true, target);
     // The transition this step began, for the capture that follows it
     // (captureSettled): a page sent for, a cold launch whose window is on
     // its way, or a click or key that may bring another application or page

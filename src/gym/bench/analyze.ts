@@ -584,7 +584,7 @@ const NOTE: Record<string, string> = {
   APP_SWITCH_THRASH:
     "The run bounced between applications without reading them.",
   PAGE_SWITCH_THRASH:
-    "The run bounced between the same pages (three or more moves among two or three pages within eight steps, two of them visited twice, src/core/runner.ts trackPageSwitch) instead of carrying their values in its note; advice on the history line, never a loop.",
+    "The run bounced between the same pages by the same controls (three or more moves among two or three pages within eight steps, two of them visited twice, every way between two pages by one control and one control used twice, src/core/runner.ts trackPageSwitch) instead of carrying their values in its note; advice on the history line, never a loop.",
   INVALID_ACTION: "The model returned an action the schema rejected.",
   // A menu Copy, Cut or Paste with nothing to act on: the runner answered it
   // with a fixed line and counted an invalid step, never a revisit (probe

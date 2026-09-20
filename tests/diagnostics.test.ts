@@ -434,7 +434,7 @@ describe("local diagnostic stream", () => {
         kind: "switched",
       });
     }));
-  it("keeps the page-switch rule's count of pages on ActionLoopDetected, never a page", () =>
+  it("keeps the page-switch rule's counts of pages and retraced moves on ActionLoopDetected, never a page", () =>
     fixture((log) => {
       const id = crypto.randomUUID();
       const snapshot: Snapshot = {
@@ -467,14 +467,16 @@ describe("local diagnostic stream", () => {
           type,
           data,
         });
-      // The rule's event: the step's type, period 0 and how many distinct
-      // pages, a count. A title or an address smuggled beside them is
-      // dropped; a sentence in the count's slot is dropped; the app-switch
-      // rule's event carries no count and gains none.
+      // The rule's event: the step's type, period 0, how many distinct
+      // pages and how many moves retraced a control, both counts. A title
+      // or an address smuggled beside them is dropped; a sentence in either
+      // count's slot is dropped; the app-switch rule's event carries no
+      // count and gains none.
       add("ActionLoopDetected", {
         actionType: "click_control",
         period: 0,
         pages: 2,
+        repeatedMoves: 1,
         title: "private page title",
         address: "http://127.0.0.1:8080/private-path",
       });
@@ -482,6 +484,7 @@ describe("local diagnostic stream", () => {
         actionType: "click_control",
         period: 0,
         pages: "two private pages",
+        repeatedMoves: "the private Add button twice",
       });
       add("ActionLoopDetected", { actionType: "open_app", period: 0 });
       log.snapshot(snapshot);
@@ -498,6 +501,7 @@ describe("local diagnostic stream", () => {
         actionType: "click_control",
         period: 0,
         pages: 2,
+        repeatedMoves: 1,
       });
       expect(events[1].data).toEqual({
         runId: id,

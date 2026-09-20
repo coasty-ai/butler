@@ -30,13 +30,17 @@ import {
   STUCK_PAUSE_MESSAGE,
   type StartOptions,
   TRANSITION_SETTLE_MS,
+  actionSignature,
   loopWarning,
+  moveKey,
   pageKey,
   pageSwitchWarning,
   readSpin,
   reflectionNote,
   repetitionPeriod,
+  retracedMoves,
   screenKey,
+  type PageStep,
 } from "../src/core/runner";
 import {
   FILES_APPEND,
@@ -1492,8 +1496,13 @@ describe("a click by name that changed nothing", () => {
  * and #3 in both shards (24-32 actions, the note never written) and
  * ops-support-ticket-draft #3 (60): click_control alternating between a
  * link on one page and one on the other, every click "changed", History >
- * Back and open_url between, the values never carried. Every page here is a
- * synthetic title on a loopback address; every label a fixed word.
+ * Back and open_url between, the values never carried. Market 1/3 at
+ * 55e4e83, shop-cart-within-budget #1 (64 actions, the budget): the shop,
+ * its "Added" page and the basket round and round by another row's "Add to
+ * basket" each time and the same "Back to the shop", warned twice for the
+ * returns alone; a bounce is warned only when its moves retrace the same
+ * controls. Every page here is a synthetic title on a loopback address;
+ * every label a fixed word.
  */
 describe("the page-switch rule", () => {
   const page = (name: string): ScreenContext => ({
@@ -1505,12 +1514,34 @@ describe("the page-switch rule", () => {
   const B = page("B");
   const C = page("C");
   const D = page("D");
-  /** The page each capture shows, in order; step n executes on capture n. The last one holds. */
-  const showing = (order: ScreenContext[]) =>
-    controller({}, (n) => ({
-      context: order[Math.min(n, order.length) - 1],
+  /**
+   * The page each capture shows, in order; step n executes on capture n. The
+   * last one holds. Each capture reads a little differently (its text), as
+   * a live page does, so the same click from a page is no revisit and no
+   * cycle to the loop rule, and only the page rule speaks.
+   */
+  const showing = (
+    order: ScreenContext[],
+    overrides: Partial<Controller> = {},
+  ) =>
+    controller(overrides, (n) => ({
+      context: {
+        ...order[Math.min(n, order.length) - 1],
+        visibleText: `reading ${n}`,
+      },
     }));
-  /** Clicks by name, each with its own label, so neither the period nor the revisit rule speaks. */
+  /** A click by name with the model's position hint: the same control each time it is used. */
+  const named = (label: string, x: number, y: number) =>
+    act({ type: "click_control", label, x, y });
+  /** The controls of a bounce: X on page A, Y on page B, Z and W elsewhere. */
+  const X = named("Link X", 0.32, 0.14);
+  const Y = named("Link Y", 0.42, 0.42);
+  const Z = named("Link Z", 0.5, 0.5);
+  const W = named("Link W", 0.6, 0.6);
+  /** The shop's "Add" buttons: one name, another row each time; and the one way back. */
+  const add = (row: number) => named("Add", 0.49, 0.33 + row * 0.07);
+  const back = named("Back", 0.35, 0.45);
+  /** Clicks by name, each with its own label. */
   const clicks = (n: number) =>
     Array.from({ length: n }, (_, i) =>
       act({ type: "click_control", label: `Link ${i + 1}` }),
@@ -1544,36 +1575,86 @@ describe("the page-switch rule", () => {
     lines.map((l) => l.includes(pageSwitchWarning));
   const events = (m: ReturnType<typeof memory>) =>
     m.of("ActionLoopDetected").map((e) => e.data);
+  /** The rule's event for a bounce among `pages` pages whose moves retraced one control once. */
+  const bounce = (pages: number, actionType = "click_control") => ({
+    actionType,
+    period: 0,
+    pages,
+    repeatedMoves: 1,
+  });
 
-  it("warns once on the fourth click when the run bounces A B A B between two pages, and journals the count of pages", async () => {
-    const { m, lines, ctl } = await run(showing([A, B, A, B, A]), clicks(4));
+  it("warns once on the fourth click when the run bounces A B A B by the same two controls, and journals the counts of pages and retraced moves", async () => {
+    const { m, lines, ctl } = await run(showing([A, B, A, B, A]), [X, Y, X, Y]);
     expect(ctl.execute).toHaveBeenCalledTimes(4);
     expect(warned(lines)).toEqual([false, false, false, true]);
     expect(lines[3].endsWith(pageSwitchWarning)).toBe(true);
-    expect(events(m)).toEqual([
-      { actionType: "click_control", period: 0, pages: 2 },
-    ]);
+    expect(events(m)).toEqual([bounce(2)]);
     // Advice, never a loop: no breaker, no loop warning, no pause.
     expect(m.of("ActionLoopBroken")).toHaveLength(0);
     expect(m.of("RunPaused")).toHaveLength(0);
     expect(lines.some((l) => l.includes(loopWarning.trim()))).toBe(false);
+  });
+  it("stays quiet for the shop: another row's Add from the shop each time and the same Back from the basket, however long it goes on", async () => {
+    // A B A B A B A B A: the same two pages, the same way back every time,
+    // and a different button forward every time. A single repeated return
+    // is not the pair; the forward moves are work.
+    const shop = await run(showing([A, B, A, B, A, B, A, B, A]), [
+      add(0),
+      back,
+      add(1),
+      back,
+      add(2),
+      back,
+      add(3),
+      back,
+    ]);
+    expect(warned(shop.lines)).toEqual(Array(8).fill(false));
+    expect(events(shop.m)).toEqual([]);
+    // The rows added by clicks at their positions, each landing on a button
+    // named "Add": the loop rule reads them as one step by that name, the
+    // page rule tells the rows apart by where each click landed.
+    const raw = (row: number) =>
+      act({ type: "click", x: 0.49, y: 0.33 + row * 0.07 });
+    const byPosition = await run(
+      showing([A, B, A, B, A, B, A], {
+        surface: async () => ({
+          ...surface,
+          targetRole: "AXButton",
+          targetLabel: "Add",
+        }),
+      }),
+      [raw(0), back, raw(1), back, raw(2), back],
+    );
+    expect(warned(byPosition.lines)).toEqual(Array(6).fill(false));
+    expect(events(byPosition.m)).toEqual([]);
+  });
+  it("warns on the fourth step when the first control moves again over a single return, and not once the returns are known to differ", async () => {
+    // X Y1 X: on the fourth step this reads as the CRM shape (the nav link
+    // clicked again with one return between) and is warned like X Y X.
+    const crm = await run(showing([A, B, A, B, A]), [X, Y, X, W]);
+    expect(warned(crm.lines)).toEqual([false, false, false, true]);
+    expect(events(crm.m)).toEqual([bounce(2)]);
+    // Y1 X Y2 X: two controls on the way from B to A is work on B, whatever
+    // X does from A.
+    const known = await run(showing([B, A, B, A, B]), [Y, X, W, X]);
+    expect(warned(known.lines)).toEqual([false, false, false, false]);
+    expect(events(known.m)).toEqual([]);
   });
   it("sees the bounce with a look between each move, and a third page in the round", async () => {
     // A B B A A B B A A B: a click moves, a capture looks at where it
     // landed. The third move is seen by the look on B (the sixth step), and
     // a look after a move is no stay, so the bounce going on is warned once.
     const look = act({ type: "capture" });
-    const [c1, c2, c3, c4, c5] = clicks(5);
     const between = await run(showing([A, B, B, A, A, B, B, A, A, B, B]), [
-      c1,
+      X,
       look,
-      c2,
+      Y,
       look,
-      c3,
+      X,
       look,
-      c4,
+      Y,
       look,
-      c5,
+      X,
       look,
     ]);
     expect(warned(between.lines)).toEqual([
@@ -1589,52 +1670,66 @@ describe("the page-switch rule", () => {
       false,
     ]);
     expect(between.lines[5].startsWith("Executed")).toBe(true);
-    expect(events(between.m)).toEqual([
-      { actionType: "capture", period: 0, pages: 2 },
-    ]);
-    // A B C A B: the listing, a lead, the form, and round again.
-    const three = await run(showing([A, B, C, A, B, C]), clicks(5));
+    expect(events(between.m)).toEqual([bounce(2, "capture")]);
+    // A B C A B: the listing, a lead, the form, and round again by the
+    // same three controls.
+    const three = await run(showing([A, B, C, A, B, C]), [X, Y, Z, X, Y]);
     expect(warned(three.lines)).toEqual([false, false, false, false, true]);
-    expect(events(three.m)).toEqual([
-      { actionType: "click_control", period: 0, pages: 3 },
-    ]);
+    expect(events(three.m)).toEqual([bounce(3)]);
   });
   it("stays quiet when every step lands on a new page (paging), on one page (the revisit rule's business), or between a listing and its items", async () => {
-    const paging = await run(showing([A, B, C, D, A]), clicks(4));
+    const paging = await run(showing([A, B, C, D, A]), [X, Y, Z, W]);
     expect(warned(paging.lines)).toEqual([false, false, false, false]);
     expect(events(paging.m)).toEqual([]);
-    const staying = await run(showing([A]), clicks(4));
+    const staying = await run(showing([A]), [X, Y, X, Y]);
     expect(warned(staying.lines)).toEqual([false, false, false, false]);
     expect(events(staying.m)).toEqual([]);
-    // The same click from one page three times over is the revisit rule's
-    // loop, with no page count on its event and no page sentence.
+    // The same click from one unchanged page three times over is the
+    // revisit rule's loop, with no page count on its event and no page
+    // sentence.
     const same = act({ type: "click_control", label: "Same" });
-    const revisit = await run(showing([A]), [same, same, same]);
+    const revisit = await run(
+      controller({}, () => ({ context: A })),
+      [same, same, same],
+    );
     expect(events(revisit.m)).toEqual([
       { actionType: "click_control", period: 0, revisits: LOOP_REVISITS },
     ]);
     expect(warned(revisit.lines)).toEqual([false, false, false]);
-    // A listing and its items: A B A C A D A, four pages, one revisited.
-    const hub = await run(showing([A, B, A, C, A, D, A, A]), clicks(7));
-    expect(warned(hub.lines)).toEqual([
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
+    // A listing and its items: A B A C A D A, four pages, one revisited,
+    // by the same two controls throughout.
+    const hub = await run(showing([A, B, A, C, A, D, A, A]), [
+      X,
+      Y,
+      X,
+      Y,
+      X,
+      Y,
+      X,
     ]);
+    expect(warned(hub.lines)).toEqual(Array(7).fill(false));
     expect(events(hub.m)).toEqual([]);
+    // Each page reached by its own link: the pages recur, no control does.
+    const links = await run(showing([A, B, A, B, A]), clicks(4));
+    expect(warned(links.lines)).toEqual([false, false, false, false]);
+    expect(events(links.m)).toEqual([]);
   });
   it("warns again for a fresh bounce once the run stayed on one page for two steps, and once while a bounce goes on", async () => {
     // Three moves warn on the fourth step; two clicks on the page it landed
     // on end the bounce; the next three moves are a fresh one, warned on
     // the step that completes the third.
-    const fresh = await run(
-      showing([A, B, A, B, A, A, A, B, A, B, A]),
-      clicks(10),
-    );
+    const fresh = await run(showing([A, B, A, B, A, A, A, B, A, B, A]), [
+      X,
+      Y,
+      X,
+      Y,
+      W,
+      W,
+      X,
+      Y,
+      X,
+      Y,
+    ]);
     expect(warned(fresh.lines)).toEqual([
       false,
       false,
@@ -1647,12 +1742,18 @@ describe("the page-switch rule", () => {
       false,
       true,
     ]);
-    expect(events(fresh.m)).toEqual([
-      { actionType: "click_control", period: 0, pages: 2 },
-      { actionType: "click_control", period: 0, pages: 2 },
-    ]);
+    expect(events(fresh.m)).toEqual([bounce(2), bounce(2)]);
     // Bouncing on without a stop is warned about once.
-    const on = await run(showing([A, B, A, B, A, B, A, B, A]), clicks(8));
+    const on = await run(showing([A, B, A, B, A, B, A, B, A]), [
+      X,
+      Y,
+      X,
+      Y,
+      X,
+      Y,
+      X,
+      Y,
+    ]);
     expect(warned(on.lines)).toEqual([
       false,
       false,
@@ -1668,23 +1769,21 @@ describe("the page-switch rule", () => {
   it("records a tool step's page and never puts the sentence on its line", async () => {
     // A B A, a read through the files tool on B, a click on B, back to A:
     // the tool step's page completes the third move, its line carries no
-    // sentence, and the click on B after it does.
+    // sentence, and the click on B after it does. The tool step acted on
+    // no control: the move off B is Y's, the click's.
     const read = act({
       type: "tool_call",
       tool: FILES_READ.id,
       args: { path: "~/OpenAssistBench/benchnote0a1b/receipt-1.txt" },
       finish: false,
     });
-    const [c1, c2, c3, c4, c5] = clicks(5);
     const { m, lines } = await run(
       showing([A, B, A, B, B, A, B]),
-      [c1, c2, c3, read, c4, c5],
+      [X, Y, X, read, Y, X],
       { ...settle, tools: fakeTools({ tools: FILES_TOOLS }).access },
     );
     expect(warned(lines)).toEqual([false, false, false, false, true, false]);
-    expect(events(m)).toEqual([
-      { actionType: "click_control", period: 0, pages: 2 },
-    ]);
+    expect(events(m)).toEqual([bounce(2)]);
   });
   it("keeps a look's line under the model's cap with the page tool note, the loop warning and the page-switch warning", () => {
     const look = "Executed. Verify the next screenshot.";
@@ -1698,6 +1797,121 @@ describe("the page-switch rule", () => {
     expect(pageSwitchWarning.startsWith(" Warning: ")).toBe(true);
     expect(PAGE_WINDOW).toBe(8);
     expect(PAGE_SWITCHES).toBe(3);
+  });
+  it("puts each move down to the control that made it and counts the moves that retrace one", () => {
+    const s = (page: string, by?: string, look = false): PageStep => ({
+      page,
+      look,
+      ...(by ? { by } : {}),
+    });
+    // A B A B by X from A and Y from B: the third move is X's second; on
+    // with Y's second it is two.
+    expect(
+      retracedMoves([s("a", "x"), s("b", "y"), s("a", "x"), s("b", "y")]),
+    ).toBe(1);
+    expect(
+      retracedMoves([
+        s("a", "x"),
+        s("b", "y"),
+        s("a", "x"),
+        s("b", "y"),
+        s("a", "x"),
+      ]),
+    ).toBe(2);
+    // The shop: another Add from A each time, the same Back from B, is no
+    // retrace, however many returns.
+    expect(
+      retracedMoves([
+        s("a", "add1"),
+        s("b", "back"),
+        s("a", "add2"),
+        s("b", "back"),
+        s("a", "add3"),
+        s("b", "back"),
+      ]),
+    ).toBe(0);
+    // A B C A B by X, Y, Z and X again.
+    expect(
+      retracedMoves([
+        s("a", "x"),
+        s("b", "y"),
+        s("c", "z"),
+        s("a", "x"),
+        s("b", "y"),
+      ]),
+    ).toBe(1);
+    // A look after a click is the click's page still loading: the move is
+    // the click's, and the looks that follow the arrival are no move.
+    expect(
+      retracedMoves([
+        s("a", "x"),
+        s("a", undefined, true),
+        s("b", undefined, true),
+        s("b", "y"),
+        s("a", undefined, true),
+        s("a", "x"),
+        s("b", undefined, true),
+      ]),
+    ).toBe(1);
+    // A tool step acted on no control: the move off its page is the last
+    // click's on that page.
+    expect(
+      retracedMoves([
+        s("a", "x"),
+        s("b", "y"),
+        s("a", "x"),
+        s("b"),
+        s("b", "y"),
+        s("a", "x"),
+      ]),
+    ).toBe(2);
+    // A move nothing in the window explains (its visit held only a look) is
+    // no retrace, whatever follows.
+    expect(
+      retracedMoves([
+        s("a", undefined, true),
+        s("b", "y"),
+        s("a", "x"),
+        s("b", "y"),
+        s("a", "x"),
+      ]),
+    ).toBe(0);
+    // One control both ways is a retrace as much as two.
+    expect(
+      retracedMoves([s("a", "t"), s("b", "t"), s("a", "t"), s("b", "t")]),
+    ).toBe(2);
+    // Nothing moved; every move by a new control.
+    expect(retracedMoves([s("a", "x"), s("a", "y")])).toBe(0);
+    expect(
+      retracedMoves([s("a", "x"), s("b", "y"), s("c", "z"), s("d", "w")]),
+    ).toBe(0);
+  });
+  it("keys a move by the loop rule's signature with the pointer's position kept", () => {
+    const target = { role: "AXButton", label: "Add" };
+    const row1 = { type: "click", x: 0.49, y: 0.33, frame_id: "f" } as Action;
+    const row2 = { type: "click", x: 0.49, y: 0.4, frame_id: "f" } as Action;
+    // Two clicks landing on buttons of one name: one step to the loop rule,
+    // two controls to the page rule.
+    expect(actionSignature(row1, target)).toBe(actionSignature(row2, target));
+    expect(moveKey(row1, target)).not.toBe(moveKey(row2, target));
+    expect(moveKey(row1, target)).toBe(
+      `${actionSignature(row1, target)}@0.49,0.33`,
+    );
+    // The model's hint on a click by name, rounded as the signature rounds
+    // it; a key press has no position.
+    const hinted = {
+      type: "click_control",
+      label: "Add",
+      x: 0.489,
+      y: 0.403,
+      frame_id: "f",
+    } as Action;
+    expect(moveKey(hinted)).toBe(`${actionSignature(hinted)}@0.49,0.4`);
+    expect(moveKey(hinted)).toBe(
+      moveKey({ ...hinted, x: 0.491, y: 0.398 } as Action),
+    );
+    const key = { type: "key", key: "ENTER", frame_id: "f" } as Action;
+    expect(moveKey(key)).toBe(actionSignature(key));
   });
   it("keys a page by application, title and address path, never its query, controls or screenshot", () => {
     const frame = (
