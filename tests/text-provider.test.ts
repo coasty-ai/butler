@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultSettings, type Settings } from "../src/core/schema";
-import { anthropicCacheRates } from "../src/providers/http";
+import { HttpProvider, anthropicCacheRates } from "../src/providers/http";
 import { LocalDiagnostics } from "../electron/diagnostics";
 import {
   buildTextRequest,
@@ -258,6 +258,64 @@ describe("text request building", () => {
     expect(textSettings({ ...base, dialogModel: "" }).model).toBe("gpt-5.4");
     expect(textSettings(base).model).toBe("gpt-5.4");
     expect(textSettings({ ...base, dialogModel: "x" }).provider).toBe("openai");
+  });
+  it("routes a text call to the dialog model, keeping the provider, endpoint, key and rates (the harness's --audit-model)", async () => {
+    const mini = s("openai", "gpt-5.4-mini");
+    const routed = textSettings({ ...mini, dialogModel: "gpt-5.4" });
+    expect(buildTextRequest(routed, "k", call).body.model).toBe("gpt-5.4");
+    expect(buildTextRequest(mini, "k", call).body.model).toBe("gpt-5.4-mini");
+    expect(buildTextRequest(routed, "k", call).url).toBe(
+      buildTextRequest(mini, "k", call).url,
+    );
+    // The rates are the run model's: the usage is priced at those, and a
+    // harness that set the dialog model corrects the difference itself.
+    expect(routed.inputPrice).toBe(mini.inputPrice);
+    expect(routed.outputPrice).toBe(mini.outputPrice);
+    expect(
+      buildTextRequest(
+        textSettings({
+          ...s("anthropic", "claude-sonnet-5"),
+          dialogModel: "claude-opus-5",
+        }),
+        "k",
+        call,
+      ).body.model,
+    ).toBe("claude-opus-5");
+    expect(
+      buildTextRequest(
+        textSettings({
+          ...s("google", "gemini-3.5-flash-lite"),
+          dialogModel: "gemini-3.5-pro",
+        }),
+        "k",
+        call,
+      ).url,
+    ).toContain("gemini-3.5-pro");
+    // HttpProvider.text, the runner's done audit's route, applies it: the
+    // request that leaves names the dialog model, the step loop's settings
+    // are untouched.
+    const request = vi.fn(async () => streamed([fixture("openai")]).response);
+    const provider = new HttpProvider(
+      { ...mini, dialogModel: "gpt-5.4" },
+      "SECRET-KEY",
+      request,
+    );
+    const reply = await provider.text(
+      { ...call, maxOutputTokens: 300 },
+      signal(),
+    );
+    expect(reply.code).toBe("ok");
+    expect(request).toHaveBeenCalledTimes(1);
+    const [, init] = request.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).model).toBe("gpt-5.4");
+    // Without a dialog model the same call names the run model.
+    const own = vi.fn(async () => streamed([fixture("openai")]).response);
+    await new HttpProvider(mini, "SECRET-KEY", own).text(
+      { ...call, maxOutputTokens: 300 },
+      signal(),
+    );
+    const [, ownInit] = own.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(ownInit.body)).model).toBe("gpt-5.4-mini");
   });
 });
 

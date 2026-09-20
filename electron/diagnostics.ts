@@ -47,6 +47,8 @@ const fields = new Set([
   "actions",
   "frames",
   "usage",
+  // UsageAdded: what the usage paid for, a code ("audit").
+  "purpose",
   "inputTokens",
   "outputTokens",
   "cachedInputTokens",
@@ -558,6 +560,9 @@ const codeFields = new Set([
   // ActionExecuted: a click by name's effect and a bound step's rung.
   "effect",
   "rung",
+  // UsageAdded: what the usage paid for ("audit": the done audit's calls),
+  // so a harness can price those tokens at the auditor's own rates.
+  "purpose",
   "jevAct",
   "jevCode",
   "settle",
@@ -821,7 +826,8 @@ const journalEvents = new Map<string, Set<string>>([
   ["RunPaused", new Set(["reason"])],
   ["RunCancelled", new Set()],
   ["TaskAmended", new Set(["taskLength"])],
-  ["UsageAdded", new Set(["usage"])],
+  // The done audit's rows carry purpose "audit" (Runner.addUsage).
+  ["UsageAdded", new Set(["usage", "purpose"])],
   [
     "FrameCaptured",
     new Set([
@@ -1390,6 +1396,9 @@ export class LocalDiagnostics {
               ? approvalCode(e.data.reason)
               : undefined),
           usage: e.data.usage,
+          // UsageAdded: what the usage paid for ("audit", the done audit's
+          // calls, which a harness reprices at the auditor's rates).
+          purpose: code(e.data.purpose),
           screenshot: e.data.screenshot,
           screenshotReason: e.data.screenshotReason,
           frameId: e.data.frame_id,

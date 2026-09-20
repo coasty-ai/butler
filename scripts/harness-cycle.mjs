@@ -176,6 +176,8 @@ const { providerDefaults } = catalog;
 const { values } = parseArgs({
   options: {
     matrix: { type: "string" },
+    // No default: unset, every run's done audit runs on its cell's own model.
+    "audit-model": { type: "string" },
     suite: { type: "string", default: "smoke" },
     tasks: { type: "string" },
     repeat: { type: "string", default: "3" },
@@ -218,6 +220,11 @@ const usage = `Usage: node scripts/harness-cycle.mjs [options]     (npm run cycl
 
 Plan
   --matrix <provider[:model],...>  Cells. Default openai. A bare provider uses its default model.
+  --audit-model <provider:model>   The model every run's done audit (one or two text calls a run)
+                                   runs on in place of the cell's own, through the cell's endpoint
+                                   and key, so it must be a model of the cell's provider; priced at
+                                   its own catalog rates. For a gpt-5.4-mini cell: openai:gpt-5.4.
+                                   Default unset: each cell audits itself. A resume keeps it.
   --suite <smoke|long|market|all>  The catalogue: the 12-task smoke suite (default), the long
                                    suite, the market suite, or all three. A plan holding long
                                    or market tasks that does not fit the time box is sharded
@@ -573,6 +580,48 @@ if (values.probe && !stored) {
 }
 if (!cells.length) fail("No matrix cells selected.");
 if (!tasks.length) fail("No tasks selected.");
+// The model the runs' text calls (the done audit, src/core/done-audit.ts)
+// run on in place of each cell's own: settings.dialogModel, which the text
+// path swaps in for the model alone (src/providers/text.ts textSettings)
+// while the provider, endpoint, key and rates stay the cell's. So it must
+// be a model of every cell's provider, and its tokens, charged by the text
+// path at the cell's rates, are repriced at its own on each row (attempt.ts
+// auditSurcharge), which is why the catalog must price it. Two full market
+// sweeps under autonomy all had the gpt-5.4-mini cell audit itself and let
+// 43-45% of its dones stand false; a stronger auditor is the lever while
+// the cell stays mini. A resume keeps the stored one, as with --autonomy.
+let audit;
+{
+  const flag = values["audit-model"];
+  const text = stored ? (stored.auditModel ?? undefined) : flag;
+  const chosen = text === undefined ? undefined : parseMatrix(text, defaults);
+  if (chosen && (chosen.unknown.length || chosen.cells.length !== 1))
+    fail(
+      `--audit-model takes one provider:model the matrix parser accepts, for example openai:gpt-5.4; ${text} is not.`,
+    );
+  audit = chosen?.cells[0];
+  if (stored && flag !== undefined) {
+    const asked = parseMatrix(flag, defaults).cells[0]?.cell;
+    if (asked !== audit?.cell)
+      fail(
+        `Cycle ${resuming} ${audit ? `audits with ${audit.cell}` : "audits each cell on its own model"}, and a resume keeps it: attempts audited by ${asked ?? flag} would pool into the same numbers. Drop the flag, or start a new cycle.`,
+      );
+  }
+  if (audit) {
+    const foreign = cells.filter((cell) => cell.provider !== audit.provider);
+    if (foreign.length)
+      fail(
+        `--audit-model ${audit.cell} runs through each cell's own endpoint and key, so it must be a model of the cell's provider: ${foreign.map((cell) => cell.cell).join(", ")} ${foreign.length > 1 ? "are" : "is"} not ${audit.provider}.`,
+      );
+    if (!cellPrices(audit, catalog))
+      fail(
+        `No token prices for ${audit.cell} in src/providers/catalog.ts. ` +
+          "The audit's tokens are priced at its model's own rates: price the model there, or pick one the catalog prices.",
+      );
+  }
+}
+/** The auditor's rates, when one is set: what its tokens are repriced at. */
+const auditPrices = audit ? cellPrices(audit, catalog) : undefined;
 /** What the selection holds, for plan.json and the report. */
 const suite = stored?.suite ?? suiteOf(tasks);
 // Every cost cap (the run's own budget, --max-cost-run, --max-cost-model,
@@ -1059,6 +1108,10 @@ if (values["dry-run"]) {
       `Probe ${probe.code} against cycle ${probe.baseline}: the models and categories the class touched there.`,
     );
   console.log(`autonomy ${autonomyLine(flags)}`);
+  if (audit)
+    console.log(
+      `audit ${audit.model}: every run's done audit on it through the cell's endpoint and key, its tokens at $${auditPrices.inputPrice}/$${auditPrices.outputPrice} per Mtok`,
+    );
   console.log(
     "No provider call, no desktop input and no file written in a dry run.\n",
   );
@@ -1234,6 +1287,9 @@ for (const cell of cells) {
         ...selectProvider(defaultSettings, cell.provider, cell.model),
         memory: flags.memory,
         ...autonomySettings(autonomy),
+        // Every text() call of the run (the done audit) on the auditor:
+        // the text path reads dialogModel, the step loop never does.
+        ...(audit ? { dialogModel: audit.model } : {}),
       },
       cell,
       cellPrices(cell, catalog),
@@ -1256,6 +1312,8 @@ for (const cell of cells) {
     model: cell.model,
     cell: cell.cell,
     settings,
+    // The row prices the audit's tokens at these rates over the cell's.
+    ...(audit ? { audit: { model: audit.model, ...auditPrices } } : {}),
   });
 }
 
@@ -1277,6 +1335,8 @@ if (!stored)
         seed,
         shard: shardText ?? null,
         suite,
+        // As the flag was given (provider:model), for a resume to parse again.
+        ...(audit ? { auditModel: audit.cell } : {}),
         ...(probe ? { probe } : {}),
         planHash: hash,
         designHash: design,
@@ -1350,6 +1410,8 @@ const cycleInfo = (extra = {}) => ({
     existsSync(ledgerFile) ? parseLedger(readFileSync(ledgerFile, "utf8")) : [],
   ),
   suite,
+  // The auditor beside the cells, which share its provider; the header names it.
+  ...(audit ? { auditModel: audit.model } : {}),
   ...(probe ? { probe } : {}),
   ...extra,
 });
@@ -1373,7 +1435,7 @@ function writeReports(results, extra = {}, analysis, comparison, verdict) {
 }
 
 console.warn(
-  `\nButler cycle ${cycleId}: ${queue.length} attempt(s) left of ${plan.length}, ${cells.map((c) => c.cell).join(", ")}, ${suite} suite, autonomy ${autonomyLine(flags)}.\n` +
+  `\nButler cycle ${cycleId}: ${queue.length} attempt(s) left of ${plan.length}, ${cells.map((c) => c.cell).join(", ")}, ${suite} suite, autonomy ${autonomyLine(flags)}${audit ? `, audit ${audit.model}` : ""}.\n` +
     (autoShards
       ? `The whole plan needs ${autoShards} nights: this is shard 1/${autoShards}; the others run ${shardNights.join(", then ")}.\n`
       : "") +

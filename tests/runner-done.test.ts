@@ -970,7 +970,13 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
       attempts: 1,
     });
     expect(m.of("UsageAdded")).toHaveLength(2);
-    expect(m.of("UsageAdded")[0].data).toEqual({ usage: AUDIT_USAGE });
+    // Tagged as the audit's, so a harness can price the tokens at the
+    // auditor's own rates when the settings put the audit on another model.
+    expect(m.of("UsageAdded")[0].data).toEqual({
+      usage: AUDIT_USAGE,
+      purpose: "audit",
+    });
+    expect(m.of("UsageAdded")[1].data.purpose).toBe("audit");
     expect(m.getRun().usage).toEqual({
       inputTokens: AUDIT_USAGE.inputTokens * 2,
       outputTokens: AUDIT_USAGE.outputTokens * 2,

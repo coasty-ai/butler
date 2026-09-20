@@ -82,6 +82,11 @@ export interface CycleInfo {
     inputPrice: number;
     outputPrice: number;
   }[];
+  /**
+   * The model every run's done audit ran on (`--audit-model`), of the
+   * cells' own provider; absent when each audit ran on its cell's model.
+   */
+  auditModel?: string;
   tasks: CycleTaskInfo[];
   repeat: number;
   seed: number;
@@ -903,7 +908,8 @@ export function renderCycleReport(cycle: CycleResults): string {
     `rev ${info.gitRev} on ${info.gitBranch}${info.dirty ? " (dirty)" : ""} · macOS ${info.host.macos} ${info.host.arch} · harness ${cycle.harnessVersion}`,
   );
   out.push(
-    `${info.startedAt} to ${info.finishedAt ?? "(running)"} · time box ${Math.round(info.caps.timeBoxSeconds / 60)} min, attempts ${Math.round(totals.totalSeconds / 60)} min, gate waits ${Math.round(info.gateWaits.totalSeconds / 60)} min · autonomy ${autonomyLine(info.flags)}`,
+    `${info.startedAt} to ${info.finishedAt ?? "(running)"} · time box ${Math.round(info.caps.timeBoxSeconds / 60)} min, attempts ${Math.round(totals.totalSeconds / 60)} min, gate waits ${Math.round(info.gateWaits.totalSeconds / 60)} min · autonomy ${autonomyLine(info.flags)}` +
+      (info.auditModel ? ` · audit ${info.auditModel}` : ""),
   );
   out.push(
     `spent ${money(totals.totalCost)} of ${money(info.caps.cycle)} (run cap ${money(info.caps.run)}, model cap ${money(info.caps.model)})` +

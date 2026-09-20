@@ -11,7 +11,7 @@ import type {
 import { VISIBLE_TEXT_CUT_MARKER } from "../core/schema";
 // text.ts imports this module's response helpers and this module imports its
 // completeText; both are used inside functions only, so the cycle is inert.
-import { completeText } from "./text";
+import { completeText, textSettings } from "./text";
 import { validateProviderEndpoint } from "../core/privacy";
 import { cachedInputShare } from "./catalog";
 import { playbookLines } from "./playbooks";
@@ -986,11 +986,16 @@ export class HttpProvider implements Provider {
       );
   }
   /**
-   * One plain-text call on the run's own model (src/providers/text.ts
-   * completeText) for the runner's done audit (src/core/done-audit.ts): the
-   * same settings, key and transport as next(), one retry, the caller's
-   * deadline. The trace carries the text path's timings, codes and usage,
-   * never the text.
+   * One plain-text call (src/providers/text.ts completeText) for the
+   * runner's done audit (src/core/done-audit.ts): the same settings, key and
+   * transport as next(), one retry, the caller's deadline. The model is the
+   * run's own, or the dialog model when the settings name one (textSettings,
+   * as every other text call of the app resolves it): the harness sets it
+   * with --audit-model so a stronger auditor reads a mini cell's dones. The
+   * rates stay the run model's, so the usage is priced at those; the
+   * harness corrects the difference from its UsageAdded rows tagged
+   * purpose audit (src/gym/bench/attempt.ts auditSurcharge). The trace
+   * carries the text path's timings, codes and usage, never the text.
    */
   async text(
     call: ProviderTextCall,
@@ -998,7 +1003,7 @@ export class HttpProvider implements Provider {
   ): Promise<ProviderTextReply> {
     const { deadlineMs, ...request } = call;
     const result = await completeText(
-      this.settings,
+      textSettings(this.settings),
       this.key,
       request,
       this.request,

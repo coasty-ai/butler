@@ -225,7 +225,53 @@ export interface AttemptCell {
   cell: string;
   /** Provider, model, prices and memory switch; budgets come from the task. */
   settings: Settings;
+  /**
+   * The model the run's text calls (the done audit, src/core/done-audit.ts)
+   * run on when the cycle set one (`--audit-model`; settings.dialogModel
+   * carries it to the text path), with its own catalog rates. The text path
+   * prices every reply at the cell's rates, so the row's cost is corrected
+   * by the difference over the audit's tokens (auditSurcharge). Absent: the
+   * audit runs on the cell's own model at its own rates.
+   */
+  audit?: AuditModel;
 }
+
+/** A model a run's text calls run on, at its own dollars per million tokens. */
+export interface AuditModel {
+  model: string;
+  inputPrice: number;
+  outputPrice: number;
+}
+
+/** Tokens the done audit's calls used (UsageAdded rows with purpose audit). */
+export interface AuditTokens {
+  input: number;
+  output: number;
+}
+
+/**
+ * What the audit's tokens cost over what the text path charged for them:
+ * the text path prices a reply at the cell's rates (src/providers/text.ts
+ * runs on settings.dialogModel but keeps settings' inputPrice and
+ * outputPrice), so a row whose audit ran on a dearer model owes the
+ * difference, and one whose audit ran on a cheaper model is owed it (the
+ * figure is then negative). Dollars, from dollars per million tokens.
+ */
+export function auditSurcharge(
+  tokens: AuditTokens,
+  cell: Pick<Settings, "inputPrice" | "outputPrice">,
+  audit: Pick<AuditModel, "inputPrice" | "outputPrice">,
+): number {
+  return (
+    (tokens.input * (audit.inputPrice - cell.inputPrice) +
+      tokens.output * (audit.outputPrice - cell.outputPrice)) /
+    1_000_000
+  );
+}
+
+/** A finite, non-negative count, or 0. */
+const tokenCount = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 
 export interface AttemptCaps {
   /** The cost cap for this attempt, after the cycle and model caps. */
@@ -268,6 +314,8 @@ function baseRow(
     provider: cell.provider,
     model: cell.model,
     cell: cell.cell,
+    // Beside the model: the auditor the cycle set, on every row, ran or not.
+    ...(cell.audit ? { auditModel: cell.audit.model } : {}),
     planIndex: caps.planIndex ?? 0,
     requeued: caps.requeued ?? 0,
     startedAt,
@@ -502,6 +550,8 @@ export async function runAttempt(
     doneChallenged: {} as Record<string, number>,
     /** RunFailed's code: DELIVERABLE_MISSING when the runner failed the run itself. */
     runFailedCode: undefined as string | undefined,
+    /** The done audit's tokens (UsageAdded rows with purpose audit), for the row and its repricing. */
+    auditTokens: { input: 0, output: 0 } as AuditTokens,
   };
   // Input reported during an earlier attempt belonged to that attempt. From
   // here on the flag is this one's, so input during the settle or prepare
@@ -730,6 +780,11 @@ export async function runAttempt(
       for (const event of snapshot.events.slice(printed)) {
         const d = event.data ?? {};
         if (event.type === "ModelRequestStarted") counters.modelCalls++;
+        if (event.type === "UsageAdded" && d.purpose === "audit") {
+          const usage = (d.usage ?? {}) as Record<string, unknown>;
+          counters.auditTokens.input += tokenCount(usage.inputTokens);
+          counters.auditTokens.output += tokenCount(usage.outputTokens);
+        }
         if (event.type === "ActionRetargetRequested") {
           counters.retries++;
           // The analyzer's own rule, so IDE_BLIND means what BLIND_SURFACE does.
@@ -1014,7 +1069,20 @@ export async function runAttempt(
       ...honesty(journal.status, grade, task),
       actions: journal.actions,
       seconds,
-      cost: journal.cost,
+      // The runner's figure, plus what the audit's tokens cost at the
+      // auditor's rates over the cell's when the cycle set one; the caps
+      // and the report read this, the journal keeps what the run's own
+      // budget saw.
+      cost: Math.max(
+        0,
+        journal.cost +
+          (cell.audit
+            ? auditSurcharge(counters.auditTokens, cell.settings, cell.audit)
+            : 0),
+      ),
+      ...(counters.auditTokens.input || counters.auditTokens.output
+        ? { auditTokens: { ...counters.auditTokens } }
+        : {}),
       inputTokens: currentRun?.usage?.inputTokens ?? 0,
       outputTokens: currentRun?.usage?.outputTokens ?? 0,
       cachedInputTokens: currentRun?.usage?.cachedInputTokens,

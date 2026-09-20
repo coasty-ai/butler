@@ -3281,6 +3281,33 @@ describe("the journal's content-free rows", () => {
       // Not counts, not a code: dropped, the row keeps its base alone.
       expect(r[3].data).toEqual({ ...base(s, 4), unmet: -1 });
     }));
+  it("keeps the done audit's purpose on its UsageAdded row as a code beside the usage, and drops a sentence there", () =>
+    fixture((log) => {
+      const audit = { inputTokens: 900, outputTokens: 80, cost: 0.0021 };
+      const dialog = { inputTokens: 100, outputTokens: 20, cost: 0.4 };
+      const s = journal([
+        // Runner.addUsage(usage, "audit"): the done audit's call, which a
+        // harness reprices at the auditor's rates (attempt.ts auditSurcharge).
+        { type: "UsageAdded", data: { usage: audit, purpose: "audit" } },
+        // The app's dialog and summaries: no purpose, the row as it was.
+        { type: "UsageAdded", data: { usage: dialog } },
+        // Never written by the runner; a sentence is not a code.
+        {
+          type: "UsageAdded",
+          data: { usage: dialog, purpose: `${MARK} for the audit` },
+        },
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        usage: audit,
+        purpose: "audit",
+      });
+      expect(r[1].data).toEqual({ ...base(s, 2), usage: dialog });
+      expect(r[2].data).toEqual({ ...base(s, 3), usage: dialog });
+    }));
   it("writes the unmet requirements' kinds as codes from the fixed list, on the audit's row and on a run failed REQUIREMENTS_UNMET; a kind off the list, a bare string and every word are dropped", () =>
     fixture((log) => {
       const s = journal([

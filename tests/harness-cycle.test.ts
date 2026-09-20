@@ -34,8 +34,10 @@ import {
 } from "../src/gym/bench/tools";
 import { LOOP_STUCK_MESSAGE } from "../src/core/runner";
 import {
+  auditSurcharge,
   createHarnessState,
   needsBenchDir,
+  neverRan,
   onEmergencyStop,
   onManualInput,
   runAttempt,
@@ -450,6 +452,160 @@ const caps = { maxCost: 0.05, approveRoutine: false };
 /* ------------------------------------------------------------ attempt.ts */
 
 describe("one attempt through the real runner", () => {
+  it("prices the done audit's tokens at the auditor's rates and names it on the row (--audit-model)", async () => {
+    // A two-clause objective and three executed actions: the runner audits
+    // the done (src/core/done-audit.ts), one text call whose usage the text
+    // path prices at the cell's rates ($0.75/$4.50) though it ran on the
+    // auditor ($2.50/$15, settings.dialogModel). Synthetic words, no task's.
+    const audit = { model: "gpt-audit", inputPrice: 2.5, outputPrice: 15 };
+    const priced: AttemptCell = {
+      ...CELL,
+      settings: {
+        ...structuredClone(defaultSettings),
+        inputPrice: 0.75,
+        outputPrice: 4.5,
+        // The owner's regime, as the sweeps the evidence comes from ran.
+        autonomy: "all",
+        autonomyAllAcknowledged: true,
+        dialogModel: audit.model,
+      },
+    };
+    const auditUsage = { inputTokens: 1000, outputTokens: 200, cost: 0.00165 };
+    const allMet = JSON.stringify({
+      requirements: [
+        {
+          text: "move through the fields",
+          kind: "other",
+          met: true,
+          evidence: 1,
+        },
+        { text: "report the view", kind: "other", met: true, evidence: 3 },
+      ],
+    });
+    const auditing = () => {
+      const text = vi.fn(async () => ({
+        text: allMet,
+        usage: auditUsage,
+        code: "ok" as const,
+      }));
+      return {
+        // Three distinct keys the policy allows on any identified surface
+        // (a dismissal and two navigation keys); a bare x,y click on this
+        // fake surface, with no named control under it, is a RETRY instead.
+        ...scripted([
+          { type: "key", key: "ESC" },
+          { type: "key", key: "TAB" },
+          { type: "key", key: "DOWN" },
+        ]),
+        text,
+      };
+    };
+    const task = testTask({
+      instruction: "Move through the three fields. Then report what you saw.",
+    });
+    const steps = 4; // three keys and the done, at the scripted usage each
+    const { controller } = fakeController();
+    const provider = auditing();
+    const { deps } = attemptDeps(controller, {
+      clients: { [CELL.cell]: provider },
+    });
+    const row = await runAttempt(deps, { ...priced, audit }, task, 1, caps);
+    expect(row.actions).toBe(3);
+    expect(provider.text).toHaveBeenCalledTimes(1);
+    expect(row.status).toBe("passed");
+    expect(row.auditModel).toBe("gpt-audit");
+    expect(row.auditTokens).toEqual({ input: 1000, output: 200 });
+    // The audit's tokens are in the run's totals as before.
+    expect(row.inputTokens).toBe(steps * usage.inputTokens + 1000);
+    expect(row.outputTokens).toBe(steps * usage.outputTokens + 200);
+    // The runner's figure plus the difference in rates over the audit's
+    // tokens: 1000 x (2.5 - 0.75) + 200 x (15 - 4.5) per million.
+    const runnerCost = steps * usage.cost + auditUsage.cost;
+    const surcharge = (1000 * 1.75 + 200 * 10.5) / 1e6;
+    expect(surcharge).toBeCloseTo(0.00385, 10);
+    expect(row.cost).toBeCloseTo(runnerCost + surcharge, 10);
+    expect(
+      auditSurcharge(row.auditTokens!, priced.settings, audit),
+    ).toBeCloseTo(surcharge, 10);
+    // The ledger carries both fields beside the model, and the caps read
+    // the repriced cost.
+    const line: LedgerLine = { kind: "attempt", at: "t", ...row };
+    const [back] = ledgerResults(parseLedger(JSON.stringify(line) + "\n"));
+    expect(back.model).toBe(CELL.model);
+    expect(back.auditModel).toBe("gpt-audit");
+    expect(back.auditTokens).toEqual({ input: 1000, output: 200 });
+    expect(spent([back]).byCell[CELL.cell]).toBeCloseTo(row.cost, 10);
+
+    // No auditor set: the audit still runs (on the cell's own model), its
+    // tokens are on the row, the cost is the runner's own, and no auditModel.
+    const own = auditing();
+    const plain = attemptDeps(fakeController().controller, {
+      clients: { [CELL.cell]: own },
+    });
+    const bare = await runAttempt(plain.deps, priced, task, 1, caps);
+    expect(own.text).toHaveBeenCalledTimes(1);
+    expect(bare.auditModel).toBeUndefined();
+    expect(bare.auditTokens).toEqual({ input: 1000, output: 200 });
+    expect(bare.cost).toBeCloseTo(runnerCost, 10);
+    expect(JSON.stringify(bare)).not.toContain("auditModel");
+
+    // A one-clause task audits nothing: no tokens, no field.
+    const quiet = auditing();
+    const short = attemptDeps(fakeController().controller, {
+      clients: { [CELL.cell]: quiet },
+    });
+    const none = await runAttempt(
+      short.deps,
+      { ...priced, audit },
+      testTask(),
+      1,
+      caps,
+    );
+    expect(quiet.text).not.toHaveBeenCalled();
+    expect(none.auditModel).toBe("gpt-audit");
+    expect(none.auditTokens).toBeUndefined();
+    // The same three keys and the done, nothing more.
+    expect(none.cost).toBeCloseTo(steps * usage.cost, 10);
+    // A row that never ran carries the auditor too, beside its model.
+    const skipped = neverRan(
+      { ...priced, audit },
+      testTask(),
+      1,
+      caps,
+      "SKIPPED",
+      createHarnessState(),
+    );
+    expect(skipped.auditModel).toBe("gpt-audit");
+    expect(skipped.auditTokens).toBeUndefined();
+    expect(
+      neverRan(priced, testTask(), 1, caps, "SKIPPED", createHarnessState())
+        .auditModel,
+    ).toBeUndefined();
+  });
+
+  it("auditSurcharge is the difference in rates over the audit's tokens, negative for a cheaper auditor", () => {
+    const cell = { inputPrice: 0.75, outputPrice: 4.5 };
+    expect(
+      auditSurcharge({ input: 1000, output: 200 }, cell, {
+        inputPrice: 2.5,
+        outputPrice: 15,
+      }),
+    ).toBeCloseTo(0.00385, 10);
+    expect(auditSurcharge({ input: 1000, output: 200 }, cell, cell)).toBe(0);
+    expect(
+      auditSurcharge({ input: 0, output: 0 }, cell, {
+        inputPrice: 2.5,
+        outputPrice: 15,
+      }),
+    ).toBe(0);
+    expect(
+      auditSurcharge({ input: 1000, output: 200 }, cell, {
+        inputPrice: 0.2,
+        outputPrice: 1.25,
+      }),
+    ).toBeCloseTo((1000 * -0.55 + 200 * -3.25) / 1e6, 10);
+  });
+
   it("resumes the latched helper before the grading capture, then latches it again", async () => {
     const { controller, calls } = fakeController();
     const { deps } = attemptDeps(controller);
@@ -3616,6 +3772,24 @@ describe("results.json and report.md", () => {
     );
   });
 
+  it("names the auditor in the header beside the regime when --audit-model set one", () => {
+    const audited = buildCycleResults({
+      cycle: info({ auditModel: "gpt-5.4" }),
+      results,
+      analysis,
+    });
+    // results.json carries it where the header reads it from.
+    expect(audited.cycle.auditModel).toBe("gpt-5.4");
+    expect(renderCycleReport(audited)).toContain(
+      "· autonomy task (every prompt declined) · audit gpt-5.4\n",
+    );
+    const own = renderCycleReport(
+      buildCycleResults({ cycle: info(), results, analysis }),
+    );
+    expect(own).not.toContain("· audit ");
+    expect(own).toContain("· autonomy task (every prompt declined)\n");
+  });
+
   it("never carries screen text, even from rows and logs that hold it", () => {
     const leaky = [
       ...results,
@@ -4137,6 +4311,112 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
     // `auto` picks a baseline among cycles of this regime only (the timing
     // medians still come from any: pinned with the suites below).
     expect(source).toContain("pool = cycles.filter(sameRegime),");
+  });
+
+  it("--audit-model puts every run's done audit on one priced model of the cell's provider, or refuses", () => {
+    const home = mkdtempSync(join(scratch, "audit-home-"));
+    const run = (...args: string[]) =>
+      spawnSync(
+        process.execPath,
+        [
+          "scripts/harness-cycle.mjs",
+          "--dry-run",
+          "--tasks",
+          "calculator",
+          ...args,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 60000,
+          env: { ...process.env, HOME: home },
+        },
+      );
+    // The recommended pair: a mini cell audited by gpt-5.4, at its own rates.
+    const audited = run("--audit-model", "openai:gpt-5.4");
+    expect(audited.status, audited.stderr).toBe(0);
+    expect(audited.stdout).toContain(
+      "\naudit gpt-5.4: every run's done audit on it through the cell's endpoint and key, its tokens at $2.5/$15 per Mtok\n",
+    );
+    // Unset: nothing changes, and no line claims an auditor.
+    const bare = run();
+    expect(bare.status, bare.stderr).toBe(0);
+    expect(bare.stdout).not.toContain("\naudit ");
+    // Refused before anything is planned, like a cell the catalog cannot
+    // price: the audit's tokens are repriced at its model's own rates.
+    const unpriced = run("--audit-model", "openai:gpt-nope");
+    expect(unpriced.status).toBe(2);
+    expect(unpriced.stderr).toContain(
+      "No token prices for openai:gpt-nope in src/providers/catalog.ts. The audit's tokens are priced at its model's own rates",
+    );
+    // The text path keeps the cell's provider, endpoint and key and swaps
+    // the model alone, so another provider's model cannot be the auditor.
+    const foreign = run("--audit-model", "google:gemini-3.5-flash-lite");
+    expect(foreign.status).toBe(2);
+    expect(foreign.stderr).toContain(
+      "--audit-model google:gemini-3.5-flash-lite runs through each cell's own endpoint and key, so it must be a model of the cell's provider: openai:gpt-5.4-mini is not google.",
+    );
+    const garbage = run("--audit-model", "nope");
+    expect(garbage.status).toBe(2);
+    expect(garbage.stderr).toContain(
+      "--audit-model takes one provider:model the matrix parser accepts, for example openai:gpt-5.4; nope is not.",
+    );
+    const help = spawnSync(
+      process.execPath,
+      ["scripts/harness-cycle.mjs", "--help"],
+      { cwd: root, encoding: "utf8", timeout: 60000 },
+    );
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain("--audit-model <provider:model>");
+    // The source: the option, the model in every cell's settings as
+    // dialogModel (the text path's model, src/providers/text.ts
+    // textSettings, which HttpProvider.text applies), the auditor's rates
+    // beside the cell for the row's repricing, plan.json's auditModel as
+    // the flag was given and results.json's beside the cells, and a resume
+    // that keeps the stored auditor and refuses a flag asking for another.
+    const source = readFileSync(
+      join(root, "scripts/harness-cycle.mjs"),
+      "utf8",
+    );
+    expect(source).toContain('    "audit-model": { type: "string" },');
+    const cell = source.indexOf("const settings = settingsSchema.parse(");
+    const dialog = source.indexOf(
+      "...(audit ? { dialogModel: audit.model } : {}),",
+      cell,
+    );
+    expect(dialog).toBeGreaterThan(cell);
+    expect(dialog).toBeLessThan(
+      source.indexOf("cellPrices(cell, catalog),", cell),
+    );
+    expect(source).toContain(
+      "...(audit ? { audit: { model: audit.model, ...auditPrices } } : {}),",
+    );
+    expect(source).toContain(
+      "const auditPrices = audit ? cellPrices(audit, catalog) : undefined;",
+    );
+    const planFile = source.indexOf(
+      'const planFile = join(cycleDir, "plan.json");',
+    );
+    expect(planFile).toBeGreaterThan(0);
+    expect(
+      source.indexOf("...(audit ? { auditModel: audit.cell } : {}),", planFile),
+    ).toBeGreaterThan(planFile);
+    expect(source).toContain("...(audit ? { auditModel: audit.model } : {}),");
+    expect(source).toContain(
+      "const text = stored ? (stored.auditModel ?? undefined) : flag;",
+    );
+    expect(source).toContain("and a resume keeps it: attempts audited by");
+    // Chosen and checked before the dry run's exit, so the plan it prints
+    // is the plan that would run.
+    expect(source.indexOf("let audit;")).toBeLessThan(
+      source.indexOf('if (values["dry-run"]) {'),
+    );
+    // The runner tags the audit's usage and the text path applies the
+    // dialog model, which is what makes the flag reach the audit at all.
+    const runner = readFileSync(join(root, "src/core/runner.ts"), "utf8");
+    expect(runner).toContain('this.addUsage(reply.usage, "audit");');
+    const http = readFileSync(join(root, "src/providers/http.ts"), "utf8");
+    expect(http).toContain("textSettings(this.settings),");
   });
 
   it("--probe compares like with like: a baseline of another regime is refused", () => {

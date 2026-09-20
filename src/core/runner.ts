@@ -1823,7 +1823,9 @@ export class Runner {
    * history the model already reads (modelHistory: no screenshot) and the
    * claimed summary; the reply parsed as the audit, or undefined when the
    * call failed, was refused, or was not the shape ("audit unavailable",
-   * the done standing). Its usage is the run's (UsageAdded). DoneAudited
+   * the done standing). Its usage is the run's (UsageAdded, with purpose
+   * "audit" so a harness can price it at the auditor's own rates when the
+   * settings' dialogModel puts the audit on another model). DoneAudited
    * carries counts, the duration, the code and the unmet kinds only.
    */
   private async auditDone(
@@ -1860,7 +1862,7 @@ export class Runner {
           ),
           this.abort.signal,
         );
-        this.addUsage(reply.usage);
+        this.addUsage(reply.usage, "audit");
         audit = parseDoneAudit(reply);
       } catch {
         audit = undefined;
@@ -2490,17 +2492,20 @@ export class Runner {
   }
   /**
    * Counts model usage made on the run's behalf outside the run loop (progress
-   * summaries, dialog about it) toward maxCost. Nothing stops here: the loop's
-   * next check() sees the total and ends the run if the budget is spent.
+   * summaries, dialog about it, the done audit) toward maxCost. Nothing stops
+   * here: the loop's next check() sees the total and ends the run if the
+   * budget is spent. `purpose` names what the usage paid for, a code on the
+   * UsageAdded row (only "audit" so far, the done audit's calls); absent for
+   * the app's dialog and summaries, whose rows are as they were.
    */
-  addUsage(usage: Usage) {
+  addUsage(usage: Usage, purpose?: "audit") {
     const run = this.snapshot.run;
     if (!run || terminal(run.status)) return;
     const keys = ["inputTokens", "outputTokens", "cost"] as const;
     // All or nothing: a broken figure must not half-apply.
     if (keys.some((k) => !Number.isFinite(usage[k]) || usage[k] < 0)) return;
     for (const k of keys) run.usage[k] += usage[k];
-    this.event("UsageAdded", { usage });
+    this.event("UsageAdded", { usage, ...(purpose ? { purpose } : {}) });
     this.recorder.save(run);
   }
   async revise(text: string) {

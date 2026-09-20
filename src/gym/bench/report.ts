@@ -31,6 +31,19 @@ export interface AttemptResult {
   model: string;
   /** `${provider}:${model}`: the matrix cell the attempt ran in. */
   cell: string;
+  /**
+   * The model the run's text calls (the done audit) ran on when the cycle
+   * set one (`--audit-model`), on every row of that cycle; absent when they
+   * ran on the cell's own model.
+   */
+  auditModel?: string;
+  /**
+   * Tokens the done audit's calls used (UsageAdded rows with purpose
+   * audit), counted in inputTokens and outputTokens too; `cost` prices them
+   * at the audit model's rates when one was set (attempt.ts
+   * auditSurcharge). Absent when no audit ran.
+   */
+  auditTokens?: { input: number; output: number };
   /** Position in the plan, 0-based. */
   planIndex: number;
   /** Times human input sent this attempt back to the queue before it ran. */
