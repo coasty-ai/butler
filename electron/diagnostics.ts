@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { redactSecrets, sanitizeText, scanText } from "../src/core/sanitize";
 import { approvalCode } from "../src/core/approval-codes";
 import { allowedCode, deniedCode, retryCode } from "../src/core/decision-codes";
+import { REQUIREMENT_KINDS } from "../src/core/done-audit";
 import type { Snapshot } from "../src/core/schema";
 import type { DiagnosticSink } from "../src/core/diagnostics";
 
@@ -30,6 +31,9 @@ const fields = new Set([
   "phase",
   "method",
   "attempt",
+  // DoneAudited: how many calls the audit took (one, or two after an
+  // unusable reply). A count.
+  "attempts",
   "durationMs",
   "ttftMs",
   "delayMs",
@@ -155,9 +159,12 @@ const fields = new Set([
   "revisits",
   "episode",
   // The done audit (DoneAudited): how many requirements the model listed
-  // and how many it found unmet; the unmet count on the challenge too.
+  // and how many it found unmet; the unmet count on the challenge too; the
+  // unmet requirements' kinds as a list of fixed codes (REQUIREMENT_KINDS),
+  // on the audit's row and on RunFailed REQUIREMENTS_UNMET.
   "requirements",
   "unmet",
+  "unmetKinds",
   // Memory and replay plans: content-free counts and fixed codes only.
   "preferences",
   "episodes",
@@ -352,6 +359,7 @@ const fields = new Set([
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
+  "attempts",
   // BrowserSheet: buttons on the sheet the harness met before a quit.
   "buttons",
   "loaded",
@@ -754,6 +762,23 @@ function menuTop(action: {
   const title = first.replace(/[.…]+$/, "").trim();
   return MENU_TOPS.has(title) ? title : "other";
 }
+/**
+ * Allow-listed keys that carry a list of codes from one fixed vocabulary:
+ * each entry passes only as a member of its list, an entry off the list is
+ * dropped, and anything but an array is dropped whole. The done audit's
+ * unmetKinds (src/core/done-audit.ts REQUIREMENT_KINDS): which kind of
+ * requirement the audit failed on (save, enter, write, …), never its words.
+ */
+const codeListFields = new Map<string, ReadonlySet<string>>([
+  ["unmetKinds", new Set<string>(REQUIREMENT_KINDS)],
+]);
+const codeList = (value: unknown, allowed: ReadonlySet<string>) =>
+  Array.isArray(value)
+    ? value
+        .slice(0, 40)
+        .map((v) => code(v))
+        .filter((v): v is string => v !== undefined && allowed.has(v))
+    : undefined;
 /** Every journal row carries these, whatever the event. */
 const journalBase = new Set(["runId", "sequence", "synthetic"]);
 /**
@@ -769,7 +794,8 @@ const journalBase = new Set(["runId", "sequence", "synthetic"]);
 const journalEvents = new Map<string, Set<string>>([
   ["RunStarted", new Set(["origin", "privacy"])],
   ["RunCompleted", new Set()],
-  ["RunFailed", new Set(["code"])],
+  // A failed run's code; REQUIREMENTS_UNMET adds the unmet kinds.
+  ["RunFailed", new Set(["code", "unmetKinds"])],
   ["RunPaused", new Set(["reason"])],
   ["RunCancelled", new Set()],
   ["TaskAmended", new Set(["taskLength"])],
@@ -816,10 +842,18 @@ const journalEvents = new Map<string, Set<string>>([
     "ActionFailed",
     new Set(["code", "change", "actionType", "reason", "problem", "unmet"]),
   ],
-  // The done audit's outcome: counts, its duration and ok or unavailable.
+  // The done audit's outcome: counts, its duration, ok or unavailable, the
+  // attempts, and the unmet requirements' kinds (codes).
   [
     "DoneAudited",
-    new Set(["requirements", "unmet", "durationMs", "code", "attempts"]),
+    new Set([
+      "requirements",
+      "unmet",
+      "unmetKinds",
+      "durationMs",
+      "code",
+      "attempts",
+    ]),
   ],
   ["ActionInterrupted", new Set(["actionType"])],
   ["ActionReaimed", new Set(["actionType"])],
@@ -1013,6 +1047,8 @@ export class LocalDiagnostics {
     if (flagFields.has(field))
       return typeof value === "boolean" ? value : undefined;
     if (codeFields.has(field)) return code(value);
+    const allowedList = codeListFields.get(field);
+    if (allowedList) return codeList(value, allowedList);
     if (bundleFields.has(field)) return bundleId(value);
     if (field === "host") return hostCode(value);
     if (typeof value === "string") {
@@ -1263,14 +1299,29 @@ export class LocalDiagnostics {
             : {}),
           // The done audit (src/core/done-audit.ts): how many requirements
           // the model listed and found unmet, the call's time and its code
-          // (ok, unavailable); on the challenge (ActionFailed DONE_CHALLENGED
-          // requirement_unmet) the unmet count. The requirements' words
-          // stay in the encrypted journal's history line.
+          // (ok, unavailable), and the unmet requirements' kinds from the
+          // fixed vocabulary (REQUIREMENT_KINDS), on the audit's row and on
+          // the run it failed (RunFailed REQUIREMENTS_UNMET); on the
+          // challenge (ActionFailed DONE_CHALLENGED requirement_unmet) the
+          // unmet count. The requirements' words stay in the encrypted
+          // journal's history line.
           ...(e.type === "DoneAudited"
             ? {
                 requirements: count(e.data.requirements),
                 unmet: count(e.data.unmet),
                 durationMs: count(e.data.durationMs),
+                // How many calls the audit took (one, or two after an
+                // unusable reply); the table allowed it since abc24ae but
+                // no reader carried it.
+                attempts: count(e.data.attempts),
+              }
+            : {}),
+          ...(e.type === "DoneAudited" || e.type === "RunFailed"
+            ? {
+                unmetKinds: codeList(
+                  e.data.unmetKinds,
+                  codeListFields.get("unmetKinds")!,
+                ),
               }
             : {}),
           ...(e.type === "ActionFailed" ? { unmet: count(e.data.unmet) } : {}),

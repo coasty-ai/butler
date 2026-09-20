@@ -1068,19 +1068,50 @@ describe("a tool step that finishes the run", () => {
   const OBJECTIVE =
     "Open the calendar page, then add the dentist appointment and tell me the time.";
   const usage = { inputTokens: 300, outputTokens: 40, cost: 0.001 };
+  type Listed = {
+    text: string;
+    kind?: string;
+    met: boolean;
+    evidence: string | null;
+  };
+  /** The audit's replies in order; the last is repeated for any later call. */
   const auditing = (
     h: ReturnType<typeof harness>,
-    requirements: { text: string; met: boolean; evidence: string | null }[],
+    requirements: Listed[],
+    ...later: Listed[][]
   ) => {
+    const replies = [requirements, ...later];
     const text = vi.fn(async () => ({
-      text: JSON.stringify({ requirements }),
+      text: JSON.stringify({
+        requirements:
+          replies[Math.min(text.mock.calls.length - 1, replies.length - 1)],
+      }),
       usage,
       code: "ok" as const,
     }));
     (h.provider as { text?: typeof text }).text = text;
     return text;
   };
-  it("is audited like a done: an unmet requirement sends it back once, and the next finish stands", async () => {
+  const PAGE_OPENED: Listed = {
+    text: "open the calendar page",
+    kind: "open",
+    met: true,
+    evidence: "step 1",
+  };
+  const ADDED: Listed = {
+    text: "add the dentist appointment",
+    kind: "enter",
+    met: true,
+    evidence: "step 3",
+  };
+  const TIME_UNTOLD: Listed = {
+    text: "tell me the time",
+    kind: "other",
+    met: false,
+    evidence: null,
+  };
+  const TIME_TOLD: Listed = { ...TIME_UNTOLD, met: true, evidence: "step 4" };
+  it("is audited like a done: an unmet requirement sends it back once, and the next finish is audited once more and stands when all is met", async () => {
     // Probe 20260919-2257: a verified append marked finish completed the
     // hotel runs with the search never made, and no audit had run because
     // no done was ever proposed.
@@ -1088,13 +1119,15 @@ describe("a tool step that finishes the run", () => {
       replies: [look, look, finishing, finishing],
       settings: all,
     });
-    const text = auditing(h, [
-      { text: "open the calendar page", met: true, evidence: "step 1" },
-      { text: "add the dentist appointment", met: true, evidence: "step 3" },
-      { text: "tell me the time", met: false, evidence: null },
-    ]);
+    const text = auditing(
+      h,
+      [PAGE_OPENED, ADDED, TIME_UNTOLD],
+      [PAGE_OPENED, ADDED, TIME_TOLD],
+    );
     await h.runner.start(OBJECTIVE, voice);
-    expect(text).toHaveBeenCalledTimes(1);
+    // The first finish audited and challenged; the second, a real step
+    // since, audited once more and standing on the second audit's word.
+    expect(text).toHaveBeenCalledTimes(2);
     const sent = h.m
       .of("ActionFailed")
       .filter((e) => e.data.reason === REQUIREMENT_UNMET);
@@ -1111,18 +1144,55 @@ describe("a tool step that finishes the run", () => {
     expect(after.history.at(-1)).toMatchObject({
       type: "rejected",
       result: requirementChallenge([
-        { text: "tell me the time", met: false, evidence: null },
+        { text: "tell me the time", kind: "other", met: false, evidence: null },
       ]),
     });
     expect(h.tools!.calls).toHaveLength(2);
     expect(h.m.of("RunCompleted")).toHaveLength(1);
     expect(h.runner.snapshot.run?.status).toBe("completed");
-    expect(h.m.of("DoneAudited")).toHaveLength(1);
+    expect(h.m.of("DoneAudited")).toHaveLength(2);
     expect(h.m.of("DoneAudited")[0].data).toMatchObject({
       requirements: 3,
       unmet: 1,
+      unmetKinds: ["other"],
       code: "ok",
     });
+    expect(h.m.of("DoneAudited")[1].data).toMatchObject({
+      requirements: 3,
+      unmet: 0,
+      unmetKinds: [],
+      code: "ok",
+    });
+  });
+  it("audits a done after the finishing step's challenge and one more tool call, and fails the run when the requirement is still unmet", async () => {
+    // Market 2/3 at abc24ae (cycle 20260920-0327), code-ci-status-report
+    // #1: a finishing append was challenged (four requirements, three
+    // unmet), the model made one more append (finish false) and said done,
+    // and the done stood with no audit at all because a step had run since
+    // the challenge. The grader scored the job never noted.
+    const h = harness({
+      replies: [
+        look,
+        look,
+        finishing,
+        call(CALENDAR_ADD.id, DENTIST), // a real step since the challenge
+        act({ type: "done", summary: "Added it." }),
+      ],
+      settings: all,
+    });
+    const text = auditing(h, [PAGE_OPENED, ADDED, TIME_UNTOLD]);
+    await h.runner.start(OBJECTIVE, voice);
+    expect(text).toHaveBeenCalledTimes(2);
+    expect(h.tools!.calls).toHaveLength(2);
+    expect(h.m.of("DoneAudited")).toHaveLength(2);
+    expect(h.m.of("RunCompleted")).toHaveLength(0);
+    expect(h.m.of("RunFailed")).toHaveLength(1);
+    expect(h.m.of("RunFailed")[0].data).toEqual({
+      code: "REQUIREMENTS_UNMET",
+      unmetKinds: ["other"],
+    });
+    expect(h.runner.snapshot.run?.status).toBe("failed");
+    expect(h.runner.snapshot.run?.summary).toMatch(/^Not done: 1 requirement /);
   });
   it("fails the run when a done follows the finishing step's challenge with only a look between", async () => {
     const h = harness({

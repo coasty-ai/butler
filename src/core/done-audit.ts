@@ -16,14 +16,21 @@
  * requirement the objective states, whether the history shows it met, and
  * the step that met it. Any requirement unmet sends the done back once
  * (DONE_CHALLENGED, reason requirement_unmet) with the unmet requirements
- * in the model's own words; the next done stands on its word, as today, so
- * a run never loops on the audit. A malformed or failed reply is "audit
- * unavailable" and the done stands: the audit's own error never fails a
- * run, and no floor moves.
+ * in the model's own words. The next claim, whatever the model did since,
+ * is audited once more over the new summary: a requirement still unmet
+ * ends the run as REQUIREMENTS_UNMET, all met lets it stand (market 2/3 at
+ * abc24ae, code-ci-status-report #1: a finishing append was challenged
+ * with three of four unmet, the model appended once more and said done,
+ * and the done stood unaudited because a step had run since — a false
+ * done the audit had already caught). Two audits at most per run, so no
+ * run loops on it. A malformed or failed reply is "audit unavailable" and
+ * the done stands: the audit's own error never fails a run, and no floor
+ * moves.
  *
  * Content: the requirements' words travel to the model and into the
  * history line the encrypted journal keeps; the trace (DoneAudited) carries
- * counts, a duration and a code only. This module is pure and makes no
+ * counts, a duration, a code and the unmet requirements' kinds (a fixed
+ * vocabulary, REQUIREMENT_KINDS) only. This module is pure and makes no
  * call: the runner owns the call (Provider.text) and the events.
  */
 import { z } from "zod";
@@ -51,6 +58,35 @@ const REQUIREMENT_CHARS = 100;
 const LIST_CHARS = 200;
 
 export const REQUIREMENT_UNMET = "requirement_unmet";
+
+/**
+ * What kind of thing a requirement asks for, as the audit files it: a fixed
+ * vocabulary the trace may carry (DoneAudited unmetKinds, RunFailed
+ * unmetKinds on REQUIREMENTS_UNMET), so a cycle's report can say which
+ * kind of requirement the audit fails on without a word of any of them.
+ * Market 2/3 at abc24ae, research-below-fold-fact #3: the grader passed
+ * every check and both audits read one of four unmet, and the trace could
+ * not say whether that was the save, the read or the write.
+ */
+export const REQUIREMENT_KINDS = [
+  "open",
+  "navigate",
+  "read",
+  "enter",
+  "select",
+  "write",
+  "save",
+  "send",
+  "confirm",
+  "other",
+] as const;
+export type RequirementKind = (typeof REQUIREMENT_KINDS)[number];
+const KIND_SET: ReadonlySet<string> = new Set(REQUIREMENT_KINDS);
+/** A kind off the list, missing or not a string reads as "other"; never a rejection. */
+export const requirementKind = (value: unknown): RequirementKind =>
+  typeof value === "string" && KIND_SET.has(value.trim().toLowerCase())
+    ? (value.trim().toLowerCase() as RequirementKind)
+    : "other";
 
 type History = Observation["history"];
 
@@ -249,8 +285,8 @@ export function auditApplies(scope: DoneAuditScope): boolean {
 
 export const DONE_AUDIT_PROMPT = `You audit whether a computer-use run on a Mac finished its objective. You are given the objective, the run's steps in order (each as the model proposed it, with the result the runner reported) and the model's own summary at done.
 List every requirement the objective states: each distinct outcome or step it asks for (a page or app to open, a value to enter, search or select, a fact to write, a file to save, a message to send, a condition to satisfy). Split a sentence that asks for several things into one requirement each; a fact the objective names is its own requirement.
-For each requirement decide from the steps and the screen at done whether the run met it. met is true only when a step shows it happened (a typed or selected value, a clicked control whose name is the value, a submitted form, a tool result, a saved file, a page reached) or the screen at done shows its outcome (a confirmation, the value in place). A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
-Reply with strict JSON and nothing else, in this exact shape: {"requirements":[{"text":string,"met":boolean,"evidence":string|null}]}. text is the requirement in a few words from the objective; evidence is the step that met it (its number and kind) or null when unmet. No prose, no code fence.`;
+For each requirement decide from the steps and the screen at done whether the run met it. met is true only when a step shows it happened (a typed or selected value, a clicked control whose name is the value, a submitted form, a tool result, a saved file, a page reached) or the screen at done shows its outcome (a confirmation, the value in place). A tool result reporting a file created, appended, replaced, renamed or moved is that file saved: a requirement to save it is met by that same step, and no further save step is needed. A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
+Reply with strict JSON and nothing else, in this exact shape: {"requirements":[{"text":string,"kind":string,"met":boolean,"evidence":string|null}]}. text is the requirement in a few words from the objective; kind is one word from this list: open, navigate, read, enter, select, write, save, send, confirm, other; evidence is the step that met it (its number and action) or null when unmet. No prose, no code fence.`;
 
 const historyLine = (entry: History[number], index: number): string => {
   const { frame_id: _frame, ...action } = entry.action ?? {};
@@ -323,7 +359,7 @@ export function doneAuditInput(
  * the done stood with the dates never searched.
  */
 export const DONE_AUDIT_REMINDER =
-  'Reply with the JSON object only, nothing before or after it: {"requirements":[{"text":"…","met":true,"evidence":"…"}]}.';
+  'Reply with the JSON object only, nothing before or after it: {"requirements":[{"text":"…","kind":"…","met":true,"evidence":"…"}]}.';
 export function doneAuditCall(
   objective: string,
   history: History,
@@ -344,6 +380,8 @@ export function doneAuditCall(
 
 export interface Requirement {
   text: string;
+  /** One of REQUIREMENT_KINDS; "other" when the reply gave none or one off the list. */
+  kind: RequirementKind;
   met: boolean;
   evidence: string | null;
 }
@@ -354,6 +392,8 @@ export interface DoneAudit {
 
 const requirementSchema = z.object({
   text: z.string().trim().min(1),
+  // Any value or none: read as a kind below, never a reason to reject.
+  kind: z.unknown().optional(),
   met: z.boolean(),
   evidence: z
     .string()
@@ -400,6 +440,7 @@ export function parseDoneAudit(
     .slice(0, DONE_AUDIT_MAX_REQUIREMENTS)
     .map((r) => ({
       text: bound(r.text, 200),
+      kind: requirementKind(r.kind),
       met: r.met,
       evidence: r.evidence === null ? null : bound(r.evidence, 200),
     }));
@@ -410,7 +451,8 @@ export function parseDoneAudit(
  * The history line for a done sent back with requirements unmet: the
  * requirements in the audit's own words (each bounded, the list bounded),
  * the two routes left, and what the next done's summary must name. Once
- * per run; the line says so, and that the next done stands.
+ * per run; the line says so, and that the next done is checked once more
+ * against these requirements and ends the run if one is still unmet.
  */
 export function requirementChallenge(unmet: Requirement[]): string {
   const names = bound(
@@ -418,19 +460,22 @@ export function requirementChallenge(unmet: Requirement[]): string {
     LIST_CHARS,
   );
   const several = unmet.length > 1;
-  return `Not accepted yet. The objective's requirements were read against this run's steps and ${unmet.length} ${several ? "were" : "was"} not met: ${names}. If ${several ? "they are" : "it is"} still to do, continue: do ${several ? "them" : "it"} (enter, select or write what the objective names, then save or submit) and say done with a summary that names the step that met each. If ${several ? "one" : "it"} cannot be done, say fail and name what blocks it. This check is made once; the next done stands on your word.`;
+  return `Not accepted yet. The objective's requirements were read against this run's steps and ${unmet.length} ${several ? "were" : "was"} not met: ${names}. If ${several ? "they are" : "it is"} still to do, continue: do ${several ? "them" : "it"} (enter, select or write what the objective names, then save or submit) and say done with a summary that names the step that met each. If ${several ? "one" : "it"} cannot be done, say fail and name what blocks it. The next done is checked once more; one still unmet ends the run as not done.`;
 }
 
 /**
  * The runner's own ending for a claim repeated after a requirement
- * challenge with nothing but looks executed since: the model was told what
- * the objective still asked for, did nothing about it, and said done again.
- * Probe 20260920-0055-a897a04, travel-hotel-shortlist #1: the audit read
- * seven requirements with two unmet (the dates were never searched), the
- * claim was sent back, the model captured once and said done again, and
- * the second done stood — graded DATES_NOT_SEARCHED. A false done becomes
- * an honest fail; a done after a real step since the challenge stands as
- * before, on the model's word.
+ * challenge whose second audit still finds a requirement unmet: the model
+ * was told what the objective still asked for and said done again with it
+ * still undone. Probe 20260920-0055-a897a04, travel-hotel-shortlist #1:
+ * the audit read seven requirements with two unmet (the dates were never
+ * searched), the claim was sent back, the model captured once and said
+ * done again, and the second done stood — graded DATES_NOT_SEARCHED. The
+ * hearing first covered a claim with nothing but looks since; market 2/3
+ * at abc24ae (code-ci-status-report #1) showed one append after the
+ * challenge let a false done stand unaudited, so every claim after the
+ * challenge is audited once more, whatever ran since. A false done becomes
+ * an honest fail; a claim the second audit finds complete stands.
  */
 export const REQUIREMENTS_UNMET = "REQUIREMENTS_UNMET";
 export function requirementsUnmet(unmet: Requirement[]): string {

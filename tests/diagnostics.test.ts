@@ -2950,4 +2950,79 @@ describe("the journal's content-free rows", () => {
       // Not counts, not a code: dropped, the row keeps its base alone.
       expect(r[3].data).toEqual({ ...base(s, 4), unmet: -1 });
     }));
+  it("writes the unmet requirements' kinds as codes from the fixed list, on the audit's row and on a run failed REQUIREMENTS_UNMET; a kind off the list, a bare string and every word are dropped", () =>
+    fixture((log) => {
+      const s = journal([
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: 4,
+            unmet: 2,
+            unmetKinds: ["enter", "save"],
+            durationMs: 900,
+            code: "ok",
+            attempts: 2,
+          },
+        },
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: 5,
+            unmet: 5,
+            // Off the list, a sentence, a number: each dropped, the rest kept.
+            unmetKinds: ["save", `${MARK} the notes`, "verify", 7, "write"],
+            durationMs: 900,
+            code: "ok",
+          },
+        },
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: 2,
+            unmet: 0,
+            // Not a list: dropped whole.
+            unmetKinds: "save",
+            durationMs: 100,
+            code: "ok",
+          },
+        },
+        {
+          type: "RunFailed",
+          data: {
+            code: "REQUIREMENTS_UNMET",
+            unmetKinds: ["save"],
+            // Never written by the runner; pinned dropped all the same.
+            unmet: [{ text: `${MARK} save the notes` }],
+            message: `${MARK} not done`,
+          },
+        },
+        { type: "RunFailed", data: { code: "MODEL_FAILED" } },
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        requirements: 4,
+        unmet: 2,
+        unmetKinds: ["enter", "save"],
+        durationMs: 900,
+        code: "ok",
+        attempts: 2,
+      });
+      expect(r[1].data.unmetKinds).toEqual(["save", "write"]);
+      expect(r[2].data).toEqual({
+        ...base(s, 3),
+        requirements: 2,
+        unmet: 0,
+        durationMs: 100,
+        code: "ok",
+      });
+      expect(r[3].data).toEqual({
+        ...base(s, 4),
+        code: "REQUIREMENTS_UNMET",
+        unmetKinds: ["save"],
+      });
+      expect(r[4].data).toEqual({ ...base(s, 5), code: "MODEL_FAILED" });
+    }));
 });

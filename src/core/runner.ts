@@ -1423,18 +1423,24 @@ export class Runner {
   private deliverableChecked = false;
   /**
    * Whether this run's first done was read against the objective's own
-   * requirements (src/core/done-audit.ts). Once per run: a done said after
-   * the challenge stands on the model's word, so no run loops on the audit.
+   * requirements (src/core/done-audit.ts). The first claim is audited once;
+   * a claim after the audit's challenge is audited once more (below); two
+   * audits at most per run, so no run loops on the audit.
    */
   private doneAudited = false;
   /**
-   * The requirements the done audit found unmet when it sent a claim back,
-   * and whether any step but a look (capture, wait) has executed since. A
-   * claim repeated with none fails the run (RequirementsUnmetError); one
-   * after a real step stands on the model's word, as before.
+   * The requirements the done audit found unmet when it sent a claim back.
+   * The next claim, whatever the model did since, is audited once more over
+   * its new summary: still unmet fails the run (RequirementsUnmetError),
+   * all met clears this and the claim stands. The hearing once ran only
+   * when nothing but looks (capture, wait) had executed since, and a claim
+   * after any other step stood on the model's word: market 2/3 at abc24ae
+   * (cycle 20260920-0327), code-ci-status-report #1 — a finishing append
+   * was challenged with three of four unmet, the model appended once more
+   * and said done, and the done stood unaudited; the grader scored the
+   * job never noted.
    */
   private challengedUnmet?: Requirement[];
-  private actedSinceChallenge = false;
   /** Applications whose search route the runner already took this run. */
   private searchRoutes = new Set<string>();
   private stateChanges = 0;
@@ -1637,7 +1643,7 @@ export class Runner {
    * claimed summary; the reply parsed as the audit, or undefined when the
    * call failed, was refused, or was not the shape ("audit unavailable",
    * the done standing). Its usage is the run's (UsageAdded). DoneAudited
-   * carries counts, the duration and the code only.
+   * carries counts, the duration, the code and the unmet kinds only.
    */
   private async auditDone(
     run: Run,
@@ -1685,6 +1691,9 @@ export class Runner {
     this.event("DoneAudited", {
       requirements: audit?.requirements.length ?? 0,
       unmet: audit?.unmet.length ?? 0,
+      // The unmet requirements' kinds, in order: a fixed vocabulary
+      // (REQUIREMENT_KINDS), never a requirement's words.
+      unmetKinds: audit?.unmet.map((r) => r.kind) ?? [],
       durationMs: Math.round(performance.now() - started),
       code: audit ? "ok" : "unavailable",
       attempts,
@@ -1911,11 +1920,6 @@ export class Runner {
     this.emit(structuredClone(this.snapshot));
   }
   private event(type: string, data: Record<string, unknown> = {}) {
-    if (type === "ActionExecuted") {
-      const kind = (data.action as { type?: unknown } | undefined)?.type;
-      if (kind !== "capture" && kind !== "wait")
-        this.actedSinceChallenge = true;
-    }
     if (this.deferring) {
       this.deferring.push({ type, data });
       return;
@@ -2896,12 +2900,15 @@ export class Runner {
       // append marked finish after five actions with the dates never
       // searched, and eight of ten completed runs never proposed a done
       // at all, so the audit at the done path saw one run in twenty-three.
-      // A claim repeated after the audit's challenge with nothing but looks
-      // executed since gets one hearing: the audit reads the new summary
-      // against the same steps, and a requirement still unmet ends the run
-      // honestly (a check-in the grader scored complete was failed here
-      // once on the first audit's word alone, probe 20260920-0158).
-      if (this.challengedUnmet && !this.actedSinceChallenge) {
+      // A claim after the audit's challenge is audited once more, whatever
+      // ran since: the audit reads the new summary against the steps, and a
+      // requirement still unmet ends the run honestly (a check-in the
+      // grader scored complete was failed here once on the first audit's
+      // word alone, probe 20260920-0158). The hearing once ran only when
+      // nothing but looks had executed since; market 2/3 at abc24ae,
+      // code-ci-status-report #1, appended once after the challenge and
+      // its done stood unaudited — a false done the audit had caught.
+      if (this.challengedUnmet) {
         const again = await this.auditDone(run, this.history, summary);
         if (this.held || epoch !== this.epoch) return "continue";
         if (again?.unmet.length) throw new RequirementsUnmetError(again.unmet);
@@ -2933,7 +2940,6 @@ export class Runner {
             result: requirementChallenge(audit.unmet),
           });
           this.challengedUnmet = audit.unmet;
-          this.actedSinceChallenge = false;
           return "continue";
         }
       }
@@ -4000,7 +4006,6 @@ export class Runner {
     this.deliverableChecked = false;
     this.doneAudited = false;
     this.challengedUnmet = undefined;
-    this.actedSinceChallenge = false;
     this.resetCounters();
     this.resetLoop();
     this.cycle = [];
@@ -4317,7 +4322,6 @@ export class Runner {
     this.deliverableChecked = false;
     this.doneAudited = false;
     this.challengedUnmet = undefined;
-    this.actedSinceChallenge = false;
     this.deliverables = run.synthetic
       ? undefined
       : this.watchDeliverables(task);
@@ -5194,12 +5198,12 @@ export class Runner {
           // 20260919-2144-9714f98: two hotel runs said done after five
           // actions with the search never filled, a digest with two of
           // three named facts absent). Any unmet, the claim is sent back
-          // once with them in the audit's words; the next done stands.
-          // A claim repeated after the audit's challenge with nothing but
-          // looks executed since gets one hearing: the audit reads the new
-          // summary against the same steps, and a requirement still unmet
-          // ends the run honestly.
-          if (this.challengedUnmet && !this.actedSinceChallenge) {
+          // once with them in the audit's words. The next claim, whatever
+          // ran since, is audited once more over its new summary: a
+          // requirement still unmet ends the run honestly, all met lets it
+          // stand (market 2/3 at abc24ae, code-ci-status-report #1: one
+          // append after the challenge let a false done stand unaudited).
+          if (this.challengedUnmet) {
             const again = await this.auditDone(run, history, action.summary);
             if (this.held || epoch !== this.epoch) {
               planFail("interrupted");
@@ -5238,7 +5242,6 @@ export class Runner {
                 result: requirementChallenge(audit.unmet),
               });
               this.challengedUnmet = audit.unmet;
-              this.actedSinceChallenge = false;
               continue;
             }
           }
@@ -5394,8 +5397,15 @@ export class Runner {
         // An error that names itself by a code carries it: the model's own
         // fail (MODEL_FAILED), the runner's verdict on a done said twice with
         // the named file unchanged (DELIVERABLE_MISSING), a helper error that
-        // reached here. A plain error is RUN_ERROR.
-        this.event("RunFailed", { code: failureCode(e) });
+        // reached here. A plain error is RUN_ERROR. The audit's verdict
+        // (REQUIREMENTS_UNMET) carries the unmet requirements' kinds, a
+        // fixed vocabulary, never their words.
+        this.event("RunFailed", {
+          code: failureCode(e),
+          ...(e instanceof RequirementsUnmetError
+            ? { unmetKinds: e.unmet.map((r) => r.kind) }
+            : {}),
+        });
         this.status("failed", message);
       }
     } finally {
