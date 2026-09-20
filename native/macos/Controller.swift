@@ -126,26 +126,54 @@ func controlGroup(_ element: AXUIElement, role: String, own: String) -> String? 
     }
     return nil
 }
-/// The text that names a control's row (ListNames.swift): up from the
-/// control, rowSearchDepth levels at most and never past the page or the
-/// window (controlGroupStopRoles), to the nearest AXRow or list item; then,
-/// over the row's children in order (its cells), the first static text (the
-/// cell itself, or one two levels down) that is not the control's own name.
-/// Empty when there is no row or no such text. Reads static text alone:
-/// never a field's value.
+/// The text that names a control's row (ListNames.swift rowCellText): up
+/// from the control one parent at a time, rowSearchDepth levels at most and
+/// never past the page or the window (controlGroupStopRoles), to the nearest
+/// AXRow or list item; then over the row's leading rowCellLimit children in
+/// order (its cells), each read by rowChildText unless it is the one the
+/// control sits in (the ancestor directly under the row, by identity), the
+/// first whose text is not the control's own name. WebKit and Chromium
+/// expose a <tr> as AXRow > AXCell > AXStaticText, and a cell may carry its
+/// text on its own value, title or description: the probe of 2026-09-20
+/// 07:29 on the vendors fixture read the row's children as static text
+/// alone and qualified none of the three "Details" links. The cells are
+/// read one at a time and the choice made after each, so a two-column row
+/// costs one cell's reads. Empty when there is no row or no such text.
 func controlRowText(_ element: AXUIElement, own: String) -> String {
-    let ownWords = own.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
-    for ancestor in ancestors(of: element, depth: rowSearchDepth) {
-        let role = attribute(ancestor, kAXRoleAttribute) as? String ?? ""
+    var node = attribute(element, kAXParentAttribute).map { $0 as! AXUIElement }, below = element
+    for _ in 0..<rowSearchDepth {
+        guard let row = node else { return "" }
+        let role = attribute(row, kAXRoleAttribute) as? String ?? ""
         if controlGroupStopRoles.contains(role) { return "" }
-        guard rowRoles.contains(role) || rowSubroles.contains(attribute(ancestor, kAXSubroleAttribute) as? String ?? "") else { continue }
-        for cell in (attribute(ancestor, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(8) {
-            let text = firstStaticText(cell, depth: 2)
-            if !text.isEmpty, text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased() != ownWords { return text }
+        if rowRoles.contains(role) || rowSubroles.contains(attribute(row, kAXSubroleAttribute) as? String ?? "") {
+            var cells = [RowCell]()
+            for child in (attribute(row, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(rowCellLimit) {
+                if CFEqual(child, below) { cells.append(RowCell(role: "", text: "", holdsControl: true)); continue }
+                let childRole = attribute(child, kAXRoleAttribute) as? String ?? ""
+                cells.append(RowCell(role: childRole, text: rowChildText(child, role: childRole), holdsControl: false))
+                let text = rowCellText(cells, own: own)
+                if !text.isEmpty { return text }
+            }
+            return ""
         }
-        return ""
+        below = row
+        node = attribute(row, kAXParentAttribute).map { $0 as! AXUIElement }
     }
     return ""
+}
+/// A row child's text (a cell, a group, a static text): its own value, title
+/// or description, in that order, the first non-empty (an editable field's
+/// title or description alone, editableControlRoles: what a person typed is
+/// never a row's name); else the first static text under it, two levels
+/// down (firstStaticText: a <td>'s text node, or a name that is itself a
+/// link); else the name of the element that titles it. Trimmed; empty when
+/// it answers nothing.
+func rowChildText(_ child: AXUIElement, role: String) -> String {
+    let names = editableControlRoles.contains(role) ? [kAXTitleAttribute, kAXDescriptionAttribute] : [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute]
+    let own = firstControlName(names.map { name in { attribute(child, name) as? String } })
+    if !own.isEmpty { return own }
+    let text = firstStaticText(child, depth: 2)
+    return text.isEmpty ? titleElementName(child) : text
 }
 /// The first static text under an element (itself, or its descendants
 /// breadth-first, `depth` levels down and twelve nodes at most), trimmed;
@@ -398,13 +426,23 @@ func recognizeScreenText(_ image: CGImage, window: CGRect?, display: CGRect, lim
     }
     return lines.joined(separator: "\n")
 }
-// Controls listed once each, by role and position; `item` reads a control's dictionary.
+// Controls listed once each, by role and position; `item` reads a control's
+// dictionary. The first list wins a collision, except that a later entry
+// carrying the earlier one's name qualified by its row (ListNames.swift
+// isRowQualified: the web walk's "Details (Vendor B)" over the tracked
+// walk's "Details" for one link, since windowState reaches a small page's
+// links too) takes the earlier one's place, so the name the model reads is
+// the qualified one wherever the control was listed first.
 func mergeControls<Control>(_ first: [Control], _ second: [Control], limit: Int, item: (Control) -> [String:Any]) -> [Control] {
-    var seen = Set<String>(), merged = [Control]()
-    for control in first + second where merged.count < limit {
+    var seen = [String: Int](), merged = [Control]()
+    for control in first + second {
         let fields = item(control)
         let key = "\(fields["role"] ?? "")|\(fields["x"] ?? "")|\(fields["y"] ?? "")"
-        if seen.insert(key).inserted { merged.append(control) }
+        if let index = seen[key] {
+            if isRowQualified(fields["label"] as? String ?? "", of: item(merged[index])["label"] as? String ?? "") { merged[index] = control }
+        } else if merged.count < limit {
+            seen[key] = merged.count; merged.append(control)
+        }
     }
     return merged
 }

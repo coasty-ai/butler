@@ -6,7 +6,12 @@ import Foundation
 // that the qualified names are what matchNamedControl resolves. Market sweep
 // 1/3 at 55e4e83 (cycle 20260920-0514-55e4e83): the vendors table's three
 // "Details" links were listed alike, and research-compare-to-csv opened the
-// first vendor again and again. Every name here is synthetic.
+// first vendor again and again. Then the cell choice (rowCellText) and the
+// merge rule (isRowQualified): the probe of 2026-09-20 07:29 on that page
+// read the row's children as static text alone and still printed qualified
+// 0, since WebKit exposes a <tr> as AXRow > AXCell > AXStaticText and a
+// cell may carry its text itself, and the tracked walk lists a small page's
+// links first with the bare name. Every name here is synthetic.
 func listNameChecks(_ check: (Bool, String) -> Void) {
     typealias Entry = (name: String, role: String)
     let vendors: [Entry] = [("Details", "link"), ("Details", "link"), ("Details", "link"), ("Back to vendors", "link")]
@@ -59,9 +64,45 @@ func listNameChecks(_ check: (Bool, String) -> Void) {
     check(matchNamedControl(controls, label: "Details", role: nil, hintX: 0.42, hintY: 0.38) == .matched(2), "the bare name with the position copied from the list still picks the nearest")
     check(matchNamedControl(controls, label: "Details (Vendor D)", role: nil, hintX: nil, hintY: nil) == .missing, "a qualifier naming a row that is not listed matches nothing")
     check(matchNamedControl(controls, label: "Back to vendors", role: nil, hintX: nil, hintY: nil) == .matched(3), "the unrepeated link resolves as before")
+    // rowCellText: which cell's text names the row. The vendors fixture's row
+    // is the vendor's name in one AXCell and the "Details" link's cell next.
+    let cell = { (text: String) in RowCell(role: "AXCell", text: text, holdsControl: false) }
+    let holder = RowCell(role: "AXCell", text: "Details", holdsControl: true)
+    check(rowCellText([cell("Vendor A"), holder], own: "Details") == "Vendor A", "the first cell with a text names the row")
+    check(rowCellText([holder, cell("Vendor A")], own: "Details") == "Vendor A", "the cell holding the control is skipped wherever it comes, so the name after the link is found")
+    check(rowCellText([RowCell(role: "AXCell", text: "Acme Ltd", holdsControl: true), cell("Vendor A")], own: "Details") == "Vendor A",
+          "the control's own cell is skipped by identity even when its text is not the control's name")
+    check(rowCellText([cell("details"), cell("Vendor A")], own: "Details") == "Vendor A", "a cell whose text is the control's own name, whatever its case, is skipped")
+    check(rowCellText([cell(" Add  to\tbasket "), cell("Widget")], own: "Add to basket") == "Widget", "the own-name comparison collapses whitespace")
+    check(rowCellText([cell(""), cell("   "), cell("Vendor A")], own: "Details") == "Vendor A", "empty and blank cells are skipped")
+    check(rowCellText([cell("Vendor A"), cell("Vendor B")], own: "Details") == "Vendor A", "the first qualifying cell wins over a later one")
+    check(rowCellText(Array(repeating: cell(""), count: 8) + [cell("Ninth")], own: "Details") == "", "cells past rowCellLimit are never read")
+    check(rowCellText(Array(repeating: cell(""), count: 7) + [cell("Eighth")], own: "Details") == "Eighth", "the eighth cell is still in reach")
+    check(rowCellText([cell("  Vendor\n A  ")], own: "Details") == "Vendor A", "the chosen text is trimmed and its whitespace collapsed")
+    check(rowCellText([cell(String(repeating: "v", count: 40))], own: "Details") == String(repeating: "v", count: rowTextChars), "the chosen text is bounded to rowTextChars")
+    check(rowCellText([cell("Vendor Ä" + String(repeating: "x", count: 40))], own: "Details").utf16.count == rowTextChars, "the bound counts UTF-16 units")
+    check(rowCellText([], own: "Details") == "", "no cells, no row text")
+    check(rowCellText([holder], own: "Details") == "", "a row holding the control alone names nothing")
+    check(rowCellText([RowCell(role: "AXStaticText", text: "Vendor A", holdsControl: false), RowCell(role: "AXLink", text: "Details", holdsControl: true)], own: "Details") == "Vendor A",
+          "a list item's static text and link read the same way as a table's cells")
+    check(rowCellText([RowCell(role: "AXLink", text: "Vendor A", holdsControl: false), holder], own: "Details") == "Vendor A", "a name that is itself a link still names the row")
+    check(rowQualifiedName("Details", row: rowCellText([holder, cell("Vendor B")], own: "Details")) == "Details (Vendor B)", "the chosen cell text is what the qualified name carries")
+    check(rowQualifiedName("Details", row: rowCellText([holder], own: "Details")) == "Details", "no cell chosen leaves the name as it was")
+    // isRowQualified: what mergeControls lets a later entry replace.
+    check(isRowQualified("Details (Vendor B)", of: "Details"), "the name with a row qualifier replaces the bare name")
+    check(isRowQualified(rowQualifiedName("Details", row: "Acme (UK)"), of: "Details"), "whatever rowQualifiedName joins is accepted")
+    check(isRowQualified(rowQualifiedName(long, row: "Vendor B"), of: long), "a qualified name cut to the cap is accepted too")
+    check(!isRowQualified("Details", of: "Details"), "the same bare name replaces nothing")
+    check(!isRowQualified("Details (Vendor B)", of: "Detail"), "a name that is only a prefix of the other is not the other qualified")
+    check(!isRowQualified("Details (Vendor B", of: "Details"), "an unclosed group is not a qualifier")
+    check(!isRowQualified("Details ()", of: "Details"), "an empty group is not a qualifier")
+    check(!isRowQualified("Details (Vendor B)", of: ""), "a nameless entry is never replaced")
+    check(!isRowQualified("Back to vendors", of: "Details"), "another name replaces nothing")
+    check(!isRowQualified("Details", of: "Details (Vendor B)"), "the bare name never replaces the qualified one")
     // The constants Controller.swift reads.
     check(controlNameChars == 80, "the name cap is the one modelControlName, CONTROL_LABEL_LIMIT and the context schema share")
     check(rowTextChars == 30 && rowSearchDepth == 8 && rowReadSeconds == 0.15, "the row text bound, the search depth and the read budget")
+    check(rowCellLimit == 8, "eight of a row's cells are read at most")
     check(rowRoles == ["AXRow"] && rowSubroles == ["AXListItem"], "a row is an AXRow or a group with the AXListItem subrole")
     check(listNameKey(name: " Add  to Basket ", role: "Button") == "button|add to basket", "the repeat key is the role and the collapsed lowercased name")
 }
