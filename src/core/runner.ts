@@ -519,7 +519,12 @@ export function screenKey(frame: Frame, surface?: Surface): string {
 /** Steps whose repetition is work, not a loop, as repetitionPeriod's period-1 rule has them. */
 function revisitable(signature: string): boolean {
   const parts = JSON.parse(signature) as unknown[];
-  if (parts[0] === "scroll" || parts[0] === "wait") return false;
+  // A capture changes nothing and is how the model looks again between
+  // steps that do (a tool read, a keystroke): counted here it called a run
+  // that read four receipts through the files tool stuck at its third look
+  // (probe 20260919-2257). Captures back to back still trip the period rule.
+  if (parts[0] === "scroll" || parts[0] === "wait" || parts[0] === "capture")
+    return false;
   return !(
     parts[0] === "key" &&
     parts[1] === "key" &&

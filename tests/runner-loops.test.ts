@@ -607,6 +607,74 @@ describe("the revisit rule", () => {
     expect(m.of("ActionLoopBroken")).toHaveLength(0);
     expect(ctl.execute).toHaveBeenCalledTimes(9);
   });
+  it("never counts a capture as a revisit: looks between unlike steps on one screen", async () => {
+    // Probe 20260919-2257, files-receipts-to-csv: the model read receipts
+    // through the files tool and captured the Finder between reads; the
+    // third capture from the unchanged screen was called a loop, the fifth
+    // a stuck one, with the run fifteen actions in and progressing.
+    allowAll();
+    const m = memory();
+    const look = act({ type: "capture" });
+    const ctl = controller({}, () => ({
+      context: {
+        appName: "Finder",
+        windowTitle: "Receipts",
+        controls: [
+          { role: "AXButton", label: "A", x: 0.1, y: 0.1 },
+          { role: "AXButton", label: "B", x: 0.2, y: 0.1 },
+          { role: "AXButton", label: "C", x: 0.3, y: 0.1 },
+          { role: "AXButton", label: "D", x: 0.4, y: 0.1 },
+        ],
+      },
+    }));
+    const p = scripted([
+      look,
+      act({ type: "click_control", label: "A" }),
+      look,
+      act({ type: "click_control", label: "B" }),
+      look,
+      act({ type: "click_control", label: "C" }),
+      look,
+      act({ type: "click_control", label: "D" }),
+      look,
+    ]);
+    const runner = new Runner(
+      ctl,
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      settle,
+    );
+    await runner.start("test", bench);
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+    expect(m.of("ActionLoopBroken")).toHaveLength(0);
+  });
+  it("still calls captures back to back a loop, by the period rule", async () => {
+    allowAll();
+    const m = memory();
+    const look = act({ type: "capture" });
+    const ctl = controller({}, () => ({
+      context: { appName: "Finder", windowTitle: "Receipts" },
+    }));
+    const p = scripted([look, look, look, look, look, look]);
+    const runner = new Runner(
+      ctl,
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      settle,
+    );
+    await runner.start("test", bench);
+    expect(m.of("ActionLoopDetected").length).toBeGreaterThan(0);
+    expect(m.of("ActionLoopDetected")[0].data).toMatchObject({ period: 1 });
+  });
   it("is no loop when the page's text moves on: adding items while the total changes", async () => {
     allowAll();
     const m = memory();
