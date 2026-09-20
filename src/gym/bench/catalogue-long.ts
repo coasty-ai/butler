@@ -20,6 +20,7 @@ import {
   containsNumber,
   countSteps,
   daysFrom,
+  factChecks,
   fileEntry,
   filesMatching,
   fileText,
@@ -36,6 +37,7 @@ import {
   MUSIC,
   mutations,
   normalizeText,
+  noteRoute,
   onlyEntries,
   REMINDERS,
   sameLocalDay,
@@ -48,6 +50,7 @@ import {
   unverifiable,
   windowTitleHas,
   wroteFileByTool,
+  type NotedCheck,
 } from "./graders";
 import type {
   AgendaEvidence,
@@ -219,8 +222,13 @@ interface ResearchSpec {
     token: string,
     random: () => number,
   ) => { html: string; parameters: Record<string, string> };
-  /** The check that defines completion, on the notes file text with the token removed. */
-  noted: (text: string, parameters: Record<string, string>) => boolean;
+  /**
+   * The check that defines completion, on the notes file text with the token
+   * removed: one predicate, or one per fact by name, graded as their
+   * conjunction with each part recorded as `noted.<fact>` (graders.ts
+   * NotedCheck), so FACT_NOT_NOTED says which fact was missing.
+   */
+  noted: NotedCheck;
   /** Anything that must not be in the note. */
   wrong?: (text: string, parameters: Record<string, string>) => boolean;
 }
@@ -265,9 +273,9 @@ function research(spec: ResearchSpec): BenchTask {
       const notes = marked(token, "notes.txt");
       const text = fileText(files, notes);
       const body = withoutMarker(text, token);
-      return checked(
+      const grade = checked(
         {
-          noted: spec.noted(body, evidence.parameters),
+          ...factChecks("noted", spec.noted, body, evidence.parameters),
           nothingWrong: !spec.wrong?.(body, evidence.parameters),
           headerKept: text.includes(NOTES_HEADER(token).trim().toLowerCase()),
           visited: fixture.visits.includes(`/${token}/${spec.page}`),
@@ -285,6 +293,9 @@ function research(spec: ResearchSpec): BenchTask {
         },
         ["saved"],
       );
+      // How the note was produced, for the report to split a missing fact
+      // by route (the files tool, TextEdit, neither).
+      return { ...grade, noteRoute: noteRoute(evidence.journal) };
     },
   };
 }
@@ -339,6 +350,12 @@ export const researchCompareNote = research({
     others.split(",").some((name) => text.includes(name.toLowerCase())),
 });
 
+/** The i-th drawn engineer's full name is in the text; one that was not drawn is not. */
+const engineer = (text: string, engineers: string, i: number) => {
+  const name = engineers.split(",")[i];
+  return !!name && containsAll(text, [name]);
+};
+
 export const researchListNote = research({
   id: "research-list-note",
   difficulty: "hard",
@@ -361,7 +378,11 @@ export const researchListNote = research({
       },
     };
   },
-  noted: (text, { engineers }) => containsAll(text, engineers.split(",")),
+  noted: {
+    // The two engineers, named by their order on the drawn team: never a name.
+    engineer1: (text, { engineers }) => engineer(text, engineers, 0),
+    engineer2: (text, { engineers }) => engineer(text, engineers, 1),
+  },
   wrong: (text, { others }) =>
     others.split(",").some((name) => text.includes(name.toLowerCase())),
 });

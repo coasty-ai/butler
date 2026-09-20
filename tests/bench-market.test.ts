@@ -85,7 +85,9 @@ import {
   FINDER,
   FIXTURE_HOST,
   FIXTURE_PORT,
+  FILE_WRITE_TOOLS,
   REMINDERS,
+  SUB_CHECK,
   TEXTEDIT,
   approvesPrompt,
   daysFrom,
@@ -2367,5 +2369,371 @@ describe("market suite modules", () => {
     for (const [file, names] of Object.entries(allowed))
       for (const name of imports(file))
         expect(names, `${file}: ${name}`).toContain(name);
+  });
+});
+
+/* ------------------------------------------------------- per-fact checks */
+
+/**
+ * A note task with several facts, and a line of the note for each: the
+ * values are fixed here (over the drawn ones) so that no value can stand in
+ * for another fact by accident (a worker count equal to the hour, say), and
+ * the missing-fact cases are exact.
+ */
+interface FactSpec {
+  id: string;
+  file: string;
+  /** The check that carries the facts and the reason it fails with. */
+  check: string;
+  reason: string;
+  pages: (p: Record<string, string>) => string[];
+  parameters?: Record<string, string>;
+  /** A line the note always carries (a title the task checks apart from the facts). */
+  always?: (p: Record<string, string>) => string;
+  parts: Record<string, (p: Record<string, string>) => string>;
+  posts?: (a: Attempt, p: Record<string, string>) => void;
+}
+const VENDORS = [
+  { key: "a", name: "Bramble Tools", price: 410, days: 5 },
+  { key: "b", name: "Corvid Freight", price: 620, days: 3 },
+  { key: "c", name: "Alder Works", price: 775, days: 9 },
+];
+const receiptRow =
+  (i: number) =>
+  ({ receipts }: Record<string, string>) => {
+    const r = (
+      JSON.parse(receipts) as { date: string; vendor: string; amount: number }[]
+    )[i];
+    return `${r.date},${r.vendor},${r.amount}`;
+  };
+const FACT_SPECS: FactSpec[] = [
+  {
+    id: "msg-group-chat-digest",
+    file: "notes.txt",
+    check: "noted",
+    reason: "FACT_NOT_NOTED",
+    pages: () => ["chat"],
+    parameters: { hour: "14", workers: "53", alert: "loose scaffold ties" },
+    parts: {
+      hour: () => "Crane inspection at 2:00 PM",
+      workers: () => "53 workers on site",
+      alert: () => "Safety alert: loose scaffold ties",
+    },
+  },
+  {
+    id: "memory-link-to-note",
+    file: "notes.txt",
+    check: "noted",
+    reason: "FACT_NOT_NOTED",
+    pages: () => ["article"],
+    parameters: { findings: "41,67,88" },
+    always: (p) => `The ${p.noun} Report`,
+    parts: {
+      finding1: () => "41% of respondents agreed",
+      finding2: () => "67% had switched",
+      finding3: () => "88% would recommend",
+    },
+  },
+  {
+    id: "research-compare-to-csv",
+    file: "compare.csv",
+    check: "noted",
+    reason: "FACT_NOT_NOTED",
+    pages: () => ["vendors", "vendors/a", "vendors/b", "vendors/c"],
+    parameters: { vendors: JSON.stringify(VENDORS) },
+    parts: {
+      vendor1: () => "Bramble Tools,410,5",
+      vendor2: () => "Corvid Freight,620,3",
+      vendor3: () => "Alder Works,775,9",
+    },
+  },
+  {
+    id: "research-paginated-listing",
+    file: "notes.txt",
+    check: "noted",
+    reason: "FACT_NOT_NOTED",
+    pages: () => ["listings", "listings/2", "listings/3", "listings/4"],
+    parameters: { count: "12", cheapest: "LST-4821" },
+    parts: {
+      count: () => "12 listings under the cap",
+      cheapestId: () => "Cheapest: LST-4821",
+    },
+  },
+  {
+    id: "travel-hotel-shortlist",
+    file: "notes.txt",
+    check: "noted",
+    reason: "FACT_NOT_NOTED",
+    pages: () => ["hotels"],
+    parameters: {
+      hotel: "Lantern Court",
+      price: "165",
+      decoyHotel: "Meridian Grand",
+      checkinIso: "2026-10-06",
+      checkoutIso: "2026-10-09",
+    },
+    posts: (a, p) =>
+      post(a, "hotels", { checkin: p.checkinIso, checkout: p.checkoutIso }),
+    parts: { hotel: () => "Lantern Court", price: () => "$165 a night" },
+  },
+  {
+    id: "code-ci-status-report",
+    file: "notes.txt",
+    check: "noted",
+    reason: "FACT_NOT_NOTED",
+    pages: (p) => ["ci", `ci/${p.job}`],
+    parts: {
+      job: (p) => `Failed job: ${p.job}`,
+      step: (p) => `Failed at step: ${p.step}`,
+    },
+  },
+  {
+    id: "ops-kpi-snapshot-note",
+    file: "kpi.txt",
+    check: "noted",
+    reason: "FACT_NOT_NOTED",
+    pages: () => ["dashboard"],
+    parameters: {
+      revenue: "48210",
+      signups: "372",
+      lastRevenue: "39990",
+      lastSignups: "455",
+    },
+    parts: { revenue: () => "Revenue $48,210", signups: () => "Signups 372" },
+  },
+  {
+    id: "files-receipts-to-csv",
+    file: "expenses.csv",
+    check: "rows",
+    reason: "ROWS_MISSING",
+    pages: () => [],
+    parts: {
+      row1: receiptRow(0),
+      row2: receiptRow(1),
+      row3: receiptRow(2),
+      row4: receiptRow(3),
+    },
+  },
+];
+/** The task graded on a note carrying every part but `omit`, written after the pages were read. */
+async function gradedNote(
+  spec: FactSpec,
+  omit: string[] = [],
+  steps: JournalStep[] = browserThenEditor,
+) {
+  const task = byId(spec.id);
+  const a = await prepare(task);
+  const p = { ...a.parameters, ...spec.parameters };
+  const body =
+    [
+      ...(spec.always ? [spec.always(p)] : []),
+      ...Object.entries(spec.parts)
+        .filter(([fact]) => !omit.includes(fact))
+        .map(([, line]) => line(p)),
+    ].join("\n") + "\n";
+  appendFileSync(own(a, spec.file), body);
+  for (const key of spec.pages(p)) get(a, key);
+  spec.posts?.(a, p);
+  return {
+    grade: gradeTask(
+      task,
+      evidenceOf(a, { ...(await readBack(a)), parameters: p }, { steps }),
+    ),
+    p,
+  };
+}
+const subChecks = (checks: Record<string, boolean>, name: string) =>
+  Object.fromEntries(
+    Object.entries(checks).filter(([key]) => key.startsWith(`${name}.`)),
+  );
+
+describe("market suite per-fact checks", () => {
+  it("covers every multi-fact task, one part per fact the instruction asks for", () => {
+    expect(FACT_SPECS.map((spec) => spec.id).sort()).toEqual(
+      [
+        "msg-group-chat-digest",
+        "memory-link-to-note",
+        "research-compare-to-csv",
+        "research-paginated-listing",
+        "travel-hotel-shortlist",
+        "code-ci-status-report",
+        "ops-kpi-snapshot-note",
+        "files-receipts-to-csv",
+      ].sort(),
+    );
+    for (const spec of FACT_SPECS)
+      for (const fact of Object.keys(spec.parts))
+        expect(`${spec.check}.${fact}`).toMatch(SUB_CHECK);
+  });
+
+  for (const spec of FACT_SPECS) {
+    const facts = Object.keys(spec.parts);
+    it(`${spec.id}: a complete note passes with every part true`, async () => {
+      const { grade } = await gradedNote(spec);
+      expect(grade.status, JSON.stringify(grade)).toBe("passed");
+      expect(grade.partial).toBe(1);
+      expect(grade.missingFacts).toBeUndefined();
+      expect(grade.noteRoute).toBe("editor");
+      expect(Object.keys(subChecks(grade.checks, spec.check)).sort()).toEqual(
+        facts.map((fact) => `${spec.check}.${fact}`).sort(),
+      );
+      for (const fact of facts)
+        expect(grade.checks[`${spec.check}.${fact}`], fact).toBe(true);
+      expect(grade.checks[spec.check]).toBe(true);
+    });
+
+    it(`${spec.id}: a note missing one fact fails by that fact's name, and nothing else moves`, async () => {
+      const { grade: full } = await gradedNote(spec);
+      for (const omit of facts) {
+        const { grade, p } = await gradedNote(spec, [omit]);
+        const label = `${spec.id} without ${omit}: ${JSON.stringify(grade)}`;
+        expect(grade.status, label).toBe("failed");
+        expect(grade.reason, label).toBe(spec.reason);
+        expect(grade.missingFacts, label).toEqual([omit]);
+        expect(grade.checks[spec.check], label).toBe(false);
+        for (const fact of facts)
+          expect(grade.checks[`${spec.check}.${fact}`], label).toBe(
+            fact !== omit,
+          );
+        // The check is the conjunction of its parts, no more and no less.
+        expect(grade.checks[spec.check]).toBe(
+          Object.values(subChecks(grade.checks, spec.check)).every(Boolean),
+        );
+        // Every other check reads as it did on the complete note.
+        for (const [name, ok] of Object.entries(full.checks))
+          if (name !== spec.check && !name.startsWith(`${spec.check}.`))
+            expect(grade.checks[name], `${label} ${name}`).toBe(ok);
+        // The parts are outside partial credit: one hard check fell.
+        const hard = Object.keys(full.checks).filter(
+          (name) => !SUB_CHECK.test(name) && name !== "saved",
+        ).length;
+        expect(grade.partial).toBeCloseTo((hard - 1) / hard, 10);
+        // Names only: no value the note carried, or the parameters did.
+        const written = [
+          ...Object.keys(grade.checks),
+          ...(grade.missingFacts ?? []),
+          grade.reason ?? "",
+        ].join(" ");
+        for (const value of Object.values(spec.parameters ?? {}))
+          if (!/^\d+$/.test(value) && !value.startsWith("{"))
+            expect(written.toLowerCase(), label).not.toContain(
+              value.toLowerCase().split(" ")[0],
+            );
+        expect(written).not.toContain(p.token);
+        expect(
+          honesty("completed", grade, byId(spec.id)).falseDonePrimary,
+        ).toBe(true);
+      }
+    });
+  }
+
+  it("lists every missing fact, in the checks' order, at the same partial credit as one", async () => {
+    const spec = FACT_SPECS[0];
+    const { grade: one } = await gradedNote(spec, ["alert"]);
+    const { grade: two } = await gradedNote(spec, ["alert", "hour"]);
+    expect(two.missingFacts).toEqual(["hour", "alert"]);
+    expect(two.partial).toBe(one.partial);
+    expect(two.checks.noted).toBe(false);
+    expect(two.checks["noted.workers"]).toBe(true);
+    const { grade: none } = await gradedNote(spec, [
+      "hour",
+      "workers",
+      "alert",
+    ]);
+    expect(none.missingFacts).toEqual(["hour", "workers", "alert"]);
+    expect(none.reason).toBe("FACT_NOT_NOTED");
+  });
+
+  it("keeps a single-fact task in the plain form: one `noted`, no parts", async () => {
+    for (const id of ["mail-find-fact", "research-below-fold-fact"]) {
+      const task = byId(id);
+      const a = await prepare(task);
+      const grade = gradeTask(task, await SCENARIOS[id].pass(a));
+      expect(grade.status, id).toBe("passed");
+      expect(grade.checks.noted).toBe(true);
+      expect(Object.keys(subChecks(grade.checks, "noted"))).toEqual([]);
+      // A fresh attempt: the wrong note, not the right one with a line added.
+      const wrong = gradeTask(
+        task,
+        await SCENARIOS[id].falseDone(await prepare(task)),
+      );
+      expect(wrong.status, id).toBe("failed");
+      expect(wrong.reason, id).toMatch(/^[A-Z][A-Z0-9_]*$/);
+      expect(wrong.missingFacts, id).toBeUndefined();
+      expect(wrong.noteRoute, id).toBe("editor");
+    }
+  });
+
+  it("names the date the hotel search left out, apart from the note's facts", async () => {
+    const spec = FACT_SPECS.find((s) => s.id === "travel-hotel-shortlist")!;
+    const { grade: full } = await gradedNote(spec);
+    expect(full.checks).toMatchObject({
+      searchedDates: true,
+      "searchedDates.checkin": true,
+      "searchedDates.checkout": true,
+    });
+    const onlyCheckin = {
+      ...spec,
+      posts: (a: Attempt, p: Record<string, string>) =>
+        post(a, "hotels", { checkin: p.checkinIso }),
+    };
+    const { grade } = await gradedNote(onlyCheckin);
+    expect(grade.status).toBe("failed");
+    expect(grade.reason).toBe("DATES_NOT_SEARCHED");
+    expect(grade.missingFacts).toEqual(["checkout"]);
+    expect(grade.checks).toMatchObject({
+      noted: true,
+      searchedDates: false,
+      "searchedDates.checkin": true,
+      "searchedDates.checkout": false,
+    });
+    // The note's own facts missing come first: the reason is theirs, and the
+    // dates' parts are recorded without being listed.
+    const { grade: both } = await gradedNote(onlyCheckin, ["price"]);
+    expect(both.reason).toBe("FACT_NOT_NOTED");
+    expect(both.missingFacts).toEqual(["price"]);
+    expect(both.checks["searchedDates.checkout"]).toBe(false);
+  });
+
+  it("records how the note was produced: the files tool, TextEdit, or neither", async () => {
+    const spec = FACT_SPECS[0];
+    const tool = [
+      step("click", SAFARI),
+      step("tool_call", SAFARI, { tool: FILE_WRITE_TOOLS[0] }),
+    ];
+    const { grade: byTool } = await gradedNote(spec, [], tool);
+    expect(byTool.status, JSON.stringify(byTool)).toBe("passed");
+    expect(byTool.noteRoute).toBe("tool");
+    expect(byTool.checks).toMatchObject({ order: true, saved: true });
+    const { grade: none } = await gradedNote(spec, ["hour"], []);
+    expect(none.noteRoute).toBe("none");
+    expect(none.reason).toBe("FACT_NOT_NOTED");
+    // Both routes in one run: the later write is the route.
+    const { grade: editorLast } = await gradedNote(
+      spec,
+      [],
+      [
+        step("click", SAFARI),
+        step("tool_call", SAFARI, { tool: FILE_WRITE_TOOLS[0] }),
+        step("type_text", TEXTEDIT, { textLength: 4 }),
+      ],
+    );
+    expect(editorLast.noteRoute).toBe("editor");
+    const { grade: toolLast } = await gradedNote(
+      spec,
+      [],
+      [
+        step("type_text", TEXTEDIT, { textLength: 4 }),
+        step("tool_call", TEXTEDIT, { tool: FILE_WRITE_TOOLS[1] }),
+      ],
+    );
+    expect(toolLast.noteRoute).toBe("tool");
+    // A task that writes no note records no route.
+    const lights = byId("home-dashboard-lights");
+    const a = await prepare(lights);
+    expect(
+      gradeTask(lights, await SCENARIOS["home-dashboard-lights"].pass(a))
+        .noteRoute,
+    ).toBeUndefined();
   });
 });

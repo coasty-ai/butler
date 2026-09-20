@@ -164,7 +164,8 @@ const { compareCycles, compareProbe, selectBaseline, timingCycles } =
   await import("../src/gym/bench/compare.ts");
 const { analyze, ownerOf, parseDiagnostics } =
   await import("../src/gym/bench/analyze.ts");
-const { median, renderSummary } = await import("../src/gym/bench/report.ts");
+const { median, reasonLabel, renderSummary } =
+  await import("../src/gym/bench/report.ts");
 const { fileFactsReader } = await import("../src/storage/files.ts");
 // The whole module: its per-model price table, where it has one, prices the
 // cells (cellPrices).
@@ -1787,7 +1788,7 @@ try {
         },
       );
       console.log(
-        `${result.cell}  ${result.taskId} #${result.attempt}  ${result.status}${result.reason ? " (" + result.reason + ")" : ""}  ${result.endingCode}  ${result.actions} actions  ${result.seconds.toFixed(1)}s  $${result.cost.toFixed(3)}`,
+        `${result.cell}  ${result.taskId} #${result.attempt}  ${result.status}${result.reason ? " (" + reasonLabel(result) + ")" : ""}  ${result.endingCode}  ${result.actions} actions  ${result.seconds.toFixed(1)}s  $${result.cost.toFixed(3)}`,
       );
       runningAfterLast = await readRunning();
       const left = attemptWindows(

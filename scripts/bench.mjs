@@ -32,7 +32,7 @@ const { register } = await import("tsx/esm/api");
 register();
 const { catalogueFor, categoriesFor, longHorizon, selectSuite } =
   await import("../src/gym/bench/suites.ts");
-const { aggregate, renderSummary, renderTable } =
+const { aggregate, reasonLabel, renderSummary, renderTable } =
   await import("../src/gym/bench/report.ts");
 const { fileFactsReader } = await import("../src/storage/files.ts");
 
@@ -475,7 +475,7 @@ try {
     results.push(result);
     gate.observe(result);
     console.log(
-      `${result.taskId} #${result.attempt}  ${result.status}${result.reason ? " (" + result.reason + ")" : ""}  ${result.actions} actions  ${result.seconds.toFixed(1)}s  $${result.cost.toFixed(3)}`,
+      `${result.taskId} #${result.attempt}  ${result.status}${result.reason ? " (" + reasonLabel(result) + ")" : ""}  ${result.actions} actions  ${result.seconds.toFixed(1)}s  $${result.cost.toFixed(3)}`,
     );
     if (state.stopped) continue;
     // Someone is at the Mac. Nothing here can tell when they have left, so

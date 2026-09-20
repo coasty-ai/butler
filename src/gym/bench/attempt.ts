@@ -967,6 +967,10 @@ export async function runAttempt(
       runId: currentRun?.id,
       status: grade.status,
       reason: grade.reason,
+      ...(grade.missingFacts?.length
+        ? { missingFacts: grade.missingFacts }
+        : {}),
+      ...(grade.noteRoute ? { noteRoute: grade.noteRoute } : {}),
       checks: grade.checks,
       partial: grade.partial,
       runStatus: journal.status,

@@ -26,6 +26,7 @@ import {
   containsNumber,
   countSteps,
   daysFrom,
+  factChecks,
   fileEntry,
   fileText,
   filesMatching,
@@ -43,9 +44,11 @@ import {
   markerValues,
   markersIn,
   menuLeafOf,
+  missingFactsOf,
   mutations,
   normalizeHost,
   normalizeText,
+  noteRoute,
   occurrences,
   onlyEntries,
   openedPathStep,
@@ -58,7 +61,9 @@ import {
   typedMarkerIn,
   visited,
   windowTitleHas,
+  withFacts,
   wroteFileByTool,
+  SUB_CHECK,
 } from "../src/gym/bench/graders";
 import {
   HARNESS_CODES,
@@ -68,10 +73,14 @@ import {
   doneChallengeLine,
   doneChallengeTotals,
   endingCode,
+  factContributors,
+  factsLine,
   honesty,
   median,
+  missingFactCounts,
   pausedAfterCode,
   ran,
+  reasonLabel,
   renderSummary,
   renderTable,
   skipped,
@@ -2584,5 +2593,301 @@ describe("analyze-runs CLI", () => {
     );
     expect(child.status).toBe(0);
     expect(child.stdout).toContain("--since");
+  });
+});
+
+/* ------------------------------------------------------- per-fact checks */
+
+describe("per-fact checks: helpers, grade, row and report", () => {
+  const stepsOf = (
+    ...steps: { type: string; appId?: string; tool?: string }[]
+  ) =>
+    ({
+      status: "completed",
+      settled: true,
+      actions: steps.length,
+      steps,
+      approvals: 0,
+      approvalsDeclined: 0,
+      retries: 0,
+      takeovers: 0,
+      takeoverSources: sources(),
+      manualTakeover: false,
+      modelFailed: false,
+      loops: 0,
+      noProgress: 0,
+      failures: {},
+      endingCode: "COMPLETED",
+      cost: 0,
+      seconds: 1,
+      modelCalls: 1,
+    }) as RunJournal;
+
+  it("spells a check with its parts, and the plain form without any", () => {
+    expect(withFacts("noted", { hour: true, alert: false })).toEqual({
+      noted: false,
+      "noted.hour": true,
+      "noted.alert": false,
+    });
+    expect(withFacts("rows", {})).toEqual({ rows: true });
+    const p = { hour: "14", workers: "53" };
+    expect(
+      factChecks("noted", (text, { hour }) => text.includes(hour), "at 14", p),
+    ).toEqual({ noted: true });
+    expect(
+      factChecks(
+        "noted",
+        {
+          hour: (text, { hour }) => text.includes(hour),
+          workers: (text, { workers }) => text.includes(workers),
+        },
+        "at 14",
+        p,
+      ),
+    ).toEqual({ noted: false, "noted.hour": true, "noted.workers": false });
+    for (const name of ["noted.hour", "rows.row2", "searchedDates.checkin"])
+      expect(name).toMatch(SUB_CHECK);
+    for (const name of ["noted", "noted.", ".hour", "a.b.c", "noted.2", "x y"])
+      expect(name).not.toMatch(SUB_CHECK);
+    expect(
+      missingFactsOf(
+        {
+          noted: false,
+          "noted.hour": false,
+          "noted.workers": true,
+          "noted.alert": false,
+          "rows.row1": false,
+        },
+        "noted",
+      ),
+    ).toEqual(["hour", "alert"]);
+    expect(
+      missingFactsOf({ noted: true, "noted.hour": true }, "noted"),
+    ).toEqual([]);
+  });
+
+  it("grades a check by its conjunction, keeps the parts out of partial credit, and lists the missing ones", () => {
+    const reasons = { noted: "FACT_NOT_NOTED", header: "NOTE_HEADER_LOST" };
+    const passed = checked(
+      { ...withFacts("noted", { hour: true, alert: true }), header: true },
+      reasons,
+    );
+    expect(passed).toEqual({
+      status: "passed",
+      checks: {
+        noted: true,
+        "noted.hour": true,
+        "noted.alert": true,
+        header: true,
+      },
+      partial: 1,
+    });
+    const missing = checked(
+      {
+        ...withFacts("noted", { hour: false, alert: false, workers: true }),
+        header: true,
+      },
+      reasons,
+    );
+    expect(missing.status).toBe("failed");
+    expect(missing.reason).toBe("FACT_NOT_NOTED");
+    expect(missing.missingFacts).toEqual(["hour", "alert"]);
+    // Two hard checks, one false: the three parts do not dilute it.
+    expect(missing.partial).toBe(0.5);
+    // The failing check without parts has no facts; a passing check's
+    // false part is never reported (its check is true only when none is).
+    const header = checked(
+      { ...withFacts("noted", { hour: true }), header: false },
+      reasons,
+    );
+    expect(header.reason).toBe("NOTE_HEADER_LOST");
+    expect(header.missingFacts).toBeUndefined();
+    // A soft check with parts stays soft.
+    const soft = checked(
+      { noted: true, ...withFacts("scrolled", { top: false }) },
+      { ...reasons, scrolled: "NOT_SCROLLED" },
+      ["scrolled"],
+    );
+    expect(soft.status).toBe("passed");
+    expect(soft.missingFacts).toBeUndefined();
+    // The first failing hard check names the facts, not a later one.
+    const two = checked(
+      {
+        ...withFacts("noted", { hour: false }),
+        ...withFacts("rows", { row1: false, row2: false }),
+      },
+      { noted: "FACT_NOT_NOTED", rows: "ROWS_MISSING" },
+    );
+    expect(two).toMatchObject({
+      reason: "FACT_NOT_NOTED",
+      missingFacts: ["hour"],
+      partial: 0,
+    });
+  });
+
+  it("reads the note's route off the journal: tool, editor, none, the later write deciding", () => {
+    const tool = {
+      type: "tool_call",
+      appId: "com.apple.Safari",
+      tool: FILE_WRITE_TOOLS[0],
+    };
+    const replace = {
+      type: "tool_call",
+      appId: TEXTEDIT,
+      tool: FILE_WRITE_TOOLS[1],
+    };
+    const typed = { type: "type_text", appId: TEXTEDIT };
+    const click = { type: "click", appId: "com.apple.Safari" };
+    expect(noteRoute(stepsOf())).toBe("none");
+    expect(noteRoute(stepsOf(click))).toBe("none");
+    expect(noteRoute(stepsOf(click, typed))).toBe("editor");
+    expect(noteRoute(stepsOf(click, tool))).toBe("tool");
+    expect(noteRoute(stepsOf(click, replace))).toBe("tool");
+    expect(noteRoute(stepsOf(tool, typed))).toBe("editor");
+    expect(noteRoute(stepsOf(typed, tool))).toBe("tool");
+    // A tool call that is not a file write, or a step in TextEdit that is a
+    // tool call, is what it is: the other tool decides nothing.
+    expect(
+      noteRoute(
+        stepsOf({
+          type: "tool_call",
+          appId: TEXTEDIT,
+          tool: "files__read_text_file",
+        }),
+      ),
+    ).toBe("editor");
+    expect(
+      noteRoute(
+        stepsOf({
+          type: "tool_call",
+          appId: "com.apple.Safari",
+          tool: "files__read_text_file",
+        }),
+      ),
+    ).toBe("none");
+  });
+
+  it("labels a reason with the missing facts, in the table and on the terminal's line", () => {
+    const facts = attempt({
+      taskId: "msg-group-chat-digest",
+      status: "failed",
+      reason: "FACT_NOT_NOTED",
+      missingFacts: ["hour", "alert"],
+      checks: {
+        noted: false,
+        "noted.hour": false,
+        "noted.workers": true,
+        "noted.alert": false,
+      },
+      noteRoute: "editor",
+    });
+    expect(reasonLabel(facts)).toBe("FACT_NOT_NOTED(hour,alert)");
+    expect(
+      reasonLabel(attempt({ status: "failed", reason: "NOT_FRONTMOST" })),
+    ).toBe("NOT_FRONTMOST");
+    expect(
+      reasonLabel(
+        attempt({ status: "failed", reason: "ROWS_MISSING", missingFacts: [] }),
+      ),
+    ).toBe("ROWS_MISSING");
+    expect(reasonLabel(attempt({}))).toBe("");
+    const table = renderTable([
+      attempt(),
+      facts,
+      attempt({
+        taskId: "files-receipts-to-csv",
+        status: "failed",
+        reason: "ROWS_MISSING",
+        missingFacts: ["row2", "row4"],
+        approvals: 1,
+        approvalsDeclined: 1,
+        approvalCodes: { SAVE_CHANGES: { asked: 1, approved: 0, declined: 1 } },
+      }),
+    ]);
+    expect(table).toMatch(
+      /msg-group-chat-digest .* FACT_NOT_NOTED\(hour,alert\)$/m,
+    );
+    expect(table).toMatch(
+      /ROWS_MISSING\(row2,row4\) declined SAVE_CHANGES 1$/m,
+    );
+    // The bench CLI prints the same label on its per-attempt line.
+    const bench = readFileSync(join(root, "scripts/bench.mjs"), "utf8");
+    expect(bench).toContain('" (" + reasonLabel(result) + ")"');
+    expect(bench).toContain(
+      "const { aggregate, reasonLabel, renderSummary, renderTable }",
+    );
+    expect(bench).not.toContain('" (" + result.reason + ")"');
+  });
+
+  it("tallies the missing facts, the note routes and their split, and prints them under the table", () => {
+    const rows = [
+      attempt({ taskId: "mail-find-fact", noteRoute: "tool" }),
+      attempt({
+        taskId: "msg-group-chat-digest",
+        status: "failed",
+        reason: "FACT_NOT_NOTED",
+        missingFacts: ["hour", "alert"],
+        noteRoute: "editor",
+      }),
+      attempt({
+        taskId: "msg-group-chat-digest",
+        attempt: 2,
+        status: "failed",
+        reason: "FACT_NOT_NOTED",
+        missingFacts: ["hour"],
+        noteRoute: "tool",
+      }),
+      attempt({
+        taskId: "files-receipts-to-csv",
+        status: "failed",
+        reason: "ROWS_MISSING",
+        missingFacts: ["row2"],
+        noteRoute: "editor",
+      }),
+      // A passing note with a stale facts list counts as no missing fact;
+      // a skipped attempt's route is not a route anything took.
+      attempt({
+        taskId: "code-ci-status-report",
+        missingFacts: ["job"],
+        noteRoute: "editor",
+      }),
+      attempt({
+        taskId: "ops-kpi-snapshot-note",
+        status: "unknown",
+        reason: "NO_PREPARED_TARGET",
+        runStatus: "skipped",
+        noteRoute: "none",
+      }),
+      attempt({ taskId: "calculator-open" }),
+    ];
+    const totals = aggregate(rows);
+    expect(totals.missingFacts).toEqual({ hour: 2, alert: 1, row2: 1 });
+    expect(totals.noteRoutes).toEqual({ tool: 2, editor: 3 });
+    expect(totals.missingFactsByRoute).toEqual({ editor: 2, tool: 1 });
+    const summary = renderSummary(totals);
+    expect(summary).toContain(
+      "missing facts  hour 2  alert 1  row2 1  (by route: editor 2  tool 1)",
+    );
+    expect(summary).toContain("note routes  editor 3  tool 2");
+    expect(missingFactCounts(rows, "FACT_NOT_NOTED")).toEqual({
+      hour: 2,
+      alert: 1,
+    });
+    expect(factContributors(rows, "FACT_NOT_NOTED")).toEqual([
+      "hour 2",
+      "alert 1",
+    ]);
+    expect(factContributors(rows, "ROWS_MISSING")).toEqual(["row2 1"]);
+    expect(factContributors(rows, "NOT_FRONTMOST")).toEqual([]);
+    expect(factContributors(rows, "FACT_NOT_NOTED", 1)).toEqual(["hour 2"]);
+    // Nothing wrote a note: no line at all.
+    const plain = aggregate([
+      attempt(),
+      attempt({ status: "failed", reason: "NOT_FRONTMOST" }),
+    ]);
+    expect(plain.missingFacts).toEqual({});
+    expect(factsLine(plain)).toBeUndefined();
+    expect(renderSummary(plain)).not.toContain("missing facts");
+    expect(renderSummary(plain)).not.toContain("note routes");
   });
 });

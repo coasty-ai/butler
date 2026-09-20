@@ -174,14 +174,35 @@ export interface Evidence {
   fixture?: FixtureEvidence;
 }
 
+/**
+ * How a note task's file came to hold its text: through the files tool (a
+ * `files__append_text_file` or `files__replace_file_text` step), through an
+ * editor (a step with TextEdit in front), or neither. When both appear the
+ * later one is the route: it is the write the file's text came from.
+ */
+export type NoteRoute = "tool" | "editor" | "none";
+
 export interface Grade {
   status: GradeStatus;
-  /** Named boolean checks, so a failure says which condition did not hold. */
+  /**
+   * Named boolean checks, so a failure says which condition did not hold. A
+   * check with several facts in it (`noted`) carries each as a sub-check
+   * named `<check>.<fact>` (`noted.hour`), so the row says which fact was
+   * missing, never what it was.
+   */
   checks: Record<string, boolean>;
   /** A fixed reason code. Never screen text, a title, a path or a URL. */
   reason?: string;
   /** Hard checks passed / hard checks total. Partial credit for long tasks; never a pass. */
   partial?: number;
+  /**
+   * The false sub-checks of the check `reason` names, by fact name
+   * (`["hour", "alert"]`). Set only when that check has sub-checks. The
+   * names are the grader's own constants, never a drawn value or the file's text.
+   */
+  missingFacts?: string[];
+  /** For a task that writes a note: how the note was produced (see NoteRoute). */
+  noteRoute?: NoteRoute;
 }
 
 /** The loopback fixture server, when the harness started one. */

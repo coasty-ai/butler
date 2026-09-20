@@ -5,6 +5,7 @@ import type {
   BenchTask,
   Grade,
   GradeStatus,
+  NoteRoute,
   TakeoverSource,
 } from "./types";
 
@@ -40,6 +41,18 @@ export interface AttemptResult {
   status: GradeStatus;
   /** Fixed reason code when the attempt did not pass. */
   reason?: string;
+  /**
+   * The false parts of the check `reason` names, by fact name (`hour`,
+   * `alert`, `row2`): which fact the note lacked, never what it was
+   * (Grade.missingFacts). The table renders them as `FACT_NOT_NOTED(hour,alert)`.
+   */
+  missingFacts?: string[];
+  /** For a note task: how the file came to hold its text (Grade.noteRoute). */
+  noteRoute?: NoteRoute;
+  /**
+   * The grader's checks; a sub-check (`noted.hour`) says how one fact of a
+   * composite check fared (graders.ts SUB_CHECK).
+   */
   checks: Record<string, boolean>;
   /** Hard checks passed / hard checks total, when the grader reports it. */
   partial?: number;
@@ -380,6 +393,49 @@ export const skipped = (result: AttemptResult) =>
 /** An attempt the model actually got. */
 export const ran = (result: AttemptResult) => !skipped(result);
 
+/**
+ * The reason as the table and the terminal print it: the code, and when the
+ * failing check had parts, the missing ones in brackets,
+ * `FACT_NOT_NOTED(hour,alert)`. Fact names only; "" for a row with no reason.
+ */
+export function reasonLabel(
+  result: Pick<AttemptResult, "reason" | "missingFacts">,
+): string {
+  if (!result.reason) return "";
+  const facts = result.missingFacts ?? [];
+  return facts.length ? `${result.reason}(${facts.join(",")})` : result.reason;
+}
+
+/**
+ * How often each fact was the missing one, over the attempts that did not
+ * pass with a reason of `reason` (any reason when none is given): the class
+ * table's contributors for a grade class, `hour 3, alert 2`.
+ */
+export function missingFactCounts(
+  results: Pick<AttemptResult, "status" | "reason" | "missingFacts">[],
+  reason?: string,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const result of results) {
+    if (result.status === "passed") continue;
+    if (reason !== undefined && result.reason !== reason) continue;
+    for (const fact of new Set(result.missingFacts ?? []))
+      counts[fact] = (counts[fact] ?? 0) + 1;
+  }
+  return counts;
+}
+/** missingFactCounts rendered most common first, `["hour 3", "alert 2"]`, at most `limit`. */
+export function factContributors(
+  results: Pick<AttemptResult, "status" | "reason" | "missingFacts">[],
+  reason: string,
+  limit = 3,
+): string[] {
+  return Object.entries(missingFactCounts(results, reason))
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .slice(0, limit)
+    .map(([fact, count]) => `${fact} ${count}`);
+}
+
 export interface CellTotals {
   attempts: number;
   /** Attempts the model actually got: harness and environment skips excluded. */
@@ -420,6 +476,16 @@ export interface Aggregate extends CellTotals {
   noProgress: number;
   /** Failure codes summed over every attempt. */
   failures: Record<string, number>;
+  /**
+   * Facts a failed attempt's note lacked, by name, over attempts that did
+   * not pass (missingFactCounts): `{hour: 3, alert: 2}`. Empty when no
+   * attempt failed on a check with parts.
+   */
+  missingFacts: Record<string, number>;
+  /** Note attempts that ran, by how the note was produced: tool, editor, none. */
+  noteRoutes: Record<string, number>;
+  /** Attempts that failed with a missing fact, by the note's route: the split of FACT_NOT_NOTED by route. */
+  missingFactsByRoute: Record<string, number>;
   /** Cleanup codes, by the attempts that left each behind. */
   leftovers: Record<string, number>;
   /** Attempts whose cleanup threw. */
@@ -529,6 +595,15 @@ export function aggregate(results: AttemptResult[]): Aggregate {
       Object.entries(groups).map(([key, rows]) => [key, cellTotals(rows)]),
     );
   const byCell = groupBy(results, (r) => r.cell);
+  const noteRoutes: Record<string, number> = {};
+  const missingFactsByRoute: Record<string, number> = {};
+  for (const result of results) {
+    if (!result.noteRoute || !ran(result)) continue;
+    noteRoutes[result.noteRoute] = (noteRoutes[result.noteRoute] ?? 0) + 1;
+    if (result.status !== "passed" && result.missingFacts?.length)
+      missingFactsByRoute[result.noteRoute] =
+        (missingFactsByRoute[result.noteRoute] ?? 0) + 1;
+  }
   return {
     ...cellTotals(results),
     totalSeconds: sum((r) => r.seconds),
@@ -540,6 +615,9 @@ export function aggregate(results: AttemptResult[]): Aggregate {
     loops: sum((r) => r.loops),
     noProgress: sum((r) => r.noProgress),
     failures,
+    missingFacts: missingFactCounts(results),
+    noteRoutes,
+    missingFactsByRoute,
     leftovers,
     cleanupFailed: results.filter((r) => r.cleanupFailed).length,
     doneChallenged: doneChallengeTotals(results),
@@ -616,7 +694,7 @@ export function renderTable(results: AttemptResult[]): string {
     // the questions it was refused, so the line is actionable.
     result.status === "passed"
       ? ""
-      : [result.reason ?? "", ...(result.openApps ?? []), declinedCodes(result)]
+      : [reasonLabel(result), ...(result.openApps ?? []), declinedCodes(result)]
           .join(" ")
           .trim(),
   ]);
@@ -660,6 +738,38 @@ export function leftoversLine(
   );
 }
 
+/**
+ * "missing facts  hour 3  alert 2  (by route: editor 4  tool 1)" and
+ * "note routes  editor 6  tool 3  none 1": which facts the failed notes
+ * lacked and how the notes were produced; undefined when no attempt wrote a
+ * note. Names and counts only.
+ */
+export function factsLine(
+  totals: Pick<
+    Aggregate,
+    "missingFacts" | "noteRoutes" | "missingFactsByRoute"
+  >,
+): string | undefined {
+  const byCount = (a: [string, number], b: [string, number]) =>
+    b[1] - a[1] || (a[0] < b[0] ? -1 : 1);
+  const list = (record: Record<string, number>) =>
+    Object.entries(record)
+      .sort(byCount)
+      .map(([name, count]) => `${name} ${count}`)
+      .join("  ");
+  const out: string[] = [];
+  if (Object.keys(totals.missingFacts).length)
+    out.push(
+      `missing facts  ${list(totals.missingFacts)}` +
+        (Object.keys(totals.missingFactsByRoute).length
+          ? `  (by route: ${list(totals.missingFactsByRoute)})`
+          : ""),
+    );
+  if (Object.keys(totals.noteRoutes).length)
+    out.push(`note routes  ${list(totals.noteRoutes)}`);
+  return out.length ? out.join("\n") : undefined;
+}
+
 /** The aggregate block printed under the table. */
 export function renderSummary(totals: Aggregate): string {
   const percent = (value: number) => (value * 100).toFixed(0) + "%";
@@ -683,6 +793,8 @@ export function renderSummary(totals: Aggregate): string {
       "failure codes  " +
         failures.map(([code, count]) => `${code} ${count}`).join("  "),
     );
+  const facts = factsLine(totals);
+  if (facts) lines.push(facts);
   const asked = Object.entries(totals.approvalCodes).sort(
     (a, b) => b[1].asked - a[1].asked || (a[0] < b[0] ? -1 : 1),
   );

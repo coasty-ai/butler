@@ -69,6 +69,7 @@ import {
   containsNumber,
   countSteps,
   daysFrom,
+  factChecks,
   fileEntry,
   filesMatching,
   fileText,
@@ -78,12 +79,15 @@ import {
   inBrowser,
   localHour,
   normalizeText,
+  noteRoute,
   onlyEntries,
   REMINDERS,
   sameLocalDay,
   savedNote,
   TEXTEDIT,
   unverifiable,
+  withFacts,
+  type NotedCheck,
 } from "./graders";
 import type {
   BenchCategory,
@@ -237,11 +241,21 @@ interface NoteSpec {
   draw: (token: string, random: () => number, now: Date) => Drawn;
   /** The page keys a run must have opened, from the parameters. */
   visited: (parameters: Record<string, string>) => string[];
-  /** Completion, on the file's text with the marker removed. */
-  noted: (text: string, parameters: Record<string, string>) => boolean;
+  /**
+   * Completion, on the file's text with the marker removed: one predicate,
+   * or one per fact the instruction asks for, by the fact's name. A map is
+   * graded as the conjunction (the check `noted`, as strict as one boolean)
+   * with each part recorded as `noted.<fact>`, so a failed attempt says which
+   * fact was missing (FACT_NOT_NOTED with `missingFacts`), never its value.
+   */
+  noted: NotedCheck;
   /** Anything that must not be in the file. */
   wrong?: (text: string, parameters: Record<string, string>) => boolean;
-  /** Further checks over the evidence and the fixture log, their reason codes, and which of them are soft. */
+  /**
+   * Further checks over the evidence and the fixture log, their reason codes,
+   * and which of them are soft. A composite check may come with its parts
+   * (withFacts): `{searchedDates, "searchedDates.checkin", …}`.
+   */
   extra?: (
     evidence: Evidence,
     text: string,
@@ -293,9 +307,9 @@ function noteTask(spec: NoteSpec): BenchTask {
       const file = marked(token, spec.file);
       const text = fileText(files, file);
       const body = withoutMarker(text, token);
-      return checked(
+      const grade = checked(
         {
-          noted: spec.noted(body, evidence.parameters),
+          ...factChecks("noted", spec.noted, body, evidence.parameters),
           nothingWrong: !spec.wrong?.(body, evidence.parameters),
           headerKept: text.includes(header(token).trim().toLowerCase()),
           visited: spec
@@ -317,6 +331,9 @@ function noteTask(spec: NoteSpec): BenchTask {
         },
         ["saved", ...(spec.soft ?? [])],
       );
+      // How the file came to hold its text, for the report to split a
+      // missing fact by route (the tool, an editor, neither).
+      return { ...grade, noteRoute: noteRoute(evidence.journal) };
     },
   };
 }
@@ -343,10 +360,11 @@ export const msgGroupChatDigest = noteTask({
     };
   },
   visited: () => ["chat"],
-  noted: (text, { hour, workers, alert }) =>
-    anyForm(text, clockForms(Number(hour))) &&
-    containsNumber(text, workers) &&
-    text.includes(alert.split(" ")[0]),
+  noted: {
+    hour: (text, { hour }) => anyForm(text, clockForms(Number(hour))),
+    workers: (text, { workers }) => containsNumber(text, workers),
+    alert: (text, { alert }) => text.includes(alert.split(" ")[0]),
+  },
   extra: (_, text) => ({ short: lines(text).length <= 7 }),
   reasons: { short: "SUMMARY_TOO_LONG" },
   order: true,
@@ -400,13 +418,22 @@ export const memoryLinkToNote = noteTask({
     };
   },
   visited: () => ["article"],
-  noted: (text, { findings }) =>
-    findings.split(",").every((percent) => containsNumber(text, percent)),
+  noted: {
+    finding1: (text, { findings }) => finding(text, findings, 0),
+    finding2: (text, { findings }) => finding(text, findings, 1),
+    finding3: (text, { findings }) => finding(text, findings, 2),
+  },
   extra: (evidence, text) => ({
     title: text.includes(lower(evidence.parameters.noun)),
   }),
   reasons: { title: "TITLE_NOT_NOTED" },
 });
+
+/** The i-th of the article's drawn findings is in the text; a finding that was not drawn is not. */
+const finding = (text: string, findings: string, i: number) => {
+  const percent = findings.split(",")[i];
+  return !!percent && containsNumber(text, percent);
+};
 
 export const COMPARE_HEADER = () => "name,price,delivery days\n";
 
@@ -442,18 +469,27 @@ export const researchCompareToCsv = noteTask({
       (v) => `vendors/${v.key}`,
     ),
   ],
-  noted: (text, { vendors }) => {
-    const rows = lines(text);
-    return (JSON.parse(vendors) as ReturnType<typeof drawVendors>).every(
-      (vendor) =>
-        rows.some(
-          (row) =>
-            row.includes(vendor.name.toLowerCase()) &&
-            csvHas(row, String(vendor.price)) &&
-            csvHas(row, String(vendor.days)),
-        ),
-    );
-  },
+  noted: Object.fromEntries(
+    // One part per vendor row, named by its position (vendor1..3): the
+    // vendors are drawn in a fixed order, and a name never reaches the row.
+    [0, 1, 2].map((i) => [
+      `vendor${i + 1}`,
+      (text: string, { vendors }: Record<string, string>) => {
+        const vendor = (JSON.parse(vendors) as ReturnType<typeof drawVendors>)[
+          i
+        ];
+        return (
+          !!vendor &&
+          lines(text).some(
+            (row) =>
+              row.includes(vendor.name.toLowerCase()) &&
+              csvHas(row, String(vendor.price)) &&
+              csvHas(row, String(vendor.days)),
+          )
+        );
+      },
+    ]),
+  ),
 });
 
 export const researchBelowFoldFact = noteTask({
@@ -507,8 +543,10 @@ export const researchPaginatedListing = noteTask({
     };
   },
   visited: () => ["listings", "listings/2", "listings/3", "listings/4"],
-  noted: (text, { count, cheapest }) =>
-    containsNumber(text, count) && text.includes(cheapest.toLowerCase()),
+  noted: {
+    count: (text, { count }) => containsNumber(text, count),
+    cheapestId: (text, { cheapest }) => text.includes(cheapest.toLowerCase()),
+  },
 });
 
 export const travelHotelShortlist = noteTask({
@@ -542,8 +580,10 @@ export const travelHotelShortlist = noteTask({
     };
   },
   visited: () => ["hotels"],
-  noted: (text, { hotel, price }) =>
-    text.includes(hotel.toLowerCase()) && containsNumber(text, price),
+  noted: {
+    hotel: (text, { hotel }) => text.includes(hotel.toLowerCase()),
+    price: (text, { price }) => containsNumber(text, price),
+  },
   wrong: (text, { decoyHotel }) => text.includes(decoyHotel.toLowerCase()),
   extra: (evidence, _, { token, fixture }) => {
     const { checkinIso = "", checkoutIso = "" } = evidence.parameters;
@@ -553,7 +593,12 @@ export const travelHotelShortlist = noteTask({
           anyForm(lower(value), dateForms(new Date(`${iso}T12:00:00`))),
         ),
       );
-    return { searchedDates: typed(checkinIso) && typed(checkoutIso) };
+    // Both dates posted, each recorded on its own (DATES_NOT_SEARCHED then
+    // says which was not).
+    return withFacts("searchedDates", {
+      checkin: typed(checkinIso),
+      checkout: typed(checkoutIso),
+    });
   },
   reasons: { searchedDates: "DATES_NOT_SEARCHED" },
 });
@@ -584,8 +629,10 @@ export const codeCiStatusReport = noteTask({
     };
   },
   visited: ({ job }) => ["ci", `ci/${job}`],
-  noted: (text, { job, step }) =>
-    text.includes(job.toLowerCase()) && text.includes(step.toLowerCase()),
+  noted: {
+    job: (text, { job }) => text.includes(job.toLowerCase()),
+    step: (text, { step }) => text.includes(step.toLowerCase()),
+  },
 });
 
 export const opsKpiSnapshotNote = noteTask({
@@ -611,8 +658,10 @@ export const opsKpiSnapshotNote = noteTask({
     };
   },
   visited: () => ["dashboard"],
-  noted: (text, { revenue, signups }) =>
-    containsNumber(text, revenue) && containsNumber(text, signups),
+  noted: {
+    revenue: (text, { revenue }) => containsNumber(text, revenue),
+    signups: (text, { signups }) => containsNumber(text, signups),
+  },
   wrong: (text, { lastRevenue, lastSignups }) =>
     containsNumber(text, lastRevenue) || containsNumber(text, lastSignups),
 });
@@ -2101,14 +2150,22 @@ export const filesReceiptsToCsv: BenchTask = {
     if (!receipts?.length) return unverifiable("NO_RECEIPTS");
     const csv = marked(token, "expenses.csv");
     const rows = lines(withoutMarker(fileText(files, csv), token));
-    return checked(
+    const grade = checked(
       {
-        rows: receipts.every((r) =>
-          rows.some(
-            (row) =>
-              anyForm(row, dateForms(new Date(`${r.date}T12:00:00`))) &&
-              row.includes(r.vendor) &&
-              csvHas(row, String(r.amount)),
+        // One part per receipt, named by its position in the folder
+        // (row1..4 for receipt-1..4): ROWS_MISSING then says which rows.
+        ...withFacts(
+          "rows",
+          Object.fromEntries(
+            receipts.map((r, i) => [
+              `row${i + 1}`,
+              rows.some(
+                (row) =>
+                  anyForm(row, dateForms(new Date(`${r.date}T12:00:00`))) &&
+                  row.includes(r.vendor) &&
+                  csvHas(row, String(r.amount)),
+              ),
+            ]),
           ),
         ),
         receiptsUntouched: receipts.every(
@@ -2122,6 +2179,7 @@ export const filesReceiptsToCsv: BenchTask = {
         single: "EXTRA_ITEMS",
       },
     );
+    return { ...grade, noteRoute: noteRoute(evidence.journal) };
   },
 };
 

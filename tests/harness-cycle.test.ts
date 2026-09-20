@@ -8398,3 +8398,114 @@ describe("a browser an earlier cycle left", () => {
     expect(cycle).toContain("not judged in a dry run");
   });
 });
+
+/* ------------------------------------------------------- per-fact checks */
+
+describe("per-fact checks in results.json and the cycle report", () => {
+  const facts = (over: Partial<AttemptResult> = {}) =>
+    failedRow({
+      taskId: "msg-group-chat-digest",
+      category: "messaging",
+      reason: "FACT_NOT_NOTED",
+      checks: {
+        noted: false,
+        "noted.hour": false,
+        "noted.workers": true,
+        "noted.alert": false,
+        headerKept: true,
+      },
+      missingFacts: ["hour", "alert"],
+      noteRoute: "editor",
+      ...over,
+    });
+
+  it("writes the missing facts, the route and the parts' check names, and drops anything else", () => {
+    const clean = contentFree(
+      facts({
+        checks: {
+          noted: false,
+          "noted.hour": false,
+          "noted.alert": false,
+          "a.b.c": true,
+          "noted.": true,
+          "x y": true,
+          "noted.2 pm": false,
+        },
+        missingFacts: ["hour", "alert", "2 pm", "loose scaffold", ""],
+      }),
+    );
+    expect(clean.checks).toEqual({
+      noted: false,
+      "noted.hour": false,
+      "noted.alert": false,
+    });
+    expect(clean.missingFacts).toEqual(["hour", "alert"]);
+    expect(clean.noteRoute).toBe("editor");
+    expect(
+      contentFree(facts({ noteRoute: "safari" as "tool" })).noteRoute,
+    ).toBeUndefined();
+    expect(
+      contentFree(facts({ missingFacts: ["a b"] })).missingFacts,
+    ).toBeUndefined();
+    expect(contentFree(row({})).missingFacts).toBeUndefined();
+    expect(contentFree(row({})).noteRoute).toBeUndefined();
+    expect(contentFree(row({ noteRoute: "none" })).noteRoute).toBe("none");
+  });
+
+  it("lists a grade class's contributors as the facts its failed notes lacked", () => {
+    const rows = [
+      row({ runId: RUN_A }),
+      facts({ planIndex: 1 }),
+      facts({ planIndex: 2, missingFacts: ["hour"], noteRoute: "tool" }),
+      facts({
+        planIndex: 3,
+        taskId: "files-receipts-to-csv",
+        category: "files",
+        reason: "ROWS_MISSING",
+        checks: { rows: false, "rows.row2": false },
+        missingFacts: ["row2"],
+      }),
+      failedRow({ planIndex: 4, runId: RUN_B }),
+      // A passing note with a stale facts list contributes nothing.
+      row({ planIndex: 5, missingFacts: ["workers"], noteRoute: "editor" }),
+    ];
+    const byCode = Object.fromEntries(
+      failureClasses(rows).map((c) => [c.code, c]),
+    );
+    expect(byCode.FACT_NOT_NOTED).toMatchObject({
+      source: "grade",
+      attempts: 2,
+      contributors: ["hour 2", "alert 1"],
+    });
+    expect(byCode.ROWS_MISSING.contributors).toEqual(["row2 1"]);
+    expect(byCode.NOT_FRONTMOST.contributors).toEqual([]);
+    // With the cycle's log the analyzer's frictions stand for the other
+    // classes as before; a grade class keeps its facts.
+    const empty = { perRun: [], fixNext: [] } as unknown as Parameters<
+      typeof failureClasses
+    >[1];
+    const logged = Object.fromEntries(
+      failureClasses(rows, empty).map((c) => [c.code, c]),
+    );
+    expect(logged.FACT_NOT_NOTED.contributors).toEqual(["hour 2", "alert 1"]);
+    const report = renderCycleReport(
+      buildCycleResults({ cycle: info(), results: rows }),
+    );
+    expect(report).toMatch(
+      /\| FACT_NOT_NOTED \| agent \|[^\n]*\| hour 2, alert 1 \|/,
+    );
+    expect(report).toMatch(
+      /msg-group-chat-digest .* FACT_NOT_NOTED\(hour,alert\)$/m,
+    );
+    expect(report).toMatch(/files-receipts-to-csv .* ROWS_MISSING\(row2\)$/m);
+    expect(report).toContain(
+      "missing facts  hour 2  alert 1  row2 1  (by route: editor 2  tool 1)",
+    );
+    expect(report).toContain("note routes  editor 3  tool 1");
+    // The cycle script prints the same label on each attempt's line.
+    const cycle = readFileSync(join(root, "scripts/harness-cycle.mjs"), "utf8");
+    expect(cycle).toContain('" (" + reasonLabel(result) + ")"');
+    expect(cycle).not.toContain('" (" + result.reason + ")"');
+    expect(cycle).toContain("const { median, reasonLabel, renderSummary } =");
+  });
+});

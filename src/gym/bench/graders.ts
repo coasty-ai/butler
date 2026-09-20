@@ -10,6 +10,7 @@ import type {
   Grade,
   JournalStep,
   MusicEvidence,
+  NoteRoute,
   RunJournal,
   TakeoverSource,
 } from "./types";
@@ -313,6 +314,22 @@ export const wroteFileByTool: StepMatch = toolCallOf(FILE_WRITE_TOOLS);
 export const savedNote = (journal: RunJournal): boolean =>
   countSteps(journal, menuLeafOf("save")) > 0 ||
   countSteps(journal, wroteFileByTool) > 0;
+/**
+ * How the note was produced, from the journal alone: the later of the last
+ * files-tool write and the last step with TextEdit in front decides, since
+ * that is the write the file's text came from; a run that did neither is
+ * "none" (it never wrote, or wrote some other way the graders cannot see).
+ */
+export function noteRoute(journal: RunJournal): NoteRoute {
+  let tool = -1;
+  let editor = -1;
+  journal.steps.forEach((step, index) => {
+    if (wroteFileByTool(step, index)) tool = index;
+    else if (inApp([TEXTEDIT])(step, index)) editor = index;
+  });
+  if (tool < 0 && editor < 0) return "none";
+  return tool > editor ? "tool" : "editor";
+}
 export const typedMarkerIn =
   (marker: string, appIds?: string[]): StepMatch =>
   (step) =>
@@ -525,6 +542,73 @@ export function windowTitleHas(
     .includes(term.toLowerCase());
 }
 
+/* ------------------------------------------------------------ sub-checks */
+
+/** A check over the note's text (marker removed) and the attempt's parameters. */
+export type FactCheck = (
+  text: string,
+  parameters: Record<string, string>,
+) => boolean;
+/**
+ * What a note task's `noted` may be: one predicate, or one per fact the
+ * instruction asks for, keyed by the fact's name (`{hour, workers, alert}`).
+ * The names are the grader's constants and reach the results as check names
+ * and a `missingFacts` list; the values never do.
+ */
+export type NotedCheck = FactCheck | Record<string, FactCheck>;
+/**
+ * The shape of a sub-check's name: the check it belongs to, a dot, the fact
+ * (`noted.hour`, `rows.row2`, `searchedDates.checkin`). Sub-checks explain
+ * their check and are never hard checks of their own: checked() leaves them
+ * out of partial credit and never names one as the reason, but lists the
+ * false ones of the failing check as `missingFacts`.
+ */
+export const SUB_CHECK = /^([A-Za-z][A-Za-z0-9_]*)\.([A-Za-z][A-Za-z0-9_]*)$/;
+export const isSubCheck = (name: string) => SUB_CHECK.test(name);
+/**
+ * A check with its parts: `{noted: every part, "noted.hour": …, …}`. The
+ * check itself is the conjunction, so a task's strictness is exactly what it
+ * was with one boolean; the parts only say which fact was the missing one.
+ */
+export function withFacts(
+  name: string,
+  facts: Record<string, boolean>,
+): Record<string, boolean> {
+  const parts = Object.entries(facts);
+  return {
+    [name]: parts.every(([, ok]) => ok),
+    ...Object.fromEntries(parts.map(([fact, ok]) => [`${name}.${fact}`, ok])),
+  };
+}
+/** A NotedCheck applied: the plain form gives `{[name]: ok}`, the map its parts too. */
+export function factChecks(
+  name: string,
+  check: NotedCheck,
+  text: string,
+  parameters: Record<string, string>,
+): Record<string, boolean> {
+  if (typeof check === "function") return { [name]: check(text, parameters) };
+  return withFacts(
+    name,
+    Object.fromEntries(
+      Object.entries(check).map(([fact, part]) => [
+        fact,
+        part(text, parameters),
+      ]),
+    ),
+  );
+}
+/** The fact names of the false sub-checks of one check, in the checks' order. */
+export function missingFactsOf(
+  checks: Record<string, boolean>,
+  name: string,
+): string[] {
+  return Object.entries(checks).flatMap(([key, ok]) => {
+    const match = SUB_CHECK.exec(key);
+    return match && match[1] === name && !ok ? [match[2]] : [];
+  });
+}
+
 /* --------------------------------------------------------------- verdicts */
 
 /** A grade with no checks, for the cases that stop grading before it starts. */
@@ -549,25 +633,30 @@ export function verdict(
 /**
  * verdict() plus partial credit. Soft checks are recorded (they explain a
  * run) but never fail it: a marker typed in two halves is not a wrong end
- * state.
+ * state. Sub-checks (`noted.hour`, SUB_CHECK) are recorded and never hard:
+ * their check carries the verdict and the partial credit as before, and when
+ * it is the failing one its false parts are the grade's `missingFacts`.
  */
 export function checked(
   checks: Record<string, boolean>,
   reasons: Record<string, string>,
   soft: string[] = [],
 ): Grade {
-  const hard = Object.entries(checks).filter(([name]) => !soft.includes(name));
+  const hard = Object.entries(checks).filter(
+    ([name]) => !soft.includes(name) && !isSubCheck(name),
+  );
   const passed = hard.filter(([, ok]) => ok).length;
   const partial = hard.length ? passed / hard.length : 0;
   const first = hard.find(([, ok]) => !ok);
-  return first
-    ? {
-        status: "failed",
-        checks,
-        reason: reasons[first[0]] ?? "FAILED",
-        partial,
-      }
-    : { status: "passed", checks, partial };
+  if (!first) return { status: "passed", checks, partial };
+  const missingFacts = missingFactsOf(checks, first[0]);
+  return {
+    status: "failed",
+    checks,
+    reason: reasons[first[0]] ?? "FAILED",
+    partial,
+    ...(missingFacts.length ? { missingFacts } : {}),
+  };
 }
 
 /** The frontmost application, or undefined when the controller did not say. */

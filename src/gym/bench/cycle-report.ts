@@ -20,6 +20,8 @@ import {
 import {
   TASK_SKIPS,
   aggregate,
+  factContributors,
+  factsLine,
   median,
   ran,
   renderTable,
@@ -458,8 +460,12 @@ export function failureClasses(
       events: entry.events,
       byModel: share(entry.cells, byCell),
       byCategory: share(entry.categories, byCategory),
+      // A grade class's contributors are the facts its failed notes lacked,
+      // by name (`hour 3, alert 2`), from the rows; the analyzer's
+      // frictions inside the runs stand for every other class.
       contributors:
-        analysis?.fixNext.find((item) => item.code === code)?.contributors ??
+        (entry.source === "grade" && factContributors(executed, code)) ||
+        analysis?.fixNext.find((item) => item.code === code)?.contributors ||
         [],
       examples: entry.examples,
       note: noteOf(code, entry.source),
@@ -511,7 +517,11 @@ export function comparable(
   };
 }
 
-const CHECK = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+/** A check name, or a sub-check's `<check>.<fact>` (graders.ts SUB_CHECK). */
+const CHECK = /^[A-Za-z][A-Za-z0-9_]{0,39}(\.[A-Za-z][A-Za-z0-9_]{0,39})?$/;
+/** A fact name in missingFacts: the grader's constant, never a value. */
+const FACT = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+const NOTE_ROUTES = new Set(["tool", "editor", "none"]);
 /** A bundle id, the one thing an APPS_OPEN row names: no path, no title. */
 const BUNDLE_ID = /^[A-Za-z0-9.-]{1,120}$/;
 /**
@@ -595,6 +605,13 @@ export function contentFree(row: AttemptResult): AttemptResult {
           ...(row.browserReset.quit === true ? { quit: true } : {}),
         }
       : undefined;
+  // Which facts a failed note lacked and how it was written: names from a
+  // fixed list, and one of three routes.
+  const missingFacts = row.missingFacts?.filter(
+    (fact) => typeof fact === "string" && FACT.test(fact),
+  );
+  const noteRoute =
+    row.noteRoute && NOTE_ROUTES.has(row.noteRoute) ? row.noteRoute : undefined;
   const {
     reason: _r,
     pausedAfter: _p,
@@ -606,11 +623,15 @@ export function contentFree(row: AttemptResult): AttemptResult {
     approvalCodes: _c,
     browserReset: _b,
     doneChallenged: _d,
+    missingFacts: _f,
+    noteRoute: _n,
     ...rest
   } = row;
   return {
     ...rest,
     ...(runId ? { runId } : {}),
+    ...(missingFacts?.length ? { missingFacts } : {}),
+    ...(noteRoute ? { noteRoute } : {}),
     ...(doneChallenged && Object.keys(doneChallenged).length
       ? { doneChallenged }
       : {}),
@@ -1145,6 +1166,19 @@ export function renderCycleReport(cycle: CycleResults): string {
       );
       out.push("");
     }
+  }
+
+  // 5a. Which facts the failed notes lacked, and how the notes were written
+  const facts = factsLine(totals);
+  if (facts) {
+    out.push("### Notes: missing facts and routes");
+    out.push("");
+    out.push(...facts.split("\n").map((line) => `- ${line}`));
+    out.push("");
+    out.push(
+      "A fact is one part of a note task's check, by its name (`noted.hour`, `rows.row2`), never its value; `by route` splits the attempts that lacked one by how the file came to hold its text: `tool` (the files tool), `editor` (TextEdit), `none` (neither). The Attempts table prints the missing facts after the reason, `FACT_NOT_NOTED(hour,alert)`.",
+    );
+    out.push("");
   }
 
   // 5b. Approvals, by the policy's question as a code
