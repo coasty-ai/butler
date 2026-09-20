@@ -503,6 +503,42 @@ export const loopWarning =
 export const appSwitchWarning =
   " Warning: you keep switching between applications. Switching again will not show new information. Read the values you need from the current screenshot and context now and carry them in your next action's note (history keeps it for later steps), then finish the step in this application.";
 /**
+ * The page-switch rule beside trackAppSwitch. Market shards 2/3 at abc24ae
+ * and 3/3 at c8c9e10 (gpt-5.4-mini, autonomy all): ops-crm-data-entry #2 (52
+ * actions, the budget) and #1 (24, STUCK_LOOP), research-compare-to-csv #2
+ * and #3 in both shards (24-32 actions, the note never written) and
+ * ops-support-ticket-draft #3 (60) alternated click_control between a link
+ * on one page and one on the other, every click "changed", History > Back
+ * and open_url between, reading each page again instead of carrying its
+ * values (type_text at action ~40, or never). The revisit rule keys a step
+ * by its screen, so each page read as progress (paging with Next is not a
+ * loop), and the app-switch rule counts open_app alone. Of the last
+ * PAGE_WINDOW executed steps' pages (pageKey), PAGE_SWITCHES or more moves
+ * between two or three pages, two of them visited twice or more, is the
+ * bounce (A B A B is four steps and three moves: the second arrival on a
+ * page from the same other page). Short: the sentence may share a capture's
+ * line with PAGE_TOOL_NOTE and loopWarning under MODEL_RESULT_CHARS.
+ */
+export const PAGE_WINDOW = 8;
+export const PAGE_SWITCHES = 3;
+export const pageSwitchWarning =
+  " Warning: you keep switching between the same pages; another switch shows nothing new. Read every value you need here into your note now, then go to the other page once and enter them there.";
+/**
+ * A page's identity for the page-switch rule: the application, the window's
+ * title and the browser address's host and path, never its query (a listing
+ * paged by ?page= is one page here and the revisit rule's business). Hashed
+ * in memory like screenKey, never journaled.
+ */
+export function pageKey(frame: Frame): string {
+  const c = frame.context;
+  const address = c?.browserAddress ? webAddress(c.browserAddress) : undefined;
+  return argsHash({
+    app: frame.appId ?? "",
+    title: c?.windowTitle ?? "",
+    page: address ? `${address.hostname}${address.pathname}` : "",
+  });
+}
+/**
  * The revisit rule beside repetitionPeriod: the same step (its signature)
  * from the same screen (screenKey) executed LOOP_REVISITS times within the
  * last LOOP_WINDOW executed steps is a loop, however many other steps come
@@ -1501,6 +1537,9 @@ export class Runner {
   /** The app the last executed open_app left frontmost with no window. */
   private windowlessApp?: { appId: string; name: string };
   private switchWarned = false;
+  /** The last PAGE_WINDOW executed steps' pages (pageKey), each with whether it was a look, for the page-switch rule. */
+  private pages: { page: string; look: boolean }[] = [];
+  private pageWarned = false;
   private loopWarned = false;
   private sinceLoopWarning = 0;
   /** The last LOOP_WINDOW executed steps as signature and screen (screenKey), for the revisit rule. */
@@ -1763,6 +1802,8 @@ export class Runner {
     this.moved = undefined;
     this.windowlessApp = undefined;
     this.switchWarned = false;
+    this.pages = [];
+    this.pageWarned = false;
     this.loopWarned = false;
     this.sinceLoopWarning = 0;
     // The user may have changed the screen: the next step sees all of it.
@@ -2000,6 +2041,51 @@ export class Runner {
     if (this.switchWarned) return false;
     this.switchWarned = true;
     this.event("ActionLoopDetected", { actionType: "open_app", period: 0 });
+    return true;
+  }
+  /**
+   * Record the page an executed step ran on (pageKey of its frame) and, on a
+   * screen step, return true once when the last PAGE_WINDOW steps bounced
+   * between the same pages: PAGE_SWITCHES or more moves between two or three
+   * distinct pages, at least two of them visited twice or more (A B A B;
+   * A B B A A B with a look between; A B C A B; never A B C D, which is
+   * paging, nor A B A C A D, a listing and its items). A tool step records
+   * its page alone, so the sentence rides on a screen step's line. Once
+   * warned, two acting steps running on one page end the bounce (a look
+   * after a move is not a stay: READ_KEEPING_TYPES): the window starts over
+   * from them, and a fresh bounce is warned about again.
+   */
+  private trackPageSwitch(frame: Frame, action: Action, screen: boolean) {
+    this.pages = [
+      ...this.pages.slice(-(PAGE_WINDOW - 1)),
+      { page: pageKey(frame), look: READ_KEEPING_TYPES.has(action.type) },
+    ];
+    const n = this.pages.length;
+    if (this.pageWarned) {
+      const last = this.pages[n - 1];
+      const before = this.pages[n - 2];
+      if (before && before.page === last.page && !before.look && !last.look) {
+        this.pageWarned = false;
+        this.pages = this.pages.slice(-2);
+      }
+      return false;
+    }
+    if (!screen) return false;
+    const seq = this.pages.map((s) => s.page);
+    const distinct = new Set(seq);
+    if (distinct.size < 2 || distinct.size > 3) return false;
+    const moves = seq.filter((p, i) => i > 0 && p !== seq[i - 1]).length;
+    if (moves < PAGE_SWITCHES) return false;
+    const revisited = [...distinct].filter(
+      (p) => seq.filter((q) => q === p).length >= 2,
+    ).length;
+    if (revisited < 2) return false;
+    this.pageWarned = true;
+    this.event("ActionLoopDetected", {
+      actionType: action.type,
+      period: 0,
+      pages: distinct.size,
+    });
     return true;
   }
   private publish() {
@@ -2993,6 +3079,7 @@ export class Runner {
     });
     const loop = this.trackLoop(action);
     this.trackAppSwitch(action);
+    this.trackPageSwitch(frame, action, false);
     // Two tool steps change nothing on screen: the no-progress check is not
     // armed, or it would call the next screen step a stall.
     this.progress = undefined;
@@ -4051,6 +4138,7 @@ export class Runner {
       clickEffect === "none",
     );
     const thrashing = this.trackAppSwitch(action, launched?.appId);
+    const bouncing = this.trackPageSwitch(executionFrame, action, true);
     // The transition this step began, for the capture that follows it
     // (captureSettled): a page sent for, a cold launch whose window is on
     // its way, or a click or key that may bring another application or page
@@ -4102,7 +4190,10 @@ export class Runner {
         this.pageToolNote(action, executionFrame) +
         (o.reaimed ? reaimNote : "") +
         (loop === "warn" ? loopWarning : "") +
-        (thrashing ? appSwitchWarning : ""),
+        // Both sentences say to carry the values; the application one, older
+        // and longer, speaks for both on a step that trips both rules, and
+        // the line stays within MODEL_RESULT_CHARS.
+        (thrashing ? appSwitchWarning : bouncing ? pageSwitchWarning : ""),
     });
     if (loop === "stuck") this.stuck(this.history.at(-1));
   }

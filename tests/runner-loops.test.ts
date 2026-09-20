@@ -19,13 +19,20 @@ import {
   CLICK_FOCUSED_NOTE,
   CLICK_NO_EFFECT_NOTE,
   LOOP_REVISITS,
+  LOOK_AGAIN_NOTE,
   LOOP_STUCK_MESSAGE,
   LOOP_WINDOW,
+  MODEL_RESULT_CHARS,
+  PAGE_SWITCHES,
+  PAGE_TOOL_NOTE,
+  PAGE_WINDOW,
   Runner,
   STUCK_PAUSE_MESSAGE,
   type StartOptions,
   TRANSITION_SETTLE_MS,
   loopWarning,
+  pageKey,
+  pageSwitchWarning,
   readSpin,
   reflectionNote,
   repetitionPeriod,
@@ -1476,4 +1483,278 @@ describe("a click by name that changed nothing", () => {
     expect(m.of("ActionLoopDetected")).toHaveLength(0);
   });
   const runner_status = (m: ReturnType<typeof memory>) => m.getRun().status;
+});
+
+/**
+ * The page-switch rule (trackPageSwitch): market shards 2/3 at abc24ae and
+ * 3/3 at c8c9e10 (gpt-5.4-mini, autonomy all), ops-crm-data-entry #2 (52
+ * actions, the budget) and #1 (24, STUCK_LOOP), research-compare-to-csv #2
+ * and #3 in both shards (24-32 actions, the note never written) and
+ * ops-support-ticket-draft #3 (60): click_control alternating between a
+ * link on one page and one on the other, every click "changed", History >
+ * Back and open_url between, the values never carried. Every page here is a
+ * synthetic title on a loopback address; every label a fixed word.
+ */
+describe("the page-switch rule", () => {
+  const page = (name: string): ScreenContext => ({
+    appName: "Browser",
+    windowTitle: `Page ${name}`,
+    browserAddress: `http://127.0.0.1:8080/${name.toLowerCase()}`,
+  });
+  const A = page("A");
+  const B = page("B");
+  const C = page("C");
+  const D = page("D");
+  /** The page each capture shows, in order; step n executes on capture n. The last one holds. */
+  const showing = (order: ScreenContext[]) =>
+    controller({}, (n) => ({
+      context: order[Math.min(n, order.length) - 1],
+    }));
+  /** Clicks by name, each with its own label, so neither the period nor the revisit rule speaks. */
+  const clicks = (n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      act({ type: "click_control", label: `Link ${i + 1}` }),
+    );
+  const run = async (
+    ctl: ReturnType<typeof controller>,
+    steps: ReturnType<typeof act>[],
+    extras: ConstructorParameters<typeof Runner>[7] = settle,
+  ) => {
+    allowAll();
+    const m = memory();
+    const p = scripted(steps);
+    const runner = new Runner(
+      ctl,
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      extras,
+    );
+    await runner.start("test", bench);
+    expect(runner.snapshot.run?.status).toBe("completed");
+    // Each step's line, off the history the next observation carried (the
+    // model's copy keeps the last six whole; the newest is always whole).
+    const lines = p.observations.slice(1).map((o) => o.history.at(-1)!.result);
+    return { m, lines, ctl };
+  };
+  const warned = (lines: string[]) =>
+    lines.map((l) => l.includes(pageSwitchWarning));
+  const events = (m: ReturnType<typeof memory>) =>
+    m.of("ActionLoopDetected").map((e) => e.data);
+
+  it("warns once on the fourth click when the run bounces A B A B between two pages, and journals the count of pages", async () => {
+    const { m, lines, ctl } = await run(showing([A, B, A, B, A]), clicks(4));
+    expect(ctl.execute).toHaveBeenCalledTimes(4);
+    expect(warned(lines)).toEqual([false, false, false, true]);
+    expect(lines[3].endsWith(pageSwitchWarning)).toBe(true);
+    expect(events(m)).toEqual([
+      { actionType: "click_control", period: 0, pages: 2 },
+    ]);
+    // Advice, never a loop: no breaker, no loop warning, no pause.
+    expect(m.of("ActionLoopBroken")).toHaveLength(0);
+    expect(m.of("RunPaused")).toHaveLength(0);
+    expect(lines.some((l) => l.includes(loopWarning.trim()))).toBe(false);
+  });
+  it("sees the bounce with a look between each move, and a third page in the round", async () => {
+    // A B B A A B B A A B: a click moves, a capture looks at where it
+    // landed. The third move is seen by the look on B (the sixth step), and
+    // a look after a move is no stay, so the bounce going on is warned once.
+    const look = act({ type: "capture" });
+    const [c1, c2, c3, c4, c5] = clicks(5);
+    const between = await run(showing([A, B, B, A, A, B, B, A, A, B, B]), [
+      c1,
+      look,
+      c2,
+      look,
+      c3,
+      look,
+      c4,
+      look,
+      c5,
+      look,
+    ]);
+    expect(warned(between.lines)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(between.lines[5].startsWith("Executed")).toBe(true);
+    expect(events(between.m)).toEqual([
+      { actionType: "capture", period: 0, pages: 2 },
+    ]);
+    // A B C A B: the listing, a lead, the form, and round again.
+    const three = await run(showing([A, B, C, A, B, C]), clicks(5));
+    expect(warned(three.lines)).toEqual([false, false, false, false, true]);
+    expect(events(three.m)).toEqual([
+      { actionType: "click_control", period: 0, pages: 3 },
+    ]);
+  });
+  it("stays quiet when every step lands on a new page (paging), on one page (the revisit rule's business), or between a listing and its items", async () => {
+    const paging = await run(showing([A, B, C, D, A]), clicks(4));
+    expect(warned(paging.lines)).toEqual([false, false, false, false]);
+    expect(events(paging.m)).toEqual([]);
+    const staying = await run(showing([A]), clicks(4));
+    expect(warned(staying.lines)).toEqual([false, false, false, false]);
+    expect(events(staying.m)).toEqual([]);
+    // The same click from one page three times over is the revisit rule's
+    // loop, with no page count on its event and no page sentence.
+    const same = act({ type: "click_control", label: "Same" });
+    const revisit = await run(showing([A]), [same, same, same]);
+    expect(events(revisit.m)).toEqual([
+      { actionType: "click_control", period: 0, revisits: LOOP_REVISITS },
+    ]);
+    expect(warned(revisit.lines)).toEqual([false, false, false]);
+    // A listing and its items: A B A C A D A, four pages, one revisited.
+    const hub = await run(showing([A, B, A, C, A, D, A, A]), clicks(7));
+    expect(warned(hub.lines)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(events(hub.m)).toEqual([]);
+  });
+  it("warns again for a fresh bounce once the run stayed on one page for two steps, and once while a bounce goes on", async () => {
+    // Three moves warn on the fourth step; two clicks on the page it landed
+    // on end the bounce; the next three moves are a fresh one, warned on
+    // the step that completes the third.
+    const fresh = await run(
+      showing([A, B, A, B, A, A, A, B, A, B, A]),
+      clicks(10),
+    );
+    expect(warned(fresh.lines)).toEqual([
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+    ]);
+    expect(events(fresh.m)).toEqual([
+      { actionType: "click_control", period: 0, pages: 2 },
+      { actionType: "click_control", period: 0, pages: 2 },
+    ]);
+    // Bouncing on without a stop is warned about once.
+    const on = await run(showing([A, B, A, B, A, B, A, B, A]), clicks(8));
+    expect(warned(on.lines)).toEqual([
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(events(on.m)).toHaveLength(1);
+  });
+  it("records a tool step's page and never puts the sentence on its line", async () => {
+    // A B A, a read through the files tool on B, a click on B, back to A:
+    // the tool step's page completes the third move, its line carries no
+    // sentence, and the click on B after it does.
+    const read = act({
+      type: "tool_call",
+      tool: FILES_READ.id,
+      args: { path: "~/OpenAssistBench/benchnote0a1b/receipt-1.txt" },
+      finish: false,
+    });
+    const [c1, c2, c3, c4, c5] = clicks(5);
+    const { m, lines } = await run(
+      showing([A, B, A, B, B, A, B]),
+      [c1, c2, c3, read, c4, c5],
+      { ...settle, tools: fakeTools({ tools: FILES_TOOLS }).access },
+    );
+    expect(warned(lines)).toEqual([false, false, false, false, true, false]);
+    expect(events(m)).toEqual([
+      { actionType: "click_control", period: 0, pages: 2 },
+    ]);
+  });
+  it("keeps a look's line under the model's cap with the page tool note, the loop warning and the page-switch warning", () => {
+    const look = "Executed. Verify the next screenshot.";
+    expect(
+      (look + PAGE_TOOL_NOTE + loopWarning + pageSwitchWarning).length,
+    ).toBeLessThanOrEqual(MODEL_RESULT_CHARS);
+    expect(
+      (look + LOOK_AGAIN_NOTE + loopWarning + pageSwitchWarning).length,
+    ).toBeLessThanOrEqual(MODEL_RESULT_CHARS);
+    expect(pageSwitchWarning).toHaveLength(190);
+    expect(pageSwitchWarning.startsWith(" Warning: ")).toBe(true);
+    expect(PAGE_WINDOW).toBe(8);
+    expect(PAGE_SWITCHES).toBe(3);
+  });
+  it("keys a page by application, title and address path, never its query, controls or screenshot", () => {
+    const frame = (
+      over: Partial<Frame> & { context?: ScreenContext },
+    ): Frame => ({
+      id: "f",
+      sha256: "one",
+      image: "",
+      geometry,
+      capturedAt: 0,
+      synthetic: false,
+      appId: "com.example.browser",
+      context: {
+        appName: "Browser",
+        windowTitle: "Listing",
+        browserAddress: "http://127.0.0.1:8080/listing?page=1",
+      },
+      ...over,
+    });
+    const context = frame({}).context!;
+    const base = pageKey(frame({}));
+    expect(base).toMatch(/^[0-9a-f]{8}$/);
+    expect(pageKey(frame({ sha256: "two" }))).toBe(base);
+    expect(
+      pageKey(
+        frame({
+          context: {
+            ...context,
+            browserAddress: "http://127.0.0.1:8080/listing?page=2",
+          },
+        }),
+      ),
+    ).toBe(base);
+    expect(
+      pageKey(
+        frame({
+          context: {
+            ...context,
+            controls: [{ role: "AXButton", label: "Next", x: 0.5, y: 0.5 }],
+            visibleText: "more",
+          },
+        }),
+      ),
+    ).toBe(base);
+    expect(
+      pageKey(
+        frame({
+          context: {
+            ...context,
+            browserAddress: "http://127.0.0.1:8080/form/new",
+          },
+        }),
+      ),
+    ).not.toBe(base);
+    expect(
+      pageKey(frame({ context: { ...context, windowTitle: "New entry" } })),
+    ).not.toBe(base);
+    expect(pageKey(frame({ appId: "com.example.editor" }))).not.toBe(base);
+  });
 });

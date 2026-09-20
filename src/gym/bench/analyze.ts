@@ -239,8 +239,10 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       return cut ? [`${TEXT_TRUNCATED_PREFIX}${cut.toUpperCase()}`] : [];
     }
     case "ActionLoopDetected":
-      // The app-switch rule's event carries period 0 and no revisit count; a
-      // revisit detection carries its count beside period 0.
+      // The page-switch rule's event carries its count of distinct pages
+      // beside period 0; the app-switch rule's carries period 0 and no count
+      // at all; a revisit detection carries its count beside period 0.
+      if (count(d.pages) !== undefined) return ["PAGE_SWITCH_THRASH"];
       return count(d.period) === 0 &&
         count(d.revisits) === undefined &&
         code(d.actionType) === "open_app"
@@ -581,6 +583,8 @@ const NOTE: Record<string, string> = {
   ACTION_LOOP: "The same short sequence of actions repeated.",
   APP_SWITCH_THRASH:
     "The run bounced between applications without reading them.",
+  PAGE_SWITCH_THRASH:
+    "The run bounced between the same pages (three or more moves among two or three pages within eight steps, two of them visited twice, src/core/runner.ts trackPageSwitch) instead of carrying their values in its note; advice on the history line, never a loop.",
   INVALID_ACTION: "The model returned an action the schema rejected.",
   // A menu Copy, Cut or Paste with nothing to act on: the runner answered it
   // with a fixed line and counted an invalid step, never a revisit (probe

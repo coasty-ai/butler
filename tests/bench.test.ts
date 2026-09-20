@@ -1691,6 +1691,23 @@ describe("pause cause from a real run", () => {
         data: { actionType: "open_app", period: 0 },
       }),
     ).toEqual(["APP_SWITCH_THRASH"]);
+    // The page-switch rule's event carries its count of distinct pages: a
+    // bounce between pages, whatever the step, never the app-switch thrash
+    // nor a loop.
+    expect(
+      frictionCodes({
+        event: "ActionLoopDetected",
+        data: { actionType: "click_control", period: 0, pages: 2 },
+      }),
+    ).toEqual(["PAGE_SWITCH_THRASH"]);
+    expect(
+      frictionCodes({
+        event: "ActionLoopDetected",
+        data: { actionType: "open_app", period: 0, pages: 3 },
+      }),
+    ).toEqual(["PAGE_SWITCH_THRASH"]);
+    expect(noteFor("PAGE_SWITCH_THRASH")).toMatch(/trackPageSwitch/);
+    expect(ownerOf("PAGE_SWITCH_THRASH")).toBe("agent");
     expect(noteFor("STUCK_LOOP")).toMatch(/reflection step/);
     expect(ownerOf("STUCK_LOOP")).toBe("agent");
   });

@@ -434,6 +434,86 @@ describe("local diagnostic stream", () => {
         kind: "switched",
       });
     }));
+  it("keeps the page-switch rule's count of pages on ActionLoopDetected, never a page", () =>
+    fixture((log) => {
+      const id = crypto.randomUUID();
+      const snapshot: Snapshot = {
+        run: {
+          id,
+          task: "private page task",
+          createdAt: new Date().toISOString(),
+          status: "executing",
+          privacy: "PRIVATE_LOCAL",
+          provider: "openai",
+          model: "fixture",
+          synthetic: false,
+          actions: 4,
+          frames: 5,
+          usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          summary: "",
+        },
+        frame: null,
+        message: "",
+        events: [],
+      };
+      const add = (type: string, data: Record<string, unknown>) =>
+        snapshot.events.push({
+          event_id: crypto.randomUUID(),
+          run_id: id,
+          sequence_number: snapshot.events.length + 1,
+          monotonic_timestamp: 0,
+          wall_clock_timestamp: new Date().toISOString(),
+          schema_version: 1,
+          type,
+          data,
+        });
+      // The rule's event: the step's type, period 0 and how many distinct
+      // pages, a count. A title or an address smuggled beside them is
+      // dropped; a sentence in the count's slot is dropped; the app-switch
+      // rule's event carries no count and gains none.
+      add("ActionLoopDetected", {
+        actionType: "click_control",
+        period: 0,
+        pages: 2,
+        title: "private page title",
+        address: "http://127.0.0.1:8080/private-path",
+      });
+      add("ActionLoopDetected", {
+        actionType: "click_control",
+        period: 0,
+        pages: "two private pages",
+      });
+      add("ActionLoopDetected", { actionType: "open_app", period: 0 });
+      log.snapshot(snapshot);
+      const raw = readFileSync(log.file, "utf8");
+      const events = raw
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(raw).not.toContain("private");
+      expect(events[0].data).toEqual({
+        runId: id,
+        sequence: 1,
+        synthetic: false,
+        actionType: "click_control",
+        period: 0,
+        pages: 2,
+      });
+      expect(events[1].data).toEqual({
+        runId: id,
+        sequence: 2,
+        synthetic: false,
+        actionType: "click_control",
+        period: 0,
+      });
+      expect(events[2].data).toEqual({
+        runId: id,
+        sequence: 3,
+        synthetic: false,
+        actionType: "open_app",
+        period: 0,
+      });
+    }));
   it("keeps the shape of unparseable model arguments as counts, flags and a code, never their text", () =>
     fixture((log) => {
       const requestId = crypto.randomUUID();
