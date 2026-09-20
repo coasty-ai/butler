@@ -16,7 +16,7 @@ Butler is the consumer product. CoArena is the intelligence/evaluation layer; Co
 
 Requirements: a Mac with Apple Silicon (M1 or newer) running macOS 14 Sonoma or later.
 
-1. **Download** the latest `Butler-<version>-arm64.dmg` from [Releases](https://github.com/coasty-ai/butler/releases).
+1. **Download** the latest `Butler-<version>-arm64.dmg` from [Releases](https://github.com/coasty-ai/butler/releases). The only release at the time of publishing (v0.1.0-alpha.1, 17 September 2026) predates the rename and most of this history; until the next tagged build, build from source as described below.
 2. **Install:** open the DMG and drag **Butler** into **Applications**.
 3. **First launch:** this alpha is signed ad hoc but not notarized by Apple, so macOS blocks the first open. Open it once, then go to **System Settings → Privacy & Security**, scroll down to the message about Butler and click **Open Anyway**. Alternatively, run this once in Terminal:
    ```sh
