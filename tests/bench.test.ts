@@ -330,10 +330,10 @@ describe("grader helpers", () => {
     });
     expect(FILE_WRITE_TOOLS).toEqual([
       "files__append_text_file",
-      "files__write_text_file",
+      "files__replace_file_text",
     ]);
     expect(countSteps(j, wroteFileByTool)).toBe(1);
-    expect(countSteps(j, toolCallOf(["files__write_text_file"]))).toBe(0);
+    expect(countSteps(j, toolCallOf(["files__replace_file_text"]))).toBe(0);
     expect(countSteps(j, toolCallOf(["files__read_text_file"]))).toBe(0);
     expect(inOrder(j, inApp([SAFARI]), wroteFileByTool)).toBe(true);
     expect(inOrder(j, inApp([SAFARI]), inApp([TEXTEDIT]))).toBe(false);
@@ -355,7 +355,7 @@ describe("grader helpers", () => {
             {
               type: "tool_call",
               appId: FINDER,
-              tool: "files__write_text_file",
+              tool: "files__replace_file_text",
             },
             { type: "open_url", appId: SAFARI },
           ],

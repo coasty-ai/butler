@@ -36,7 +36,8 @@ const TOOL_STEPS: Record<string, string> = {
   files__read_text_file: "read a file",
   files__list_directory: "listed a folder",
   files__append_text_file: "added a line to a file",
-  files__write_text_file: "replaced a file's contents",
+  files__replace_file_text: "replaced a file's contents",
+
   "claude-code__Agent": "sent a request to Claude Code",
 };
 

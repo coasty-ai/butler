@@ -175,12 +175,33 @@ policy, call, bounding and undo door as every other tool. To the model its
 tools are builtin: `transport: "builtin"`, trusted, local, closed-world, so
 they list in Private local too; nothing leaves the Mac through them.
 
-| Tool                      | Arguments                                 | Tier / undo        | Result                                                                                                                               |
-| ------------------------- | ----------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `files__read_text_file`   | `path`                                    | read               | the file's text, up to 64 KB (`FILE_LIMITS.readBytes`); a larger file is refused with `TOO_LARGE`, never cut                         |
-| `files__append_text_file` | `path`, `text`, `newline?` (default true) | additive, undoable | `verified: true` after read-back; `facts { kind: "file", name, change: "appended" \| "created", lines }`; `undoToken`                |
-| `files__write_text_file`  | `path`, `text`                            | write, undoable    | the same, `change: "replaced"` (or `"created"`); the previous contents are what undo puts back                                       |
-| `files__list_directory`   | `path`                                    | read               | one visible entry per line (`name/` for a folder, `name (N bytes)` for a file), up to 200, dotfiles and credential-like names hidden |
+| Tool                       | Arguments                                 | Tier / undo        | Result                                                                                                                                                                                             |
+| -------------------------- | ----------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `files__read_text_file`    | `path`                                    | read               | the file's text, up to 64 KB (`FILE_LIMITS.readBytes`); a larger file is refused with `TOO_LARGE`, never cut                                                                                       |
+| `files__append_text_file`  | `path`, `text`, `newline?` (default true) | additive, undoable | `verified: true` after read-back; `facts { kind: "file", name, change: "appended" \| "created", lines }`; `undoToken`                                                                              |
+| `files__replace_file_text` | `path`, `text`                            | write, undoable    | the same, `change: "replaced"` (or `"created"`); the previous contents are what undo puts back; `would_erase` at `prepare` when the file holds text and the user's words did not ask to replace it |
+| `files__list_directory`    | `path`                                    | read               | one visible entry per line (`name/` for a folder, `name (N bytes)` for a file), up to 200, dotfiles and credential-like names hidden                                                               |
+
+The tool that erases is named for it. In probe cycle 20260919-1952 the note
+tasks said "write <fact> into <path>", gpt-5.4-mini matched the verb to the
+tool then named `write_text_file`, and the header line the graders require
+went with the rest of the file (2 of the 3 tool-route notes: `code-ci-status-
+report` NOTE_HEADER_LOST, `msg-group-chat-digest` FACT_NOT_NOTED; the one that
+appended, `travel-hotel-shortlist`, kept its header), in 5 to 7 actions where
+the editor route took a median of 27. So no tool has "write" in its name:
+`append_text_file`'s description carries the verbs a task uses (write, add,
+log, note) and `replace_file_text` says it erases and names the other. The
+content-keeping rule backs the names: `replace_file_text` on a file that
+holds text, when the user's own words say none of replace, overwrite,
+rewrite, clear, erase or start over (`REPLACING_WORDS`, `asksToReplace`), is
+the `would_erase` problem at `prepare`, a fixed RETRY in every mode ("all"
+included: it is a retry, not a question) that tells the model to add with
+`append_text_file` or that replacing needs the objective to ask for it; an
+empty or absent file may be written, a folder is left to the call, and the
+words reach `prepare` as `ToolWords` from the runner (`Runner.userWords`, the
+same words policy grounds on; undefined for a rewrite or a wake-up asks for
+nothing). Not a floor: the credential deny, the budget, the master switch
+and every protected rule sit where they were.
 
 `append_text_file` writes the text on its own line: a newline first when the
 file's last line is open, one after unless the text brought its own, so a
@@ -232,7 +253,9 @@ mode. An append the user's own words named by its path runs under "task"
 that replaces the file runs under "task" and "flow" only when the words named
 the file and the tool can undo it (`TOOL_ALLOWED.grounded_write`: the rule the
 Save button runs under, `askedForLabel`), asks `Change <name>, replacing what
-it holds with: <text>?` otherwise, and runs under "all". The questions are
+it holds with: <text>?` otherwise, and runs under "all"; before any of that,
+a file that holds text is replaced only when the words asked for it
+(`would_erase`, above). The questions are
 `TOOL_FILE_APPEND`, `TOOL_FILE_WRITE` and `TOOL_FILE_READ` in the approval
 codes, open with the closed verbs, and can be approved neither by a follow-up
 "yes" nor from the phone. No floor moves: a credential in the arguments is
@@ -274,7 +297,11 @@ TextEdit steps were required, and `savedNote` counts it as the save.
   with the path as the instruction writes it once the tool is listed and the
   instruction names it, rather than opening TextEdit; the probe
   `npm run cycle -- --probe FACT_NOT_NOTED --baseline 20260919-1646-09c5412 --autonomy all --repeat 3`
-  measures this.
+  measures this. Cycle 20260919-1952 showed the route taken (5 to 7 actions)
+  and the wrong tool picked; the next probe must show `headerKept` true and
+  `noted` true on every tool-route note, with a `replace_file_text` call at
+  most one RETRY before the append, so actions stay at or under 8.
+
 - That a run which appends through the tool and then says done passes the
   note graders' `single` (no other item in the folder) and `headerKept` checks
   on a real disk write, and that TextEdit, when the person has the file open,

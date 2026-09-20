@@ -266,6 +266,15 @@ describe("toolFastPath: steps", () => {
       args: { path: "~/work/log.md", text: "Dana called at 3" },
     });
   });
+  it("never proposes the tool that erases: a request to replace, overwrite or clear a file goes to the model", () => {
+    for (const text of [
+      "replace the contents of ~/notes/todo.txt with buy oat milk",
+      "overwrite ~/notes/todo.txt with buy oat milk",
+      "clear ~/notes/todo.txt",
+      "rewrite ~/notes/todo.txt as a list",
+    ])
+      expect(path(text), text).toBeUndefined();
+  });
   it("hands a plainly said request to the coding agent", () => {
     expect(path("ask the coding agent to fix the failing test")).toEqual({
       kind: "step",

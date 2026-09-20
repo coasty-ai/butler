@@ -17,7 +17,7 @@ import {
   FAKE_HOME,
   FILES_APPEND,
   FILES_READ,
-  FILES_WRITE,
+  FILES_REPLACE,
   FS_LIST,
   FS_WRITE,
   GH_SEARCH,
@@ -57,7 +57,12 @@ const context = (
   args: Record<string, unknown>,
   o: { userWords?: string; calls?: number } = {},
 ): PolicyContext => ({
-  tool: { spec, prepared: prepare(spec, args), calls: o.calls ?? 0 },
+  // The runner hands prepare the same words policy grounds on.
+  tool: {
+    spec,
+    prepared: prepare(spec, args, { userWords: o.userWords }),
+    calls: o.calls ?? 0,
+  },
   clock: CLOCK,
   ...(o.userWords !== undefined ? { userWords: o.userWords } : {}),
 });
@@ -299,19 +304,56 @@ describe("toolDecision: the files tool", () => {
       all: "ALLOW",
     });
   });
-  it("runs a write that replaces a file only when the words named it, under task and flow, and always under all", () => {
+  it("refuses to erase a file that holds text unless the words ask for it: the fixed retry in every mode, all included, before any question", () => {
+    // Probe cycle 20260919-1952: the note tasks say "write <fact> into
+    // <path>", the tool then named write_text_file matched the verb, and
+    // the header line went with the file (2 of 3 tool-route notes). The
+    // rule is the tool's, at prepare; policy retries with the one sentence.
     const table = { path: NOTES, text: "name,price,days\nAcme,120,3" };
-    expect(kinds(FILES_WRITE, table, { userWords: NOTE_WORDS })).toEqual({
+    for (const words of [NOTE_WORDS, "fill in the table", undefined])
+      for (const mode of MODES) {
+        const d = decide(FILES_REPLACE, table, mode, {
+          ...(words ? { userWords: words } : {}),
+        });
+        expect([words, mode, d]).toEqual([
+          words,
+          mode,
+          { kind: "RETRY", reason: TOOL_REFUSALS.would_erase },
+        ]);
+      }
+    expect(TOOL_REFUSALS.would_erase).toMatch(/^No input was sent\./);
+    expect(TOOL_REFUSALS.would_erase).toContain("append_text_file");
+    // The append on the same file and words is the route it names.
+    expect(
+      decide(FILES_APPEND, LINE, "task", { userWords: NOTE_WORDS }),
+    ).toEqual({ kind: "ALLOW", reason: TOOL_ALLOWED.grounded });
+    // A credential in the text is the floor, ahead of the retry.
+    for (const mode of MODES)
+      expect(
+        decide(
+          FILES_REPLACE,
+          { path: NOTES, text: "api_key=sk-abcdefghijklmnopqrst" },
+          mode,
+          { userWords: NOTE_WORDS },
+        ),
+      ).toEqual({ kind: "DENY", reason: TOOL_REFUSALS.credential });
+  });
+  it("runs a replace the words asked for only when they named the file, under task and flow, and always under all", () => {
+    const table = { path: NOTES, text: "name,price,days\nAcme,120,3" };
+    const REPLACE_WORDS = `Replace what ${NOTES} holds with the price table from the page, then save it.`;
+    expect(kinds(FILES_REPLACE, table, { userWords: REPLACE_WORDS })).toEqual({
       ask: "CONFIRM",
       task: "ALLOW",
       flow: "ALLOW",
       all: "ALLOW",
     });
     expect(
-      decide(FILES_WRITE, table, "task", { userWords: NOTE_WORDS }).reason,
+      decide(FILES_REPLACE, table, "task", { userWords: REPLACE_WORDS }).reason,
     ).toBe(TOOL_ALLOWED.grounded_write);
+    // Words that asked to replace but did not name the file: the question,
+    // except under all.
     expect(
-      kinds(FILES_WRITE, table, { userWords: "fill in the table" }),
+      kinds(FILES_REPLACE, table, { userWords: "overwrite the notes file" }),
     ).toEqual({
       ask: "CONFIRM",
       task: "CONFIRM",
@@ -319,16 +361,35 @@ describe("toolDecision: the files tool", () => {
       all: "ALLOW",
     });
     expect(
-      decide(FILES_WRITE, table, "task", { userWords: "fill in the table" })
-        .reason,
+      decide(FILES_REPLACE, table, "task", {
+        userWords: "overwrite the notes file",
+      }).reason,
     ).toBe(
       "Change benchnote0a1b-notes.txt, replacing what it holds with: name,price,days Acme,120,3?",
     );
+    // A file with nothing in it needs no replacing word: the table as before.
+    const fresh = {
+      path: "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-compare.csv",
+      text: "name,price,days\nAcme,120,3",
+    };
+    expect(
+      kinds(FILES_REPLACE, fresh, { userWords: "fill in the table" }),
+    ).toEqual({
+      ask: "CONFIRM",
+      task: "CONFIRM",
+      flow: "CONFIRM",
+      all: "ALLOW",
+    });
+    expect(
+      kinds(FILES_REPLACE, fresh, {
+        userWords: `put the table in ${fresh.path}`,
+      }).task,
+    ).toBe("ALLOW");
     // Without an undo of its own a write asks however the words read; an
     // untrusted or open-world write keeps its question too.
     expect(
-      kinds({ ...FILES_WRITE, undoable: false }, table, {
-        userWords: NOTE_WORDS,
+      kinds({ ...FILES_REPLACE, undoable: false }, table, {
+        userWords: REPLACE_WORDS,
       }),
     ).toEqual({
       ask: "CONFIRM",
@@ -337,15 +398,16 @@ describe("toolDecision: the files tool", () => {
       all: "ALLOW",
     });
     expect(
-      kinds({ ...FILES_WRITE, trusted: false }, table, {
-        userWords: NOTE_WORDS,
+      kinds({ ...FILES_REPLACE, trusted: false }, table, {
+        userWords: REPLACE_WORDS,
       }).task,
     ).toBe("CONFIRM");
     expect(
-      kinds({ ...FILES_WRITE, openWorld: true }, table, {
-        userWords: NOTE_WORDS,
+      kinds({ ...FILES_REPLACE, openWorld: true }, table, {
+        userWords: REPLACE_WORDS,
       }).task,
     ).toBe("CONFIRM");
+
     // The MCP write the words happen to name still asks: not trusted.
     expect(
       decide(FS_WRITE, { path: "/tmp/a", content: "hi" }, "task", {

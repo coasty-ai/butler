@@ -2363,10 +2363,15 @@ export class Runner {
   }
   /**
    * What policy needs for a tool_call: the frozen spec of the tool it names,
-   * the tool layer's validation of the arguments, the calls so far and the
+   * the tool layer's validation of the arguments (given the user's own words,
+   * for a tool whose rule reads them at prepare: the files tool refuses to
+   * erase a file the words did not ask to replace), the calls so far and the
    * clock. Empty when the tool is not in this run's list (policy retries).
    */
-  private toolContext(action: Extract<Action, { type: "tool_call" }>): {
+  private toolContext(
+    action: Extract<Action, { type: "tool_call" }>,
+    userWords: string | undefined,
+  ): {
     tool?: { spec: ToolSpec; prepared: ToolPrepared; calls: number };
     clock?: ToolClock;
   } {
@@ -2376,7 +2381,7 @@ export class Runner {
     return {
       tool: {
         spec,
-        prepared: tools.prepare(spec, action.args),
+        prepared: tools.prepare(spec, action.args, { userWords }),
         calls: this.snapshot.run!.tools?.calls ?? 0,
       },
       clock: tools.clock(),
@@ -4295,7 +4300,10 @@ export class Runner {
         }
         const userWords = this.userWords(run);
         const toolContext =
-          action.type === "tool_call" ? this.toolContext(action) : {};
+          action.type === "tool_call"
+            ? this.toolContext(action, userWords)
+            : {};
+
         const evaluated = evaluate(
           action,
           actionSurface,

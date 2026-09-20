@@ -305,8 +305,9 @@ export const toolCallOf =
  */
 export const FILE_WRITE_TOOLS = [
   "files__append_text_file",
-  "files__write_text_file",
+  "files__replace_file_text",
 ] as const;
+
 export const wroteFileByTool: StepMatch = toolCallOf(FILE_WRITE_TOOLS);
 /** The note was saved: TextEdit's Save, or a write through the files tool. */
 export const savedNote = (journal: RunJournal): boolean =>

@@ -506,8 +506,15 @@ describe("what one step costs", () => {
     // tools paragraph: a file the objective names is written through
     // append_text_file, not an editor, docs/TOOLS.md) and the sentence on
     // what a done summary names and the named file's check
-    // (src/core/deliverables.ts), the three landed the same evening.
-    expect(instruction.length).toBeLessThan(17000);
+    // (src/core/deliverables.ts), the three landed the same evening;
+    // 17,065 once the files sentence says that adding to a file is
+    // append_text_file and that replace_file_text erases the file and needs
+    // the objective's words (probe cycle 20260919-1952: the tool then named
+    // write_text_file matched "write <fact> into <path>" and lost the header
+    // in 2 of 3 tool-route notes), 113 characters the pin moved for.
+
+    expect(instruction.length).toBeLessThan(17100);
+
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
     expect(instruction).not.toContain('{"type":"menu_item"');

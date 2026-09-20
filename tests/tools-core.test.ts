@@ -592,7 +592,9 @@ describe("undo, fallback and helpers", () => {
     expect(builtinToolTitle("filesystem__list_directory")).toBeUndefined();
     expect(builtinToolTitle("apple__calendar")).toBeUndefined();
     expect(builtinToolTitle("files__append_text_file")).toBe("Files");
+    expect(builtinToolTitle("files__replace_file_text")).toBe("Files");
     expect(builtinToolTitle("files__read_text_file")).toBe("Files");
+
     expect(builtinToolTitle("files__")).toBeUndefined();
     expect(builtinToolTitle("files__Agent")).toBeUndefined();
   });

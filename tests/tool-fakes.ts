@@ -6,8 +6,10 @@ import type {
   ToolPrepared,
   ToolQuestion,
   ToolSpec,
+  ToolWords,
 } from "../src/core/tools";
 import { TOOL_LIMITS, TOOL_RESULT_TEXT } from "../src/core/tools";
+import { asksToReplace } from "../src/tools/providers/files";
 
 /**
  * A fake tool layer for the runner and policy tests: a builtin calendar and
@@ -135,16 +137,19 @@ export const FILES_APPEND = files(
   "Adds text to the end of a plain-text file on its own line.",
   "path (text, a ~/ path), text (text), newline? (boolean)",
 );
-export const FILES_WRITE = files(
-  "write_text_file",
+export const FILES_REPLACE = files(
+  "replace_file_text",
   "write",
   true,
-  "Replaces the whole contents of a plain-text file.",
+  "Replaces everything a plain-text file holds with the text, erasing what it held.",
   "path (text, a ~/ path), text (text)",
 );
-export const FILES_TOOLS = [FILES_READ, FILES_APPEND, FILES_WRITE];
+export const FILES_TOOLS = [FILES_READ, FILES_APPEND, FILES_REPLACE];
 /** The home folder the fakes stand in for: an absolute path under it grounds as its ~/ form. */
 export const FAKE_HOME = "/Users/me";
+/** The one file the fake home holds with text in it (what FILES_READ reads); every other path is absent or empty. */
+export const FAKE_NOTES =
+  "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
 const homeRelative = (path: unknown) =>
   typeof path === "string" && path.startsWith(`${FAKE_HOME}/`)
     ? `~/${path.slice(FAKE_HOME.length + 1)}`
@@ -210,7 +215,7 @@ const REQUIRED: Record<string, string[]> = {
   apple__reminders_create: ["title"],
   files__read_text_file: ["path"],
   files__append_text_file: ["path", "text"],
-  files__write_text_file: ["path", "text"],
+  files__replace_file_text: ["path", "text"],
   filesystem__list_directory: ["path"],
   filesystem__write_file: ["path", "content"],
   github__search_repositories: ["query"],
@@ -260,7 +265,7 @@ const questionOf = (
         name: baseName(args.path),
         text: s(args.text),
       };
-    case FILES_WRITE.id:
+    case FILES_REPLACE.id:
       return {
         kind: "file_write",
         name: baseName(args.path),
@@ -279,10 +284,11 @@ const questionOf = (
       };
   }
 };
-/** The registry's synchronous validation, for the fake catalogue. */
+/** The registry's synchronous validation, for the fake catalogue; the words as the runner hands them (ToolWords). */
 export function prepare(
   spec: ToolSpec,
   args: Record<string, unknown>,
+  words?: ToolWords,
 ): ToolPrepared {
   const required = REQUIRED[spec.id] ?? [];
   if (required.some((k) => typeof args[k] !== "string"))
@@ -295,6 +301,15 @@ export function prepare(
       return { ok: false, problem: "bad_path" };
     if (/(?:^|\/)\.|\/\.\.(?:\/|$)|^~\/Library\//.test(homeRelative(path)))
       return { ok: false, problem: "bad_path" };
+    // The real tool's content-keeping rule (src/tools/providers/files.ts):
+    // a replace of the one file that holds text needs a replacing word.
+    if (
+      spec.id === FILES_REPLACE.id &&
+      homeRelative(path) === FAKE_NOTES &&
+      !asksToReplace(words?.userWords)
+    )
+      return { ok: false, problem: "would_erase" };
+
     return {
       ok: true,
       question: questionOf(spec, args),
@@ -394,7 +409,7 @@ const defaultOutcome = (
           undoToken: "u-3",
         },
       );
-    case FILES_WRITE.id:
+    case FILES_REPLACE.id:
       return ok(spec, `Replaced the contents of ${homeRelative(args.path)}.`, {
         verified: true,
         facts: {

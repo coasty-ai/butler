@@ -559,7 +559,7 @@ describe("tool registry: the in-process files tool", () => {
       "apple__calendar_list_events",
       "files__read_text_file",
       "files__append_text_file",
-      "files__write_text_file",
+      "files__replace_file_text",
       "files__list_directory",
       "memo__dummy",
     ]);

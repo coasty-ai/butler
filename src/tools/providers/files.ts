@@ -48,6 +48,16 @@ import type { McpProvider } from "../mcp";
  * the file changed since. The text a user asked to write is theirs and is
  * not redacted, but a credential in it (scanText BLOCK_UPLOAD) is refused:
  * it would not be typed either.
+ *
+ * The one tool that erases is named for it: replace_file_text, never
+ * "write". In probe cycle 20260919-1952 the note tasks said "write <fact>
+ * into <path>", gpt-5.4-mini matched the verb to write_text_file, and the
+ * header line the graders require went with the rest of the file (2 of the
+ * 3 tool-route notes, NOTE_HEADER_LOST and FACT_NOT_NOTED); the one that
+ * appended passed. So the destructive tool says what it does, and prepare
+ * refuses to replace a file that holds text unless the user's own words ask
+ * for it (would_erase: a fixed RETRY that names append_text_file, in every
+ * mode; never a question).
  */
 export const FILES_ID = "files";
 export const FILES_TITLE = "Files";
@@ -64,7 +74,10 @@ export const FILE_LIMITS = {
 } as const;
 
 export type FileToolName =
-  "read_text_file" | "append_text_file" | "write_text_file" | "list_directory";
+  | "read_text_file"
+  | "append_text_file"
+  | "replace_file_text"
+  | "list_directory";
 export interface FileTool {
   does: string;
   params: string;
@@ -83,7 +96,7 @@ export const FILE_TOOLS: Record<FileToolName, FileTool> = {
     required: ["path"],
   },
   append_text_file: {
-    does: "Adds text to the end of a plain-text file in your home folder on its own line, keeping what is there; creates the file if absent. The write is the save.",
+    does: "Writes text at the end of a plain-text file in your home folder on its own line, keeping what is there: how to write, add, log or note a fact into a file. Creates it if absent; the write is the save.",
     params:
       "path (text, a ~/ path), text (text), newline? (boolean, default true)",
     tier: "additive",
@@ -91,8 +104,9 @@ export const FILE_TOOLS: Record<FileToolName, FileTool> = {
     keys: ["path", "text", "newline"],
     required: ["path", "text"],
   },
-  write_text_file: {
-    does: "Replaces the whole contents of a plain-text file in your home folder with the text; creates the file if absent. Can be undone.",
+  replace_file_text: {
+    does: "Replaces everything a plain-text file in your home folder holds with the text, erasing what it held. Only when the objective says to replace, overwrite or clear the file; otherwise append_text_file.",
+
     params: "path (text, a ~/ path), text (text)",
     tier: "write",
     undoable: true,
@@ -113,8 +127,19 @@ export const FILE_TOOL_IDS = FILE_TOOL_NAMES.map((n) => `${FILES_ID}__${n}`);
 /** The two tools that change a file, by id: what a grader or a step namer counts as the note written. */
 export const FILE_WRITE_TOOL_IDS = [
   `${FILES_ID}__append_text_file`,
-  `${FILES_ID}__write_text_file`,
+  `${FILES_ID}__replace_file_text`,
 ];
+/**
+ * Whether the user's own words ask for a file's contents to go: replace,
+ * overwrite, rewrite, clear, erase or start over, in any of their forms.
+ * Without one, replace_file_text on a file that holds text is the
+ * would_erase problem at prepare. Words that are not the user's (undefined)
+ * ask for nothing.
+ */
+export const REPLACING_WORDS =
+  /\b(?:replac(?:e|es|ed|ing)|overwrit(?:e|es|ing|ten)|rewrit(?:e|es|ing|ten)|clear(?:s|ed|ing)?|eras(?:e|es|ed|ing)|start(?:s|ed|ing)?\s+(?:over|afresh))\b/i;
+export const asksToReplace = (words: string | undefined): boolean =>
+  typeof words === "string" && REPLACING_WORDS.test(words);
 
 // MARK: paths
 
@@ -442,7 +467,7 @@ function questionOf(checked: Checked): ToolQuestion {
       return { kind: "file_list", name };
     case "append_text_file":
       return { kind: "file_append", name, text: checked.text };
-    case "write_text_file":
+    case "replace_file_text":
       return { kind: "file_write", name, text: checked.text };
   }
 }
@@ -532,6 +557,20 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
   };
   const isResult = (value: unknown): value is ProviderResult =>
     !!value && typeof value === "object" && "code" in value;
+  /**
+   * Whether the path is a file with bytes in it: what replace_file_text
+   * would erase. A missing file, an empty one, a folder or one that cannot
+   * be read is not (call() answers for those); the symlink is followed, as
+   * the write follows it.
+   */
+  const hasContent = (path: HomePath): boolean => {
+    try {
+      const stat = statSync(path.absolute);
+      return stat.isFile() && stat.size > 0;
+    } catch {
+      return false;
+    }
+  };
 
   const read = (path: HomePath): ProviderResult => {
     const found = resolveReal(path);
@@ -715,10 +754,21 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
     async tools() {
       return on() ? specs : [];
     },
-    prepare(spec, args): ToolPrepared {
+    prepare(spec, args, words): ToolPrepared {
       if (!on()) return { ok: false, problem: "unavailable" };
       const checked = checkArgs(spec.name, args, home);
       if ("problem" in checked) return { ok: false, problem: checked.problem };
+      // The content-keeping rule: a whole-file replace of a file that holds
+      // text needs the user's own words to say replace, overwrite, rewrite,
+      // clear, erase or start over; otherwise the fixed RETRY sends the model
+      // to append_text_file. An empty or absent file may be written. This is
+      // a retry, not a question, so it holds under "all" as in every mode.
+      if (
+        checked.name === "replace_file_text" &&
+        !asksToReplace(words?.userWords) &&
+        hasContent(checked.path)
+      )
+        return { ok: false, problem: "would_erase" };
       // The path alone grounds the call, in its ~/ form whatever way the
       // model wrote it: the text is the file's content, which the words
       // cannot be expected to carry (it was read off a page), and the tool
@@ -748,7 +798,7 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
             return list(checked.path);
           case "append_text_file":
             return write(checked, "append");
-          case "write_text_file":
+          case "replace_file_text":
             return write(checked, "replace");
         }
       } catch (error) {

@@ -91,6 +91,15 @@ export type ToolQuestion =
   /** The files tool (src/tools/providers/files.ts): the file's own name, and for a write the text as a preview. */
   | { kind: "file_read" | "file_list"; name: string }
   | { kind: "file_append" | "file_write"; name: string; text: string };
+/**
+ * The user's own words at prepare: the run's objective when it is theirs
+ * (Runner.userWords), undefined for a rewrite, an accepted offer or a watch
+ * wake-up. Policy grounds the arguments on the same words; a tool reads them
+ * here only for a rule of its own that must refuse before any question.
+ */
+export interface ToolWords {
+  userWords?: string;
+}
 export type ToolProblem =
   | "unknown_tool"
   | "invalid_args"
@@ -98,7 +107,9 @@ export type ToolProblem =
   | "unavailable"
   | "denylisted"
   /** A path the files tool may not touch: outside the home folder, under ~/Library, hidden, credential-like or executable. */
-  | "bad_path";
+  | "bad_path"
+  /** A whole-file replace of a file that holds text, when the user's words did not say to replace, overwrite or clear it (the files tool): append_text_file is the route. */
+  | "would_erase";
 export type ToolPrepared =
   | { ok: false; problem: ToolProblem }
   | {
@@ -162,8 +173,12 @@ export interface ToolAccess {
   clock(): ToolClock;
   /** Once per run, before the first proposal; ≤ TOOL_LIMITS.list tools, builtin first; frozen for the run. */
   list(task: string, signal: AbortSignal): Promise<ToolList>;
-  /** Synchronous validation and question fields; runs before policy. */
-  prepare(spec: ToolSpec, args: Record<string, unknown>): ToolPrepared;
+  /** Synchronous validation and question fields; runs before policy. The words go along for a tool whose rule reads them here (the files tool's content-keeping rule). */
+  prepare(
+    spec: ToolSpec,
+    args: Record<string, unknown>,
+    words?: ToolWords,
+  ): ToolPrepared;
   call(
     spec: ToolSpec,
     args: Record<string, unknown>,
@@ -186,7 +201,11 @@ export interface ToolProvider {
   };
   /** Current, pinned, ticked, tiered; [] unless state is "on". */
   tools(signal: AbortSignal): Promise<ToolSpec[]>;
-  prepare(spec: ToolSpec, args: Record<string, unknown>): ToolPrepared;
+  prepare(
+    spec: ToolSpec,
+    args: Record<string, unknown>,
+    words?: ToolWords,
+  ): ToolPrepared;
   call(
     spec: ToolSpec,
     args: Record<string, unknown>,
@@ -340,6 +359,9 @@ export const TOOL_REFUSALS = {
   too_large: "No input was sent. The arguments are too large for a tool call.",
   bad_path:
     "No input was sent. The files tool touches only a ~/ path inside your home folder that is not under ~/Library, hidden, credential-like or executable; use the path as the objective writes it, or use the screen.",
+  would_erase:
+    "No input was sent. That file already holds text and replace_file_text would erase it. To add to the file, call append_text_file with the same path; the whole file is replaced only when the objective says to replace, overwrite or clear it.",
+
   unavailable:
     "No input was sent. That tool is not available right now; use the screen, or finish with done or fail.",
   budget: "This run has used its tool calls.",

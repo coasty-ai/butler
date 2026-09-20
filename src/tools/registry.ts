@@ -638,7 +638,7 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
         unavailable: unavailable.slice(0, TOOL_LIMITS.unavailable),
       };
     },
-    prepare(spec, args): ToolPrepared {
+    prepare(spec, args, words): ToolPrepared {
       if (TOOL_DENYLIST.test(spec.name))
         return { ok: false, problem: "denylisted" };
       const running = providers.get(spec.provider)?.provider;
@@ -647,7 +647,7 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
         return { ok: false, problem: "too_large" };
       if (!usable(running.state().state))
         return { ok: false, problem: "unavailable" };
-      return running.prepare(spec, args);
+      return running.prepare(spec, args, words);
     },
     async call(spec, args, signal) {
       const startedAt = now();

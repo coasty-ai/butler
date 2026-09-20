@@ -198,10 +198,13 @@ export function toolDecision(
       return allow(TOOL_ALLOWED.grounded);
   }
   // A write that replaces what a first-party, closed-world tool holds (the
-  // files tool's write_text_file) runs unasked only when its own undo can
+  // files tool's replace_file_text) runs unasked only when its own undo can
   // take it back and the user's words named what it touches: the rule the
   // Save button runs under (policy.ts askedForLabel), for the tool step. An
-  // MCP write, untrusted or open-world, keeps its question.
+  // MCP write, untrusted or open-world, keeps its question. Whether the
+  // words asked for the file's contents to go at all is the tool's own rule
+  // at prepare (would_erase, refused above with the other problems).
+
   if (
     spec.tier === "write" &&
     spec.undoable &&

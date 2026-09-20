@@ -277,8 +277,10 @@ export function SettingsTools({
             Files: reads, adds to and replaces plain-text files in your home
             folder, never under Library, hidden or credential-like names, and
             never scripts. Runs on this Mac; nothing leaves through it. A step
-            you asked for by the file’s name runs and is reported; replacing a
-            file you did not name asks first, and either can be undone.
+            you asked for by the file’s name runs and is reported; a file that
+            already holds text is replaced only when you asked for that,
+            replacing a file you did not name asks first, and either can be
+            undone.
           </span>
         </label>
         <p>

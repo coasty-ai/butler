@@ -15,6 +15,7 @@ import {
   RESERVED_PROVIDERS,
   TOOL_ID,
   TOOL_LIMITS,
+  TOOL_REFUSALS,
   type ProviderResult,
   type ToolSpec,
 } from "../src/core/tools";
@@ -26,6 +27,8 @@ import {
   FILE_TOOL_IDS,
   FILE_TOOL_NAMES,
   FILE_WRITE_TOOL_IDS,
+  REPLACING_WORDS,
+  asksToReplace,
   checkArgs,
   createFilesProvider,
   credentialLikeName,
@@ -90,18 +93,18 @@ describe("the files tool's table", () => {
     expect(FILE_TOOL_NAMES).toEqual([
       "read_text_file",
       "append_text_file",
-      "write_text_file",
+      "replace_file_text",
       "list_directory",
     ]);
     expect(FILE_TOOL_IDS).toEqual([
       "files__read_text_file",
       "files__append_text_file",
-      "files__write_text_file",
+      "files__replace_file_text",
       "files__list_directory",
     ]);
     expect(FILE_WRITE_TOOL_IDS).toEqual([
       "files__append_text_file",
-      "files__write_text_file",
+      "files__replace_file_text",
     ]);
     for (const name of FILE_TOOL_NAMES) {
       const s = spec(name);
@@ -127,11 +130,20 @@ describe("the files tool's table", () => {
       tier: "additive",
       undoable: true,
     });
-    expect(spec("write_text_file")).toMatchObject({
+    expect(spec("replace_file_text")).toMatchObject({
       tier: "write",
       undoable: true,
     });
     expect(FILE_TOOLS.append_text_file.does).toContain("keeping what is there");
+    // Naming that steers a small model (probe cycle 20260919-1952: "write
+    // <fact> into <path>" matched the tool then named write_text_file, and
+    // the header went with the file): the additive tool's description
+    // carries the verbs a task uses, the erasing tool says what it does and
+    // names the other, and no tool has "write" in its name.
+    expect(FILE_TOOLS.append_text_file.does).toMatch(/\bwrite\b.*\badd\b/);
+    expect(FILE_TOOLS.replace_file_text.does).toMatch(/erasing/);
+    expect(FILE_TOOLS.replace_file_text.does).toContain("append_text_file");
+    for (const name of FILE_TOOL_NAMES) expect(name).not.toMatch(/write/);
     expect(FILE_LIMITS.readBytes).toBe(TOOL_LIMITS.rawResultBytes);
   });
   it("follows settings.tools.files", () => {
@@ -310,7 +322,7 @@ describe("paths", () => {
       });
     // A write never touches an executable kind; a read of one is a content question.
     expect(
-      checkArgs("write_text_file", { path: "~/bin/run.sh", text: "x" }, HOME),
+      checkArgs("replace_file_text", { path: "~/bin/run.sh", text: "x" }, HOME),
     ).toEqual({ problem: "bad_path" });
     expect(
       checkArgs("append_text_file", { path: "~/x.command", text: "x" }, HOME),
@@ -336,7 +348,7 @@ describe("paths", () => {
       argsBytes: expect.any(Number),
     });
     expect(
-      provider.prepare(spec("write_text_file"), {
+      provider.prepare(spec("replace_file_text"), {
         path: "~/Documents/a.txt",
         text: "all new",
       }),
@@ -355,6 +367,108 @@ describe("paths", () => {
     expect(provider.prepare(spec("read_text_file"), {})).toEqual({
       ok: false,
       problem: "invalid_args",
+    });
+  });
+});
+
+describe("the content-keeping rule", () => {
+  const NOTES = "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
+  const notes = "OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
+  const replace = (path: string, words?: string) =>
+    provider.prepare(
+      spec("replace_file_text"),
+      { path, text: "name,price,days\nAcme,120,3\n" },
+      { userWords: words },
+    );
+  it("refuses to replace a file that holds text unless the words ask for it, with the fixed retry and no question", () => {
+    // The note tasks' words: "write <fact> into <path>", no replacing word.
+    for (const words of [
+      `In Safari, read the report and write the Q3 total on a new line in ${NOTES}. Save it.`,
+      "fill in the table",
+      "add the totals to the notes file, clearly marked",
+      "",
+      undefined,
+    ])
+      expect(replace(NOTES, words), String(words)).toEqual({
+        ok: false,
+        problem: "would_erase",
+      });
+    // No third argument at all (an older caller) reads as no words.
+    expect(
+      provider.prepare(spec("replace_file_text"), { path: NOTES, text: "x" }),
+    ).toEqual({ ok: false, problem: "would_erase" });
+    expect(text(notes)).toBe("Research notes for benchnote0a1b\n");
+    expect(TOOL_REFUSALS.would_erase).toMatch(/^No input was sent\./);
+    expect(TOOL_REFUSALS.would_erase).toContain("append_text_file");
+    expect(TOOL_REFUSALS.would_erase).toContain("replace_file_text");
+    expect(TOOL_REFUSALS.would_erase).toMatch(/replace, overwrite or clear/);
+  });
+  it("replaces once the words say replace, overwrite, rewrite, clear, erase or start over, in any form", () => {
+    for (const words of [
+      `Replace what ${NOTES} holds with the price table.`,
+      `overwrite ${NOTES} with the table`,
+      `Rewrite ${NOTES} as a CSV table`,
+      `clear ${NOTES} and put the table in`,
+      `Erase the notes in ${NOTES}, then add the table`,
+      `start over in ${NOTES} with the table`,
+      "REPLACING the file's contents",
+      "the file was overwritten last time; do it again",
+      "it has been cleared before",
+      "erased",
+      "starting afresh",
+    ])
+      expect(replace(NOTES, words), words).toMatchObject({
+        ok: true,
+        question: { kind: "file_write", name: "benchnote0a1b-notes.txt" },
+        groundText: [NOTES],
+      });
+    for (const words of [
+      "write it clearly",
+      "the erasure was a mistake",
+      "restart the server",
+      "started",
+      "over",
+      "nuclear power",
+    ])
+      expect(asksToReplace(words), words).toBe(false);
+    expect(asksToReplace(undefined)).toBe(false);
+    expect(REPLACING_WORDS.flags).toContain("i");
+  });
+  it("lets an empty or absent file be written, leaves a folder to the call, and follows a symlink to what it would erase", () => {
+    const empty = "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-empty.txt";
+    writeFileSync(
+      file("OpenAssistBench/benchnote0a1b/benchnote0a1b-empty.txt"),
+      "",
+    );
+    expect(replace(empty, "write the table into the file")).toMatchObject({
+      ok: true,
+      question: { kind: "file_write" },
+    });
+    expect(
+      replace("~/OpenAssistBench/benchnote0a1b/benchnote0a1b-new.csv", "x"),
+    ).toMatchObject({ ok: true });
+    expect(
+      replace("~/OpenAssistBench/benchnote0a1b/benchnote0a1b-new.csv"),
+    ).toMatchObject({ ok: true });
+    // A folder is not a file with contents; call() answers NOT_A_FILE.
+    expect(replace("~/OpenAssistBench", "x")).toMatchObject({ ok: true });
+    // The append never asks the question: it keeps what is there.
+    expect(
+      provider.prepare(
+        spec("append_text_file"),
+        { path: NOTES, text: "Q3 total 15,888" },
+        { userWords: "write the Q3 total into the notes" },
+      ),
+    ).toMatchObject({ ok: true, question: { kind: "file_append" } });
+    // A symlink at the path is what the write would follow.
+    symlinkSync(file(notes), file("OpenAssistBench/benchnote0a1b/alias.txt"));
+    expect(
+      replace("~/OpenAssistBench/benchnote0a1b/alias.txt", "put the table in"),
+    ).toEqual({ ok: false, problem: "would_erase" });
+    // A path the rules refuse is bad_path first, whatever the words.
+    expect(replace("~/.ssh/config", "replace it")).toEqual({
+      ok: false,
+      problem: "bad_path",
     });
   });
 });
@@ -419,7 +533,7 @@ describe("append, write, read and list", () => {
     expect(text("OpenAssistBench/benchnote0a1b/benchnote0a1b-kpi.txt")).toBe(
       "Revenue 12,400\nSignups 88\n",
     );
-    const missing = await call("write_text_file", {
+    const missing = await call("replace_file_text", {
       path: "~/Nowhere/a.txt",
       text: "x",
     });
@@ -427,8 +541,8 @@ describe("append, write, read and list", () => {
     expect(code(missing)).toBe("NOT_FOUND");
     expect(existsSync(file("Nowhere"))).toBe(false);
   });
-  it("replaces the whole file with write_text_file and reads it back", async () => {
-    const result = await call("write_text_file", {
+  it("replaces the whole file with replace_file_text and reads it back (call() trusts prepare's rule)", async () => {
+    const result = await call("replace_file_text", {
       path: NOTES,
       text: "name,price,days\nAcme,120,3\n",
     });
@@ -439,7 +553,7 @@ describe("append, write, read and list", () => {
     });
     expect(result.raw).toContain("Replaced the contents of");
     expect(text(notes)).toBe("name,price,days\nAcme,120,3\n");
-    const created = await call("write_text_file", {
+    const created = await call("replace_file_text", {
       path: "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-compare.csv",
       text: "a,b",
     });
@@ -597,7 +711,7 @@ describe("append, write, read and list", () => {
       );
       expect(
         code(
-          await call("write_text_file", {
+          await call("replace_file_text", {
             path: "~/OpenAssistBench/elsewhere/new.txt",
             text: "x",
           }),
@@ -609,7 +723,7 @@ describe("append, write, read and list", () => {
       ).toBe("PROTECTED_PATH");
       expect(
         code(
-          await call("write_text_file", {
+          await call("replace_file_text", {
             path: "~/Documents/keys/x.txt",
             text: "x",
           }),
@@ -683,7 +797,7 @@ describe("undo", () => {
   const NOTES = "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
   const notes = "OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
   it("puts a replaced file back, removes a created one, and takes an append off the end", async () => {
-    const replaced = await call("write_text_file", {
+    const replaced = await call("replace_file_text", {
       path: NOTES,
       text: "new",
     });
@@ -693,7 +807,7 @@ describe("undo", () => {
       items: 1,
     });
     expect(text(notes)).toBe("Research notes for benchnote0a1b\n");
-    const created = await call("write_text_file", {
+    const created = await call("replace_file_text", {
       path: "~/OpenAssistBench/benchnote0a1b/new.txt",
       text: "x",
     });
@@ -710,19 +824,25 @@ describe("undo", () => {
     expect(text(notes)).toBe("Research notes for benchnote0a1b\n");
   });
   it("is single use, expires with the undo window, and leaves a file that changed since alone", async () => {
-    const first = await call("write_text_file", { path: NOTES, text: "one" });
+    const first = await call("replace_file_text", { path: NOTES, text: "one" });
     expect((await provider.undo(first.undoToken!, signal)).code).toBe("ok");
     expect(code(await provider.undo(first.undoToken!, signal))).toBe(
       "NOT_FOUND",
     );
     expect(code(await provider.undo("nope", signal))).toBe("NOT_FOUND");
-    const second = await call("write_text_file", { path: NOTES, text: "two" });
+    const second = await call("replace_file_text", {
+      path: NOTES,
+      text: "two",
+    });
     now += TOOL_LIMITS.undoWindowMs;
     expect(code(await provider.undo(second.undoToken!, signal))).toBe(
       "NOT_FOUND",
     );
     expect(text(notes)).toBe("two");
-    const third = await call("write_text_file", { path: NOTES, text: "three" });
+    const third = await call("replace_file_text", {
+      path: NOTES,
+      text: "three",
+    });
     writeFileSync(file(notes), "the user typed over it");
     expect(code(await provider.undo(third.undoToken!, signal))).toBe(
       "CHANGED_SINCE",

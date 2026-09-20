@@ -3929,7 +3929,7 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
       expect(list.tools.map((t) => t.id)).toEqual([
         "files__read_text_file",
         "files__append_text_file",
-        "files__write_text_file",
+        "files__replace_file_text",
         "files__list_directory",
       ]);
       expect(list.unavailable).toEqual([]);
