@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,7 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   RESERVED_PROVIDERS,
   TOOL_ID,
@@ -32,6 +34,7 @@ import {
   checkArgs,
   createFilesProvider,
   credentialLikeName,
+  deliverableTextReader,
   fileName,
   fileToolSpec,
   homePath,
@@ -1295,5 +1298,99 @@ describe("undo", () => {
     expect((await provider.undo(tokens.at(-1)!, signal)).code).toBe("ok");
     await provider.close();
     expect(code(await provider.undo(tokens.at(-2)!, signal))).toBe("NOT_FOUND");
+  });
+});
+
+/**
+ * The done audit's read-back of a deliverable (src/core/done-audit.ts
+ * DoneEvidence; RunnerExtras.deliverableText): sweep B at bceb9cd,
+ * memory-link-to-note #1, the audit read seven requirements all met over a
+ * file holding one of four facts, since the appended text reached it only
+ * inside a cut history line. The reader is read_text_file's rules without
+ * the tool: the same paths, the same refusals as null.
+ */
+describe("deliverableTextReader (the done audit's read-back)", () => {
+  const notes = "OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
+  it("reads a plain-text file under the home whole, by its ~/ or absolute path, with an append at its end", async () => {
+    const read = deliverableTextReader(home);
+    expect(await read(`~/${notes}`)).toBe("Research notes for benchnote0a1b\n");
+    expect(await read(file(notes))).toBe("Research notes for benchnote0a1b\n");
+    // A trailing slash on the home is no different.
+    expect(await deliverableTextReader(`${home}/`)(`~/${notes}`)).toBe(
+      "Research notes for benchnote0a1b\n",
+    );
+    appendFileSync(file(notes), "Title\nFinding one\n");
+    expect(await read(`~/${notes}`)).toBe(
+      "Research notes for benchnote0a1b\nTitle\nFinding one\n",
+    );
+    // An empty file is empty text, not a refusal.
+    writeFileSync(file("OpenAssistBench/empty.txt"), "");
+    expect(await read("~/OpenAssistBench/empty.txt")).toBe("");
+  });
+  it("answers null for everything read_text_file refuses: absent, a folder, outside the home, the home itself, hidden, Library, credential-like, a link out, not text, too large, not a path", async () => {
+    const read = deliverableTextReader(home);
+    expect(
+      await read("~/OpenAssistBench/benchnote0a1b/missing.txt"),
+    ).toBeNull();
+    expect(await read("~/OpenAssistBench")).toBeNull();
+    expect(await read("/etc/hosts")).toBeNull();
+    expect(await read(join(tmpdir(), "elsewhere.txt"))).toBeNull();
+    expect(await read("~")).toBeNull();
+    expect(await read("~/")).toBeNull();
+    expect(await read(home)).toBeNull();
+    expect(await read("~/../outside.txt")).toBeNull();
+    writeFileSync(file(".hidden.txt"), "x");
+    expect(await read("~/.hidden.txt")).toBeNull();
+    writeFileSync(file("Library/Keychains/login.txt"), "x");
+    expect(await read("~/Library/Keychains/login.txt")).toBeNull();
+    writeFileSync(file("OpenAssistBench/logins.csv"), "user,pass");
+    expect(await read("~/OpenAssistBench/logins.csv")).toBeNull();
+    // A symlink inside the home to a file outside it: refused by its realpath.
+    const outside = mkdtempSync(join(tmpdir(), "butler-outside-"));
+    try {
+      writeFileSync(join(outside, "o.txt"), "outside");
+      symlinkSync(join(outside, "o.txt"), file("OpenAssistBench/link.txt"));
+      expect(await read("~/OpenAssistBench/link.txt")).toBeNull();
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+    writeFileSync(
+      file("OpenAssistBench/blob.txt"),
+      Buffer.from([0x41, 0x00, 0x42]),
+    );
+    expect(await read("~/OpenAssistBench/blob.txt")).toBeNull();
+    writeFileSync(
+      file("OpenAssistBench/big.txt"),
+      "a".repeat(FILE_LIMITS.readBytes + 1),
+    );
+    expect(await read("~/OpenAssistBench/big.txt")).toBeNull();
+    expect(await read("")).toBeNull();
+    expect(await read("notes.txt")).toBeNull();
+    expect(await read(undefined as unknown as string)).toBeNull();
+    // Nothing was written or moved by any of it.
+    expect(text(notes)).toBe("Research notes for benchnote0a1b\n");
+  });
+  it("is the reader the app, both harness scripts and the bench attempt hand the runner as deliverableText", () => {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const main = readFileSync(join(root, "electron/main.ts"), "utf8");
+    expect(main).toContain(
+      'import { deliverableTextReader } from "../src/tools/providers/files";',
+    );
+    expect(main).toContain(
+      'deliverableText: deliverableTextReader(app.getPath("home")),',
+    );
+    for (const script of ["scripts/bench.mjs", "scripts/harness-cycle.mjs"]) {
+      const source = readFileSync(join(root, script), "utf8");
+      expect(source, script).toContain('"../src/tools/providers/files.ts"');
+      expect(source, script).toContain(
+        "deliverableText: deliverableTextReader(homedir()),",
+      );
+    }
+    const attempt = readFileSync(
+      join(root, "src/gym/bench/attempt.ts"),
+      "utf8",
+    );
+    expect(attempt).toContain("deliverableText?: DeliverableTextReader;");
+    expect(attempt).toContain("{ deliverableText: deps.deliverableText }");
   });
 });

@@ -10,7 +10,10 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import type { PresenceReport } from "../../../electron/controller";
-import type { FileFactsReader } from "../../core/deliverables";
+import type {
+  DeliverableTextReader,
+  FileFactsReader,
+} from "../../core/deliverables";
 import type { MemoryAccess } from "../../core/memory";
 import { nullRecorder } from "../../core/recorder";
 import type { ToolAccess } from "../../core/tools";
@@ -172,6 +175,14 @@ export interface AttemptDeps {
    * against a file, as in the app without the reader.
    */
   deliverables?: FileFactsReader;
+  /**
+   * The done audit's reader of a deliverable's content
+   * (src/tools/providers/files.ts deliverableTextReader), handed to the
+   * Runner as RunnerExtras.deliverableText: the files the run wrote are read
+   * back at a claim and shown to the auditor. Without it the audit reads
+   * the steps alone.
+   */
+  deliverableText?: DeliverableTextReader;
   launch: Launch;
   fixture?: FixtureHandle;
   /**
@@ -902,6 +913,9 @@ export async function runAttempt(
       {
         ...(deps.tools ? { tools: deps.tools } : {}),
         ...(deps.deliverables ? { deliverables: deps.deliverables } : {}),
+        ...(deps.deliverableText
+          ? { deliverableText: deps.deliverableText }
+          : {}),
       },
     );
     state.runner = runner;

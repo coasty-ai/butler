@@ -171,6 +171,10 @@ const fields = new Set([
   "requirements",
   "unmet",
   "unmetKinds",
+  // DoneAudited: how many files the audit read back (a count) and whether
+  // the last page read was shown to it (a flag); never their text.
+  "deliverables",
+  "pageRead",
   // Memory and replay plans: content-free counts and fixed codes only.
   "preferences",
   "episodes",
@@ -440,6 +444,8 @@ const countFields = new Set([
   "depth",
   // FrameCaptured: nodes the page-text walk visited.
   "textNodes",
+  // DoneAudited: files read back for the audit.
+  "deliverables",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
@@ -532,6 +538,8 @@ const flagFields = new Set([
   // ActionFailed STATE_CHANGED, ActionRetargetRequested: the runner closed
   // the menu the last right_click left open for this refusal.
   "dismissed",
+  // DoneAudited: the last page read was shown to the audit.
+  "pageRead",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -891,7 +899,8 @@ const journalEvents = new Map<string, Set<string>>([
     ]),
   ],
   // The done audit's outcome: counts, its duration, ok or unavailable, the
-  // attempts, and the unmet requirements' kinds (codes).
+  // attempts, the unmet requirements' kinds (codes), how many files were
+  // read back for it and whether a page read was shown (never their text).
   [
     "DoneAudited",
     new Set([
@@ -901,6 +910,8 @@ const journalEvents = new Map<string, Set<string>>([
       "durationMs",
       "code",
       "attempts",
+      "deliverables",
+      "pageRead",
     ]),
   ],
   ["ActionInterrupted", new Set(["actionType"])],
@@ -1387,6 +1398,10 @@ export class LocalDiagnostics {
                 // unusable reply); the table allowed it since abc24ae but
                 // no reader carried it.
                 attempts: count(e.data.attempts),
+                // Files read back for the audit (a count) and whether the
+                // last page read was shown (a flag); the text of neither.
+                deliverables: count(e.data.deliverables),
+                pageRead: e.data.pageRead,
               }
             : {}),
           ...(e.type === "DoneAudited" || e.type === "RunFailed"

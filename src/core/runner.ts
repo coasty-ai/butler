@@ -74,15 +74,19 @@ import {
   deliverablePaths,
   sameFacts,
   type Deliverable,
+  type DeliverableTextReader,
   type FileFactsReader,
 } from "./deliverables";
 import {
   auditApplies,
+  DELIVERABLES_MAX,
   doneAuditCall,
   parseDoneAudit,
   requirementChallenge,
   REQUIREMENT_UNMET,
   type DoneAudit,
+  type DoneDeliverable,
+  type DoneEvidence,
   RequirementsUnmetError,
   type Requirement,
 } from "./done-audit";
@@ -229,6 +233,46 @@ const knownType = (input: unknown) => {
   const type = (input as { type?: unknown } | null)?.type;
   return typeof type === "string" && actionTypes.has(type) ? type : "unknown";
 };
+/** The web reads whose newest ok result the done audit reads whole (Runner.pageRead). */
+export const PAGE_READ_TOOLS: ReadonlySet<string> = new Set([
+  "web__read_page_text",
+  "web__read_current_page",
+]);
+/**
+ * The file a files-tool write leaves for the user, from the call's own
+ * arguments: the path an append or replace wrote to, or where a rename or
+ * move put the file, with the path it left (so the run's list forgets it).
+ * undefined for any other tool, or arguments that are not paths. Paths as
+ * the model wrote them (~/… or absolute), joined by string alone: the
+ * reader resolves them under the home folder.
+ */
+export function writtenPath(action: {
+  tool: string;
+  args: Record<string, unknown>;
+}): { path: string; from?: string } | undefined {
+  const path = typeof action.args.path === "string" ? action.args.path : "";
+  if (!path) return undefined;
+  switch (action.tool) {
+    case "files__append_text_file":
+    case "files__replace_file_text":
+      return { path };
+    case "files__rename_file": {
+      const newName = action.args.newName;
+      const slash = path.lastIndexOf("/");
+      if (typeof newName !== "string" || !newName || slash < 0)
+        return undefined;
+      return { path: path.slice(0, slash + 1) + newName, from: path };
+    }
+    case "files__move_file": {
+      const folder = action.args.toFolder;
+      const name = path.slice(path.lastIndexOf("/") + 1);
+      if (typeof folder !== "string" || !folder || !name) return undefined;
+      return { path: `${folder.replace(/\/+$/, "")}/${name}`, from: path };
+    }
+    default:
+      return undefined;
+  }
+}
 /** History entries the model sees whole; the steps before them become one line. */
 export const MODEL_HISTORY_FULL = 6;
 /**
@@ -1591,6 +1635,18 @@ export interface RunnerExtras {
    * checked against a file.
    */
   deliverables?: FileFactsReader;
+  /**
+   * Reads a plain-text file's content by path for the done audit's
+   * deliverable section (src/tools/providers/files.ts deliverableTextReader,
+   * the files tool's own path rules; src/core/done-audit.ts DoneEvidence).
+   * At a claim the files this run wrote through the files tool, and the
+   * file the task names, are read back and shown to the auditor bounded, so
+   * a fact missing from the file is read off the file, not the summary
+   * (sweep B at bceb9cd, memory-link-to-note #1: three findings absent from
+   * the file, seven requirements read all met). null is "could not be
+   * read". Without it the audit reads the steps alone, as before.
+   */
+  deliverableText?: DeliverableTextReader;
 }
 export class Runner {
   settled = true;
@@ -1750,6 +1806,19 @@ export class Runner {
   /** A tool call of another tier was executed this run, whatever it returned. */
   private wroteByTool = false;
   /**
+   * The paths the files tool wrote this run, oldest first, each once: the
+   * path appended to or replaced, or where a rename or move put the file,
+   * which then forgets the path it left (writtenPath). Read back at a claim
+   * for the done audit (doneEvidence), most recent first.
+   */
+  private written: string[] = [];
+  /**
+   * The result of the run's newest ok web read (PAGE_READ_TOOLS), whole as
+   * the tool layer returned it, for the done audit: the history line the
+   * audit reads cuts it at 1,200 characters and the model's copy at 640.
+   */
+  private pageRead?: string;
+  /**
    * The clock line the frozen list is shown with, taken when the list is:
    * context.tools rides in the request's cacheable workspace part, so it
    * must not change from step to step (policy grounds dates on the live
@@ -1872,14 +1941,73 @@ export class Runner {
     return unchanged;
   }
   /**
+   * What the done audit reads back at a claim, kept as a tool call
+   * executes: the file a files-tool write left (its path, most recent last,
+   * each once; a rename or move forgets the path the file left) and the
+   * newest ok web read's result whole. A read answered from the run's
+   * earlier result (repeat) changes neither.
+   */
+  private trackDeliverable(
+    action: Extract<Action, { type: "tool_call" }>,
+    outcome: ToolOutcome,
+    repeat: boolean,
+  ) {
+    const wrote = writtenPath(action);
+    if (wrote)
+      this.written = [
+        ...this.written.filter((p) => p !== wrote.path && p !== wrote.from),
+        wrote.path,
+      ];
+    if (!repeat && PAGE_READ_TOOLS.has(action.tool))
+      this.pageRead = outcome.text;
+  }
+  /**
+   * The run's deliverables at a claim, for the done audit (DoneEvidence):
+   * the files the files tool wrote this run, most recent first, then the
+   * file the task names (deliverablePaths) when not among them, at most
+   * DELIVERABLES_MAX, each read back whole through extras.deliverableText
+   * (the files tool's own rules; a read declined or failed is a deliverable
+   * that could not be read, which the section says), and the newest ok web
+   * read's result. Nothing is read without the reader: the audit then reads
+   * the steps as before. Nothing here can end a run.
+   */
+  private async doneEvidence(run: Run): Promise<DoneEvidence> {
+    const read = this.extras.deliverableText;
+    const deliverables: DoneDeliverable[] = [];
+    if (read) {
+      const paths: string[] = [];
+      for (const path of [
+        ...[...this.written].reverse(),
+        ...deliverablePaths(run.task),
+      ])
+        if (!paths.includes(path)) paths.push(path);
+      for (const path of paths.slice(0, DELIVERABLES_MAX)) {
+        let text: string | null = null;
+        try {
+          text = await read(path);
+        } catch {
+          text = null;
+        }
+        deliverables.push(text === null ? { path } : { path, text });
+      }
+    }
+    return {
+      deliverables,
+      ...(this.pageRead !== undefined ? { pageRead: this.pageRead } : {}),
+    };
+  }
+  /**
    * One text call to the run's provider with the objective, the compact
-   * history the model already reads (modelHistory: no screenshot) and the
-   * claimed summary; the reply parsed as the audit, or undefined when the
-   * call failed, was refused, or was not the shape ("audit unavailable",
-   * the done standing). Its usage is the run's (UsageAdded, with purpose
-   * "audit" so a harness can price it at the auditor's own rates when the
-   * settings' dialogModel puts the audit on another model). DoneAudited
-   * carries counts, the duration, the code and the unmet kinds only.
+   * history the model already reads (modelHistory: no screenshot), the
+   * screen at the claim, the run's deliverables read back and its last page
+   * read (doneEvidence) and the claimed summary; the reply parsed as the
+   * audit, or undefined when the call failed, was refused, or was not the
+   * shape ("audit unavailable", the done standing). Its usage is the run's
+   * (UsageAdded, with purpose "audit" so a harness can price it at the
+   * auditor's own rates when the settings' dialogModel puts the audit on
+   * another model). DoneAudited carries counts, the duration, the code, the
+   * unmet kinds, how many deliverables were shown and whether a page read
+   * was; never their text.
    */
   private async auditDone(
     run: Run,
@@ -1902,6 +2030,9 @@ export class Runner {
     const screen = context
       ? { title: context.windowTitle, text: context.visibleText }
       : undefined;
+    // The files the run wrote, read back now, and its last page read: what
+    // the user gets, shown whole enough to compare facts against.
+    const evidence = await this.doneEvidence(run);
     for (const retry of [false, true]) {
       attempts += 1;
       try {
@@ -1912,6 +2043,7 @@ export class Runner {
             summary,
             retry,
             screen,
+            evidence,
           ),
           this.abort.signal,
         );
@@ -1933,6 +2065,10 @@ export class Runner {
       durationMs: Math.round(performance.now() - started),
       code: audit ? "ok" : "unavailable",
       attempts,
+      // How many files were read back for the audit and whether a page
+      // read was shown: a count and a flag, never their text.
+      deliverables: evidence.deliverables.length,
+      pageRead: evidence.pageRead !== undefined,
     });
     return audit;
   }
@@ -3218,6 +3354,7 @@ export class Runner {
       return "continue";
     }
     const ok = outcome.code === "ok";
+    if (ok) this.trackDeliverable(action, outcome, earlier !== undefined);
     run.actions++;
     run.tools = {
       calls: (run.tools?.calls ?? 0) + 1,
@@ -4486,6 +4623,8 @@ export class Runner {
     this.downloadHinted = new Set();
     this.readCalls = 0;
     this.wroteByTool = false;
+    this.written = [];
+    this.pageRead = undefined;
     this.settleBefore = undefined;
     this.streamedPage = undefined;
     this.dismissMenu = false;

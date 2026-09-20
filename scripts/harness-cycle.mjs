@@ -168,6 +168,8 @@ const { analyze, ownerOf, parseDiagnostics } =
 const { median, reasonLabel, renderSummary } =
   await import("../src/gym/bench/report.ts");
 const { fileFactsReader } = await import("../src/storage/files.ts");
+const { deliverableTextReader } =
+  await import("../src/tools/providers/files.ts");
 // The whole module: its per-model price table, where it has one, prices the
 // cells (cellPrices).
 const catalog = await import("../src/providers/catalog.ts");
@@ -1544,6 +1546,9 @@ const deps = {
   // fails the run the second time (src/core/deliverables.ts); the reader
   // sees existence, size and time under this home, never contents.
   deliverables: fileFactsReader(homedir()),
+  // The done audit reads the files the run wrote back at a claim, under the
+  // files tool's own path rules (src/core/done-audit.ts DoneEvidence).
+  deliverableText: deliverableTextReader(homedir()),
   launch: launchServices(),
 };
 const deadline = Date.now() + timeBoxSeconds * 1000;

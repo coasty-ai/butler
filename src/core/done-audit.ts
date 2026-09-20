@@ -50,11 +50,38 @@
  * evidence the step's number alone; the cap is DONE_AUDIT_MAX_OUTPUT_TOKENS,
  * and the retry's reminder asks for the same bounds.
  *
+ * What the audit can see decides what it can catch. Sweep B at bceb9cd
+ * (cycle 20260920-0957-bceb9cd, gpt-5.4-mini cell, the audit on gpt-5.4
+ * through --audit-model), memory-link-to-note #1: a web read, four
+ * captures and an append_text_file marked finish; the grader found the
+ * title in the file and none of the three findings, and the audit (1,357
+ * input, 1,490 output tokens) read seven requirements all met. It could
+ * not do better: the appended text sat inside the append action's JSON in
+ * one history line and the page's text inside the read's result line, both
+ * cut at 1,200 characters (the model's copy of an older result at 640), so
+ * no auditor could compare three facts against a page from that. The same
+ * shape gave the day's false dones on msg-group-chat-digest (facts
+ * missing), mail-draft-reply (the wrong sentence), ops-support-ticket-draft
+ * (the wrong draft) and travel-hotel-shortlist (dates never searched): the
+ * artifact the user gets was never shown whole. Since then the input
+ * carries the run's deliverables (DoneEvidence): the files the run wrote
+ * through the files tool, most recent first, then the file the task names,
+ * at most DELIVERABLES_MAX, each read back at the claim and shown up to
+ * DELIVERABLE_CHARS (a longer file its start and its end, since an append
+ * lands at the end), or "could not be read"; and the newest ok web read's
+ * result up to PAGE_READ_CHARS in place of its cut history line. The whole
+ * input stays under AUDIT_INPUT_CHARS: the oldest steps give way first
+ * (never under HISTORY_MIN_CHARS), then the page read. The prompt says a
+ * fact absent from the deliverable is unmet whatever the summary says.
+ *
  * Content: the requirements' words travel to the model and into the
- * history line the encrypted journal keeps; the trace (DoneAudited) carries
- * counts, a duration, a code and the unmet requirements' kinds (a fixed
- * vocabulary, REQUIREMENT_KINDS) only. This module is pure and makes no
- * call: the runner owns the call (Provider.text) and the events.
+ * history line the encrypted journal keeps; a deliverable's content and the
+ * page's text travel to the model only, as the history lines do; the trace
+ * (DoneAudited) carries counts, a duration, a code, the unmet requirements'
+ * kinds (a fixed vocabulary, REQUIREMENT_KINDS), how many deliverables were
+ * shown and whether a page read was, never a word of any. This module is
+ * pure and makes no call or read: the runner owns the call (Provider.text),
+ * the reading (RunnerExtras.deliverableText) and the events.
  */
 import { z } from "zod";
 import type {
@@ -95,6 +122,43 @@ export const DONE_AUDIT_EFFORT = "medium" as const;
 export const DONE_AUDIT_MAX_REQUIREMENTS = 12;
 /** The history the audit reads, in characters; oldest lines drop first. */
 const HISTORY_CHARS = 8_000;
+/**
+ * The newest steps are kept to at least this many characters whatever the
+ * evidence sections need: the write step and the claim are the steps the
+ * audit cites as evidence numbers. Two or three whole lines at 1,200.
+ */
+export const HISTORY_MIN_CHARS = 2_500;
+/**
+ * The whole input, in characters (about 3,500 tokens): the objective (at
+ * most 2,000), the steps, the screen at done (1,700), up to three
+ * deliverables (about 1,750 each with the path and the cut marker), the
+ * page read and the summary (600). The objective, screen, deliverables and
+ * summary always fit (about 10,200 at most); the steps give way first, down
+ * to HISTORY_MIN_CHARS, then the page read, down to PAGE_READ_MIN_CHARS,
+ * and 10,200 + 2,500 + 300 stays under the budget.
+ */
+export const AUDIT_INPUT_CHARS = 14_000;
+/**
+ * Characters of a deliverable's content the audit reads. A longer file
+ * shows its first DELIVERABLE_HEAD_CHARS and its end, with the cut counted
+ * between: an append lands at the end of a file that may hold earlier
+ * notes, and a head alone would show the auditor the old notes and hide
+ * the new ones.
+ */
+export const DELIVERABLE_CHARS = 1_500;
+export const DELIVERABLE_HEAD_CHARS = 500;
+/** Files the audit reads back at a claim, most recently written first. */
+export const DELIVERABLES_MAX = 3;
+/**
+ * Characters of the newest ok web read's result the audit gets, whole from
+ * the tool layer's result (WEB_LIMITS.resultChars 30,400) rather than the
+ * 1,200-character history line, and the least it keeps when the input is
+ * full.
+ */
+export const PAGE_READ_CHARS = 2_500;
+export const PAGE_READ_MIN_CHARS = 300;
+/** A deliverable's path in its section. */
+const PATH_CHARS = 200;
 const SUMMARY_CHARS = 600;
 const OBJECTIVE_CHARS = 2_000;
 /** A requirement's words in the history line, and the whole list's. */
@@ -329,7 +393,7 @@ export function auditApplies(scope: DoneAuditScope): boolean {
 
 export const DONE_AUDIT_PROMPT = `You audit whether a computer-use run on a Mac finished its objective. You are given the objective, the run's steps in order (each as the model proposed it, with the result the runner reported) and the model's own summary at done.
 List every requirement the objective states: each distinct outcome or step it asks for (a page or app to open, a value to enter, search or select, a fact to write, a file to save, a message to send, a condition to satisfy). Split a sentence that asks for several things into one requirement each; a fact the objective names is its own requirement. List at most ${DONE_AUDIT_MAX_REQUIREMENTS}.
-For each requirement decide from the steps and the screen at done whether the run met it. met is true only when a step shows it happened (a typed or selected value, a clicked control whose name is the value or the action asked for, such as Keep draft, Apply, Save or Add to basket, a submitted form, a tool result, a saved file, a page reached, an app or file a step opened) or the screen at done shows its outcome (a confirmation, the value in place). A tool result reporting a file created, appended, replaced, renamed or moved is that file saved: a requirement to save it is met by that same step, and no further save step is needed. A clause that only names where or how to do something (open a file or app, use an app, go to a page) is a means, not an outcome: when the outcome it serves is met by a tool result or on screen, the means is met too, with that step as evidence; a clause that is itself an outcome the user wants (a page left open, an app brought to the front, a file opened for them to read) stays a requirement. A clause that forbids something (do not send, do not change anything else, leave the rest untouched) is met when no step did it: answer met true with evidence null, never unmet for want of a step. A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
+For each requirement decide from the steps and the screen at done whether the run met it. met is true only when a step shows it happened (a typed or selected value, a clicked control whose name is the value or the action asked for, such as Keep draft, Apply, Save or Add to basket, a submitted form, a tool result, a saved file, a page reached, an app or file a step opened) or the screen at done shows its outcome (a confirmation, the value in place). A tool result reporting a file created, appended, replaced, renamed or moved is that file saved: a requirement to save it is met by that same step, and no further save step is needed. When the input shows a deliverable at done (the content of a file the run wrote) or the last page read, a requirement to write, add or note facts is met only when the deliverable's content shows those facts: a fact the objective asks for, named in it or read from the page, that is absent from the deliverable is unmet, whatever the summary says. A clause that only names where or how to do something (open a file or app, use an app, go to a page) is a means, not an outcome: when the outcome it serves is met by a tool result or on screen, the means is met too, with that step as evidence; a clause that is itself an outcome the user wants (a page left open, an app brought to the front, a file opened for them to read) stays a requirement. A clause that forbids something (do not send, do not change anything else, leave the rest untouched) is met when no step did it: answer met true with evidence null, never unmet for want of a step. A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
 Reply with strict JSON and nothing else, in this exact shape: {"requirements":[{"text":string,"kind":string,"met":boolean,"evidence":number|null}]}. text is the requirement in a few words from the objective; kind is one word from this list: open, navigate, read, enter, select, write, save, send, confirm, other; evidence is the number of the step that met it (an integer, nothing else), or null when unmet or when nothing needed doing. No prose, no code fence.`;
 
 const historyLine = (entry: History[number], index: number): string => {
@@ -338,11 +402,6 @@ const historyLine = (entry: History[number], index: number): string => {
   return `${index + 1}. ${entry.type}${shown} -> ${entry.result}`;
 };
 
-/**
- * The call's input: the objective, the history lines the model already
- * reads (oldest first, the oldest dropped when over HISTORY_CHARS) and the
- * claimed summary. Never a screenshot.
- */
 /** Characters of the screen at done the audit reads (the window title and the visible text). */
 export const SCREEN_CHARS = 1_500;
 /** What the run's last frame showed when the claim was made, for the audit. */
@@ -350,25 +409,99 @@ export interface DoneScreen {
   title?: string;
   text?: string;
 }
-export function doneAuditInput(
-  objective: string,
-  history: History,
-  summary: string,
-  screen?: DoneScreen,
-): string {
+/**
+ * A file the run wrote (or the objective names), read back at the claim
+ * through RunnerExtras.deliverableText; text absent when it could not be
+ * read (absent, not plain text, declined), which the section says.
+ */
+export interface DoneDeliverable {
+  path: string;
+  text?: string;
+}
+/**
+ * What the run produced, read back at the claim (Runner.doneEvidence): the
+ * files it wrote, most recent first, and the newest ok web read's result
+ * whole as the tool layer returned it.
+ */
+export interface DoneEvidence {
+  deliverables: DoneDeliverable[];
+  pageRead?: string;
+}
+export const DELIVERABLE_LINE =
+  "Deliverable at done (the file the run wrote, its content):";
+export const PAGE_READ_LINE = "Last page read (the page's text the run had):";
+export const DELIVERABLE_UNREAD =
+  "(The file could not be read at the claim: it does not exist, is not a plain-text file, or is outside the home folder.)";
+export const DELIVERABLE_EMPTY = "(The file is empty.)";
+
+/**
+ * A deliverable's content within DELIVERABLE_CHARS: whole when it fits,
+ * else its first DELIVERABLE_HEAD_CHARS and its last (DELIVERABLE_CHARS −
+ * DELIVERABLE_HEAD_CHARS), the cut counted between them.
+ */
+export function boundDeliverable(text: string): string {
+  if (text.length <= DELIVERABLE_CHARS) return text;
+  const tail = DELIVERABLE_CHARS - DELIVERABLE_HEAD_CHARS;
+  return `${text.slice(0, DELIVERABLE_HEAD_CHARS)}\n[… ${text.length - DELIVERABLE_CHARS} characters cut …]\n${text.slice(-tail)}`;
+}
+const deliverableSection = (item: DoneDeliverable): string[] => [
+  "",
+  DELIVERABLE_LINE,
+  bound(item.path, PATH_CHARS),
+  item.text === undefined
+    ? DELIVERABLE_UNREAD
+    : item.text.trim() === ""
+      ? DELIVERABLE_EMPTY
+      : boundDeliverable(item.text),
+];
+/** The characters the lines take joined, each with its newline (one over, on purpose). */
+const size = (lines: string[]) =>
+  lines.reduce((total, line) => total + line.length + 1, 0);
+/** Room the omitted-steps line may take beside the lines counted. */
+const OMITTED_LINE_CHARS = 60;
+/**
+ * The history lines kept for the audit, newest first up to the budget,
+ * then reversed to oldest first, with one line counting the steps dropped.
+ */
+function keptLines(history: History, budget: number): string[] {
   const lines = history.map(historyLine);
   const kept: string[] = [];
   let length = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = bound(lines[i], 1_200);
-    if (length + line.length > HISTORY_CHARS) {
+    if (length + line.length > budget) {
       kept.push(`… ${i + 1} earlier step${i + 1 === 1 ? "" : "s"} omitted.`);
       break;
     }
     kept.push(line);
     length += line.length + 1;
   }
-  kept.reverse();
+  return kept.reverse();
+}
+/**
+ * The call's input: the objective, the history lines the model already
+ * reads (oldest first, the oldest dropped when over the history's budget),
+ * the screen at done, the deliverables and the last page read (the
+ * evidence), and the claimed summary. Never a screenshot. Under
+ * AUDIT_INPUT_CHARS: the fixed sections (objective, screen, deliverables,
+ * summary) are measured first, the steps get what is left up to
+ * HISTORY_CHARS and never under HISTORY_MIN_CHARS, and the page read gets
+ * what is left after them up to PAGE_READ_CHARS and never under
+ * PAGE_READ_MIN_CHARS.
+ */
+export function doneAuditInput(
+  objective: string,
+  history: History,
+  summary: string,
+  screen?: DoneScreen,
+  evidence?: DoneEvidence,
+): string {
+  const head = [
+    "Objective:",
+    bound(objective, OBJECTIVE_CHARS),
+    "",
+    "Steps (oldest first):",
+  ];
   // The screen when the claim was made: the steps' result lines say only
   // that a step executed, so a confirmation page or a value in place shows
   // here or nowhere (market 1/3 at 5e7d433: two check-ins the grader scored
@@ -382,16 +515,49 @@ export function doneAuditInput(
           bound(screen.text ?? "", SCREEN_CHARS),
         ]
       : [];
+  const deliverables = (evidence?.deliverables ?? [])
+    .slice(0, DELIVERABLES_MAX)
+    .flatMap(deliverableSection);
+  const tail = ["", "Summary at done:", bound(summary, SUMMARY_CHARS)];
+  const fixed = size(head) + size(shown) + size(deliverables) + size(tail);
+  const page = evidence?.pageRead
+    ? bound(evidence.pageRead, PAGE_READ_CHARS)
+    : "";
+  const pageLabel = ["", PAGE_READ_LINE];
+  const pageSize = page ? size(pageLabel) + page.length + 1 : 0;
+  // What the steps and the page read may take between them, each line
+  // with its newline: the budget less the fixed sections and one, so the
+  // whole input stays below AUDIT_INPUT_CHARS when both are cut (the last
+  // line has no newline, which pays for the one under).
+  const room = AUDIT_INPUT_CHARS - 1 - fixed;
+  const historyBudget = Math.max(
+    HISTORY_MIN_CHARS,
+    Math.min(HISTORY_CHARS, room - pageSize - OMITTED_LINE_CHARS),
+  );
+  const kept = keptLines(history, historyBudget);
+  const steps = kept.length ? kept.join("\n") : "(none)";
+  const pageShown = page
+    ? [
+        ...pageLabel,
+        bound(
+          page,
+          Math.max(
+            PAGE_READ_MIN_CHARS,
+            Math.min(
+              PAGE_READ_CHARS,
+              room - (steps.length + 1) - size(pageLabel),
+            ),
+          ),
+        ),
+      ]
+    : [];
   return [
-    "Objective:",
-    bound(objective, OBJECTIVE_CHARS),
-    "",
-    "Steps (oldest first):",
-    kept.length ? kept.join("\n") : "(none)",
+    ...head,
+    steps,
     ...shown,
-    "",
-    "Summary at done:",
-    bound(summary, SUMMARY_CHARS),
+    ...deliverables,
+    ...pageShown,
+    ...tail,
   ].join("\n");
 }
 
@@ -413,11 +579,12 @@ export function doneAuditCall(
   summary: string,
   retry = false,
   screen?: DoneScreen,
+  evidence?: DoneEvidence,
 ): ProviderTextCall {
   return {
     system: DONE_AUDIT_PROMPT,
     input:
-      doneAuditInput(objective, history, summary, screen) +
+      doneAuditInput(objective, history, summary, screen, evidence) +
       (retry ? `\n\n${DONE_AUDIT_REMINDER}` : ""),
     maxOutputTokens: DONE_AUDIT_MAX_OUTPUT_TOKENS,
     // Medium, not low: at low effort the auditor read a hotel search whose

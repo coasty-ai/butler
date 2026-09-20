@@ -3349,6 +3349,86 @@ describe("the journal's content-free rows", () => {
       expect(r[1].data).toEqual({ ...base(s, 2), usage: dialog });
       expect(r[2].data).toEqual({ ...base(s, 3), usage: dialog });
     }));
+  it("writes how many files the done audit read back as a count and whether it saw a page read as a flag, never their text or paths", () =>
+    fixture((log) => {
+      // Sweep B at bceb9cd, memory-link-to-note #1: the audit now reads the
+      // file the run wrote and the page it read (src/core/done-audit.ts
+      // DoneEvidence); the row says how many and whether, nothing of what.
+      const s = journal([
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: 4,
+            unmet: 1,
+            unmetKinds: ["write"],
+            durationMs: 900,
+            code: "ok",
+            attempts: 1,
+            deliverables: 2,
+            pageRead: true,
+            // Never written by the runner; pinned dropped all the same.
+            deliverableText: `${MARK} Finding one`,
+            pageText: `${MARK} article`,
+            paths: [`${MARK}/notes.txt`],
+          },
+        },
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: 2,
+            unmet: 0,
+            durationMs: 100,
+            code: "ok",
+            attempts: 1,
+            deliverables: 0,
+            pageRead: false,
+          },
+        },
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: 2,
+            unmet: 0,
+            durationMs: 100,
+            code: "ok",
+            // Not a count, not a flag: dropped.
+            deliverables: "two",
+            pageRead: `${MARK} yes`,
+          },
+        },
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        requirements: 4,
+        unmet: 1,
+        unmetKinds: ["write"],
+        durationMs: 900,
+        code: "ok",
+        attempts: 1,
+        deliverables: 2,
+        pageRead: true,
+      });
+      expect(r[1].data).toEqual({
+        ...base(s, 2),
+        requirements: 2,
+        unmet: 0,
+        durationMs: 100,
+        code: "ok",
+        attempts: 1,
+        deliverables: 0,
+        pageRead: false,
+      });
+      expect(r[2].data).toEqual({
+        ...base(s, 3),
+        requirements: 2,
+        unmet: 0,
+        durationMs: 100,
+        code: "ok",
+      });
+    }));
   it("writes the unmet requirements' kinds as codes from the fixed list, on the audit's row and on a run failed REQUIREMENTS_UNMET; a kind off the list, a bare string and every word are dropped", () =>
     fixture((log) => {
       const s = journal([

@@ -211,6 +211,17 @@ export interface FileFacts {
  * a missing file is a fact (exists false), not a refusal.
  */
 export type FileFactsReader = (path: string) => Promise<FileFacts | null>;
+/**
+ * Reads a plain-text file's whole content by path (`~` meaning the home
+ * folder) for the done audit's deliverable section (src/core/done-audit.ts
+ * DoneEvidence): the files the run wrote through the files tool, and the
+ * file the task names, read back at a claim so a fact missing from the file
+ * is read off the file, not the summary. Under the files tool's own path
+ * rules (src/tools/providers/files.ts deliverableTextReader); null when the
+ * reader declines the path, the file is absent, not plain text or too
+ * large, which the audit is told as "could not be read". Never writes.
+ */
+export type DeliverableTextReader = (path: string) => Promise<string | null>;
 
 /** The same file as far as the check can tell: both absent, or same size and time. */
 export function sameFacts(before: FileFacts, now: FileFacts): boolean {

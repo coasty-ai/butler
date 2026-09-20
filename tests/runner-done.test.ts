@@ -18,7 +18,18 @@ import {
   doneChallenge,
   failureCode,
   MODEL_RESULT_CHARS,
+  PAGE_READ_TOOLS,
+  writtenPath,
+  type RunnerExtras,
 } from "../src/core/runner";
+import {
+  fakeTools,
+  FILES_APPEND,
+  FILES_TOOLS,
+  WEB_READ,
+  WEB_TOOLS_FAKE,
+  ok,
+} from "./tool-fakes";
 import { ModelFailedError } from "../src/core/errors";
 import { approvalCode } from "../src/core/approval-codes";
 import {
@@ -28,6 +39,18 @@ import {
 } from "../src/core/deliverables";
 import {
   auditApplies,
+  AUDIT_INPUT_CHARS,
+  boundDeliverable,
+  DELIVERABLE_CHARS,
+  DELIVERABLE_EMPTY,
+  DELIVERABLE_HEAD_CHARS,
+  DELIVERABLE_LINE,
+  DELIVERABLE_UNREAD,
+  DELIVERABLES_MAX,
+  HISTORY_MIN_CHARS,
+  PAGE_READ_CHARS,
+  PAGE_READ_LINE,
+  PAGE_READ_MIN_CHARS,
   DONE_AUDIT_DEADLINE_MS,
   DONE_AUDIT_MAX_OUTPUT_TOKENS,
   DONE_AUDIT_MAX_REQUIREMENTS,
@@ -960,6 +983,10 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
       durationMs: expect.any(Number),
       code: "ok",
       attempts: 1,
+      // No file written through a tool and no page read this run: the
+      // count and the flag say so (the evidence describe below).
+      deliverables: 0,
+      pageRead: false,
     });
     expect(audits(m)[1].data).toEqual({
       requirements: 2,
@@ -968,6 +995,8 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
       durationMs: expect.any(Number),
       code: "ok",
       attempts: 1,
+      deliverables: 0,
+      pageRead: false,
     });
     expect(m.of("UsageAdded")).toHaveLength(2);
     // Tagged as the audit's, so a harness can price the tokens at the
@@ -1296,6 +1325,8 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
         durationMs: expect.any(Number),
         code: "unavailable",
         attempts: 2,
+        deliverables: 0,
+        pageRead: false,
       });
       // Each reply that arrived cost tokens; a thrown call cost none.
       const arrived = item.replies[0] instanceof Error ? 0 : 2;
@@ -1350,6 +1381,8 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
         durationMs: expect.any(Number),
         code: "ok",
         attempts: 2,
+        deliverables: 0,
+        pageRead: false,
       });
       // The second done's audit stood on its first, whole reply.
       expect(p.text).toHaveBeenCalledTimes(3);
@@ -1695,6 +1728,19 @@ describe("the done audit's pieces", () => {
     expect(DONE_AUDIT_PROMPT).toContain(
       "A tool result reporting a file created, appended, replaced, renamed or moved is that file saved: a requirement to save it is met by that same step, and no further save step is needed.",
     );
+    // The deliverable rule (sweep B at bceb9cd, memory-link-to-note #1: the
+    // audit on gpt-5.4 read seven requirements all met over a file holding
+    // the title and none of the three findings). It follows the save rule
+    // and precedes the means rule.
+    const deliverableRule =
+      "When the input shows a deliverable at done (the content of a file the run wrote) or the last page read, a requirement to write, add or note facts is met only when the deliverable's content shows those facts: a fact the objective asks for, named in it or read from the page, that is absent from the deliverable is unmet, whatever the summary says.";
+    expect(DONE_AUDIT_PROMPT).toContain(deliverableRule);
+    expect(DONE_AUDIT_PROMPT.indexOf(deliverableRule)).toBeGreaterThan(
+      DONE_AUDIT_PROMPT.indexOf("no further save step is needed."),
+    );
+    expect(DONE_AUDIT_PROMPT.indexOf(deliverableRule)).toBeLessThan(
+      DONE_AUDIT_PROMPT.indexOf("A clause that only names where or how"),
+    );
     expect(DONE_AUDIT_PROMPT).toContain(
       "A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.",
     );
@@ -1721,8 +1767,9 @@ describe("the done audit's pieces", () => {
     );
     expect(DONE_AUDIT_PROMPT.endsWith("No prose, no code fence.")).toBe(true);
     // Lengths: 1,380 → 1,685 (abc24ae, 0f5cd0b) → 2,443 (5e119c1) →
-    // 2,445; the reminder 130 → 198 → 205.
-    expect(DONE_AUDIT_PROMPT.length).toBe(2_445);
+    // 2,445 → 2,792 (the deliverable rule, +347); the reminder 130 → 198 →
+    // 205.
+    expect(DONE_AUDIT_PROMPT.length).toBe(2_792);
     expect(DONE_AUDIT_REMINDER.length).toBe(205);
     // The output cap: at 700, six of the cycle's fourteen replies were cut
     // at exactly the cap (the usable ones ran 212–586 tokens) and two runs
@@ -1804,5 +1851,409 @@ describe("the done audit's pieces", () => {
     expect(many).toContain(`${DONE_AUDIT_MAX_REQUIREMENTS} were not met`);
     expect(many.length).toBeLessThan(MODEL_RESULT_CHARS);
     expect(REQUIREMENT_UNMET).toBe("requirement_unmet");
+  });
+});
+
+/**
+ * Sweep B at bceb9cd (cycle 20260920-0957-bceb9cd, gpt-5.4-mini cell, the
+ * audit on gpt-5.4 through --audit-model), memory-link-to-note #1: a web
+ * read, four captures and an append marked finish; the grader found the
+ * title in the file and none of the three findings, and the audit (1,357
+ * input, 1,490 output tokens) read seven requirements all met. It could not
+ * do better: the appended text sat inside the append action's JSON in one
+ * history line and the page's text inside the read's result line, both cut
+ * at 1,200 characters. The shapes below are that, content-free: a read, a
+ * write and a done, with the file's content and the page's text synthetic,
+ * through the fake tool layer (tests/tool-fakes.ts) and a reader over a map
+ * of paths to contents injected as RunnerExtras.deliverableText.
+ */
+const NOTE = "~/OpenAssistBench/tok/tok-notes.txt";
+/** Names the file ("add … to <path>": deliverablePaths finds it) and asks for facts. */
+const LINK_TO_NOTE = `Read the article at https://shop.example/tok/article and add its title and the three findings to ${NOTE}, one per line, then save.`;
+const readPage = act({
+  type: "tool_call",
+  tool: WEB_READ.id,
+  args: { url: "https://shop.example/tok/article" },
+  finish: false,
+});
+const append = (path: string, text: string) =>
+  act({ type: "tool_call", tool: FILES_APPEND.id, args: { path, text } });
+/** A page longer than a history line's 1,200 characters and shorter than PAGE_READ_CHARS. */
+const PAGE_BODY = "# Title\n" + "finding ".repeat(250);
+/**
+ * A runner over the fake tool layer and, when `files` is given, a reader
+ * answering from it (a missing key or null: could not be read); the paths
+ * asked of the reader are kept.
+ */
+function evidenced(
+  p: ReturnType<typeof auditing>,
+  m: ReturnType<typeof memory>,
+  files?: Map<string, string | null>,
+) {
+  const fake = fakeTools({ tools: [...FILES_TOOLS, ...WEB_TOOLS_FAKE] });
+  const reads: string[] = [];
+  const extras: RunnerExtras = {
+    tools: fake.access,
+    ...(files
+      ? {
+          deliverableText: async (path: string) => {
+            reads.push(path);
+            return files.get(path) ?? null;
+          },
+        }
+      : {}),
+  };
+  const runner = new Runner(
+    controller(),
+    p,
+    m.recorder,
+    settings,
+    () => {},
+    [],
+    undefined,
+    extras,
+  );
+  return { runner, fake, reads };
+}
+const sections = (input: string, line: string) => input.split(line).length - 1;
+
+describe("the done audit's evidence: the deliverable and the page read (sweep B at bceb9cd)", () => {
+  it("shows the audit the file the run wrote, read back at the claim, and the page it read whole past the history line's cut", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const content = "Title\nFinding one\n";
+    const p = auditing(
+      scripted([
+        readPage,
+        append(NOTE, content),
+        click,
+        done("Added the title and the findings."),
+      ]),
+      [ALL_MET],
+    );
+    const { runner, fake, reads } = evidenced(p, m, new Map([[NOTE, content]]));
+    fake.script(WEB_READ.id, () => ok(WEB_READ, PAGE_BODY));
+    await runner.start(LINK_TO_NOTE);
+    expect(p.text).toHaveBeenCalledTimes(1);
+    const input = p.calls[0].input;
+    // The deliverable section: the path, then the content whole, once —
+    // the path the append wrote is the path the objective names.
+    expect(input).toContain(`${DELIVERABLE_LINE}\n${NOTE}\n${content}`);
+    expect(sections(input, DELIVERABLE_LINE)).toBe(1);
+    expect(reads).toEqual([NOTE]);
+    // The page read: the tool layer's result whole (2,060 characters,
+    // past the 1,200 the history line keeps), once beside the cut line.
+    expect(input).toContain(`${PAGE_READ_LINE}\n`);
+    expect(input).toContain(PAGE_BODY);
+    expect(sections(input, PAGE_BODY)).toBe(1);
+    expect(PAGE_BODY.length).toBeGreaterThan(1_200);
+    // The order: steps, deliverable, page read, summary.
+    const at = (marker: string) => input.indexOf(marker);
+    expect(at("Steps (oldest first):")).toBeLessThan(at(DELIVERABLE_LINE));
+    expect(at(DELIVERABLE_LINE)).toBeLessThan(at(PAGE_READ_LINE));
+    expect(at(PAGE_READ_LINE)).toBeLessThan(at("Summary at done:"));
+    expect(input.length).toBeLessThan(AUDIT_INPUT_CHARS);
+    // The trace: a count and a flag, never the file's or the page's text.
+    expect(audits(m)).toHaveLength(1);
+    expect(audits(m)[0].data).toMatchObject({
+      code: "ok",
+      deliverables: 1,
+      pageRead: true,
+    });
+    const traced = JSON.stringify(
+      [...audits(m), ...m.of("ToolCallFinished")].map((e) => e.data),
+    );
+    expect(traced).not.toContain("Finding one");
+    expect(traced).not.toContain("finding ");
+    expect(traced).not.toContain("tok-notes");
+    expect(m.of("RunCompleted")).toHaveLength(1);
+  });
+  it("adds no section and asks the reader nothing when the run wrote no file and read no page: deliverables 0, pageRead false", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const p = auditing(scripted(threeThenDone()), [ALL_MET]);
+    const { runner, reads } = evidenced(p, m, new Map([[NOTE, "anything"]]));
+    await runner.start(TWO_CLAUSES);
+    expect(p.text).toHaveBeenCalledTimes(1);
+    expect(p.calls[0].input).not.toContain(DELIVERABLE_LINE);
+    expect(p.calls[0].input).not.toContain(PAGE_READ_LINE);
+    expect(reads).toEqual([]);
+    expect(audits(m)[0].data).toMatchObject({
+      deliverables: 0,
+      pageRead: false,
+    });
+  });
+  it("reads back the file the objective names when nothing wrote it through a tool (the editor route), and nothing at all without the reader", async () => {
+    policy.evaluate = () => ALLOW;
+    // Three screen steps, then done, on the objective that names the file.
+    const m = memory();
+    const p = auditing(scripted(threeThenDone()), [ALL_MET]);
+    const { runner, reads } = evidenced(p, m, new Map([[NOTE, "Title\n"]]));
+    await runner.start(LINK_TO_NOTE);
+    expect(reads).toEqual([NOTE]);
+    expect(p.calls[0].input).toContain(`${DELIVERABLE_LINE}\n${NOTE}\nTitle\n`);
+    expect(audits(m)[0].data).toMatchObject({ deliverables: 1 });
+    // No reader: the audit reads the steps as before, whatever was written.
+    const m2 = memory();
+    const p2 = auditing(
+      scripted([readPage, append(NOTE, "Title\n"), click, done("Added.")]),
+      [ALL_MET],
+    );
+    const { runner: bare } = evidenced(p2, m2);
+    await bare.start(LINK_TO_NOTE);
+    expect(p2.calls[0].input).not.toContain(DELIVERABLE_LINE);
+    // The page read needs no reader.
+    expect(p2.calls[0].input).toContain(PAGE_READ_LINE);
+    expect(audits(m2)[0].data).toMatchObject({
+      deliverables: 0,
+      pageRead: true,
+    });
+  });
+  it("says the file could not be read when the reader answers null or throws, an empty file when it is, and audits all the same", async () => {
+    policy.evaluate = () => ALLOW;
+    const gone = new Map<string, string | null>([[NOTE, null]]);
+    for (const files of [
+      gone,
+      new Map<string, string | null>(),
+      new Map([[NOTE, ""]]),
+    ]) {
+      const m = memory();
+      const p = auditing(
+        scripted([append(NOTE, "Title\n"), click, enter, done("Added.")]),
+        [ALL_MET],
+      );
+      const { runner } = evidenced(p, m, files);
+      await runner.start(LINK_TO_NOTE);
+      expect(p.text).toHaveBeenCalledTimes(1);
+      const expected =
+        files.get(NOTE) === "" ? DELIVERABLE_EMPTY : DELIVERABLE_UNREAD;
+      expect(p.calls[0].input).toContain(
+        `${DELIVERABLE_LINE}\n${NOTE}\n${expected}`,
+      );
+      expect(audits(m)[0].data).toMatchObject({ code: "ok", deliverables: 1 });
+      expect(m.of("RunCompleted")).toHaveLength(1);
+    }
+    // A reader that throws is a file that could not be read, not an error.
+    const m = memory();
+    const p = auditing(
+      scripted([append(NOTE, "Title\n"), click, enter, done("Added.")]),
+      [ALL_MET],
+    );
+    const fake = fakeTools({ tools: FILES_TOOLS });
+    const runner = new Runner(
+      controller(),
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      {
+        tools: fake.access,
+        deliverableText: async () => {
+          throw new Error("disk");
+        },
+      },
+    );
+    await runner.start(LINK_TO_NOTE);
+    expect(p.calls[0].input).toContain(
+      `${DELIVERABLE_LINE}\n${NOTE}\n${DELIVERABLE_UNREAD}`,
+    );
+    expect(m.of("RunCompleted")).toHaveLength(1);
+    expect(m.of("RunFailed")).toHaveLength(0);
+  });
+  it("reads back at most DELIVERABLES_MAX files, the most recently written first, and the named file after them", async () => {
+    policy.evaluate = () => ALLOW;
+    const paths = [1, 2, 3, 4].map((i) => `~/OpenAssistBench/tok/r${i}.txt`);
+    const files = new Map(paths.map((path, i) => [path, `row ${i + 1}\n`]));
+    files.set(NOTE, "totals\n");
+    const m = memory();
+    const p = auditing(
+      scripted([
+        ...paths.map((path, i) => append(path, `row ${i + 1}\n`)),
+        done("Wrote the rows and the totals."),
+      ]),
+      [ALL_MET],
+    );
+    const { runner, reads } = evidenced(p, m, files);
+    await runner.start(
+      `Add one line per receipt to the four receipt files, then save the totals in ${NOTE}.`,
+    );
+    expect(DELIVERABLES_MAX).toBe(3);
+    // The three newest writes, newest first; the oldest write and the
+    // named file are past the cap.
+    expect(reads).toEqual([paths[3], paths[2], paths[1]]);
+    const input = p.calls[0].input;
+    expect(sections(input, DELIVERABLE_LINE)).toBe(3);
+    // Within the sections (the steps' own JSON names every path in the
+    // order written): newest first.
+    const shown = input.slice(input.indexOf(DELIVERABLE_LINE));
+    expect(shown.indexOf(paths[3])).toBeLessThan(shown.indexOf(paths[2]));
+    expect(shown.indexOf(paths[2])).toBeLessThan(shown.indexOf(paths[1]));
+    expect(shown).toContain(`${paths[3]}\nrow 4\n`);
+    expect(shown).not.toContain(paths[0]);
+    expect(input).not.toContain("totals\n");
+    expect(audits(m)[0].data).toMatchObject({
+      deliverables: 3,
+      pageRead: false,
+    });
+  });
+  it("names the file a files-tool write leaves from the call's arguments: the path written, or where a rename or move put it", () => {
+    const args = (tool: string, a: Record<string, unknown>) => ({
+      tool,
+      args: a,
+    });
+    expect(
+      writtenPath(args("files__append_text_file", { path: NOTE, text: "x" })),
+    ).toEqual({ path: NOTE });
+    expect(
+      writtenPath(args("files__replace_file_text", { path: NOTE, text: "x" })),
+    ).toEqual({ path: NOTE });
+    expect(
+      writtenPath(
+        args("files__rename_file", { path: "~/a/old.txt", newName: "new.txt" }),
+      ),
+    ).toEqual({ path: "~/a/new.txt", from: "~/a/old.txt" });
+    expect(
+      writtenPath(
+        args("files__move_file", { path: "~/a/old.txt", toFolder: "~/b/" }),
+      ),
+    ).toEqual({ path: "~/b/old.txt", from: "~/a/old.txt" });
+    expect(
+      writtenPath(
+        args("files__move_file", {
+          path: "/Users/me/a/old.txt",
+          toFolder: "~/b",
+        }),
+      ),
+    ).toEqual({ path: "~/b/old.txt", from: "/Users/me/a/old.txt" });
+    // A read, another tool, a path that is not a string, a rename with no
+    // new name or of a bare name, a move with no folder: nothing written.
+    expect(
+      writtenPath(args("files__read_text_file", { path: NOTE })),
+    ).toBeUndefined();
+    expect(
+      writtenPath(args("web__read_page_text", { url: "https://x.example" })),
+    ).toBeUndefined();
+    expect(
+      writtenPath(args("files__append_text_file", { path: 7, text: "x" })),
+    ).toBeUndefined();
+    expect(
+      writtenPath(args("files__rename_file", { path: "~/a/old.txt" })),
+    ).toBeUndefined();
+    expect(
+      writtenPath(
+        args("files__rename_file", { path: "old.txt", newName: "new.txt" }),
+      ),
+    ).toBeUndefined();
+    expect(
+      writtenPath(args("files__move_file", { path: "~/a/old.txt" })),
+    ).toBeUndefined();
+    // The web reads whose newest result the audit reads whole.
+    expect([...PAGE_READ_TOOLS].sort()).toEqual([
+      "web__read_current_page",
+      "web__read_page_text",
+    ]);
+    expect(PAGE_READ_TOOLS.has("files__read_text_file")).toBe(false);
+  });
+  it("keeps the whole input under AUDIT_INPUT_CHARS: the oldest steps give way first, then the page read; a long file shows its start and its end", () => {
+    const steps = Array.from({ length: 40 }, (_, i) => ({
+      type: "type_text",
+      action: { type: "type_text", text: `${i} ` + "y".repeat(700) },
+      result: "z".repeat(600),
+    }));
+    const screen = { title: "t".repeat(300), text: "v".repeat(2_000) };
+    // One deliverable over the bound and a page under its cap, with an
+    // oversized history: the steps are cut, the rest whole.
+    const input = doneAuditInput(
+      "x".repeat(5_000),
+      steps,
+      "s".repeat(2_000),
+      screen,
+      {
+        deliverables: [{ path: NOTE, text: "d".repeat(3_000) }],
+        pageRead: "p".repeat(2_400),
+      },
+    );
+    expect(input.length).toBeLessThan(AUDIT_INPUT_CHARS);
+    expect(input).toContain("earlier steps omitted");
+    expect(input).toContain("40. type_text");
+    expect(input).not.toContain("\n1. type_text");
+    expect(input).toContain(`${PAGE_READ_LINE}\n${"p".repeat(2_400)}`);
+    // The file: its first DELIVERABLE_HEAD_CHARS, the cut counted, its end.
+    expect(input).toContain(
+      `${NOTE}\n${"d".repeat(DELIVERABLE_HEAD_CHARS)}\n[… 1500 characters cut …]\n${"d".repeat(DELIVERABLE_CHARS - DELIVERABLE_HEAD_CHARS)}\n`,
+    );
+    expect(input).not.toContain("d".repeat(DELIVERABLE_CHARS + 1));
+    // Four long deliverables, a full screen and a 30,000-character page:
+    // three deliverables shown, the newest steps kept to HISTORY_MIN_CHARS,
+    // the page cut but never under PAGE_READ_MIN_CHARS, the whole under.
+    const heavy = doneAuditInput(
+      "x".repeat(5_000),
+      steps,
+      "s".repeat(2_000),
+      screen,
+      {
+        deliverables: [1, 2, 3, 4].map((i) => ({
+          path: `~/OpenAssistBench/tok/f${i}.txt`,
+          text: `${i}`.repeat(3_000),
+        })),
+        pageRead: "p".repeat(30_000),
+      },
+    );
+    expect(heavy.length).toBeLessThan(AUDIT_INPUT_CHARS);
+    // The budget is used, not left: one character under it.
+    expect(heavy.length).toBe(AUDIT_INPUT_CHARS - 1);
+    expect(sections(heavy, DELIVERABLE_LINE)).toBe(DELIVERABLES_MAX);
+    expect(heavy).not.toContain("f4.txt");
+    expect(heavy).toContain("p".repeat(PAGE_READ_MIN_CHARS));
+    expect(heavy).not.toContain("p".repeat(PAGE_READ_CHARS));
+    expect(heavy).toContain("40. type_text");
+    expect(heavy).toContain("39. type_text");
+    expect(heavy).toContain("earlier steps omitted");
+    // The budgets.
+    expect(AUDIT_INPUT_CHARS).toBe(14_000);
+    expect(HISTORY_MIN_CHARS).toBe(2_500);
+    expect(DELIVERABLE_CHARS).toBe(1_500);
+    expect(DELIVERABLE_HEAD_CHARS).toBe(500);
+    expect(PAGE_READ_CHARS).toBe(2_500);
+    expect(PAGE_READ_MIN_CHARS).toBe(300);
+    // boundDeliverable: whole at the bound, start and end past it.
+    expect(boundDeliverable("d".repeat(DELIVERABLE_CHARS))).toBe(
+      "d".repeat(DELIVERABLE_CHARS),
+    );
+    const cut = boundDeliverable("a".repeat(600) + "b".repeat(1_000));
+    expect(
+      cut.startsWith("a".repeat(500) + "\n[… 100 characters cut …]\n"),
+    ).toBe(true);
+    expect(cut.endsWith("b".repeat(1_000))).toBe(true);
+    // No evidence, or empty evidence: the input as before.
+    const plain = doneAuditInput("Do this and that.", [], "Done.");
+    expect(plain).not.toContain(DELIVERABLE_LINE);
+    expect(plain).not.toContain(PAGE_READ_LINE);
+    expect(
+      doneAuditInput("Do this and that.", [], "Done.", undefined, {
+        deliverables: [],
+      }),
+    ).toBe(plain);
+    // An unreadable file and a blank one say so.
+    const told = doneAuditInput("Do this and that.", [], "Done.", undefined, {
+      deliverables: [{ path: NOTE }, { path: "~/b.txt", text: " \n" }],
+    });
+    expect(told).toContain(`${NOTE}\n${DELIVERABLE_UNREAD}`);
+    expect(told).toContain(`~/b.txt\n${DELIVERABLE_EMPTY}`);
+    // A deliverable's path is bounded like a title.
+    const longPath = "~/" + "q".repeat(400) + ".txt";
+    const bounded = doneAuditInput(
+      "Do this and that.",
+      [],
+      "Done.",
+      undefined,
+      {
+        deliverables: [{ path: longPath, text: "t" }],
+      },
+    );
+    expect(bounded).not.toContain(longPath);
+    expect(bounded).toContain("~/" + "q".repeat(197) + "…");
   });
 });

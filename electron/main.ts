@@ -87,6 +87,7 @@ import { networkFailure } from "../src/providers/network";
 import { scanText } from "../src/core/sanitize";
 import { Vault, seal, unseal, digest } from "../src/storage/vault";
 import { fileFactsReader } from "../src/storage/files";
+import { deliverableTextReader } from "../src/tools/providers/files";
 import {
   prepareBundle,
   reviewSchema,
@@ -4285,6 +4286,10 @@ async function buildRunner(tutorial: boolean): Promise<Runner> {
           // sent back once and fails the run the second time; only the
           // file's existence, size and time are read, under the home folder.
           deliverables: fileFactsReader(app.getPath("home")),
+          // The done audit reads the files the run wrote back at a claim
+          // (and the file the words name), under the files tool's own path
+          // rules, so a fact missing from the file is read off the file.
+          deliverableText: deliverableTextReader(app.getPath("home")),
           onMonitor: (binding, spec, run) =>
             watchers.start(binding, {
               ...spec,

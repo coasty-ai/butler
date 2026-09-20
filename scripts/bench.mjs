@@ -35,6 +35,8 @@ const { catalogueFor, categoriesFor, longHorizon, selectSuite } =
 const { aggregate, reasonLabel, renderSummary, renderTable } =
   await import("../src/gym/bench/report.ts");
 const { fileFactsReader } = await import("../src/storage/files.ts");
+const { deliverableTextReader } =
+  await import("../src/tools/providers/files.ts");
 
 const { values } = parseArgs({
   options: {
@@ -394,6 +396,9 @@ const deps = {
   // fails the run the second time (src/core/deliverables.ts); the reader
   // sees existence, size and time under this home, never contents.
   deliverables: fileFactsReader(homedir()),
+  // The done audit reads the files the run wrote back at a claim, under the
+  // files tool's own path rules (src/core/done-audit.ts DoneEvidence).
+  deliverableText: deliverableTextReader(homedir()),
   launch: launchServices(),
 };
 const attemptCell = {

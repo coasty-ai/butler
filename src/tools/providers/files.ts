@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
+import type { DeliverableTextReader } from "../../core/deliverables";
 import type { Settings } from "../../core/schema";
 import { scanText } from "../../core/sanitize";
 import {
@@ -620,6 +621,89 @@ type Undo = { token: string; expiresAt: number } & (
     }
 );
 
+/**
+ * The realpath of what exists on the way to the path (the file, else its
+ * folder), held to the same rules as the path as written, so a symlink can
+ * never lead out of the home folder or into what the rules exclude. Also
+ * says whether the file itself exists and what it is.
+ */
+function resolveRealPath(
+  path: HomePath,
+  home: string,
+):
+  | { real: string; exists: boolean; kind: "file" | "folder" | "other" }
+  | ProviderResult {
+  let stat;
+  try {
+    stat = lstatSync(path.absolute);
+  } catch {
+    stat = undefined;
+  }
+  const existing = stat ? path.absolute : dirname(path.absolute);
+  let real: string;
+  try {
+    real = realpathSync(existing);
+  } catch {
+    return refuse("NOT_FOUND", "That folder does not exist.");
+  }
+  const checked = homePath(real, home);
+  if (isProblem(checked))
+    return refuse(checked.problem, PATH_SENTENCES[checked.problem]);
+  if (!stat) {
+    let parent;
+    try {
+      parent = statSync(real);
+    } catch {
+      return refuse("NOT_FOUND", "That folder does not exist.");
+    }
+    if (!parent.isDirectory())
+      return refuse("NOT_FOUND", "The path's folder is not a folder.");
+    return { real: resolve(real, path.name), exists: false, kind: "file" };
+  }
+  let target;
+  try {
+    target = statSync(real);
+  } catch {
+    return refuse("NOT_FOUND", "That file does not exist.");
+  }
+  return {
+    real,
+    exists: true,
+    kind: target.isFile() ? "file" : target.isDirectory() ? "folder" : "other",
+  };
+}
+const isResult = (value: unknown): value is ProviderResult =>
+  !!value && typeof value === "object" && "code" in value;
+
+/**
+ * The done audit's reader of a deliverable's content (src/core/done-audit.ts
+ * DoneEvidence; RunnerExtras.deliverableText): a plain-text file's whole
+ * text by path, under the same rules as read_text_file — the path as
+ * written and its realpath under homePath, a file (not a folder, not a
+ * link out of the home), at most FILE_LIMITS.readBytes, UTF-8 with no NUL —
+ * or null for anything else, which the audit is told as "could not be
+ * read". Sweep B at bceb9cd, memory-link-to-note #1: the audit read seven
+ * requirements all met over a file holding one of four facts, since the
+ * appended text reached it only inside a cut history line. No refusal
+ * sentence, no undo entry, nothing written, nothing traced here.
+ */
+export function deliverableTextReader(home: string): DeliverableTextReader {
+  const base = normalizedHome(home);
+  return async (path) => {
+    const checked = homePath(path, base);
+    if (isProblem(checked)) return null;
+    try {
+      const found = resolveRealPath(checked, base);
+      if (isResult(found) || !found.exists || found.kind !== "file")
+        return null;
+      if (statSync(found.real).size > FILE_LIMITS.readBytes) return null;
+      return textOf(readFileSync(found.real)) ?? null;
+    } catch {
+      return null;
+    }
+  };
+}
+
 export function createFilesProvider(o: LocalProviderOptions): McpProvider {
   const now = o.now ?? Date.now;
   const home = normalizedHome(o.home);
@@ -628,62 +712,7 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
   const specs = FILE_TOOL_NAMES.map(fileToolSpec);
   const on = () => state === "on";
 
-  /**
-   * The realpath of what exists on the way to the path (the file, else its
-   * folder), held to the same rules as the path as written, so a symlink can
-   * never lead out of the home folder or into what the rules exclude. Also
-   * says whether the file itself exists and what it is.
-   */
-  const resolveReal = (
-    path: HomePath,
-  ):
-    | { real: string; exists: boolean; kind: "file" | "folder" | "other" }
-    | ProviderResult => {
-    let stat;
-    try {
-      stat = lstatSync(path.absolute);
-    } catch {
-      stat = undefined;
-    }
-    const existing = stat ? path.absolute : dirname(path.absolute);
-    let real: string;
-    try {
-      real = realpathSync(existing);
-    } catch {
-      return refuse("NOT_FOUND", "That folder does not exist.");
-    }
-    const checked = homePath(real, home);
-    if (isProblem(checked))
-      return refuse(checked.problem, PATH_SENTENCES[checked.problem]);
-    if (!stat) {
-      let parent;
-      try {
-        parent = statSync(real);
-      } catch {
-        return refuse("NOT_FOUND", "That folder does not exist.");
-      }
-      if (!parent.isDirectory())
-        return refuse("NOT_FOUND", "The path's folder is not a folder.");
-      return { real: resolve(real, path.name), exists: false, kind: "file" };
-    }
-    let target;
-    try {
-      target = statSync(real);
-    } catch {
-      return refuse("NOT_FOUND", "That file does not exist.");
-    }
-    return {
-      real,
-      exists: true,
-      kind: target.isFile()
-        ? "file"
-        : target.isDirectory()
-          ? "folder"
-          : "other",
-    };
-  };
-  const isResult = (value: unknown): value is ProviderResult =>
-    !!value && typeof value === "object" && "code" in value;
+  const resolveReal = (path: HomePath) => resolveRealPath(path, home);
   /** Whether anything at all is at the path: a file, a folder, a link (broken or not). */
   const exists = (path: string): boolean => {
     try {
