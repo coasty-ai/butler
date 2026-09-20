@@ -71,7 +71,12 @@ export type NativeActionCode =
   | "TARGET_MISSING"
   | "TARGET_DISABLED"
   | "TARGET_REFUSED"
-  | "TARGET_AMBIGUOUS";
+  | "TARGET_AMBIGUOUS"
+  // A frontmost type_text the helper refused before any keystroke because the
+  // focused element identifies itself as something text is not typed into
+  // (native/macos/ClickEffect.swift typingRefused); the message is the
+  // policy's own NO_FIELD_FOCUSED sentence.
+  | "NO_FIELD_FOCUSED";
 /**
  * A recoverable, rejected step reported by the native helper (for example an
  * application that could not be resolved or launched). No GUI input was sent.

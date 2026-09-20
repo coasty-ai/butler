@@ -36,13 +36,26 @@
 // web area sits five or six levels under the window and its children may come
 // through AXVisibleChildren differently, and only a live read can tell.
 //
+// Cycles 20260920-0631 and -0731 (market, autonomy all): a field clicked by
+// name read press/focused and the type_text steps after it never landed (the
+// page's text nodes stayed at 15 through four typings), while the passing
+// runs read the same words with the nodes growing. With `--focus` the probe
+// also runs the runner's own click_control on the page's first listed text
+// field (native clickNamedControl: a clear field takes the pointer first now)
+// and prints `via`, `effect`, the focused role the next surface reads and
+// whether its label is the field's. One click is sent then, and no keystroke;
+// typing itself is the next cycle's measure (text nodes growing after each
+// type_text). On the booking and CRM fixture pages expect via "pointer",
+// effect "focused", focusedAfter a text role and sameLabel true.
+//
 // Run it with nobody at the desktop and the page to probe frontmost (Safari on
 // a fixture page, then Chrome on the same page for the comparison):
 //
 //   npm run build:native
 //   node --import tsx scripts/probe-web-controls.mjs
+//   node --import tsx scripts/probe-web-controls.mjs --focus
 //
-// No network calls, nothing written, no input sent.
+// No network calls, nothing written, no input sent without `--focus`.
 import { resolve } from "node:path";
 import { NativeController } from "../electron/controller.ts";
 import { defaultSettings } from "../src/core/schema.ts";
@@ -210,6 +223,64 @@ try {
       namedHitRoles: tally(named.map((n) => `${n.listed}→${n.hit}`)),
     }),
   );
+  // --focus: the click path itself on the first listed text field, then
+  // where the application's focus is. The helper is resumed for the one
+  // click (execute needs a current frame and the latch open) and stopped
+  // again; nothing is typed.
+  if (process.argv.includes("--focus")) {
+    await controller.resume();
+    const fresh = await controller.capture();
+    const field = (fresh.context?.controls ?? []).find(
+      (c) =>
+        ["textfield", "textarea", "number", "combobox", "searchfield"].includes(
+          c.role,
+        ) &&
+        typeof c.label === "string" &&
+        c.label,
+    );
+    if (!field) {
+      console.log(JSON.stringify({ focusProbe: "no labelled text field" }));
+    } else {
+      let clicked;
+      try {
+        clicked = await controller.execute(
+          {
+            type: "click_control",
+            frame_id: fresh.id,
+            label: field.label,
+            role: field.role,
+            x: field.x,
+            y: field.y,
+          },
+          fresh,
+          new AbortController().signal,
+        );
+      } catch (error) {
+        // The helper's refusal as its code or class, never its words.
+        clicked = { refused: error?.code ?? error?.name ?? "error" };
+      }
+      const after = await controller.surface();
+      console.log(
+        JSON.stringify({
+          focusProbe: {
+            clicked: field.role,
+            via: clicked?.via ?? "(none)",
+            effect: clicked?.effect ?? "(none)",
+            refused: clicked?.refused,
+            focusedAfter: after.focusedRole ?? "(none)",
+            focusedSubrole: after.focusedSubrole ?? "(none)",
+            // The focused element's label is the clicked field's (compared,
+            // never printed).
+            sameLabel:
+              typeof after.focusedLabel === "string" &&
+              after.focusedLabel.trim().toLowerCase() ===
+                field.label.trim().toLowerCase(),
+          },
+        }),
+      );
+    }
+    await controller.stop("probe clicked the field");
+  }
 } finally {
   try {
     await controller.stop("probe done");

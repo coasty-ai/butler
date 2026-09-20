@@ -1267,57 +1267,95 @@ func readClickEffect(before: ClickSnapshot, control: AXUIElement, editable: Bool
     }
     return effect
 }
-/**
- A click by name in the frontmost window, read back (ClickEffect.swift). A
- field is given focus by accessibility first, as deliverByPosting does before
- typing, and the read verifies the application's focused element is that
- field. Otherwise, or when that did not take, the pointer click lands at the
- control's centre through the HID tap as it always did, marked as the helper's
- own by postInput; when the reads see nothing, the control's own AXPress is
- tried and read again. The result carries the route that acted last and the
- final effect, or `scrolled` when the page was moved to reveal the control
- first (Reveal.swift). A point that is not clear (the control still under
- the Dock, or something else under the hit test) gets no pointer click at
- all: only the control's own focus or press. Every input keeps the
- stop-latch check (mouse, ensureRunning) behind the protected-surface walk
- execute ran first.
- */
-func clickNamedControl(_ element: AXUIElement, at target: CGPoint, pointer: Bool = true, scrolled: Bool = false, pressFirst: Bool = false, mouse: (CGEventType, CGPoint) throws -> Void) throws -> [String:Any] {
-    let role = attribute(element, kAXRoleAttribute) as? String ?? "", subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
-    let editable = focusRequested(role: role, subrole: subrole)
-    let before = clickSnapshot(state: windowState(), control: element)
-    var via = pointer ? ClickRoute.pointer : .press, effect = ClickEffect.none
-    if editable {
-        try ensureRunning()
-        via = .press
-        if !before.targetFocused { _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
-        effect = readClickEffect(before: before, control: element, editable: true)
+/// After either route on a field: whether the application's focused element
+/// is the field or inside it (an incrementor's inner text field), read every
+/// focusPollStepMs up to focusPollLimitMs (ClickEffect.swift focusLanded).
+/// Reads only.
+func fieldFocusLanded(_ control: AXUIElement, application: AXUIElement) -> Bool {
+    for read in 0..<focusPollReads {
+        if read > 0 { Thread.sleep(forTimeInterval: Double(focusPollStepMs) / 1000) }
+        let focused = attribute(application, kAXFocusedUIElementAttribute).flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
+        if focusLanded(focused: focused, control: control, ancestors: focused.map { ancestors(of: $0, depth: focusDescendantDepth) } ?? [], same: { CFEqual($0, $1) }) { return true }
     }
+    return false
+}
+/**
+ A click by name in the frontmost window, read back (ClickEffect.swift). The
+ order of the two routes is clickOrder's. A field (fieldRole: a text field,
+ text area, combo box, number input, search field) whose point is clear is
+ clicked by the pointer first, at the point, through the HID tap and marked
+ as the helper's own by postInput — the sweeps of 2026-09-20 showed a WebKit
+ field given focus by accessibility reading "focused" while the keystrokes
+ typed next went nowhere (ClickEffect.swift, the field rule) — and is asked
+ for focus by accessibility (AXFocused, then AXPress) only when the pointer
+ did not take or the point is not clear; on either route a field reads
+ "focused" only when the application's focused element is the field or
+ inside it (fieldFocusLanded), else none. Any other control keeps a0d2cb8's
+ order: a hit-invisible one (its point falls through to its own ancestor) is
+ pressed by its own action first (WebKit toggles a check box or radio and
+ activates a button on AXPress) and the pointer click at the point, which
+ reaches the label and toggles it through its binding, is its second route
+ while the point is visible; otherwise the pointer comes first and the press
+ second. The result carries the route that acted last and the final effect,
+ or `scrolled` when the page was moved to reveal the control first
+ (Reveal.swift). A point that is neither clear nor a visible hit-invisible
+ control's gets no pointer click at all. Every input keeps the stop-latch
+ check (mouse, ensureRunning) behind the protected-surface walk execute ran
+ first.
+ */
+func clickNamedControl(_ element: AXUIElement, at target: CGPoint, clear: Bool = true, hitAncestor: Bool = false, visible: Bool = true, scrolled: Bool = false, mouse: (CGEventType, CGPoint) throws -> Void) throws -> [String:Any] {
+    let role = attribute(element, kAXRoleAttribute) as? String ?? "", subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
+    let before = clickSnapshot(state: windowState(), control: element)
+    // A pointer click may land only on a clear point, or on a visible
+    // hit-invisible control (the label the click reaches toggles it).
+    let pointer = clear || (hitAncestor && visible)
+    let pressable = actionNames(element).contains(kAXPressAction)
+    let order = clickOrder(role: role, subrole: subrole, clear: clear, hitAncestor: hitAncestor)
+    var via = pointer ? ClickRoute.pointer : .press, effect = ClickEffect.none
     func click() throws {
         via = .pointer
         try mouse(.leftMouseDown, target)
         postInput(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left))
-        effect = readClickEffect(before: before, control: element, editable: editable)
     }
+    if fieldRole(role: role, subrole: subrole) {
+        var pid: pid_t = 0
+        let application = AXUIElementGetPid(element, &pid) == .success && pid > 0 ? AXUIElementCreateApplication(pid) : AXUIElementCreateSystemWide()
+        // The read after either route: the focus polled first (it lands within
+        // a frame or two of a pointer click), then one snapshot for a change.
+        func readField() {
+            let landed = fieldFocusLanded(element, application: application)
+            effect = fieldClickEffect(read: clickEffect(before: before, after: clickSnapshot(state: windowState(), control: element), editable: true), landed: landed)
+        }
+        func focusByAccessibility() throws {
+            try ensureRunning()
+            via = .press
+            if !before.targetFocused { _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
+            readField()
+            if effect == .none, pressable { try ensureRunning(); _ = AXUIElementPerformAction(element, kAXPressAction as CFString); readField() }
+        }
+        switch order {
+        case .pointerFirst:
+            try click(); readField()
+            if effect == .none { try focusByAccessibility() }
+        case .pressFirst:
+            try focusByAccessibility()
+            if effect == .none, pointer { try click(); readField() }
+        }
+        return clickResult(effect: effect, via: revealRoute(scrolled: scrolled, route: via) ?? via)
+    }
+    func read() { effect = readClickEffect(before: before, control: element, editable: false) }
     func press() throws {
         try ensureRunning()
         via = .press
         _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
-        effect = readClickEffect(before: before, control: element, editable: editable)
+        read()
     }
-    let pressable = actionNames(element).contains(kAXPressAction)
-    // A hit-invisible control (its point falls through to its own ancestor:
-    // a check box or radio drawn by its label, HitCover.hitAncestor) is
-    // pressed by its own action first (WebKit toggles a check box or radio
-    // and activates a button on AXPress); the pointer click at the point,
-    // which reaches the label and toggles it through its binding, is the
-    // route only when the control offers no press or the press read as
-    // nothing. Otherwise the pointer comes first, then the press.
-    if pressFirst {
+    switch order {
+    case .pressFirst:
         if effect == .none, pressable { try press() }
-        if effect == .none, pointer { try click() }
-    } else {
-        if effect == .none, pointer { try click() }
+        if effect == .none, pointer { try click(); read() }
+    case .pointerFirst:
+        if effect == .none, pointer { try click(); read() }
         if effect == .none, pressable { try press() }
     }
     return clickResult(effect: effect, via: revealRoute(scrolled: scrolled, route: via) ?? via)
@@ -2400,6 +2438,16 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> [Strin
             return (value as! AXUIElement)
         }
         let typingTarget = focusedElement()
+        // A focus that identifies itself as something text is not typed into
+        // (the web area a field's focus fell back to, a button, a link, a
+        // list) refuses the step before any keystroke: the keys would go
+        // somewhere the model did not choose and the text would be lost
+        // without a word (the sweeps of 2026-09-20, ClickEffect.swift). A
+        // focus that identifies nothing is the policy's to judge
+        // (typingRefused); the bound route already refuses (typingField).
+        if let target = typingTarget, typingRefused(role: attribute(target, kAXRoleAttribute) as? String ?? "", subrole: attribute(target, kAXSubroleAttribute) as? String ?? "") {
+            throw ControlError(noFieldFocusedMessage, code: noFieldFocusedCode)
+        }
         var replaced = false
         // A query field that already holds text is replaced, not appended to:
         // select its contents first (by accessibility, falling back to the
@@ -2474,10 +2522,11 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> [Strin
         // A hit-invisible control (its point falls through to its own
         // ancestor, hitCover) is pressed by its own action first; the
         // pointer click is its second route only while the point is visible.
+        // A field whose point is clear takes the pointer first (clickOrder).
         let hitAncestor = !reveal.clear && reveal.point != nil && hitCover(entry.element, at: target, application: AXUIElementCreateSystemWide()) == .hitAncestor
         // Cycle 20260919-2044: five STUCK_LOOP runs were this click repeated on
         // an unchanged page, the step reported done with nothing read back.
-        return try clickNamedControl(entry.element, at: target, pointer: reveal.clear || (hitAncestor && reveal.visible), scrolled: reveal.scrolled, pressFirst: hitAncestor) { type, point in try mouse(type, point) }
+        return try clickNamedControl(entry.element, at: target, clear: reveal.clear, hitAncestor: hitAncestor, visible: reveal.visible, scrolled: reveal.scrolled) { type, point in try mouse(type, point) }
     case "key", "hotkey":
         let names = action["keys"] as? [String] ?? [action["key"] as? String ?? ""]
         guard names.count<=4,names.allSatisfy({keys[$0] != nil}) else {throw ControlError("Unsupported key.")}

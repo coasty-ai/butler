@@ -424,6 +424,7 @@ test("a named target the helper did not press is a rejected step, and a hotkey r
       const still = request.action.label === 'Still';
       return reply({id: request.id, result: {executed: true, via: still ? 'pointer' : 'press', effect: still ? 'none' : 'focused'}});
     }
+    if (request.action.type === 'type_text') return reply({id: request.id, error: 'No known text field is focused. Click the intended text field first, then type.', code: 'NO_FIELD_FOCUSED'});
     const keys = request.action.keys.join('+');
     if (keys === 'CMD+Q') return reply({id: request.id, error: 'Menu items that quit an application or end the session are left to the user.', code: 'TARGET_REFUSED'});
     if (keys === 'CMD+E') return reply({id: request.id, error: 'The menu item for CMD+E is greyed out right now.', code: 'TARGET_DISABLED'});
@@ -466,6 +467,22 @@ test("a named target the helper did not press is a rejected step, and a hotkey r
       );
     expect(await click("Still")).toEqual({ via: "pointer", effect: "none" });
     expect(await click("Name")).toEqual({ via: "press", effect: "focused" });
+    // A frontmost type_text the helper refused before any keystroke because
+    // the focused element is not a text field (native typingRefused): a
+    // rejected step with the policy's own NO_FIELD_FOCUSED sentence, which
+    // the runner prefixes with "No input was sent.".
+    const typed = await controller
+      .execute(
+        { type: "type_text", frame_id: "f", text: "hello" } as any,
+        {} as Frame,
+        new AbortController().signal,
+      )
+      .catch((e) => e);
+    expect(typed).toBeInstanceOf(NativeActionError);
+    expect(typed.code).toBe("NO_FIELD_FOCUSED");
+    expect(typed.message).toBe(
+      "No known text field is focused. Click the intended text field first, then type.",
+    );
   } finally {
     controller.close();
     cleanup();

@@ -37,6 +37,7 @@ import CoreGraphics
         revealChecks(check)
         controlRoleChecks(check)
         hitCoverChecks(check)
+        fieldClickChecks(check)
         listNameChecks(check)
         observerChecks(check)
         webTextChecks(check)

@@ -437,6 +437,7 @@ const nativeActionCodes = new Set<NativeActionCode>([
   "TARGET_DISABLED",
   "TARGET_REFUSED",
   "TARGET_AMBIGUOUS",
+  "NO_FIELD_FOCUSED",
 ]);
 function nativeError(line: {
   error?: unknown;
