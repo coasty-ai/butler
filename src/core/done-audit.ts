@@ -73,6 +73,18 @@
  * input stays under AUDIT_INPUT_CHARS: the oldest steps give way first
  * (never under HISTORY_MIN_CHARS), then the page read. The prompt says a
  * fact absent from the deliverable is unmet whatever the summary says.
+ * Sweep B 2/3 at 2308fd9 (cycle 20260920-1049-2308fd9, gpt-5.4-mini, the
+ * audit on gpt-5.4), msg-group-chat-digest #2: open_url, one capture and
+ * an append with finish — the run never called a web read, the screen at
+ * done carried the first 1,500 characters of the visible text and the
+ * chat's later lines sat below the first screen, so the auditor had the
+ * note whole and no page to compare it with (6 requirements, 0 unmet, the
+ * grader found one of three facts). Since then, when the run made no web
+ * read and the last frame is a browser page, the runner reads the page in
+ * front whole at the claim through the web tool's read_current_page
+ * (Runner.pageAtClaim) and the section carries it under PAGE_FETCHED_LINE
+ * in place of PAGE_READ_LINE; DoneEvidence.pageSource says which, and
+ * DoneAudited.pageRead carries it as a code (PAGE_READ_CODES).
  *
  * Which claims are audited (auditApplies): never a synthetic run, a
  * routine's replay or a run of fewer than DONE_AUDIT_MIN_ACTIONS actions;
@@ -438,7 +450,7 @@ export function auditApplies(scope: DoneAuditScope): boolean {
 
 export const DONE_AUDIT_PROMPT = `You audit whether a computer-use run on a Mac finished its objective. You are given the objective, the run's steps in order (each as the model proposed it, with the result the runner reported) and the model's own summary at done.
 List every requirement the objective states: each distinct outcome or step it asks for (a page or app to open, a value to enter, search or select, a fact to write, a file to save, a message to send, a condition to satisfy). Split a sentence that asks for several things into one requirement each; a fact the objective names is its own requirement. List at most ${DONE_AUDIT_MAX_REQUIREMENTS}.
-For each requirement decide from the steps and the screen at done whether the run met it. met is true only when a step shows it happened (a typed or selected value, a clicked control whose name is the value or the action asked for, such as Keep draft, Apply, Save or Add to basket, a submitted form, a tool result, a saved file, a page reached, an app or file a step opened) or the screen at done shows its outcome (a confirmation, the value in place). A tool result reporting a file created, appended, replaced, renamed or moved is that file saved: a requirement to save it is met by that same step, and no further save step is needed. When the input shows a deliverable at done (the content of a file the run wrote) or the last page read, a requirement to write, add or note facts is met only when the deliverable's content shows those facts: a fact the objective asks for, named in it or read from the page, that is absent from the deliverable is unmet, whatever the summary says. A clause that only names where or how to do something (open a file or app, use an app, go to a page) is a means, not an outcome: when the outcome it serves is met by a tool result or on screen, the means is met too, with that step as evidence; a clause that is itself an outcome the user wants (a page left open, an app brought to the front, a file opened for them to read) stays a requirement. A clause that forbids something (do not send, do not change anything else, leave the rest untouched) is met when no step did it: answer met true with evidence null, never unmet for want of a step. A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
+For each requirement decide from the steps and the screen at done whether the run met it. met is true only when a step shows it happened (a typed or selected value, a clicked control whose name is the value or the action asked for, such as Keep draft, Apply, Save or Add to basket, a submitted form, a tool result, a saved file, a page reached, an app or file a step opened) or the screen at done shows its outcome (a confirmation, the value in place). A tool result reporting a file created, appended, replaced, renamed or moved is that file saved: a requirement to save it is met by that same step, and no further save step is needed. When the input shows a deliverable at done (the content of a file the run wrote), the last page read or the page in front at the claim, a requirement to write, add or note facts is met only when the deliverable's content shows those facts: a fact the objective asks for, named in it or read from the page, that is absent from the deliverable is unmet, whatever the summary says. A clause that only names where or how to do something (open a file or app, use an app, go to a page) is a means, not an outcome: when the outcome it serves is met by a tool result or on screen, the means is met too, with that step as evidence; a clause that is itself an outcome the user wants (a page left open, an app brought to the front, a file opened for them to read) stays a requirement. A clause that forbids something (do not send, do not change anything else, leave the rest untouched) is met when no step did it: answer met true with evidence null, never unmet for want of a step. A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
 Reply with strict JSON and nothing else, in this exact shape: {"requirements":[{"text":string,"kind":string,"met":boolean,"evidence":number|null}]}. text is the requirement in a few words from the objective; kind is one word from this list: open, navigate, read, enter, select, write, save, send, confirm, other; evidence is the number of the step that met it (an integer, nothing else), or null when unmet or when nothing needed doing. No prose, no code fence.`;
 
 const historyLine = (entry: History[number], index: number): string => {
@@ -465,16 +477,35 @@ export interface DoneDeliverable {
 }
 /**
  * What the run produced, read back at the claim (Runner.doneEvidence): the
- * files it wrote, most recent first, and the newest ok web read's result
- * whole as the tool layer returned it.
+ * files it wrote, most recent first, and a page's text whole as the tool
+ * layer returned it — the newest ok web read's result (pageSource "tool"),
+ * or, when the run made none and a browser page was in front at the claim,
+ * the page fetched then through read_current_page ("fetched"). pageSource
+ * is absent when pageRead is.
  */
 export interface DoneEvidence {
   deliverables: DoneDeliverable[];
   pageRead?: string;
+  pageSource?: Exclude<PageReadCode, "none">;
+}
+/**
+ * How the audit's page section came to be, as DoneAudited.pageRead carries
+ * it: "tool" (the run's own web read), "fetched" (read at the claim for the
+ * audit) or "none".
+ */
+export const PAGE_READ_CODES = ["tool", "fetched", "none"] as const;
+export type PageReadCode = (typeof PAGE_READ_CODES)[number];
+/** The code for the evidence's page section: its source, or none without one. */
+export function pageReadCode(evidence?: DoneEvidence): PageReadCode {
+  if (!evidence || evidence.pageRead === undefined) return "none";
+  return evidence.pageSource ?? "tool";
 }
 export const DELIVERABLE_LINE =
   "Deliverable at done (the file the run wrote, its content):";
 export const PAGE_READ_LINE = "Last page read (the page's text the run had):";
+/** The page section's label when the runner read the page in front at the claim (pageSource "fetched"). */
+export const PAGE_FETCHED_LINE =
+  "Last page read (fetched at the claim; the page the run had in front):";
 export const DELIVERABLE_UNREAD =
   "(The file could not be read at the claim: it does not exist, is not a plain-text file, or is outside the home folder.)";
 export const DELIVERABLE_EMPTY = "(The file is empty.)";
@@ -527,7 +558,8 @@ function keptLines(history: History, budget: number): string[] {
  * The call's input: the objective, the history lines the model already
  * reads (oldest first, the oldest dropped when over the history's budget),
  * the screen at done, the deliverables and the last page read (the
- * evidence), and the claimed summary. Never a screenshot. Under
+ * evidence; under PAGE_FETCHED_LINE when it was read at the claim), and the
+ * claimed summary. Never a screenshot. Under
  * AUDIT_INPUT_CHARS: the fixed sections (objective, screen, deliverables,
  * summary) are measured first, the steps get what is left up to
  * HISTORY_CHARS and never under HISTORY_MIN_CHARS, and the page read gets
@@ -568,7 +600,10 @@ export function doneAuditInput(
   const page = evidence?.pageRead
     ? bound(evidence.pageRead, PAGE_READ_CHARS)
     : "";
-  const pageLabel = ["", PAGE_READ_LINE];
+  const pageLabel = [
+    "",
+    evidence?.pageSource === "fetched" ? PAGE_FETCHED_LINE : PAGE_READ_LINE,
+  ];
   const pageSize = page ? size(pageLabel) + page.length + 1 : 0;
   // What the steps and the page read may take between them, each line
   // with its newline: the budget less the fixed sections and one, so the

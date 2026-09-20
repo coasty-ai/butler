@@ -583,9 +583,11 @@ const defaultOutcome = (
   }
 };
 
+/** A scripted outcome sees the call's arguments, its signal and the words the runner handed the call (ToolWords). */
 export type Scripted = (
   args: Record<string, unknown>,
   signal: AbortSignal,
+  words?: ToolWords,
 ) => ToolOutcome | Promise<ToolOutcome>;
 export interface FakeTools {
   access: ToolAccess;
@@ -621,10 +623,12 @@ export function fakeTools(
         };
       },
       prepare,
-      call: async (spec, args, signal) => {
+      call: async (spec, args, signal, words) => {
         fake.calls.push({ id: spec.id, args });
         const scripted = scripts.get(spec.id);
-        return scripted ? scripted(args, signal) : defaultOutcome(spec, args);
+        return scripted
+          ? scripted(args, signal, words)
+          : defaultOutcome(spec, args);
       },
       undoLast: async () => {
         fake.undoCalls++;

@@ -83,6 +83,8 @@ import {
   auditApplies,
   DELIVERABLES_MAX,
   doneAuditCall,
+  PAGE_READ_CHARS,
+  pageReadCode,
   parseDoneAudit,
   requirementChallenge,
   REQUIREMENT_UNMET,
@@ -241,6 +243,14 @@ export const PAGE_READ_TOOLS: ReadonlySet<string> = new Set([
   "web__read_page_text",
   "web__read_current_page",
 ]);
+/**
+ * The tool the done audit reads the page in front with when the run made no
+ * web read of its own (Runner.pageAtClaim): the web tool's read of the
+ * browser's current address, listed for the run.
+ */
+export const AUDIT_PAGE_TOOL = "web__read_current_page";
+/** The audit's page fetch is waited for this long, then the audit runs without it. */
+export const AUDIT_PAGE_FETCH_MS = 3_000;
 /**
  * The file a files-tool write leaves for the user, from the call's own
  * arguments: the path an append or replace wrote to, or where a rename or
@@ -2017,8 +2027,10 @@ export class Runner {
    * DELIVERABLES_MAX, each read back whole through extras.deliverableText
    * (the files tool's own rules; a read declined or failed is a deliverable
    * that could not be read, which the section says), and the newest ok web
-   * read's result. Nothing is read without the reader: the audit then reads
-   * the steps as before. Nothing here can end a run.
+   * read's result (pageSource "tool") — or, when the run made none, the
+   * page in front read at the claim (pageAtClaim, "fetched"). Nothing is
+   * read without the reader: the audit then reads the steps as before.
+   * Nothing here can end a run.
    */
   private async doneEvidence(run: Run): Promise<DoneEvidence> {
     const read = this.extras.deliverableText;
@@ -2040,10 +2052,58 @@ export class Runner {
         deliverables.push(text === null ? { path } : { path, text });
       }
     }
+    if (this.pageRead !== undefined)
+      return { deliverables, pageRead: this.pageRead, pageSource: "tool" };
+    const fetched = await this.pageAtClaim();
     return {
       deliverables,
-      ...(this.pageRead !== undefined ? { pageRead: this.pageRead } : {}),
+      ...(fetched !== undefined
+        ? { pageRead: fetched, pageSource: "fetched" }
+        : {}),
     };
+  }
+  /**
+   * The page in front at a claim, read whole for the done audit when the
+   * run made no web read of its own: sweep B 2/3 at 2308fd9 (cycle
+   * 20260920-1049-2308fd9, gpt-5.4-mini, the audit on gpt-5.4),
+   * msg-group-chat-digest #2 — open_url, one capture, an append with
+   * finish; the auditor had the note whole and no page (pageRead false),
+   * since the screen at done carries the first 1,500 characters of the
+   * visible text and the chat's later lines sat below the first screen, so
+   * it read six requirements met over a note holding one of three facts.
+   * Read when the last frame is a browser page (hostOf, browserAddress)
+   * and the web tool's read_current_page (AUDIT_PAGE_TOOL) is in this run's
+   * frozen list, through the same tool access the run's calls take, with
+   * ToolWords {pageAddress} alone (the fetch needs nothing else of the
+   * user's), maxChars at PAGE_READ_CHARS (the section shows no more), the
+   * run's abort and AUDIT_PAGE_FETCH_MS: the provider's own rules decide
+   * (a protected site, an address on this Mac outside the named loopback
+   * origins, a page that is not text), and anything but an ok outcome — a
+   * refusal, a throw, the deadline — is no page, never an error. Once per
+   * claim (doneEvidence is gathered once before the audit's retry loop).
+   * Not a run action: it goes through none of toolCall's accounting — no
+   * ActionExecuted, no run.actions or run.tools.calls, no read guard, no
+   * loop or switch tracking — and no ToolCallProposed or ToolCallFinished
+   * is journaled for it; the provider's own WebPageRead row (tool, outcome,
+   * size, a host code) stands as its trace, and DoneAudited.pageRead
+   * "fetched" says the audit read the page. The text goes to the auditing
+   * model only, as the run's own page read does.
+   */
+  private async pageAtClaim(): Promise<string | undefined> {
+    const tools = this.extras.tools;
+    const frame = this.snapshot.frame;
+    const address = frame?.context?.browserAddress;
+    if (!tools || !frame || !address || !hostOf(frame)) return undefined;
+    const spec = this.toolList?.tools.find((t) => t.id === AUDIT_PAGE_TOOL);
+    if (!spec) return undefined;
+    const { value } = await this.within<ToolOutcome>(
+      AUDIT_PAGE_FETCH_MS,
+      (signal) =>
+        tools.call(spec, { maxChars: PAGE_READ_CHARS }, signal, {
+          pageAddress: address,
+        }),
+    );
+    return value?.code === "ok" ? value.text : undefined;
   }
   /**
    * One text call to the run's provider with the objective, the compact
@@ -2055,8 +2115,8 @@ export class Runner {
    * (UsageAdded, with purpose "audit" so a harness can price it at the
    * auditor's own rates when the settings' dialogModel puts the audit on
    * another model). DoneAudited carries counts, the duration, the code, the
-   * unmet kinds, how many deliverables were shown and whether a page read
-   * was; never their text.
+   * unmet kinds, how many deliverables were shown and how the page section
+   * came to be (tool, fetched, none); never their text.
    */
   private async auditDone(
     run: Run,
@@ -2114,10 +2174,11 @@ export class Runner {
       durationMs: Math.round(performance.now() - started),
       code: audit ? "ok" : "unavailable",
       attempts,
-      // How many files were read back for the audit and whether a page
-      // read was shown: a count and a flag, never their text.
+      // How many files were read back for the audit and how the page
+      // section came to be (tool, fetched, none): a count and a code,
+      // never their text.
       deliverables: evidence.deliverables.length,
-      pageRead: evidence.pageRead !== undefined,
+      pageRead: pageReadCode(evidence),
     });
     return audit;
   }

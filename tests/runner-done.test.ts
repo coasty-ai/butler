@@ -14,6 +14,8 @@ import {
 } from "../src/core/schema";
 import {
   Runner,
+  AUDIT_PAGE_FETCH_MS,
+  AUDIT_PAGE_TOOL,
   declinedResult,
   doneChallenge,
   failureCode,
@@ -24,12 +26,15 @@ import {
 } from "../src/core/runner";
 import {
   fakeTools,
+  failed,
   FILES_APPEND,
   FILES_TOOLS,
+  WEB_CURRENT,
   WEB_READ,
   WEB_TOOLS_FAKE,
   ok,
 } from "./tool-fakes";
+import type { ToolWords } from "../src/core/tools";
 import { ModelFailedError } from "../src/core/errors";
 import { approvalCode } from "../src/core/approval-codes";
 import {
@@ -48,9 +53,12 @@ import {
   DELIVERABLE_UNREAD,
   DELIVERABLES_MAX,
   HISTORY_MIN_CHARS,
+  PAGE_FETCHED_LINE,
   PAGE_READ_CHARS,
+  PAGE_READ_CODES,
   PAGE_READ_LINE,
   PAGE_READ_MIN_CHARS,
+  pageReadCode,
   DONE_AUDIT_DEADLINE_MS,
   DONE_AUDIT_MAX_OUTPUT_TOKENS,
   DONE_AUDIT_MAX_REQUIREMENTS,
@@ -984,10 +992,11 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
       durationMs: expect.any(Number),
       code: "ok",
       attempts: 1,
-      // No file written through a tool and no page read this run: the
-      // count and the flag say so (the evidence describe below).
+      // No file written through a tool, no page read this run and no
+      // browser page in front at the claim: the count and the code say so
+      // (the evidence describes below).
       deliverables: 0,
-      pageRead: false,
+      pageRead: "none",
     });
     expect(audits(m)[1].data).toEqual({
       requirements: 2,
@@ -997,7 +1006,7 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
       code: "ok",
       attempts: 1,
       deliverables: 0,
-      pageRead: false,
+      pageRead: "none",
     });
     expect(m.of("UsageAdded")).toHaveLength(2);
     // Tagged as the audit's, so a harness can price the tokens at the
@@ -1327,7 +1336,7 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
         code: "unavailable",
         attempts: 2,
         deliverables: 0,
-        pageRead: false,
+        pageRead: "none",
       });
       // Each reply that arrived cost tokens; a thrown call cost none.
       const arrived = item.replies[0] instanceof Error ? 0 : 2;
@@ -1383,7 +1392,7 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
         code: "ok",
         attempts: 2,
         deliverables: 0,
-        pageRead: false,
+        pageRead: "none",
       });
       // The second done's audit stood on its first, whole reply.
       expect(p.text).toHaveBeenCalledTimes(3);
@@ -1848,9 +1857,11 @@ describe("the done audit's pieces", () => {
     // The deliverable rule (sweep B at bceb9cd, memory-link-to-note #1: the
     // audit on gpt-5.4 read seven requirements all met over a file holding
     // the title and none of the three findings). It follows the save rule
-    // and precedes the means rule.
+    // and precedes the means rule. Since 2308fd9's sweep (msg-group-chat-
+    // digest #2: the note whole and no page before the auditor) it names
+    // the page in front at the claim beside the last page read.
     const deliverableRule =
-      "When the input shows a deliverable at done (the content of a file the run wrote) or the last page read, a requirement to write, add or note facts is met only when the deliverable's content shows those facts: a fact the objective asks for, named in it or read from the page, that is absent from the deliverable is unmet, whatever the summary says.";
+      "When the input shows a deliverable at done (the content of a file the run wrote), the last page read or the page in front at the claim, a requirement to write, add or note facts is met only when the deliverable's content shows those facts: a fact the objective asks for, named in it or read from the page, that is absent from the deliverable is unmet, whatever the summary says.";
     expect(DONE_AUDIT_PROMPT).toContain(deliverableRule);
     expect(DONE_AUDIT_PROMPT.indexOf(deliverableRule)).toBeGreaterThan(
       DONE_AUDIT_PROMPT.indexOf("no further save step is needed."),
@@ -1884,9 +1895,9 @@ describe("the done audit's pieces", () => {
     );
     expect(DONE_AUDIT_PROMPT.endsWith("No prose, no code fence.")).toBe(true);
     // Lengths: 1,380 → 1,685 (abc24ae, 0f5cd0b) → 2,443 (5e119c1) →
-    // 2,445 → 2,792 (the deliverable rule, +347); the reminder 130 → 198 →
-    // 205.
-    expect(DONE_AUDIT_PROMPT.length).toBe(2_792);
+    // 2,445 → 2,792 (the deliverable rule, +347) → 2,824 (the page in front
+    // at the claim, +32); the reminder 130 → 198 → 205.
+    expect(DONE_AUDIT_PROMPT.length).toBe(2_824);
     expect(DONE_AUDIT_REMINDER.length).toBe(205);
     // The output cap: at 700, six of the cycle's fourteen replies were cut
     // at exactly the cap (the usable ones ran 212–586 tokens) and two runs
@@ -2070,12 +2081,13 @@ describe("the done audit's evidence: the deliverable and the page read (sweep B 
     expect(at(DELIVERABLE_LINE)).toBeLessThan(at(PAGE_READ_LINE));
     expect(at(PAGE_READ_LINE)).toBeLessThan(at("Summary at done:"));
     expect(input.length).toBeLessThan(AUDIT_INPUT_CHARS);
-    // The trace: a count and a flag, never the file's or the page's text.
+    // The trace: a count and a code (the run's own read), never the file's
+    // or the page's text.
     expect(audits(m)).toHaveLength(1);
     expect(audits(m)[0].data).toMatchObject({
       code: "ok",
       deliverables: 1,
-      pageRead: true,
+      pageRead: "tool",
     });
     const traced = JSON.stringify(
       [...audits(m), ...m.of("ToolCallFinished")].map((e) => e.data),
@@ -2085,7 +2097,7 @@ describe("the done audit's evidence: the deliverable and the page read (sweep B 
     expect(traced).not.toContain("tok-notes");
     expect(m.of("RunCompleted")).toHaveLength(1);
   });
-  it("adds no section and asks the reader nothing when the run wrote no file and read no page: deliverables 0, pageRead false", async () => {
+  it("adds no section and asks the reader nothing when the run wrote no file and read no page: deliverables 0, pageRead none", async () => {
     policy.evaluate = () => ALLOW;
     const m = memory();
     const p = auditing(scripted(threeThenDone()), [ALL_MET]);
@@ -2097,7 +2109,7 @@ describe("the done audit's evidence: the deliverable and the page read (sweep B 
     expect(reads).toEqual([]);
     expect(audits(m)[0].data).toMatchObject({
       deliverables: 0,
-      pageRead: false,
+      pageRead: "none",
     });
   });
   it("reads back the file the objective names when nothing wrote it through a tool (the editor route), and nothing at all without the reader", async () => {
@@ -2123,7 +2135,7 @@ describe("the done audit's evidence: the deliverable and the page read (sweep B 
     expect(p2.calls[0].input).toContain(PAGE_READ_LINE);
     expect(audits(m2)[0].data).toMatchObject({
       deliverables: 0,
-      pageRead: true,
+      pageRead: "tool",
     });
   });
   it("says the file could not be read when the reader answers null or throws, an empty file when it is, and audits all the same", async () => {
@@ -2212,7 +2224,7 @@ describe("the done audit's evidence: the deliverable and the page read (sweep B 
     expect(input).not.toContain("totals\n");
     expect(audits(m)[0].data).toMatchObject({
       deliverables: 3,
-      pageRead: false,
+      pageRead: "none",
     });
   });
   it("names the file a files-tool write leaves from the call's arguments: the path written, or where a rename or move put it", () => {
@@ -2372,5 +2384,289 @@ describe("the done audit's evidence: the deliverable and the page read (sweep B 
     );
     expect(bounded).not.toContain(longPath);
     expect(bounded).toContain("~/" + "q".repeat(197) + "…");
+  });
+});
+
+/**
+ * Sweep B 2/3 at 2308fd9 (cycle 20260920-1049-2308fd9, gpt-5.4-mini, the
+ * audit on gpt-5.4): msg-group-chat-digest #2 ran open_url, one capture and
+ * an append with finish, and the audit — six requirements, none unmet,
+ * deliverables 1, pageRead false, 2,521 output tokens — stood over a note
+ * holding one of its three facts. It had the note whole and no page: the
+ * run never called a web read, and the screen at done carries the first
+ * 1,500 characters of the visible text while the chat's later lines sat
+ * below the first screen. The shapes below are that, content-free: three
+ * screen steps on a browser page, then done, with the page's text
+ * synthetic and read at the claim through the fake web tool's
+ * read_current_page.
+ */
+const CHAT_PAGE = "https://shop.example/tok/chat";
+/** Longer than the screen's 1,500 characters: the lines a first screen would not show. */
+const CHAT_BODY =
+  "# Site chat\n" + "09:00 worker-a: alert cleared\n".repeat(80);
+/** Names the file and asks for three facts (synthetic words, no task's). */
+const DIGEST = `Read the site chat and write a three-line summary to ${NOTE}: the hour, the workers and the alert, one per line, then save.`;
+const safari: Surface = {
+  appId: "com.apple.Safari",
+  pid: 7,
+  secureInput: false,
+  unknown: false,
+};
+/** Every capture is a new frame of a browser page at `address` (the frame's context names it; null for a window with no address). */
+function browsing(address: string | null = CHAT_PAGE): Controller {
+  const base = controller(safari);
+  return {
+    ...base,
+    capture: async () => ({
+      ...(await base.capture()),
+      context: {
+        appName: "Safari",
+        windowTitle: "Site chat",
+        ...(address !== null ? { browserAddress: address } : {}),
+        visibleText: "Site chat\n09:00 worker-a: alert cleared",
+      },
+    }),
+  };
+}
+/**
+ * A runner over a browser page and the fake tool layer; read_current_page
+ * answers CHAT_BODY unless scripted otherwise, and the words each fetch
+ * carried are kept.
+ */
+function fetching(
+  p: ReturnType<typeof auditing>,
+  m: ReturnType<typeof memory>,
+  o: { controller?: Controller; tools?: typeof FILES_TOOLS | null } = {},
+) {
+  const fake = fakeTools({
+    tools: o.tools ?? [...FILES_TOOLS, ...WEB_TOOLS_FAKE],
+  });
+  const words: (ToolWords | undefined)[] = [];
+  fake.script(WEB_CURRENT.id, (_args, _signal, w) => {
+    words.push(w);
+    return ok(WEB_CURRENT, CHAT_BODY);
+  });
+  const runner = new Runner(
+    o.controller ?? browsing(),
+    p,
+    m.recorder,
+    settings,
+    () => {},
+    [],
+    undefined,
+    o.tools === null ? {} : { tools: fake.access },
+  );
+  return { runner, fake, words };
+}
+const fetches = (fake: ReturnType<typeof fakeTools>) =>
+  fake.calls.filter((c) => c.id === WEB_CURRENT.id);
+/** Every journaled event's data, as one string: what a trace could leak. */
+const traced = (m: ReturnType<typeof memory>) =>
+  JSON.stringify(m.events.map((e) => e.data));
+
+describe("the page in front at the claim, read for the audit (sweep B 2/3 at 2308fd9)", () => {
+  it("reads the page in front once through read_current_page with the frame's address when the run made no web read, shows it under its own label, and counts no run step for it", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const p = auditing(scripted(threeThenDone()), [ALL_MET]);
+    const { runner, fake, words } = fetching(p, m);
+    await runner.start(DIGEST);
+    expect(p.text).toHaveBeenCalledTimes(1);
+    // One call, the tool the run's list carries, the address off the
+    // frame in ToolWords, maxChars at what the section shows.
+    expect(fetches(fake)).toEqual([
+      { id: AUDIT_PAGE_TOOL, args: { maxChars: PAGE_READ_CHARS } },
+    ]);
+    expect(words).toEqual([{ pageAddress: CHAT_PAGE }]);
+    const input = p.calls[0].input;
+    expect(input).toContain(`${PAGE_FETCHED_LINE}\n`);
+    expect(input).not.toContain(PAGE_READ_LINE);
+    expect(input).toContain(CHAT_BODY);
+    expect(sections(input, CHAT_BODY)).toBe(1);
+    expect(CHAT_BODY.length).toBeGreaterThan(SCREEN_CHARS);
+    const at = (marker: string) => input.indexOf(marker);
+    expect(at("Steps (oldest first):")).toBeLessThan(at(PAGE_FETCHED_LINE));
+    expect(at(PAGE_FETCHED_LINE)).toBeLessThan(at("Summary at done:"));
+    expect(input.length).toBeLessThan(AUDIT_INPUT_CHARS);
+    // The trace: the code says the audit fetched it; nothing else of it.
+    expect(audits(m)).toHaveLength(1);
+    expect(audits(m)[0].data).toMatchObject({
+      code: "ok",
+      deliverables: 0,
+      pageRead: "fetched",
+    });
+    // Not a run action: the three screen steps are the run's whole count,
+    // no tool call is counted or journaled, and the read guard saw nothing.
+    expect(m.getRun().actions).toBe(3);
+    expect(m.getRun().tools).toBeUndefined();
+    expect(m.of("ActionExecuted")).toHaveLength(3);
+    expect(m.of("ToolCallProposed")).toHaveLength(0);
+    expect(m.of("ToolCallFinished")).toHaveLength(0);
+    expect(traced(m)).not.toContain("worker-a");
+    expect(traced(m)).not.toContain("Site chat");
+    expect(m.of("RunCompleted")).toHaveLength(1);
+  });
+  it("leaves a run's own web read as the page shown, under the run's label with pageRead tool, and fetches nothing", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const p = auditing(
+      scripted([readPage, click, enter, done("Read the article and noted.")]),
+      [ALL_MET],
+    );
+    const { runner, fake, words } = fetching(p, m);
+    fake.script(WEB_READ.id, () => ok(WEB_READ, PAGE_BODY));
+    await runner.start(DIGEST);
+    expect(fetches(fake)).toEqual([]);
+    expect(words).toEqual([]);
+    const input = p.calls[0].input;
+    expect(input).toContain(`${PAGE_READ_LINE}\n`);
+    expect(input).not.toContain(PAGE_FETCHED_LINE);
+    expect(input).toContain(PAGE_BODY);
+    expect(input).not.toContain(CHAT_BODY);
+    expect(audits(m)[0].data).toMatchObject({ pageRead: "tool" });
+    // The run's read is a run action, as ever.
+    expect(m.getRun().tools).toEqual({ calls: 1, writes: 0 });
+    expect(m.of("ToolCallFinished")).toHaveLength(1);
+  });
+  it("fetches nothing without a browser page in front (no address, or one that is not a web page), without the web tool in the run's list, or without a tool layer: pageRead none", async () => {
+    policy.evaluate = () => ALLOW;
+    const cases: {
+      controller?: Controller;
+      tools?: typeof FILES_TOOLS | null;
+    }[] = [
+      { controller: controller() },
+      { controller: browsing(null) },
+      { controller: browsing("about:blank") },
+      { controller: browsing("file:///Users/me/chat.html") },
+      { tools: FILES_TOOLS },
+      { tools: null },
+    ];
+    for (const o of cases) {
+      const m = memory();
+      const p = auditing(scripted(threeThenDone()), [ALL_MET]);
+      const { runner, fake } = fetching(p, m, o);
+      await runner.start(DIGEST);
+      expect(p.text).toHaveBeenCalledTimes(1);
+      expect(fetches(fake)).toEqual([]);
+      expect(fake.calls).toEqual([]);
+      expect(p.calls[0].input).not.toContain(PAGE_FETCHED_LINE);
+      expect(p.calls[0].input).not.toContain(PAGE_READ_LINE);
+      expect(audits(m)[0].data).toMatchObject({ code: "ok", pageRead: "none" });
+      expect(m.of("RunCompleted")).toHaveLength(1);
+    }
+  });
+  it("shows no page and audits all the same when the provider refuses the page, the call throws, or nothing answers within AUDIT_PAGE_FETCH_MS", async () => {
+    policy.evaluate = () => ALLOW;
+    expect(AUDIT_PAGE_FETCH_MS).toBe(3_000);
+    const refused = failed(WEB_CURRENT, "error");
+    const scripts: ((signal: AbortSignal) => Promise<typeof refused>)[] = [
+      // The provider's own rules (a protected site, an address on this
+      // Mac): a refusal, as the registry returns it.
+      async () => refused,
+      // A tool layer that breaks its promise not to throw.
+      async () => {
+        throw new Error("broken");
+      },
+      // A fetch that hangs: the deadline aborts it and the audit runs on.
+      (signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => resolve(failed(WEB_CURRENT, "interrupted")),
+            { once: true },
+          );
+        }),
+    ];
+    for (const script of scripts) {
+      const m = memory();
+      const p = auditing(scripted(threeThenDone()), [ALL_MET]);
+      const { runner, fake } = fetching(p, m);
+      fake.script(WEB_CURRENT.id, (_args, signal) => script(signal));
+      const started = Date.now();
+      await runner.start(DIGEST);
+      if (script === scripts[2])
+        expect(Date.now() - started).toBeGreaterThanOrEqual(
+          AUDIT_PAGE_FETCH_MS - 50,
+        );
+      expect(fetches(fake)).toHaveLength(1);
+      expect(p.text).toHaveBeenCalledTimes(1);
+      expect(p.calls[0].input).not.toContain(PAGE_FETCHED_LINE);
+      expect(p.calls[0].input).not.toContain(CHAT_BODY);
+      expect(audits(m)[0].data).toMatchObject({ code: "ok", pageRead: "none" });
+      expect(m.getRun().actions).toBe(3);
+      expect(m.of("RunCompleted")).toHaveLength(1);
+      expect(m.of("RunFailed")).toHaveLength(0);
+    }
+  }, 15_000);
+  it("reads the page once per claim: a challenged done and the second claim fetch it once each, and the audit's retry does not", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    // The first audit's reply is unusable once (the retry with the
+    // reminder), then challenges; the second claim's audit lets it stand.
+    const p = auditing(scripted(threeThenDone()), [
+      "not json",
+      HOTEL_AUDIT,
+      ALL_MET,
+    ]);
+    const { runner, fake, words } = fetching(p, m);
+    await runner.start(DIGEST);
+    expect(p.text).toHaveBeenCalledTimes(3);
+    expect(audits(m)).toHaveLength(2);
+    expect(audits(m)[0].data).toMatchObject({
+      attempts: 2,
+      pageRead: "fetched",
+    });
+    expect(audits(m)[1].data).toMatchObject({
+      attempts: 1,
+      pageRead: "fetched",
+    });
+    expect(fetches(fake)).toHaveLength(2);
+    expect(words).toEqual([
+      { pageAddress: CHAT_PAGE },
+      { pageAddress: CHAT_PAGE },
+    ]);
+    for (const call of p.calls) expect(call.input).toContain(PAGE_FETCHED_LINE);
+    expect(m.of("ToolCallProposed")).toHaveLength(0);
+    expect(m.getRun().tools).toBeUndefined();
+    expect(m.of("RunCompleted")).toHaveLength(1);
+  });
+  it("names the section by its source and the trace by a fixed code: tool for the run's read, fetched for the claim's, none without one", () => {
+    expect(PAGE_READ_CODES).toEqual(["tool", "fetched", "none"]);
+    expect(pageReadCode(undefined)).toBe("none");
+    expect(pageReadCode({ deliverables: [] })).toBe("none");
+    expect(pageReadCode({ deliverables: [], pageRead: "p" })).toBe("tool");
+    expect(
+      pageReadCode({ deliverables: [], pageRead: "p", pageSource: "tool" }),
+    ).toBe("tool");
+    expect(
+      pageReadCode({ deliverables: [], pageRead: "p", pageSource: "fetched" }),
+    ).toBe("fetched");
+    // The tool the fetch goes through is one of the reads the run's own
+    // pageRead is kept from.
+    expect(PAGE_READ_TOOLS.has(AUDIT_PAGE_TOOL)).toBe(true);
+    expect(AUDIT_PAGE_TOOL).toBe(WEB_CURRENT.id);
+    // The labels: distinct, and the fetched one names the claim.
+    expect(PAGE_FETCHED_LINE).not.toBe(PAGE_READ_LINE);
+    expect(PAGE_FETCHED_LINE).toContain("fetched at the claim");
+    const fetched = doneAuditInput(
+      "Do this and that.",
+      [],
+      "Done.",
+      undefined,
+      {
+        deliverables: [],
+        pageRead: "page text",
+        pageSource: "fetched",
+      },
+    );
+    expect(fetched).toContain(`${PAGE_FETCHED_LINE}\npage text`);
+    expect(fetched).not.toContain(PAGE_READ_LINE);
+    const own = doneAuditInput("Do this and that.", [], "Done.", undefined, {
+      deliverables: [],
+      pageRead: "page text",
+      pageSource: "tool",
+    });
+    expect(own).toContain(`${PAGE_READ_LINE}\npage text`);
+    expect(own).not.toContain(PAGE_FETCHED_LINE);
   });
 });

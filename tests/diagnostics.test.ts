@@ -3408,11 +3408,15 @@ describe("the journal's content-free rows", () => {
       expect(r[1].data).toEqual({ ...base(s, 2), usage: dialog });
       expect(r[2].data).toEqual({ ...base(s, 3), usage: dialog });
     }));
-  it("writes how many files the done audit read back as a count and whether it saw a page read as a flag, never their text or paths", () =>
+  it("writes how many files the done audit read back as a count and how its page section came to be as a code (tool, fetched, none; an older flag as tool or none), never their text or paths", () =>
     fixture((log) => {
-      // Sweep B at bceb9cd, memory-link-to-note #1: the audit now reads the
+      // Sweep B at bceb9cd, memory-link-to-note #1: the audit reads the
       // file the run wrote and the page it read (src/core/done-audit.ts
-      // DoneEvidence); the row says how many and whether, nothing of what.
+      // DoneEvidence); since sweep B 2/3 at 2308fd9 (msg-group-chat-digest
+      // #2: the note whole and no page) it reads the page in front at the
+      // claim when the run made no web read, and pageRead says which
+      // (PAGE_READ_CODES) where it was a flag. The row says how many and
+      // how, nothing of what.
       const s = journal([
         {
           type: "DoneAudited",
@@ -3424,7 +3428,7 @@ describe("the journal's content-free rows", () => {
             code: "ok",
             attempts: 1,
             deliverables: 2,
-            pageRead: true,
+            pageRead: "fetched",
             // Never written by the runner; pinned dropped all the same.
             deliverableText: `${MARK} Finding one`,
             pageText: `${MARK} article`,
@@ -3440,7 +3444,7 @@ describe("the journal's content-free rows", () => {
             code: "ok",
             attempts: 1,
             deliverables: 0,
-            pageRead: false,
+            pageRead: "none",
           },
         },
         {
@@ -3450,10 +3454,33 @@ describe("the journal's content-free rows", () => {
             unmet: 0,
             durationMs: 100,
             code: "ok",
-            // Not a count, not a flag: dropped.
+            // Not a count, not a code: dropped.
             deliverables: "two",
             pageRead: `${MARK} yes`,
           },
+        },
+        // A journal written before the codes: the flag for the run's own
+        // page read reads as tool, its absence as none.
+        {
+          type: "DoneAudited",
+          data: { requirements: 1, code: "ok", pageRead: true },
+        },
+        {
+          type: "DoneAudited",
+          data: { requirements: 1, code: "ok", pageRead: false },
+        },
+        // A word outside the vocabulary, a number: dropped.
+        {
+          type: "DoneAudited",
+          data: { requirements: 1, code: "ok", pageRead: "maybe" },
+        },
+        {
+          type: "DoneAudited",
+          data: { requirements: 1, code: "ok", pageRead: 1 },
+        },
+        {
+          type: "DoneAudited",
+          data: { requirements: 1, code: "ok", pageRead: "tool" },
         },
       ]);
       log.snapshot(s);
@@ -3468,7 +3495,7 @@ describe("the journal's content-free rows", () => {
         code: "ok",
         attempts: 1,
         deliverables: 2,
-        pageRead: true,
+        pageRead: "fetched",
       });
       expect(r[1].data).toEqual({
         ...base(s, 2),
@@ -3478,7 +3505,7 @@ describe("the journal's content-free rows", () => {
         code: "ok",
         attempts: 1,
         deliverables: 0,
-        pageRead: false,
+        pageRead: "none",
       });
       expect(r[2].data).toEqual({
         ...base(s, 3),
@@ -3487,6 +3514,11 @@ describe("the journal's content-free rows", () => {
         durationMs: 100,
         code: "ok",
       });
+      expect(r[3].data).toMatchObject({ pageRead: "tool" });
+      expect(r[4].data).toMatchObject({ pageRead: "none" });
+      expect(r[5].data).not.toHaveProperty("pageRead");
+      expect(r[6].data).not.toHaveProperty("pageRead");
+      expect(r[7].data).toMatchObject({ pageRead: "tool" });
     }));
   it("writes the unmet requirements' kinds as codes from the fixed list, on the audit's row and on a run failed REQUIREMENTS_UNMET; a kind off the list, a bare string and every word are dropped", () =>
     fixture((log) => {
