@@ -384,6 +384,65 @@ describe("System Settings pane rows (cycle 20260919-0226-17c6e7f)", () => {
 });
 
 /**
+ * Repeated names in a list (cycle 20260920-0514-55e4e83, research-compare-
+ * to-csv): the vendors table lists a "Details" link in every row, so native
+ * qualifies each with its row ("Details (Vendor B)", ListNames.swift) and
+ * that is the name the model clicks by and the surface's controlLabel. The
+ * hit test at the link's centre still finds the link itself, whose own name
+ * is the bare "Details": namedTargetUnderPointer accepts a name that starts
+ * with the hit's, so the click is not read as covered, while another name
+ * under the pointer still is. The label the routine gates judge is the hit
+ * element's own (targetLabel), so a qualifier never changes a decision. Every
+ * name here is synthetic.
+ */
+describe("a control named by its row (cycle 20260920-0514-55e4e83)", () => {
+  const row = {
+    ...safari,
+    controlStatus: "resolved" as const,
+    controlLabel: "Details (Vendor B)",
+    targetRole: "AXLink",
+    targetLabel: "Details",
+    targetURL: "http://127.0.0.1:47831/t/vendors/b",
+  };
+  it("is not covered when the link's own shorter name is under the pointer", () => {
+    expect(
+      decide(named("Details (Vendor B)", { x: 0.42, y: 0.38 }), row),
+    ).toEqual({ kind: "ALLOW", reason: "Follow a web link." });
+    // A qualifier longer than the twelve characters normalizeControlLabel
+    // strips still agrees with the hit by prefix.
+    expect(
+      decide(named("Details (Acme Widgets International)"), {
+        ...row,
+        controlLabel: "Details (Acme Widgets International)",
+      }),
+    ).toEqual({ kind: "ALLOW", reason: "Follow a web link." });
+    // A shop's repeated button: the benign gate reads the hit's own name.
+    expect(
+      decide(named("Add to cart (Widget)"), {
+        ...row,
+        controlLabel: "Add to cart (Widget)",
+        targetRole: "AXButton",
+        targetLabel: "Add to cart",
+        targetURL: undefined,
+      }),
+    ).toEqual({
+      kind: "ALLOW",
+      reason: "Activate an identified, non-consequential control.",
+    });
+  });
+  it("is still covered when another name is under the pointer", () => {
+    const covered = decide(named("Details (Vendor B)"), {
+      ...row,
+      targetRole: "AXGroup",
+      targetLabel: "Other",
+    });
+    expect(covered.kind).toBe("RETRY");
+    expect(retryCode(covered.reason)).toBe("CONTROL_COVERED");
+    expect(covered.reason).toContain("Details (Vendor B) is covered");
+  });
+});
+
+/**
  * NOT_REVIEWED (cycle 20260919-0739-d495598, three of three attempts): the
  * booking form's own submit button is labelled Review, and a review is what
  * the button opens: the page it leads to says nothing is booked until the

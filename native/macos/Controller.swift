@@ -126,6 +126,43 @@ func controlGroup(_ element: AXUIElement, role: String, own: String) -> String? 
     }
     return nil
 }
+/// The text that names a control's row (ListNames.swift): up from the
+/// control, rowSearchDepth levels at most and never past the page or the
+/// window (controlGroupStopRoles), to the nearest AXRow or list item; then,
+/// over the row's children in order (its cells), the first static text (the
+/// cell itself, or one two levels down) that is not the control's own name.
+/// Empty when there is no row or no such text. Reads static text alone:
+/// never a field's value.
+func controlRowText(_ element: AXUIElement, own: String) -> String {
+    let ownWords = own.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+    for ancestor in ancestors(of: element, depth: rowSearchDepth) {
+        let role = attribute(ancestor, kAXRoleAttribute) as? String ?? ""
+        if controlGroupStopRoles.contains(role) { return "" }
+        guard rowRoles.contains(role) || rowSubroles.contains(attribute(ancestor, kAXSubroleAttribute) as? String ?? "") else { continue }
+        for cell in (attribute(ancestor, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(8) {
+            let text = firstStaticText(cell, depth: 2)
+            if !text.isEmpty, text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased() != ownWords { return text }
+        }
+        return ""
+    }
+    return ""
+}
+/// The first static text under an element (itself, or its descendants
+/// breadth-first, `depth` levels down and twelve nodes at most), trimmed;
+/// empty when there is none.
+func firstStaticText(_ element: AXUIElement, depth: Int) -> String {
+    var queue = [(element, 0)], index = 0
+    while index < queue.count, index < 12 {
+        let (node, level) = queue[index]; index += 1
+        if attribute(node, kAXRoleAttribute) as? String == "AXStaticText", let value = attribute(node, kAXValueAttribute) as? String {
+            let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return text }
+        }
+        guard level < depth else { continue }
+        for child in (attribute(node, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(6) { queue.append((child, level + 1)) }
+    }
+    return ""
+}
 func controlSignature(_ element:AXUIElement) -> String {
     let fields=[kAXRoleAttribute,kAXSubroleAttribute,kAXValueAttribute,kAXEnabledAttribute,"AXURL"].map {String(describing:attribute(element,$0) ?? "" as CFString)}
     return SHA256.hash(data:Data((fields + [controlLabel(element),String(describing:elementRect(element))]).joined(separator:"\u{0}").utf8)).map{String(format:"%02x",$0)}.joined()
@@ -160,7 +197,7 @@ func modelControlName(_ element:AXUIElement, role:String) -> String {
     let name = firstControlName(controlNameOrder(editable: editable).map { attributeName in
         attributeName == titleElementAttribute ? { titleElementName(element) } : { attribute(element, attributeName) as? String }
     })
-    return name.isEmpty ? "" : utf16Prefix(name, 80)
+    return name.isEmpty ? "" : utf16Prefix(name, controlNameChars)
 }
 // Visible controls of the focused window with their centers as screenshot
 // fractions, so the model can click a listed control exactly instead of
@@ -211,6 +248,21 @@ func webControlEntries(_ window: AXUIElement, display: CGRect, limit: Int = 45) 
         guard depth < 40 else { continue }
         let children = (attribute(node, "AXVisibleChildren") ?? attribute(node, kAXChildrenAttribute)) as? [AXUIElement] ?? []
         for child in children.prefix(60) { queue.append((child, depth + 1)) }
+    }
+    // Names repeated in a list ("Details" in every row of the vendors table)
+    // are told apart by their row (ListNames.swift, controlRowText), read
+    // only for the entries that repeat and within rowReadSeconds in all, so
+    // a page of distinct names costs nothing more. Before the entries are
+    // stored: the name the model reads is the name a click_control resolves.
+    let listed = result.map { (name: $0.item["label"] as? String ?? "", role: $0.item["role"] as? String ?? "") }
+    let rowsStarted = ProcessInfo.processInfo.systemUptime
+    let names = qualifiedListNames(listed) { index in
+        ProcessInfo.processInfo.systemUptime - rowsStarted > rowReadSeconds ? "" : controlRowText(result[index].element, own: listed[index].name)
+    }
+    for index in result.indices where names[index] != listed[index].name {
+        var item = result[index].item
+        item["label"] = names[index]
+        result[index] = ControlEntry(item: item, element: result[index].element)
     }
     return result
 }

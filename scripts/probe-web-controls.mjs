@@ -23,6 +23,13 @@
 // it are taken with the helper stopped, so the reveal only reads and no page
 // is scrolled.
 //
+// Cycle 20260920-0514 (market 1/3): research-compare-to-csv opened the first
+// vendor again and again, because the vendors table lists a "Details" link in
+// every row and the three were listed alike. `repeatedNames` below counts the
+// names two or more listed controls of one role share and `qualified` the
+// names carrying a row qualifier (native ListNames.swift): after `npm run
+// build:native`, expect 0 and 3 on the vendors fixture page.
+//
 // Written for the STOPPED_AFTER_HANDOFF lane of cycle 20260919-0739: market
 // tasks ran "In Safari" for the first time and three runs saw UNIDENTIFIED_TARGET
 // there. Chrome's web controls reached the model in earlier cycles; Safari's
@@ -106,6 +113,24 @@ try {
       grouped: controls.filter((c) => typeof c.group === "string" && c.group)
         .length,
       disabled: controls.filter((c) => c.enabled === false).length,
+      // Names shared by two or more listed controls of one role, and names
+      // carrying a row qualifier (native ListNames.swift: "Details (Vendor
+      // B)" for a link repeated in every row of a table, cycle
+      // 20260920-0514-55e4e83): on the vendors page expect 0 and 3. Counts
+      // only; a label like "Thermostat (°F)" counts as qualified too.
+      repeatedNames: Object.values(
+        tally(
+          controls
+            .filter((c) => typeof c.label === "string" && c.label)
+            .map(
+              (c) =>
+                `${c.role}|${c.label.trim().replace(/\s+/g, " ").toLowerCase()}`,
+            ),
+        ),
+      ).filter((n) => n >= 2).length,
+      qualified: controls.filter(
+        (c) => typeof c.label === "string" && /\s\([^()]+\)$/.test(c.label),
+      ).length,
       roles: tally(controls.map((c) => c.role)),
       // The page address the web tools read (frame.context.browserAddress):
       // present or not, its host class and whether it carries a path — never

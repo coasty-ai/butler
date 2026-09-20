@@ -172,6 +172,23 @@ describe("bounded screen context", () => {
         controls: [{ ...radio, group: "g".repeat(61) }],
       })?.controls?.[0].group,
     ).toHaveLength(60);
+    // A name qualified by its row (native ListNames.swift: "Details (Vendor
+    // B)" for a link repeated in every row of a table) is admitted whole,
+    // parentheses included, at 60 characters and at the 80-unit name cap
+    // itself; one past the cap is cut like any other label.
+    const listed = (label: string) =>
+      cleanScreenContext({
+        appName: "Safari",
+        windowTitle: "Vendors",
+        controls: [{ role: "link", label, x: 0.42, y: 0.38 }],
+      })?.controls?.[0].label;
+    const sixty = `Details (${"v".repeat(50)})`;
+    expect(sixty).toHaveLength(60);
+    expect(listed(sixty)).toBe(sixty);
+    const eighty = `Details (${"v".repeat(70)})`;
+    expect(eighty).toHaveLength(80);
+    expect(listed(eighty)).toBe(eighty);
+    expect(listed(eighty + "!")).toBe(eighty);
     for (const bad of [
       [{ role: "button", x: 1.5, y: 0.2 }],
       [{ role: "button", x: 0.2, y: 0.2, value: "secret" }],
