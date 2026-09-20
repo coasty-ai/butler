@@ -1333,9 +1333,12 @@ export interface Provider {
 export interface ExecutionResult {
   /**
    * How a hotkey went: pressed as the menu item the application publishes for
-   * that chord, or posted as keys to the focused element.
+   * that chord, or posted as keys to the focused element. How a click by name
+   * (click_control) reached its control: the pointer at its centre, or the
+   * accessibility route (AXPress; AXFocused for a field), the route that
+   * acted last when an earlier one read as nothing.
    */
-  via?: "menu" | "keys";
+  via?: "menu" | "keys" | "press" | "pointer";
   launched?: {
     appId: string;
     name: string;
@@ -1366,14 +1369,17 @@ export interface ExecutionResult {
   };
   /**
    * For a step delivered to a bound window: the rung that delivered it and
-   * what the postcondition read found 120 and 400 ms later (design §2.7).
-   * "changed" is the window's controls, the field's value, its window count
-   * or its pixels moving; "none" both reads unchanged; "unverifiable" a
-   * write the application echoed without a change the helper could read.
-   * None of it is proof: the next screenshot is.
+   * what the postcondition read found 120 and 400 ms later (design §2.7);
+   * for a click by name in front, what two reads within 300 ms found
+   * (native/macos/ClickEffect.swift). "changed" is the window's controls,
+   * title, page or window count, the field's value, the control's own state
+   * or the pixels moving; "focused" only focus moved, or a field clicked by
+   * name holds it; "none" every read unchanged after every route; and
+   * "unverifiable" a write the application echoed without a change the
+   * helper could read. None of it is proof: the next screenshot is.
    */
   rung?: Rung;
-  effect?: "changed" | "none" | "unverifiable";
+  effect?: "changed" | "focused" | "none" | "unverifiable";
 }
 export interface Controller {
   kind: "tutorial" | "native";

@@ -92,6 +92,8 @@ export interface RunJournal {
   loops: number;
   /** Same-type actions that changed nothing on screen (NoProgressDetected). */
   noProgress: number;
+  /** Clicks by name the helper read as no effect on every route (ActionExecuted effect none). */
+  clickNoEffect?: number;
   /** Failure codes seen during the run (STATE_CHANGED, INVALID_ACTION, ...). */
   failures: Record<string, number>;
   /**

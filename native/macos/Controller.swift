@@ -831,17 +831,100 @@ func restoreMainWindow(pid: pid_t, bundleId: String, appNames: [String]) throws 
  so a name it quoted resolves to where that control is at this moment.
  */
 func currentNamedControls() -> [NamedControl] {
+    currentControlEntries().map {
+        NamedControl(label: $0.item["label"] as? String ?? "", role: $0.item["role"] as? String ?? "",
+                     x: $0.item["x"] as? Double ?? 0, y: $0.item["y"] as? Double ?? 0,
+                     enabled: $0.item["enabled"] as? Bool ?? true)
+    }
+}
+// The same controls with the element behind each, so a click by name can be
+// read back against the control itself (ClickEffect.swift).
+func currentControlEntries() -> [ControlEntry] {
     let display = CGDisplayBounds(displayID)
     let state = windowState()
-    var items = groundedControls(state, display: display)
+    var entries = groundedControlEntries(state, display: display)
     if browserAppIDs.contains(state.appId), let window = state.window {
-        items = mergeControls(items, webControls(window, display: display), limit: 60) { $0 }
+        entries = mergeControls(entries, webControlEntries(window, display: display), limit: 60) { $0.item }
     }
-    return items.map {
-        NamedControl(label: $0["label"] as? String ?? "", role: $0["role"] as? String ?? "",
-                     x: $0["x"] as? Double ?? 0, y: $0["y"] as? Double ?? 0,
-                     enabled: $0["enabled"] as? Bool ?? true)
+    return entries
+}
+func resolveNamedControlEntry(_ action: [String:Any]) -> (match: ControlMatch, entry: ControlEntry?, control: NamedControl?) {
+    targetNamedControl(action, entries: currentControlEntries())
+}
+
+// MARK: Click effect (ClickEffect.swift): what a click by name changed.
+
+/// The focused element as an identity: its hash (an AXUIElement hashes as it
+/// compares, CFEqual), role and label; never its value.
+func focusIdentity(_ element: AXUIElement?) -> String {
+    guard let element else { return "" }
+    let role = attribute(element, kAXRoleAttribute) as? String ?? ""
+    let label = ["AXTextField", "AXTextArea", "AXComboBox"].contains(role) ? fieldLabel(element) : String(controlLabel(element).prefix(120))
+    return "\(CFHash(element))|\(role)|\(label)"
+}
+/// The clicked control's own state: its value as a digest (a secure field's
+/// is never read), whether it is selected and whether it is expanded.
+func controlStateDigest(_ element: AXUIElement) -> String {
+    let secure = attribute(element, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole
+    let value = secure ? "secure" : String(describing: attribute(element, kAXValueAttribute) ?? "" as CFString)
+    let digest = SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    return [digest, String(describing: attribute(element, kAXSelectedAttribute) ?? "" as CFString),
+            String(describing: attribute(element, "AXExpanded") ?? "" as CFString)].joined(separator: "|")
+}
+/// One reading of what a click can change, from a window state already walked.
+func clickSnapshot(state: WindowState, control: AXUIElement) -> ClickSnapshot {
+    ClickSnapshot(focus: focusIdentity(state.focused), controls: state.controls,
+                  title: state.window.flatMap { attribute($0, kAXTitleAttribute) as? String } ?? "",
+                  page: state.document, control: controlStateDigest(control),
+                  windows: state.pid > 0 ? onScreenWindowCount(state.pid) : 0,
+                  targetFocused: sameElement(control, state.focused))
+}
+/// The reads after an input in front (clickReadDelaysMs), the second only
+/// when the first saw nothing. Reads alone: no input, no stop-latch check.
+func readClickEffect(before: ClickSnapshot, control: AXUIElement, editable: Bool) -> ClickEffect {
+    var effect = ClickEffect.none
+    for delay in clickReadDelaysMs {
+        Thread.sleep(forTimeInterval: Double(delay) / 1000)
+        effect = clickEffect(before: before, after: clickSnapshot(state: windowState(), control: control), editable: editable)
+        if effect != .none { break }
     }
+    return effect
+}
+/**
+ A click by name in the frontmost window, read back (ClickEffect.swift). A
+ field is given focus by accessibility first, as deliverByPosting does before
+ typing, and the read verifies the application's focused element is that
+ field. Otherwise, or when that did not take, the pointer click lands at the
+ control's centre through the HID tap as it always did, marked as the helper's
+ own by postInput; when the reads see nothing, the control's own AXPress is
+ tried and read again. The result carries the route that acted last and the
+ final effect. Every input keeps the stop-latch check (mouse, ensureRunning)
+ behind the protected-surface walk execute ran first.
+ */
+func clickNamedControl(_ element: AXUIElement, at target: CGPoint, mouse: (CGEventType, CGPoint) throws -> Void) throws -> [String:Any] {
+    let role = attribute(element, kAXRoleAttribute) as? String ?? "", subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
+    let editable = focusRequested(role: role, subrole: subrole)
+    let before = clickSnapshot(state: windowState(), control: element)
+    var via = ClickRoute.pointer, effect = ClickEffect.none
+    if editable {
+        try ensureRunning()
+        via = .press
+        if !before.targetFocused { _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
+        effect = readClickEffect(before: before, control: element, editable: true)
+    }
+    if effect == .none {
+        via = .pointer
+        try mouse(.leftMouseDown, target)
+        postInput(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left))
+        effect = readClickEffect(before: before, control: element, editable: editable)
+    }
+    if effect == .none, actionNames(element).contains(kAXPressAction) {
+        try ensureRunning()
+        via = .press
+        _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        effect = readClickEffect(before: before, control: element, editable: editable)
+    }
+    return clickResult(effect: effect, via: via)
 }
 func resolveNamedControl(_ action: [String:Any]) -> (match: ControlMatch, control: NamedControl?) {
     let controls = currentNamedControls()
@@ -1809,12 +1892,15 @@ let keys: [String:CGKeyCode] = ["A":0,"S":1,"D":2,"F":3,"H":4,"G":5,"Z":6,"X":7,
 // Returns how a hotkey went: "menu" when pressed through its menu item
 // (menuRoute, the path revalidate was given), "keys" when posted.
 @discardableResult
-func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> String? {
+// Returns the result fields the step reports beside "executed": a hotkey's
+// route ("via": menu or keys), a click by name's route and effect
+// (ClickEffect.swift), nothing for the rest.
+func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> [String:Any] {
     try ensureRunning(); try guardSurface()
     // Waiting and observing send no input, so window transitions must not reject them.
     switch action["type"] as? String {
-    case "wait": guard let ms = action["milliseconds"] as? Int, ms>=0,ms<=5000 else {throw ControlError("Invalid wait.")};for _ in 0..<(ms/10){try ensureRunning();Thread.sleep(forTimeInterval:0.01)};return nil
-    case "capture": return nil
+    case "wait": guard let ms = action["milliseconds"] as? Int, ms>=0,ms<=5000 else {throw ControlError("Invalid wait.")};for _ in 0..<(ms/10){try ensureRunning();Thread.sleep(forTimeInterval:0.01)};return [:]
+    case "capture": return [:]
     default: break
     }
     guard AXIsProcessTrusted() else { throw ControlError("Accessibility permission is required.") }
@@ -1924,9 +2010,9 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> String
     case "click_control":
         // Resolved again here, against the tree as it is at this instant: the
         // name is the intent, the position is only where it happens to be.
-        let (match, resolved) = resolveNamedControl(action)
-        guard case .matched = match, let control = resolved else {
-            switch match {
+        let resolution = resolveNamedControlEntry(action)
+        guard case .matched = resolution.match, let control = resolution.control, let entry = resolution.entry else {
+            switch resolution.match {
             case .ambiguous(let count):
                 throw ControlError("\(count) controls are named that. Name a different control, or add the x and y from the context list.", code: "TARGET_AMBIGUOUS")
             default:
@@ -1935,22 +2021,23 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> String
         }
         guard control.enabled else { throw ControlError("That control is disabled.", code: "TARGET_DISABLED") }
         let target = CGPoint(x: b.minX+min(b.width-1, floor(control.x*b.width)), y: b.minY+min(b.height-1, floor(control.y*b.height)))
-        try mouse(.leftMouseDown, target)
-        postInput(CGEvent(mouseEventSource:nil, mouseType:.leftMouseUp, mouseCursorPosition:target, mouseButton:.left))
+        // Cycle 20260919-2044: five STUCK_LOOP runs were this click repeated on
+        // an unchanged page, the step reported done with nothing read back.
+        return try clickNamedControl(entry.element, at: target) { type, point in try mouse(type, point) }
     case "key", "hotkey":
         let names = action["keys"] as? [String] ?? [action["key"] as? String ?? ""]
         guard names.count<=4,names.allSatisfy({keys[$0] != nil}) else {throw ControlError("Unsupported key.")}
         guard clipboardChordAllowed(names: names, paste: action["paste"] as? Bool == true) else {throw ControlError("Clipboard disabled.")}
         // Pressed by name like menu_item, resolved again now: a refused, missing or
         // greyed-out item is reported, and its keys are never posted instead.
-        if action["type"] as? String == "hotkey", let path = menuRoute { try pressMenuPath(path, chord: normalizeChord(names)); return "menu" }
+        if action["type"] as? String == "hotkey", let path = menuRoute { try pressMenuPath(path, chord: normalizeChord(names)); return ["via": "menu"] }
         var flags:CGEventFlags = [];for name in names {if name == "CMD"{flags.insert(.maskCommand)};if name == "CTRL"{flags.insert(.maskControl)};if name == "ALT"{flags.insert(.maskAlternate)};if name == "SHIFT"{flags.insert(.maskShift)}}
         var pressed:[CGKeyCode] = [];defer {for code in pressed.reversed(){postInput(CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:false))}}
         for name in names {try ensureRunning();let code = keys[name]!;let e = CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:true);e?.flags = flags;postInput(e);pressed.append(code)}
-        return action["type"] as? String == "hotkey" ? "keys" : nil
+        return action["type"] as? String == "hotkey" ? ["via": "keys"] : [:]
     default: throw ControlError("Unknown native action.")
     }
-    return nil
+    return [:]
 }
 final class LaunchOutcome: @unchecked Sendable {
     let lock = NSLock(); var done = false; var failed = false
@@ -2826,6 +2913,12 @@ func deliverByAccessibility(_ bound: TargetBinding, _ action: [String:Any], cont
     switch action["type"] as? String ?? "" {
     case "click_control":
         guard let element = control?.element else { return .none }
+        // A field's click asks for focus, given here as the write deliverByPosting
+        // makes before typing; the postcondition read verifies it took (focused).
+        if focusRequested(role: attribute(element, kAXRoleAttribute) as? String ?? "", subrole: attribute(element, kAXSubroleAttribute) as? String ?? "") {
+            try setTargetAttribute(element, kAXFocusedAttribute, kCFBooleanTrue, bound: bound)
+            return .acted
+        }
         if actionNames(element).contains(kAXPressAction) { try performTargetAction(element, kAXPressAction, bound: bound); return .acted }
         // A row or cell with no press of its own is chosen by selecting its row.
         guard let row = rowAncestor(element) else { return .none }
@@ -2945,23 +3038,27 @@ func targetCaptureSetup(_ bound: TargetBinding) async throws -> (filter: SCConte
 // hash, the field's value, its window count and its image. A field's value is
 // read only for the field the step acts on, never a secure one (those are
 // refused before).
+// A click by name (`control`) also reads the focus and the control's own state
+// (ClickEffect.swift), so a press that only focused a field is seen.
 @available(macOS 14.0, *)
-func observeTarget(_ bound: TargetBinding, field: AXUIElement?, setup: (filter: SCContentFilter, config: SCStreamConfiguration)) async -> TargetObservation {
+func observeTarget(_ bound: TargetBinding, field: AXUIElement?, control: AXUIElement? = nil, setup: (filter: SCContentFilter, config: SCStreamConfiguration)) async -> TargetObservation {
     let state = targetState(bound)
     let image = try? await SCScreenshotManager.captureImage(contentFilter: setup.filter, configuration: setup.config)
     return TargetObservation(controls: state.controls, fieldValue: field.map { String(describing: attribute($0, kAXValueAttribute) ?? "" as CFString) },
-                             windowCount: onScreenWindowCount(bound.pid), pixels: image.flatMap { ScreenPixels($0) })
+                             windowCount: onScreenWindowCount(bound.pid), pixels: image.flatMap { ScreenPixels($0) },
+                             focus: focusIdentity(state.focused), control: control.map(controlStateDigest) ?? "",
+                             targetFocused: control.map { sameElement($0, state.focused) } ?? false)
 }
 // The "did it take" step (design §2.7): read 120 ms after the delivery and, if
 // nothing moved, again at 400 ms.
 @available(macOS 14.0, *)
-func readPostcondition(_ bound: TargetBinding, before: TargetObservation, field: AXUIElement?, targetRect: CGRect?, setup: (filter: SCContentFilter, config: SCStreamConfiguration)) async throws -> (read: PostconditionRead, after: TargetObservation) {
+func readPostcondition(_ bound: TargetBinding, before: TargetObservation, field: AXUIElement?, control: AXUIElement? = nil, targetRect: CGRect?, setup: (filter: SCContentFilter, config: SCStreamConfiguration)) async throws -> (read: PostconditionRead, after: TargetObservation) {
     var after = before, read = PostconditionRead()
     for delay in [120, 280] {
         try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
-        after = await observeTarget(bound, field: field, setup: setup)
+        after = await observeTarget(bound, field: field, control: control, setup: setup)
         read = postconditionRead(before: before, after: after, targetRect: targetRect)
-        if read.any { break }
+        if read.any || read.focusChanged { break }
     }
     return (read, after)
 }
@@ -3250,6 +3347,11 @@ func executeTarget(token: String, action: [String:Any], rungs requested: [Rung])
     }
     let field = ["type_text", "key"].contains(type) ? try typingField(bound, action: action, state: state, entries: entries) : control?.element
     let replacing = type == "type_text" && field.map(replacesField) == true
+    // A click by name is read back against the control itself: its focus and
+    // its own state beside the window (ClickEffect.swift); a field's click
+    // counts as taken when the field holds focus.
+    let clicked = type == "click_control" ? control?.element : nil
+    let editable = clicked.map { focusRequested(role: attribute($0, kAXRoleAttribute) as? String ?? "", subrole: attribute($0, kAXSubroleAttribute) as? String ?? "") } ?? false
     let setup = try await targetCaptureSetup(bound)
     let rect = field.flatMap(elementRect) ?? point.map { CGRect(x: $0.x - 48, y: $0.y - 32, width: 96, height: 64) }
     let targetRect = rect.map { imageRect($0, window: frame, imageWidth: setup.config.width, imageHeight: setup.config.height) }
@@ -3270,7 +3372,7 @@ func executeTarget(token: String, action: [String:Any], rungs requested: [Rung])
     var last: (rung: Rung, effect: RungEffect, read: PostconditionRead)? = nil
     for rung in plan.rungs {
         try ensureRunning()
-        let before = await observeTarget(bound, field: field, setup: setup)
+        let before = await observeTarget(bound, field: field, control: clicked, setup: setup)
         let delivery: TargetDelivery
         switch rung {
         case .ax: delivery = try deliverByAccessibility(bound, action, control: control, point: point, field: field, replacing: replacing, menuRoute: menuRoute)
@@ -3278,21 +3380,21 @@ func executeTarget(token: String, action: [String:Any], rungs requested: [Rung])
         case .foreground: continue
         }
         guard delivery != .none else { continue }
-        let (read, after) = try await readPostcondition(bound, before: before, field: field, targetRect: targetRect, setup: setup)
-        var effect = postconditionVerdict(read)
+        let (read, after) = try await readPostcondition(bound, before: before, field: field, control: clicked, targetRect: targetRect, setup: setup)
+        var effect = postconditionVerdict(read, editable: editable)
         if case .wrote(let expected) = delivery {
             effect = writeVerdict(readBack: after.fieldValue, expected: expected, echoRisk: bound.appClass.multiprocessWeb && field.map(insideWebArea) == true, fieldPixelsChanged: read.targetPixelsChanged)
         }
-        if effect == .changed {
+        if effect == .changed || effect == .focused {
             // Only the same context (not one a pause or another command replaced) learns the finished text.
             if let before = typedInto { withState { if searchCommand?.pid == before.pid, searchCommand?.at == before.at { searchCommand = nextSearchContext(before, .typed(text, replaced: replacing)) } } }
-            return targetResult(rung: rung, effect: effect, code: nil, read: read)
+            return targetResult(rung: rung, effect: effect, code: nil, read: read, via: clickRoute(type: type, rung: rung))
         }
         withState { targetMisses.record(appId: bound.appId, type: type, rung: rung) }
         last = (rung, effect, read)
     }
     guard let last else { return targetResult(rung: nil, effect: nil, code: .unavailable, read: nil) }
-    return targetResult(rung: last.rung, effect: last.effect, code: .noEffect, read: last.read)
+    return targetResult(rung: last.rung, effect: last.effect, code: .noEffect, read: last.read, via: clickRoute(type: type, rung: last.rung))
 }
 /**
  Rung 3 (design §2.8), only after the runner has announced it: the application
@@ -3923,7 +4025,7 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
     case "execute":
         guard var action = command["action"] as? [String:Any] else {throw ControlError("Missing action.")}
         // Waiting and observing send no input and are not bound to a frame.
-        if ["wait", "capture"].contains(action["type"] as? String ?? "") {try execute(action);return ["executed":true]}
+        if ["wait", "capture"].contains(action["type"] as? String ?? "") {_ = try execute(action);return ["executed":true]}
         try ensureRunning()
         guard let previous = getCurrentFrame()?["frame"] as? [String:Any], action["frame_id"] as? String == previous["id"] as? String else {throw changedScreen("The observation is no longer current.")}
         // A hotkey's route is chosen once: one revalidated as a menu press is never posted as keys.
@@ -3941,7 +4043,7 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
             action["frame_id"] = fresh["id"]
         } else {throw ControlError("macOS 14 required.")}
         var result: [String:Any] = ["executed":true]
-        if let via = try execute(action, menuRoute: menuRoute) {result["via"] = via}
+        for (key, value) in try execute(action, menuRoute: menuRoute) { result[key] = value }
         return result
     case "revalidate":
         guard let action = command["action"] as? [String:Any] else { throw ControlError("Missing action.") }

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { failureClasses } from "../src/gym/bench/cycle-report";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -1691,6 +1692,33 @@ describe("pause cause from a real run", () => {
     expect(noteFor("STUCK_LOOP")).toMatch(/reflection step/);
     expect(ownerOf("STUCK_LOOP")).toBe("agent");
   });
+  it("counts a click by name the helper read as no effect, from the executed row's code alone", () => {
+    // native/macos/ClickEffect.swift: the executed step carries what the
+    // helper's reads found; none on every route is the pattern, a change or
+    // a focus is not, and the label never enters the code.
+    expect(
+      frictionCodes({
+        event: "ActionExecuted",
+        data: { actionType: "click_control", via: "pointer", effect: "none" },
+      }),
+    ).toEqual(["CLICK_NO_EFFECT"]);
+    expect(
+      frictionCodes({
+        event: "ActionExecuted",
+        data: { action: { type: "click_control", label: "x" }, effect: "none" },
+      }),
+    ).toEqual(["CLICK_NO_EFFECT"]);
+    for (const effect of ["changed", "focused", undefined, "None"])
+      expect(
+        frictionCodes({
+          event: "ActionExecuted",
+          data: { actionType: "click_control", via: "press", effect },
+        }),
+      ).toEqual([]);
+    expect(noteFor("CLICK_NO_EFFECT")).toMatch(/300 ms/);
+    expect(noteFor("CLICK_NO_EFFECT")).toMatch(/loop at once/);
+    expect(ownerOf("CLICK_NO_EFFECT")).toBe("agent");
+  });
 });
 
 describe("bench --dry-run", () => {
@@ -1775,6 +1803,33 @@ describe("attempt.ts and the tool layer", () => {
     expect(source).toContain(
       "const FIRST_PARTY_TOOL = /^(?:apple|files)__[A-Za-z0-9_.-]{1,128}$/;",
     );
+  });
+  it("numbers the journal events the null recorder leaves at 0, so the cycle's log keeps them, and counts a click by name with no effect", () => {
+    // LocalDiagnostics.snapshot writes only an event whose sequence is past
+    // the last written; nullRecorder stamps 0 on every one, and cycle
+    // 20260919-2044's log carried no journal row of any run. The wrapper
+    // numbers them per attempt and leaves a recorder's own numbers alone.
+    const wrapper = source.slice(
+      source.indexOf("const inner = deps.recorder ?? nullRecorder();"),
+      source.indexOf("let runner: Runner;"),
+    );
+    expect(wrapper).toContain("let sequence = 0;");
+    expect(wrapper).toContain("append: (id, type, data) => {");
+    expect(wrapper).toContain("const event = inner.append(id, type, data);");
+    expect(wrapper).toContain("event.sequence_number > 0");
+    expect(wrapper).toContain("{ ...event, sequence_number: ++sequence }");
+    // The executed row's effect, as the analyzer reads it (CLICK_NO_EFFECT).
+    const counted = source.slice(
+      source.indexOf('if (event.type === "NoProgressDetected")'),
+      source.indexOf('if (event.type === "ActionExecuted") {'),
+    );
+    expect(counted).toContain(
+      'if (event.type === "ActionExecuted" && d.effect === "none")',
+    );
+    expect(counted).toContain("counters.clickNoEffect++;");
+    expect(source).toContain("clickNoEffect: counters.clickNoEffect,");
+    expect(source).toContain("...(journal.clickNoEffect");
+    expect(source).toContain("? { clickNoEffect: journal.clickNoEffect }");
   });
 });
 
@@ -2889,5 +2944,45 @@ describe("per-fact checks: helpers, grade, row and report", () => {
     expect(factsLine(plain)).toBeUndefined();
     expect(renderSummary(plain)).not.toContain("missing facts");
     expect(renderSummary(plain)).not.toContain("note routes");
+  });
+});
+
+describe("clicks by name with no effect in the results", () => {
+  it("are summed over the attempts and become a friction class per attempt that did not pass", () => {
+    expect(
+      aggregate([
+        attempt({ clickNoEffect: 2 }),
+        attempt(),
+        attempt({ clickNoEffect: 1 }),
+      ]).clickNoEffect,
+    ).toBe(3);
+    const rows = [
+      attempt({
+        status: "failed",
+        reason: "ROWS_MISSING",
+        endingCode: "STUCK_LOOP",
+        clickNoEffect: 3,
+        runId: "11111111-1111-4111-8111-111111111111",
+      }),
+      attempt({ status: "passed", clickNoEffect: 1 }),
+      attempt({
+        status: "failed",
+        reason: "ROWS_MISSING",
+        endingCode: "ACTION_BUDGET",
+      }),
+    ];
+    const clicks = failureClasses(rows).find(
+      (c) => c.code === "CLICK_NO_EFFECT",
+    );
+    expect(clicks).toMatchObject({
+      source: "friction",
+      owner: "agent",
+      attempts: 1,
+      passedAttempts: 1,
+      events: 3,
+    });
+    expect(clicks?.note).toMatch(/300 ms/);
+    // A row that never saw one adds nothing; the field is absent, not 0.
+    expect("clickNoEffect" in attempt()).toBe(false);
   });
 });

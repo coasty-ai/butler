@@ -548,6 +548,36 @@ export const CORRECTION_NOTE =
 export const LOOP_STUCK_MESSAGE =
   "Stuck: the same steps kept repeating without progress, so the run stopped before the objective was done.";
 /**
+ * The history line of a click by name (click_control) that changed nothing
+ * the helper could read after every route it has: the pointer at the
+ * control's centre and its accessibility press, or focus for a field
+ * (native/macos/ClickEffect.swift, two reads within 300 ms). Cycle
+ * 20260919-2044-60630f0: five of eight STUCK_LOOP runs were such a click
+ * repeated on an unchanged page while every step read "Executed". Fixed
+ * words, so the model changes route at once; the same click from the same
+ * screen changing nothing again is a loop at once (trackLoop). Short, since
+ * the model's copy of a line is cut at MODEL_RESULT_CHARS and the reflection
+ * note may ride on the same line.
+ */
+export const CLICK_NO_EFFECT_NOTE =
+  " The control did not respond (nothing changed after the click and the accessibility press). Try click(x, y) at its centre with the x and y from context.controls, another control, or the keyboard path.";
+/** A click by name in front whose reads saw focus move to the control and nothing else. */
+export const CLICK_FOCUSED_NOTE = " It has focus now.";
+/**
+ * What a click by name's history line adds after the helper's reads. The
+ * bound ladder's line (backgroundResult) already words a focus; a no-effect
+ * ending gets the fixed sentence on both routes.
+ */
+export function clickEffectNote(
+  action: Action,
+  outcome: void | ExecutionResult | undefined,
+): string {
+  if (action.type !== "click_control" || !outcome || !outcome.effect) return "";
+  if (outcome.effect === "none") return CLICK_NO_EFFECT_NOTE;
+  if (outcome.effect === "focused" && !outcome.rung) return CLICK_FOCUSED_NOTE;
+  return "";
+}
+/**
  * The one reflection step an unattended run gets when a loop continued past
  * its warning. The benchmark, a routine's replay and autonomy "all" have
  * nobody to say "continue with a hint", so the pause the loop used to end in
@@ -1315,6 +1345,8 @@ export class Runner {
   /** Signatures an unattended run was already given its reflection step for. */
   private reflected = new Set<string>();
   private loopEpisodes = 0;
+  /** Clicks by name with no effect, counted by step and screen (signature and screenKey); the second is a loop at once. */
+  private noEffectClicks = new Map<string, number>();
   /** The transition the last executed step began; the capture after it waits. */
   private settleBefore?: "launched" | "navigated";
   /** The host the streamed prelude's last open_url sent the browser to, for the first capture to wait on. */
@@ -1542,12 +1574,17 @@ export class Runner {
    * is forgotten once four fresh steps in a row (each seen once in the
    * window) show the run has moved on; before, one unlike step forgot it, and
    * a loop with a capture or a stray click in it was warned about again and
-   * again and never called stuck.
+   * again and never called stuck. A click by name the helper read as no
+   * effect (`noEffect`, CLICK_NO_EFFECT_NOTE) is a fresh step the first time;
+   * the same click from the same screen reading so again is a loop at once,
+   * not on its third round: cycle 20260919-2044, eleven such clicks in a row
+   * before the revisit rule spoke.
    */
   private trackLoop(
     action: Action,
     target?: { role?: string; label?: string },
     screen?: { frame: Frame; surface?: Surface },
+    noEffect = false,
   ): "warn" | "stuck" | undefined {
     const signature = actionSignature(action, target);
     const key = screen
@@ -1565,7 +1602,14 @@ export class Runner {
       !readTool && revisitable(signature)
         ? this.steps.filter((s) => s === key).length
         : 0;
-    if (!period && revisits < LOOP_REVISITS) {
+    // Counted for the run, across the breaker's resets: the second such click
+    // from the same screen is a loop whatever else the window holds.
+    const noEffectCount = noEffect
+      ? (this.noEffectClicks.get(key) ?? 0) + 1
+      : 0;
+    if (noEffect) this.noEffectClicks.set(key, noEffectCount);
+    const repeatedNoEffect = noEffectCount >= 2;
+    if (!period && revisits < LOOP_REVISITS && !repeatedNoEffect) {
       const fresh = this.steps
         .slice(-4)
         .every((s) => this.steps.filter((t) => t === s).length === 1);
@@ -1575,14 +1619,17 @@ export class Runner {
       }
       return undefined;
     }
-    // The loop's members: the cycle the period rule saw and every step the
-    // window holds more than once, as signatures.
+    // The loop's members: the cycle the period rule saw, every step the
+    // window holds more than once, and the click that changed nothing again
+    // (the window may hold it once after a reset), as signatures.
     const repeated = this.steps.filter((s, i, all) => all.indexOf(s) !== i);
     this.cycle = [
       ...new Set(
-        [...(period ? this.signatures.slice(-period) : []), ...repeated].map(
-          (s) => s.split("\u0000")[0],
-        ),
+        [
+          ...(period ? this.signatures.slice(-period) : []),
+          ...repeated,
+          ...(repeatedNoEffect ? [key] : []),
+        ].map((s) => s.split("\u0000")[0]),
       ),
     ];
     if (!this.loopWarned) {
@@ -1591,7 +1638,13 @@ export class Runner {
       this.event("ActionLoopDetected", {
         actionType: action.type,
         period,
-        ...(revisits >= LOOP_REVISITS ? { revisits } : {}),
+        // The revisit rule's count, or how often this click read as no effect.
+        ...(revisits >= LOOP_REVISITS
+          ? { revisits }
+          : repeatedNoEffect
+            ? { revisits: noEffectCount }
+            : {}),
+        ...(repeatedNoEffect ? { noEffect: true } : {}),
       });
       // The reflection step was spent on this loop already: no second warning.
       if (this.cycle.some((s) => this.reflected.has(s))) {
@@ -3185,7 +3238,7 @@ export class Runner {
     outcome = { ...outcome, rung, effect: outcome.effect ?? "unverifiable" };
     for (const missed of ladder.rungs.slice(0, ladder.rungs.indexOf(rung)))
       this.recordMiss(target, action, missed, rung);
-    if (outcome.effect === "changed") {
+    if (outcome.effect === "changed" || outcome.effect === "focused") {
       this.observe(target, action, rung, "works");
       return { outcome };
     }
@@ -3529,11 +3582,16 @@ export class Runner {
           }
         : undefined;
     const via =
-      action.type === "hotkey" &&
       outcome &&
-      (outcome.via === "menu" || outcome.via === "keys")
+      ((action.type === "hotkey" &&
+        (outcome.via === "menu" || outcome.via === "keys")) ||
+        (action.type === "click_control" &&
+          (outcome.via === "press" || outcome.via === "pointer")))
         ? outcome.via
         : undefined;
+    // What a click by name changed, as the helper read it on either route.
+    const clickEffect =
+      action.type === "click_control" ? outcome?.effect : undefined;
     // Read before planPending is cleared: this step came from the plan.
     const fromPlan =
       this.planPending !== undefined ? this.plan?.source : undefined;
@@ -3559,14 +3617,14 @@ export class Runner {
       frame_id: executionFrame.id,
       // Taken before this run existed, while the user was still speaking.
       ...(o.early ? { early: true } : {}),
-      // Whether a hotkey was pressed as its menu item or posted as keys.
+      // Whether a hotkey was pressed as its menu item or posted as keys; how a
+      // click by name reached its control (press or pointer).
       ...(via ? { via } : {}),
-      // The rung that reached a bound window and what its postcondition read found.
-      ...(outcome?.rung
-        ? {
-            rung: outcome.rung,
-            ...(outcome.effect && { effect: outcome.effect }),
-          }
+      // The rung that reached a bound window and what its postcondition read
+      // found; in front, what a click by name's reads found.
+      ...(outcome?.rung ? { rung: outcome.rung } : {}),
+      ...((outcome?.rung || clickEffect) && outcome?.effect
+        ? { effect: outcome.effect }
         : {}),
       ...(opened ? { opened: { kind: opened.kind } } : {}),
       ...(launched
@@ -3587,6 +3645,7 @@ export class Runner {
       action,
       { role: actionSurface.targetRole, label: actionSurface.targetLabel },
       { frame: executionFrame, surface: actionSurface },
+      clickEffect === "none",
     );
     const thrashing = this.trackAppSwitch(action, launched?.appId);
     // The transition this step began, for the capture that follows it
@@ -3632,6 +3691,7 @@ export class Runner {
                 : ["type_text", "key", "hotkey"].includes(action.type)
                   ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
                   : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
+        clickEffectNote(action, outcome) +
         (o.reaimed ? reaimNote : "") +
         (loop === "warn" ? loopWarning : "") +
         (thrashing ? appSwitchWarning : ""),
@@ -3657,6 +3717,7 @@ export class Runner {
     this.cycle = [];
     this.reflected = new Set();
     this.loopEpisodes = 0;
+    this.noEffectClicks = new Map();
     this.settleBefore = undefined;
     this.streamedPage = undefined;
     this.resetMemory();

@@ -98,7 +98,7 @@ func backgroundInputChecks(_ check: (Bool, String) -> Void) {
     check(elsewhere.windowPixelsChanged && !elsewhere.targetPixelsChanged && postconditionVerdict(elsewhere) == .changed, "a change elsewhere in the window counts as delivered")
     check(!postconditionRead(before: before, after: TargetObservation(controls: "a", fieldValue: "hello", windowCount: 1, pixels: nil), targetRect: target).any, "a missing image is not evidence of change")
     check(!postconditionRead(before: before, after: before, targetRect: nil).any, "with no target rectangle only the whole window is compared")
-    check(Set(same.dictionary.keys) == ["controls", "field", "windows", "targetPixels", "windowPixels"] && same.dictionary.values.allSatisfy { $0 as? Bool == false }, "the observed read reports exactly its five flags")
+    check(Set(same.dictionary.keys) == ["controls", "field", "windows", "targetPixels", "windowPixels", "focus", "control"] && same.dictionary.values.allSatisfy { $0 as? Bool == false }, "the observed read reports exactly its seven flags")
 
     check(writeVerdict(readBack: "hello world", expected: "hello world", echoRisk: false, fieldPixelsChanged: false) == .changed, "a read-back equal to the expectation confirms a write")
     check(writeVerdict(readBack: "hello", expected: "hello world", echoRisk: false, fieldPixelsChanged: true) == RungEffect.none, "a read-back that differs is no effect, whatever the pixels")

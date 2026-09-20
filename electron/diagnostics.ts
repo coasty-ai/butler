@@ -208,9 +208,15 @@ const fields = new Set([
   "dropped",
   "channel",
   // A refused step's kind of screen change and a hotkey's route (menu or
-  // keys): fixed codes from the native helper, never its sentence.
+  // keys): fixed codes from the native helper, never its sentence. A click by
+  // name's route (press or pointer) and what the helper's reads found after
+  // it (changed, focused, none); a bound step's rung (ax, post, foreground).
   "change",
   "via",
+  "effect",
+  "rung",
+  // ActionLoopDetected: the loop is a click by name repeated with no effect.
+  "noEffect",
   // The opt-in Jev decider on a dialog turn: its time, the act it chose and
   // that act's probability, whether it was used, and its failure code.
   "jevMs",
@@ -463,6 +469,8 @@ const flagFields = new Set([
   "cancelled",
   // ForegroundRequested: the detour that releases the window for good.
   "final",
+  // ActionLoopDetected: a click by name with no effect repeated from one screen.
+  "noEffect",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -494,6 +502,9 @@ const codeFields = new Set([
   "channel",
   "change",
   "via",
+  // ActionExecuted: a click by name's effect and a bound step's rung.
+  "effect",
+  "rung",
   "jevAct",
   "jevCode",
   "settle",
@@ -699,6 +710,8 @@ const journalEvents = new Map<string, Set<string>>([
       "early",
       "streamed",
       "via",
+      "effect",
+      "rung",
       "clauseIndex",
       "outcome",
       "launchedAppId",
@@ -728,7 +741,10 @@ const journalEvents = new Map<string, Set<string>>([
       "reasonLength",
     ]),
   ],
-  ["ActionLoopDetected", new Set(["actionType", "period", "revisits"])],
+  [
+    "ActionLoopDetected",
+    new Set(["actionType", "period", "revisits", "noEffect"]),
+  ],
   ["ActionLoopBroken", new Set(["episode", "outcome"])],
   ["NoProgressDetected", new Set(["actionType"])],
   ["SearchRouteTaken", new Set(["appId", "depth"])],
@@ -1063,8 +1079,13 @@ export class LocalDiagnostics {
           code: e.data.code,
           // ActionFailed for STATE_CHANGED: which kind of change, as a code.
           change: e.data.change,
-          // ActionExecuted for a hotkey: pressed as its menu item or as keys.
+          // ActionExecuted for a hotkey: pressed as its menu item or as keys;
+          // for a click by name: the route that acted last (press or pointer)
+          // and what the helper's reads found (changed, focused, none); for a
+          // bound step: its rung. Codes, never a label.
           via: e.data.via,
+          effect: e.data.effect,
+          rung: e.data.rung,
           // A step taken before the run existed, while the user was speaking.
           early: e.data.early,
           // Its executed row, when the step was a fast action on a clause.
@@ -1170,6 +1191,8 @@ export class LocalDiagnostics {
           // content, and a REFUSED failure is logged by its code alone.
           period: e.data.period,
           revisits: e.data.revisits,
+          // A click by name with no effect, repeated from one screen (a flag).
+          noEffect: e.data.noEffect,
           // The loop breaker's decision (ActionLoopBroken): which episode and
           // whether the run got its reflection step or was failed as stuck.
           ...(e.type === "ActionLoopBroken"

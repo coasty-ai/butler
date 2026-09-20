@@ -286,7 +286,7 @@ func hotkeyWiringChecks(_ check: (Bool, String) -> Void) {
         "sameElement(",
     ]), "only a by-name step skips the focused-field check")
     check(has(section("func execute(", "final class LaunchOutcome"), [
-        "if action[\"type\"] as? String == \"hotkey\", let path = menuRoute { try pressMenuPath(path, chord: normalizeChord(names)); return \"menu\" }",
+        "if action[\"type\"] as? String == \"hotkey\", let path = menuRoute { try pressMenuPath(path, chord: normalizeChord(names)); return [\"via\": \"menu\"] }",
         "CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:true)",
     ]), "a menu-routed hotkey is pressed as its item and returns before any key is posted")
     check(has(section("func pressMenuPath(", "\n}"), [

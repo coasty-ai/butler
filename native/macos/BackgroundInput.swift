@@ -125,18 +125,26 @@ struct RungMisses: Equatable {
 
 // MARK: Postconditions
 
-/// How a delivery read: something observable changed, nothing did, or the
-/// application answered in a way that proves nothing (a write it echoed back).
-enum RungEffect: String { case changed, none, unverifiable }
+/// How a delivery read: something observable changed, only focus moved (or a
+/// field clicked by name holds it), nothing did, or the application answered
+/// in a way that proves nothing (a write it echoed back).
+enum RungEffect: String { case changed, focused, none, unverifiable }
 
 /// One reading of the bound window around a delivery: the controls hash of its
 /// tree, the value of the field acted on, how many windows the application
-/// shows, and its image.
+/// shows, its image, and for a click by name the focus and the control's own
+/// state (ClickEffect.swift).
 struct TargetObservation {
     let controls: String
     let fieldValue: String?
     let windowCount: Int
     let pixels: ScreenPixels?
+    /// The focused element's identity (focusIdentity); empty when none is in the window.
+    var focus = ""
+    /// The clicked control's own state (controlStateDigest); empty for other steps.
+    var control = ""
+    /// The clicked control is the focused element.
+    var targetFocused = false
 }
 
 /// What changed between two readings, as the result reports it to the runner.
@@ -146,9 +154,16 @@ struct PostconditionRead: Equatable {
     var windowCountChanged = false
     var targetPixelsChanged = false
     var windowPixelsChanged = false
-    var any: Bool { controlsChanged || fieldChanged || windowCountChanged || targetPixelsChanged || windowPixelsChanged }
+    /// Focus moved between the readings: an effect on its own, not a change.
+    var focusChanged = false
+    /// The clicked control's value, selection or expansion changed.
+    var controlChanged = false
+    /// The clicked control holds focus after the read.
+    var targetFocused = false
+    var any: Bool { controlsChanged || fieldChanged || windowCountChanged || targetPixelsChanged || windowPixelsChanged || controlChanged }
     var dictionary: [String: Any] {
-        ["controls": controlsChanged, "field": fieldChanged, "windows": windowCountChanged, "targetPixels": targetPixelsChanged, "windowPixels": windowPixelsChanged]
+        ["controls": controlsChanged, "field": fieldChanged, "windows": windowCountChanged, "targetPixels": targetPixelsChanged, "windowPixels": windowPixelsChanged,
+         "focus": focusChanged, "control": controlChanged]
     }
 }
 
@@ -168,9 +183,18 @@ func postconditionRead(before: TargetObservation, after: TargetObservation, targ
         read.windowPixelsChanged = old.changed(comparedTo: fresh, in: CGRect(x: 0, y: 0, width: old.width, height: old.height), target: false)
         if let rect = targetRect { read.targetPixelsChanged = old.changed(comparedTo: fresh, in: rect, target: true) }
     }
+    read.focusChanged = before.focus != after.focus
+    read.controlChanged = before.control != after.control
+    read.targetFocused = after.targetFocused
     return read
 }
-func postconditionVerdict(_ read: PostconditionRead) -> RungEffect { read.any ? .changed : RungEffect.none }
+/// The verdict: any change is changed; focus moving, or a field clicked by
+/// name (`editable`) holding focus, is focused; else none (ClickEffect.swift).
+func postconditionVerdict(_ read: PostconditionRead, editable: Bool = false) -> RungEffect {
+    if read.any { return .changed }
+    if read.focusChanged || (editable && read.targetFocused) { return .focused }
+    return RungEffect.none
+}
 
 /**
  How a text write is judged (design §2.6). The field is read back after the
@@ -186,13 +210,15 @@ func writeVerdict(readBack: String?, expected: String, echoRisk: Bool, fieldPixe
 }
 
 /// The result of executeTarget as the runner reads it: what was tried, how it
-/// read, and the code when the runner has to decide the next rung itself.
-func targetResult(rung: Rung?, effect: RungEffect?, code: TargetRefusal?, read: PostconditionRead?) -> [String: Any] {
+/// read, the code when the runner has to decide the next rung itself, and for
+/// a click by name the route that acted last (ClickEffect.swift clickRoute).
+func targetResult(rung: Rung?, effect: RungEffect?, code: TargetRefusal?, read: PostconditionRead?, via: ClickRoute? = nil) -> [String: Any] {
     var result: [String: Any] = ["executed": rung != nil]
     if let rung { result["rung"] = rung.rawValue }
     if let effect { result["effect"] = effect.rawValue }
     if let code { result["code"] = code.rawValue }
     if let read { result["observed"] = read.dictionary }
+    if let via { result["via"] = via.rawValue }
     return result
 }
 

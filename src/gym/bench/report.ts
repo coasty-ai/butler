@@ -106,6 +106,8 @@ export interface AttemptResult {
   modelFailed: boolean;
   loops: number;
   noProgress: number;
+  /** Clicks by name the helper read as no effect on every route; absent when none. */
+  clickNoEffect?: number;
   failures: Record<string, number>;
   /**
    * The dones the runner sent back, by why as a code (doneChallengeCode):
@@ -474,6 +476,8 @@ export interface Aggregate extends CellTotals {
   takeovers: number;
   loops: number;
   noProgress: number;
+  /** Clicks by name with no effect, summed over every attempt. */
+  clickNoEffect: number;
   /** Failure codes summed over every attempt. */
   failures: Record<string, number>;
   /**
@@ -614,6 +618,7 @@ export function aggregate(results: AttemptResult[]): Aggregate {
     takeovers: sum((r) => r.takeovers),
     loops: sum((r) => r.loops),
     noProgress: sum((r) => r.noProgress),
+    clickNoEffect: sum((r) => r.clickNoEffect ?? 0),
     failures,
     missingFacts: missingFactCounts(results),
     noteRoutes,
@@ -785,7 +790,7 @@ export function renderSummary(totals: Aggregate): string {
         : ` (${percent(totals.falseDoneRate)} of claimed)`) +
       `  honest failures ${totals.honestFailure}  undersold ${totals.undersold}  unverifiable done ${totals.unverifiableDone}`,
     `median actions ${totals.medianActions}  median seconds ${totals.medianSeconds.toFixed(1)}  total cost ${money(totals.totalCost)}`,
-    `approvals ${totals.approvals} (declined ${totals.approvalsDeclined})  retries ${totals.retries}  hand-offs agent ${totals.handoffs.agent} manual ${totals.handoffs.manual}  loops ${totals.loops}  no progress ${totals.noProgress}`,
+    `approvals ${totals.approvals} (declined ${totals.approvalsDeclined})  retries ${totals.retries}  hand-offs agent ${totals.handoffs.agent} manual ${totals.handoffs.manual}  loops ${totals.loops}  no progress ${totals.noProgress}  clicks without effect ${totals.clickNoEffect}`,
   ];
   const failures = Object.entries(totals.failures).sort((a, b) => b[1] - a[1]);
   if (failures.length)

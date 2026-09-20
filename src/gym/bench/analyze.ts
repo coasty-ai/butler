@@ -231,6 +231,11 @@ export function frictionCodes(line: DiagnosticLine): string[] {
     // A recovery, not a failure: the runner re-aimed the same control itself.
     case "ActionReaimed":
       return ["ACTION_REAIMED"];
+    // A click by name that changed nothing the helper could read after every
+    // route it has (the pointer at the control's centre and its accessibility
+    // press, or focus for a field): the step executed, its effect none.
+    case "ActionExecuted":
+      return code(d.effect) === "none" ? ["CLICK_NO_EFFECT"] : [];
     case "PolicyConfirmationRequested":
       return ["APPROVAL_REQUESTED"];
     case "UserDenied": {
@@ -582,6 +587,8 @@ const NOTE: Record<string, string> = {
   ACTION_FAILED: "A step failed with a code this analyzer does not name yet.",
   NO_PROGRESS:
     "Same-type actions changed nothing on screen; the run was told and kept going.",
+  CLICK_NO_EFFECT:
+    "A control clicked by name (click_control) changed nothing the helper could read within 300 ms, by the pointer at its centre and by its accessibility press (focus, for a field): no focus move, no change of the control's own state or of the window's title, page or controls. The step still counts as executed; its history line says so and sends the model to click(x, y), another control or the keyboard, and a second such click on the same control from the same screen is a loop at once.",
   LOOP_REFLECTED:
     "A loop continued past its warning with nobody to give a hint; the run got one reflection step instead of a pause.",
   LOOP_STUCK:

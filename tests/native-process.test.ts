@@ -420,6 +420,10 @@ test("a refused step keeps its kind of change as a known code only", async () =>
 test("a named target the helper did not press is a rejected step, and a hotkey reports its route", async () => {
   const { binary, cleanup } = fakeHelper(`
   if (request.method === 'execute') {
+    if (request.action.type === 'click_control') {
+      const still = request.action.label === 'Still';
+      return reply({id: request.id, result: {executed: true, via: still ? 'pointer' : 'press', effect: still ? 'none' : 'focused'}});
+    }
     const keys = request.action.keys.join('+');
     if (keys === 'CMD+Q') return reply({id: request.id, error: 'Menu items that quit an application or end the session are left to the user.', code: 'TARGET_REFUSED'});
     if (keys === 'CMD+E') return reply({id: request.id, error: 'The menu item for CMD+E is greyed out right now.', code: 'TARGET_DISABLED'});
@@ -452,6 +456,16 @@ test("a named target the helper did not press is a rejected step, and a hotkey r
     expect(await hotkey("CMD", "N")).toEqual({ via: "menu" });
     expect(await hotkey("CMD", "T")).toEqual({ via: "keys" });
     expect(await hotkey("CMD", "W")).toBeUndefined();
+    // A click by name reports the route that acted last and what the
+    // helper's reads found after it (native/macos/ClickEffect.swift).
+    const click = (label: string) =>
+      controller.execute(
+        { type: "click_control", frame_id: "f", label } as any,
+        {} as Frame,
+        new AbortController().signal,
+      );
+    expect(await click("Still")).toEqual({ via: "pointer", effect: "none" });
+    expect(await click("Name")).toEqual({ via: "press", effect: "focused" });
   } finally {
     controller.close();
     cleanup();

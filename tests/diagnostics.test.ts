@@ -601,6 +601,28 @@ describe("local diagnostic stream", () => {
         reason: "deliverable_unchanged",
       });
       add("RunFailed", { code: "DELIVERABLE_MISSING" });
+      // A click by name: the route that acted last and what the helper's
+      // reads found, as codes; the label stays in the journal. The loop the
+      // second such click makes carries its flag and count.
+      add("ActionExecuted", {
+        action: { type: "click_control", label: "Packages", frame_id: "f" },
+        frame_id: "f",
+        via: "pointer",
+        effect: "none",
+      });
+      add("ActionLoopDetected", {
+        actionType: "click_control",
+        period: 0,
+        revisits: 2,
+        noEffect: true,
+      });
+      add("ActionExecuted", {
+        action: { type: "click_control", label: "Packages", frame_id: "f" },
+        frame_id: "f",
+        rung: "ax",
+        effect: "focused",
+        via: "press",
+      });
       log.snapshot(snapshot);
       const raw = readFileSync(log.file, "utf8");
       const events = raw
@@ -608,6 +630,24 @@ describe("local diagnostic stream", () => {
         .split("\n")
         .map((x) => JSON.parse(x));
       expect(raw).not.toContain("ackages");
+      expect(events[5].data).toMatchObject({
+        actionType: "click_control",
+        via: "pointer",
+        effect: "none",
+      });
+      expect(events[5].data.rung).toBeUndefined();
+      expect(events[6].data).toMatchObject({
+        actionType: "click_control",
+        period: 0,
+        revisits: 2,
+        noEffect: true,
+      });
+      expect(events[7].data).toMatchObject({
+        actionType: "click_control",
+        rung: "ax",
+        effect: "focused",
+        via: "press",
+      });
       expect(events[0].data).toMatchObject({
         code: "STATE_CHANGED",
         change: "FOCUS_CHANGED",

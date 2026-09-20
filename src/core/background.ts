@@ -214,11 +214,13 @@ export function backgroundResult(
   const read =
     outcome.effect === "changed"
       ? "; the window changed"
-      : outcome.effect === "none"
-        ? `; nothing changed, so ${appName} may ignore this route; use a listed control, the menu or the keyboard instead`
-        : outcome.rung === "foreground"
-          ? ""
-          : "; whether it took could not be read";
+      : outcome.effect === "focused"
+        ? "; it has focus now"
+        : outcome.effect === "none"
+          ? `; nothing changed, so ${appName} may ignore this route; use a listed control, the menu or the keyboard instead`
+          : outcome.rung === "foreground"
+            ? ""
+            : "; whether it took could not be read";
   return `Executed${what} ${via}${read}. Verify the next screenshot${typing ? " shows the intended result before done" : ""}.`;
 }
 

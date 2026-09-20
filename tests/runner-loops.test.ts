@@ -16,6 +16,8 @@ import {
 } from "../src/core/schema";
 import {
   BUDGET_CONTEXT_FROM,
+  CLICK_FOCUSED_NOTE,
+  CLICK_NO_EFFECT_NOTE,
   LOOP_REVISITS,
   LOOP_STUCK_MESSAGE,
   LOOP_WINDOW,
@@ -1123,4 +1125,183 @@ describe("the settle after a transition", () => {
       "Aim by name",
     );
   });
+});
+
+/**
+ * A click by name the helper read as no effect (native/macos/ClickEffect.swift):
+ * cycle 20260919-2044-60630f0, five of eight STUCK_LOOP runs were click_control
+ * repeated on an unchanged page, every step reading "Executed", the revisit
+ * rule speaking on the third round. The helper now says what its reads found;
+ * the runner journals it, says so in fixed words, and calls the second such
+ * click from the same screen a loop at once. Fixed labels only.
+ */
+describe("a click by name that changed nothing", () => {
+  const byName = act({ type: "click_control", label: "Next" });
+  const other = act({ type: "click_control", label: "Previous" });
+  const stillPointer = { effect: "none", via: "pointer" } as const;
+  /** The surface names the control the way the helper does for a resolved click by name. */
+  const named = async (action?: Action): Promise<Surface> =>
+    action?.type === "click_control"
+      ? {
+          ...surface,
+          controlStatus: "resolved",
+          controlLabel: action.label,
+          targetRole: "AXButton",
+          targetLabel: action.label,
+        }
+      : surface;
+  const runnerFor = (
+    c: Controller,
+    p: ReturnType<typeof scripted>,
+    m: ReturnType<typeof memory>,
+  ) =>
+    new Runner(
+      c,
+      p,
+      m.recorder,
+      unattendedAll,
+      () => {},
+      [],
+      undefined,
+      settle,
+    );
+  it("journals the effect and the route, says so in fixed words, and is a loop at once the second time from the same screen", async () => {
+    allowAll();
+    const c = controller({
+      surface: named,
+      execute: vi.fn(async () => stillPointer),
+    });
+    const m = memory();
+    const provider = scripted([byName, byName]);
+    await runnerFor(c, provider, m).start("task", bench);
+    const executed = m.of("ActionExecuted").map((e) => e.data);
+    expect(executed).toHaveLength(2);
+    for (const data of executed)
+      expect(data).toMatchObject({ effect: "none", via: "pointer" });
+    expect(executed[0].rung).toBeUndefined();
+    // The first is a fresh step with the fixed sentence; the second, from the
+    // same screen, is the loop (revisits 2, flagged) and carries the warning
+    // the revisit rule used to give on the third round.
+    const lines = provider.observations.map((o) => o.history.at(-1)?.result);
+    expect(lines[1]).toBe(
+      `Executed click on button “Next”. Verify the next screenshot.${CLICK_NO_EFFECT_NOTE}`,
+    );
+    expect(lines[1]).not.toContain(loopWarning.trim());
+    expect(lines[2]).toBe(
+      `Executed click on button “Next”. Verify the next screenshot.${CLICK_NO_EFFECT_NOTE}${loopWarning}`,
+    );
+    expect(m.of("ActionLoopDetected").map((e) => e.data)).toEqual([
+      { actionType: "click_control", period: 0, revisits: 2, noEffect: true },
+    ]);
+    expect(m.of("ActionLoopBroken")).toHaveLength(0);
+    expect(runner_status(m)).toBe("completed");
+  });
+  it("then runs the breaker as any loop: the reflection step four cycling clicks on, and an honest fail when it clicks again", async () => {
+    allowAll();
+    const c = controller({
+      surface: named,
+      execute: vi.fn(async () => stillPointer),
+    });
+    const m = memory();
+    // Warned at the second click, stuck at the sixth (four cycling steps on)
+    // with the reflection step; the seventh loops on a reflected signature
+    // and ends the run. The eighth is never asked for.
+    const provider = scripted(Array(8).fill(byName));
+    await runnerFor(c, provider, m).start("task", bench);
+    expect(runner_status(m)).toBe("failed");
+    expect(m.getRun().summary).toBe(LOOP_STUCK_MESSAGE);
+    expect(m.of("ActionExecuted")).toHaveLength(7);
+    expect(m.of("ActionLoopDetected").map((e) => e.data)).toEqual([
+      { actionType: "click_control", period: 0, revisits: 2, noEffect: true },
+      { actionType: "click_control", period: 0, revisits: 7, noEffect: true },
+    ]);
+    expect(m.of("ActionLoopBroken").map((e) => e.data)).toEqual([
+      { episode: 1, outcome: "reflect" },
+      { episode: 2, outcome: "fail" },
+    ]);
+    expect(m.of("RunPaused")).toHaveLength(0);
+    // The sixth click's line carries the reflection (the model's copy of a
+    // long line is bounded, so its opening words are checked).
+    expect(provider.observations[6].history.at(-1)?.result).toContain(
+      "Stop and change course",
+    );
+    expect(provider.observations[6].history.at(-1)?.result).toContain(
+      CLICK_NO_EFFECT_NOTE.trim(),
+    );
+  });
+  it("is no loop when the click did something, when a different control is clicked, or from a different screen", async () => {
+    allowAll();
+    let calls = 0;
+    const c = controller(
+      {
+        surface: named,
+        execute: vi.fn(async (action: Action) =>
+          action.type === "click_control" && action.label === "Next"
+            ? calls++ < 2
+              ? ({ effect: "changed", via: "pointer" } as const)
+              : stillPointer
+            : stillPointer,
+        ),
+      },
+      // A click that changed something shows a different screen next (its
+      // title here, like a page that paged); the last screen differs again.
+      (n) => ({
+        context: {
+          appName: "App",
+          windowTitle: ["A", "B", "C", "C", "D"][n - 1] ?? "E",
+        },
+      }),
+    );
+    const m = memory();
+    // Two clicks that changed the screen, one on another control that did
+    // not, one "Next" that did not (fresh), then the same from a new screen.
+    const provider = scripted([byName, byName, other, byName, byName]);
+    await runnerFor(c, provider, m).start("task", bench);
+    expect(runner_status(m)).toBe("completed");
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+    const lines = provider.observations.map((o) => o.history.at(-1)?.result);
+    expect(lines[1]).toBe(
+      "Executed click on button “Next”. Verify the next screenshot.",
+    );
+    expect(lines[3]).toBe(
+      `Executed click on button “Previous”. Verify the next screenshot.${CLICK_NO_EFFECT_NOTE}`,
+    );
+    expect(lines[4]).toContain(CLICK_NO_EFFECT_NOTE.trim());
+    expect(lines[5]).toContain(CLICK_NO_EFFECT_NOTE.trim());
+    expect(lines[5]).not.toContain(loopWarning.trim());
+    expect(m.of("ActionExecuted").map((e) => e.data.effect)).toEqual([
+      "changed",
+      "changed",
+      "none",
+      "none",
+      "none",
+    ]);
+  });
+  it("words a field that took focus, and leaves a click the helper did not read as it was", async () => {
+    allowAll();
+    const c = controller({
+      surface: named,
+      execute: vi.fn(async (action: Action) =>
+        action.type === "click_control" && action.label === "Next"
+          ? ({ effect: "focused", via: "press" } as const)
+          : undefined,
+      ),
+    });
+    const m = memory();
+    const provider = scripted([byName, other]);
+    await runnerFor(c, provider, m).start("task", bench);
+    const lines = provider.observations.map((o) => o.history.at(-1)?.result);
+    expect(lines[1]).toBe(
+      `Executed click on button “Next”. Verify the next screenshot.${CLICK_FOCUSED_NOTE}`,
+    );
+    expect(lines[2]).toBe(
+      "Executed click on button “Previous”. Verify the next screenshot.",
+    );
+    const executed = m.of("ActionExecuted").map((e) => e.data);
+    expect(executed[0]).toMatchObject({ effect: "focused", via: "press" });
+    expect(executed[1].effect).toBeUndefined();
+    expect(executed[1].via).toBeUndefined();
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+  });
+  const runner_status = (m: ReturnType<typeof memory>) => m.getRun().status;
 });

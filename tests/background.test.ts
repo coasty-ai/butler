@@ -330,6 +330,17 @@ describe("what the model is told (design §2.4)", () => {
     ).toBe(
       "Executed click on button “Send” by events posted to Slack; nothing changed, so Slack may ignore this route; use a listed control, the menu or the keyboard instead. Verify the next screenshot.",
     );
+    // A press that only moved focus (a field clicked by name) took.
+    expect(
+      backgroundResult(
+        send,
+        what,
+        { rung: "ax", effect: "focused", via: "press" },
+        "Slack",
+      ),
+    ).toBe(
+      "Executed click on button “Send” by accessibility; it has focus now. Verify the next screenshot.",
+    );
     expect(
       backgroundResult(
         act({ type: "type_text", text: "hello" }),

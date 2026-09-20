@@ -521,6 +521,36 @@ describe("the ladder and what it remembers (design §2.5, §2.7, §5)", () => {
       { appId: SLACK, appName: "Slack", route: "post", verdict: "works" },
     ]);
   });
+  it("a press that only focused the control is a delivered step: focused, by the press, remembered as works", async () => {
+    // A field clicked by name in a bound window: deliverByAccessibility sets
+    // AXFocused and the postcondition read sees focus move (RungEffect
+    // focused, native/macos/ClickEffect.swift). Before, the read saw nothing
+    // and the ladder stepped to a posted click, then asked for the window.
+    const c = desktop({
+      deliver: () => ({ rung: "ax", effect: "focused", via: "press" }),
+    });
+    const m = journal();
+    const provider = scripted([reply]);
+    const memory = fakeMemory({ context: { preferences: [], episodes: [] } });
+    const runner = runnerWith(c, provider, m, { memory: memory.access });
+    await start(runner, "in Slack, reply");
+    expect(c.executeTarget.mock.calls.map((call) => call[3])).toEqual([
+      ["ax", "post"],
+    ]);
+    expect(m.of("RungStepped")).toHaveLength(0);
+    expect(c.foregroundTarget).not.toHaveBeenCalled();
+    expect(provider.observations[1].history.at(-1)?.result).toBe(
+      "Executed click on button “Reply” by accessibility; it has focus now. Verify the next screenshot.",
+    );
+    expect(m.of("ActionExecuted")[0].data).toMatchObject({
+      rung: "ax",
+      effect: "focused",
+      via: "press",
+    });
+    expect(memory.learned[0].background).toEqual([
+      { appId: SLACK, appName: "Slack", route: "press", verdict: "works" },
+    ]);
+  });
   it("counts misses by the kind of step: a click the window ignores never disables its menus", async () => {
     const c = desktop({
       deliver: (action, rungs) =>

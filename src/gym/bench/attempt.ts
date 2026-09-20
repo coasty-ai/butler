@@ -492,6 +492,7 @@ export async function runAttempt(
     takeoverSources: noSources(),
     loops: 0,
     noProgress: 0,
+    clickNoEffect: 0,
     modelCalls: 0,
     modelFailed: false,
     paused: false,
@@ -692,6 +693,14 @@ export async function runAttempt(
     let answered = 0;
     let held: string | undefined;
     const inner = deps.recorder ?? nullRecorder();
+    // The null recorder numbers nothing (sequence 0), and the cycle's log
+    // (LocalDiagnostics.snapshot) writes only an event whose sequence is past
+    // the last one written: every journal row of every bench run was dropped
+    // (cycle 20260919-2044-60630f0: RunState, Native* and Provider* rows
+    // alone), so the analyzer's frictions (ACTION_LOOP, LOOP_STUCK,
+    // CLICK_NO_EFFECT) never reached the failure classes. Numbered here, per
+    // attempt, when the recorder left them at 0.
+    let sequence = 0;
     const recorder: Recorder = {
       ...inner,
       begin: (r) => {
@@ -701,6 +710,12 @@ export async function runAttempt(
       save: (r) => {
         run = r;
         inner.save(r);
+      },
+      append: (id, type, data) => {
+        const event = inner.append(id, type, data);
+        return event.sequence_number > 0
+          ? event
+          : { ...event, sequence_number: ++sequence };
       },
     };
     let runner: Runner;
@@ -731,6 +746,9 @@ export async function runAttempt(
         }
         if (event.type === "ActionLoopDetected") counters.loops++;
         if (event.type === "NoProgressDetected") counters.noProgress++;
+        // A click by name the helper read as no effect on every route.
+        if (event.type === "ActionExecuted" && d.effect === "none")
+          counters.clickNoEffect++;
         if (
           event.type === "ActionProposed" &&
           (d.action as { type?: unknown } | undefined)?.type === "fail"
@@ -921,6 +939,7 @@ export async function runAttempt(
       modelFailed: counters.modelFailed,
       loops: counters.loops,
       noProgress: counters.noProgress,
+      clickNoEffect: counters.clickNoEffect,
       failures: counters.failures,
       endingCode: ending(),
       cost: currentRun?.usage?.cost ?? 0,
@@ -1004,6 +1023,9 @@ export async function runAttempt(
       modelFailed: journal.modelFailed,
       loops: journal.loops,
       noProgress: journal.noProgress,
+      ...(journal.clickNoEffect
+        ? { clickNoEffect: journal.clickNoEffect }
+        : {}),
       failures: journal.failures,
       ...(Object.keys(counters.doneChallenged).length
         ? { doneChallenged: counters.doneChallenged }

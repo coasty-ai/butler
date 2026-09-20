@@ -86,6 +86,33 @@ describe("target replies are parsed, bounded and never trusted for shape", () =>
     expect(
       targetResult({ executed: true, rung: "sky", effect: "maybe" }),
     ).toEqual({});
+    // A click by name: a press that only focused a field is an effect, and
+    // the route that acted last rides beside the rung; anything else named
+    // as a route is dropped.
+    expect(
+      targetResult({
+        executed: true,
+        rung: "ax",
+        effect: "focused",
+        via: "press",
+      }),
+    ).toEqual({ rung: "ax", effect: "focused", via: "press" });
+    expect(
+      targetResult({
+        executed: true,
+        rung: "post",
+        effect: "none",
+        via: "pointer",
+      }),
+    ).toEqual({ rung: "post", effect: "none", via: "pointer" });
+    expect(
+      targetResult({
+        executed: true,
+        rung: "post",
+        effect: "none",
+        via: "mouse",
+      }),
+    ).toEqual({ rung: "post", effect: "none" });
     expect(targetResult(null)).toBeUndefined();
     expect(() =>
       targetResult({

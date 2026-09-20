@@ -286,6 +286,10 @@ function attemptCodes(
       add(`${APPROVAL_DECLINED_PREFIX}${code}`, "friction", tally.declined);
   // Harness-only codes the analyzer does not classify.
   if (result.noProgress) add("NO_PROGRESS", "friction", result.noProgress);
+  // A click by name the helper read as no effect on every route: the same
+  // count the analyzer takes from the executed rows when the log has them.
+  if (result.clickNoEffect)
+    add("CLICK_NO_EFFECT", "friction", result.clickNoEffect);
   if (result.falseDone) add("FALSE_DONE", "friction");
   if (result.modelFailed) add("MODEL_FAILED", "friction");
   // The runner's check of a done against the task's file, from the row

@@ -854,9 +854,25 @@ export function runTarget(value: unknown): RunTarget | undefined {
 const rungs = new Set<Rung>(["ax", "post", "foreground"]);
 const effects = new Set<NonNullable<ExecutionResult["effect"]>>([
   "changed",
+  "focused",
   "none",
   "unverifiable",
 ]);
+const routes = new Set<NonNullable<ExecutionResult["via"]>>([
+  "menu",
+  "keys",
+  "press",
+  "pointer",
+]);
+/** The helper's route or effect as one of the runner's fixed words; anything else is dropped. */
+const routeOf = (value: unknown) =>
+  routes.has(value as NonNullable<ExecutionResult["via"]>)
+    ? (value as NonNullable<ExecutionResult["via"]>)
+    : undefined;
+const effectOf = (value: unknown) =>
+  effects.has(value as NonNullable<ExecutionResult["effect"]>)
+    ? (value as NonNullable<ExecutionResult["effect"]>)
+    : undefined;
 /**
  * The helper's executeTarget reply: the rung that delivered the step and
  * what its postcondition read found, plus the launch and open results an
@@ -875,14 +891,15 @@ export function targetResult(value: unknown): ExecutionResult | undefined {
         : "The step could not be delivered to the window.",
     );
   const rung = rungs.has(v.rung as Rung) ? (v.rung as Rung) : undefined;
-  const effect = effects.has(v.effect as NonNullable<ExecutionResult["effect"]>)
-    ? (v.effect as NonNullable<ExecutionResult["effect"]>)
-    : undefined;
+  const effect = effectOf(v.effect);
+  // A click by name says which route acted last (press or pointer).
+  const via = v.via === "press" || v.via === "pointer" ? v.via : undefined;
   const launched = launchedResult(v.launched),
     opened = openedResult(v.opened);
   return {
     ...(rung && { rung }),
     ...(effect && { effect }),
+    ...(via && { via }),
     ...(launched && { launched }),
     ...(opened && { opened }),
   };
@@ -1429,15 +1446,16 @@ export class NativeController implements Controller {
     signal.addEventListener("abort", stop, { once: true });
     try {
       const result = await this.request("execute", { action });
+      // A hotkey's route (menu or keys); a click by name's route and what the
+      // helper's reads found after it (native/macos/ClickEffect.swift).
       const launched = launchedResult(result?.launched),
         opened = openedResult(result?.opened),
-        via =
-          result?.via === "menu" || result?.via === "keys"
-            ? (result.via as "menu" | "keys")
-            : undefined;
-      return launched || opened || via
+        via = routeOf(result?.via),
+        effect = effectOf(result?.effect);
+      return launched || opened || via || effect
         ? {
             ...(via && { via }),
+            ...(effect && { effect }),
             ...(launched && { launched }),
             ...(opened && { opened }),
           }
