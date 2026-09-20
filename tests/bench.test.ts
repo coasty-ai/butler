@@ -3202,3 +3202,56 @@ describe("clicks by name with no effect in the results", () => {
     expect("clickNoEffect" in attempt()).toBe(false);
   });
 });
+
+// The runner's menu dismissal (src/core/runner.ts MENU_CLOSED_LINE) rides as
+// a flag on the refusal that asked for it: its own friction class beside the
+// change or the retarget's classes, never in their place.
+describe("MENU_DISMISSED", () => {
+  it("classifies a refusal the runner answered by closing the open menu, from the flag alone", () => {
+    expect(
+      frictionCodes({
+        event: "ActionFailed",
+        data: {
+          code: "STATE_CHANGED",
+          change: "TARGET_COVERED",
+          dismissed: true,
+        },
+      }),
+    ).toEqual(["SCREEN_CHANGED", "MENU_DISMISSED"]);
+    expect(
+      frictionCodes({
+        event: "ActionFailed",
+        data: { code: "STATE_CHANGED", change: "TARGET_COVERED" },
+      }),
+    ).toEqual(["SCREEN_CHANGED"]);
+    // A sentence in the flag's slot is not the flag.
+    expect(
+      frictionCodes({
+        event: "ActionFailed",
+        data: { code: "STATE_CHANGED", dismissed: "yes" },
+      }),
+    ).toEqual(["SCREEN_CHANGED"]);
+    expect(
+      frictionCodes({
+        event: "ActionRetargetRequested",
+        data: {
+          actionType: "menu_item",
+          reasonCode: "MENU_ITEM_MISSING",
+          dismissed: true,
+        },
+      }),
+    ).toEqual([
+      "CONTROL_NOT_FOUND",
+      "RETRY_MENU_ITEM_MISSING",
+      "MENU_DISMISSED",
+    ]);
+    expect(
+      frictionCodes({
+        event: "ActionRetargetRequested",
+        data: { actionType: "menu_item", reasonCode: "MENU_ITEM_MISSING" },
+      }),
+    ).toEqual(["CONTROL_NOT_FOUND", "RETRY_MENU_ITEM_MISSING"]);
+    expect(noteFor("MENU_DISMISSED")).toMatch(/Escape/);
+    expect(ownerOf("MENU_DISMISSED")).toBe("agent");
+  });
+});

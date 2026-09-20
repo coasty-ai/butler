@@ -15,6 +15,7 @@ import {
   type Surface,
 } from "../src/core/schema";
 import {
+  MENU_CLOSED_LINE,
   MENU_NEEDS_FOCUS_LINE,
   MENU_NEEDS_SELECTION_LINE,
   Runner,
@@ -22,6 +23,7 @@ import {
   actionSignature,
   declinedResult,
   menuClipboardRefusal,
+  menuClosedReason,
   nativeAction,
   refusedTargetsWarning,
   repetitionPeriod,
@@ -2656,5 +2658,314 @@ describe("a menu Copy or Paste with nothing to act on", () => {
     await runner.resume();
     await running;
     expect(runner.snapshot.run?.status).toBe("completed");
+  });
+});
+
+// Market 2/3 at f926928 (cycle 20260920-0553), mail-save-attachment #2: a
+// right_click opened the attachment's context menu, a menu_item named an item
+// that menu does not have (MENU_ITEM_MISSING: menu_item reaches the menu bar),
+// and every click after it was refused TARGET_COVERED by the still-open menu
+// until the third strike paused the run for a user the bench does not have.
+// The runner closes the menu once, with an Escape that goes through the same
+// pipeline as a model's key, and the refusal that asked for it is no strike.
+describe("a context menu left open over the target", () => {
+  const covered = () =>
+    new ScreenChangedError(
+      "Another control covers the input target.",
+      "TARGET_COVERED",
+    );
+  const rightClick = act({ type: "right_click", x: 0.4, y: 0.4 });
+  const click = act({ type: "click", x: 0.5, y: 0.5 });
+  /** What the controller does with the nth execute: nothing, or throw. */
+  const executes = (...outcomes: (undefined | (() => Error))[]) => {
+    let n = 0;
+    return vi.fn(async () => {
+      const outcome = outcomes[n++];
+      if (outcome) throw outcome();
+    });
+  };
+  const types = (c: Controller) => executedActions(c).map((a) => a.type);
+  const failures = (m: ReturnType<typeof memory>) =>
+    m.of("ActionFailed").map((e) => e.data);
+  const dismissed = {
+    code: "STATE_CHANGED",
+    change: "TARGET_COVERED",
+    dismissed: true,
+  };
+  const strike = { code: "STATE_CHANGED", change: "TARGET_COVERED" };
+  const pausedMessage =
+    "The target keeps changing. Wait for it to settle, then continue.";
+  it("closes the menu with one Escape instead of counting the covered target as a strike", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({ execute: executes(undefined, covered) });
+    const p = scripted([rightClick, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("RunPaused")).toHaveLength(0);
+    // The right_click, the covered click, the Escape; then the model's done.
+    expect(types(c)).toEqual(["right_click", "click", "key"]);
+    expect(executedActions(c)[2]).toMatchObject({ type: "key", key: "ESC" });
+    // The refusal carries its change and the dismissal; the Escape's own
+    // executed event is marked the runner's, the right_click's is not.
+    expect(failures(m)).toEqual([dismissed]);
+    expect(
+      m
+        .of("ActionExecuted")
+        .map((e) => [(e.data.action as Action).type, e.data.synthetic]),
+    ).toEqual([
+      ["right_click", undefined],
+      ["key", true],
+    ]);
+    // Three model calls (right_click, click, done): the Escape cost none and
+    // counts as one action.
+    expect(p.next).toHaveBeenCalledTimes(3);
+    expect(runner.snapshot.run?.actions).toBe(2);
+    expect(runner.snapshot.run?.usage.cost).toBe(0);
+    const history = p.observations[2].history;
+    expect(history.map((h) => h.type)).toEqual([
+      "right_click",
+      "rejected",
+      "key",
+    ]);
+    expect(history[1].result).toContain(
+      "Another control now covers the target",
+    );
+    expect(history[2]).toEqual({
+      type: "key",
+      action: { type: "key", key: "ESC" },
+      result: MENU_CLOSED_LINE,
+    });
+    expect(MENU_CLOSED_LINE).toBe(
+      "Closed the open menu (Escape) so the target is reachable again.",
+    );
+  });
+  it("lets the real policy judge the Escape, which it allows as the dismissal key", async () => {
+    // Every other step is pinned ALLOW; a key falls through to the real rule.
+    policy.evaluate = (a) =>
+      a.type === "key"
+        ? (undefined as unknown as Decision)
+        : { kind: "ALLOW", reason: a.type === "done" ? "" : "Test." };
+    const m = memory();
+    const c = controller({ execute: executes(undefined, covered) });
+    const p = scripted([rightClick, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(types(c)).toEqual(["right_click", "click", "key"]);
+    expect(m.of("PolicyAllowed").map((e) => e.data.reasonCode)).toEqual([
+      "OTHER",
+      "OTHER",
+      "DISMISS",
+    ]);
+  });
+  it("still pauses on the third covered target after the dismissal", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: executes(
+        undefined,
+        covered,
+        undefined,
+        covered,
+        covered,
+        covered,
+      ),
+    });
+    const p = scripted([rightClick, click, click, click, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(runner.snapshot.message).toBe(pausedMessage);
+    expect(types(c)).toEqual([
+      "right_click",
+      "click",
+      "key",
+      "click",
+      "click",
+      "click",
+    ]);
+    expect(failures(m)).toEqual([dismissed, strike, strike, strike]);
+    expect(m.of("RunPaused")).toHaveLength(1);
+    runner.stop();
+    await running;
+  });
+  it("counts a covered target as before when no menu is open", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: executes(undefined, covered, covered, covered),
+    });
+    const p = scripted([click, click, click, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(runner.snapshot.message).toBe(pausedMessage);
+    expect(types(c)).toEqual(["click", "click", "click", "click"]);
+    expect(failures(m)).toEqual([strike, strike, strike]);
+    runner.stop();
+    await running;
+  });
+  it("dismisses for a covered target only: another change after a right_click is a strike", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: executes(
+        undefined,
+        () =>
+          new ScreenChangedError("The focused field changed.", "FOCUS_CHANGED"),
+      ),
+    });
+    const p = scripted([rightClick, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(types(c)).toEqual(["right_click", "click"]);
+    expect(failures(m)).toEqual([
+      { code: "STATE_CHANGED", change: "FOCUS_CHANGED" },
+    ]);
+  });
+  it("closes the menu once: the next covered target counts", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: executes(undefined, covered, undefined, covered),
+    });
+    const p = scripted([rightClick, click, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(types(c)).toEqual(["right_click", "click", "key", "click"]);
+    expect(failures(m)).toEqual([dismissed, strike]);
+    expect(m.of("RunPaused")).toHaveLength(0);
+  });
+  it("never dismisses twice for one menu, even when the Escape itself is refused", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({ execute: executes(undefined, covered, covered) });
+    const p = scripted([rightClick, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(types(c)).toEqual(["right_click", "click", "key"]);
+    expect(failures(m)).toEqual([dismissed, strike]);
+    // Nothing executed for the Escape; the model reads it as a refused step.
+    expect(m.of("ActionExecuted")).toHaveLength(1);
+    const history = p.observations[2].history;
+    expect(history.map((h) => h.type)).toEqual([
+      "right_click",
+      "rejected",
+      "rejected",
+    ]);
+    expect(history[2].action).toEqual({ type: "key", key: "ESC" });
+  });
+  it("may close the menu the next right_click opens", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: executes(
+        undefined,
+        covered,
+        undefined,
+        undefined,
+        covered,
+        undefined,
+      ),
+    });
+    const p = scripted([rightClick, click, rightClick, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(types(c)).toEqual([
+      "right_click",
+      "click",
+      "key",
+      "right_click",
+      "click",
+      "key",
+    ]);
+    expect(failures(m)).toEqual([dismissed, dismissed]);
+    expect(m.of("RunPaused")).toHaveLength(0);
+  });
+  // The retarget path: the menu step meets the real policy over a surface
+  // that found no such item in the menu bar; every other step is pinned ALLOW.
+  const menuPolicy = () => {
+    policy.evaluate = (a) =>
+      a.type === "menu_item"
+        ? (undefined as unknown as Decision)
+        : { kind: "ALLOW", reason: a.type === "done" ? "" : "Test." };
+  };
+  const menus = (menuStatus: "missing" | "disabled") =>
+    controller({
+      surface: async (a?: Action) =>
+        a?.type === "menu_item" ? { ...surface, menuStatus } : surface,
+    });
+  const menuItem = act({
+    type: "menu_item",
+    path: ["File", "Save Attachment"],
+  });
+  it("closes the menu when a menu_item names an item the menu bar does not have after a right_click, and says so", async () => {
+    menuPolicy();
+    const m = memory();
+    const c = menus("missing");
+    const p = scripted([rightClick, menuItem, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(types(c)).toEqual(["right_click", "key", "click"]);
+    expect(m.of("ActionRetargetRequested").map((e) => e.data)).toEqual([
+      expect.objectContaining({
+        actionType: "menu_item",
+        reasonCode: "MENU_ITEM_MISSING",
+        dismissed: true,
+      }),
+    ]);
+    expect(m.of("ActionFailed")).toHaveLength(0);
+    const history = p.observations[2].history;
+    expect(history.map((h) => h.type)).toEqual([
+      "right_click",
+      "menu_item",
+      "key",
+    ]);
+    expect(history[1].result).toContain("is not in this application's menus");
+    expect(history[1].result).toMatch(
+      /take another route; the menu was closed\.$/,
+    );
+    expect(history[2].result).toBe(MENU_CLOSED_LINE);
+    // The amendment replaces the reason's final stop and adds nothing else.
+    expect(menuClosedReason("No input was sent. Gone.")).toBe(
+      "No input was sent. Gone; the menu was closed.",
+    );
+    expect(menuClosedReason("No stop")).toBe("No stop; the menu was closed.");
+  });
+  it("leaves a missing menu item to the model as before when no menu is open", async () => {
+    menuPolicy();
+    const m = memory();
+    const c = menus("missing");
+    const p = scripted([menuItem]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(c.execute).not.toHaveBeenCalled();
+    const [retarget] = m.of("ActionRetargetRequested").map((e) => e.data);
+    expect(retarget).toMatchObject({ reasonCode: "MENU_ITEM_MISSING" });
+    expect(retarget.dismissed).toBeUndefined();
+    expect(p.observations[1].history[0].result).not.toContain(
+      "the menu was closed",
+    );
+  });
+  it("closes nothing for a menu item that is greyed out rather than missing", async () => {
+    menuPolicy();
+    const m = memory();
+    const c = menus("disabled");
+    const p = scripted([rightClick, menuItem]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(types(c)).toEqual(["right_click"]);
+    const [retarget] = m.of("ActionRetargetRequested").map((e) => e.data);
+    expect(retarget).toMatchObject({ reasonCode: "MENU_ITEM_DISABLED" });
+    expect(retarget.dismissed).toBeUndefined();
   });
 });

@@ -241,6 +241,9 @@ const fields = new Set([
   // ActionExecuted and ActionRetargetRequested for a click by name: the
   // control's point fell through to its own ancestor (a flag; native hitCover).
   "hitAncestor",
+  // ActionFailed STATE_CHANGED and ActionRetargetRequested: the runner closed
+  // the menu the last right_click left open for this refusal (a flag).
+  "dismissed",
   // ActionLoopDetected: the loop is a click by name repeated with no effect.
   "noEffect",
   // The opt-in Jev decider on a dialog turn: its time, the act it chose and
@@ -518,6 +521,9 @@ const flagFields = new Set([
   // ActionExecuted, ActionRetargetRequested: a click by name whose control's
   // point fell through to the control's own ancestor (native hitCover).
   "hitAncestor",
+  // ActionFailed STATE_CHANGED, ActionRetargetRequested: the runner closed
+  // the menu the last right_click left open for this refusal.
+  "dismissed",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -859,7 +865,15 @@ const journalEvents = new Map<string, Set<string>>([
   ],
   [
     "ActionFailed",
-    new Set(["code", "change", "actionType", "reason", "problem", "unmet"]),
+    new Set([
+      "code",
+      "change",
+      "actionType",
+      "reason",
+      "problem",
+      "unmet",
+      "dismissed",
+    ]),
   ],
   // The done audit's outcome: counts, its duration, ok or unavailable, the
   // attempts, and the unmet requirements' kinds (codes).
@@ -887,6 +901,8 @@ const journalEvents = new Map<string, Set<string>>([
       "reasonCode",
       "reasonLength",
       "hitAncestor",
+      // The open menu was closed for this refusal (a flag).
+      "dismissed",
       // A refused tool_call: the tool's fixed trace name and server.
       "tool",
       "server",
@@ -1253,6 +1269,9 @@ export class LocalDiagnostics {
           // control's point fell through to its own ancestor (native hitCover),
           // a flag beside the route.
           hitAncestor: e.data.hitAncestor,
+          // ActionFailed STATE_CHANGED and ActionRetargetRequested: the runner
+          // closed the menu the last right_click left open for this refusal.
+          dismissed: e.data.dismissed,
           // A step taken before the run existed, while the user was speaking.
           early: e.data.early,
           // Its executed row, when the step was a fast action on a clause.

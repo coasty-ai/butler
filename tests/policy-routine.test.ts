@@ -3139,3 +3139,24 @@ describe("number inputs and sliders", () => {
     );
   });
 });
+
+// The Escape the runner proposes to close a context menu left open
+// (src/core/runner.ts MENU_CLOSED_LINE) meets the policy like a model's key:
+// the dismissal rule, routine on any identified surface whatever has focus.
+describe("the Escape that closes an open menu", () => {
+  it("is routine wherever the surface is identified, and unverified where it is not", () => {
+    const esc = key("ESC");
+    for (const s of [
+      {},
+      { focusedRole: "AXButton", focusedLabel: "Delete" },
+      { focusedRole: "AXTextField", focusedLabel: "Search" },
+      { targetRole: "AXMenuItem", targetLabel: "Save Attachment" },
+      { accessibility: "none" as const },
+    ] satisfies Partial<Surface>[]) {
+      const d = decide(esc, s);
+      expect(d.kind).toBe("ALLOW");
+      expect(allowedCode(d.reason)).toBe("DISMISS");
+    }
+    expect(decide(esc, { unknown: true }).kind).toBe("RETRY");
+  });
+});

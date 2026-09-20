@@ -180,11 +180,18 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       // sentence in the field, or OTHER, adds nothing.
       const why = approvalCodeOf(d.reasonCode);
       const named = why ? RETRY_CLASS[why] : undefined;
-      const beside = why && why !== "OTHER" ? [`${RETRY_PREFIX}${why}`] : [];
+      // A menu item missing while the last right_click's menu was open: the
+      // runner closed that menu for this refusal (the flag), its own class
+      // beside whatever the refusal is classed as.
+      const closed = d.dismissed === true ? ["MENU_DISMISSED"] : [];
+      const beside = [
+        ...(why && why !== "OTHER" ? [`${RETRY_PREFIX}${why}`] : []),
+        ...closed,
+      ];
       if (named)
         return GROUPED_RETRY_CLASSES.has(named) && named !== why
           ? [named, ...beside]
-          : [named];
+          : [named, ...closed];
       if (why?.startsWith("TOOL_")) return ["TOOL_REFUSED", ...beside];
       // A tool_call carries no roles: sent back, it is a refused tool call
       // whatever its code (cycle 20260920-0327-abc24ae: ten tool refusals
@@ -205,7 +212,12 @@ export function frictionCodes(line: DiagnosticLine): string[] {
     }
     case "ActionFailed": {
       const failure = code(d.code);
-      if (failure === "STATE_CHANGED") return ["SCREEN_CHANGED"];
+      // A covered target the runner answered by closing the menu the last
+      // right_click left open (the flag): its own class beside the change.
+      if (failure === "STATE_CHANGED")
+        return d.dismissed === true
+          ? ["SCREEN_CHANGED", "MENU_DISMISSED"]
+          : ["SCREEN_CHANGED"];
       if (failure === "MALFORMED_RESPONSE") return ["MALFORMED_RESPONSE"];
       if (failure === "REFUSED") return ["MODEL_REFUSED"];
       // A done sent back over the task's own file, or over a requirement
@@ -561,6 +573,8 @@ const NOTE: Record<string, string> = {
     "The screen changed between the screenshot and the input, so the step was rejected.",
   SCREEN_CHANGED_NATIVE:
     "The native helper rejected input because the target moved or the window changed.",
+  MENU_DISMISSED:
+    "A context menu the model's right_click left open covered the target (or a menu_item named an item that menu has and the menu bar does not), and the runner closed it with one Escape before the model's next step instead of counting a strike (src/core/runner.ts menuOpen, MENU_CLOSED_LINE).",
   UNIDENTIFIED_TARGET:
     "The policy could not identify what the pointer would hit, so no input was sent.",
   CONTROL_NOT_FOUND:

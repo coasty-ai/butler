@@ -3357,3 +3357,94 @@ describe("the journal's content-free rows", () => {
       expect(r[4].data).toEqual({ ...base(s, 5), code: "MODEL_FAILED" });
     }));
 });
+
+// The runner's menu dismissal (src/core/runner.ts MENU_CLOSED_LINE): the
+// refusal that asked for it carries a flag, and the Escape's executed row
+// keeps the run's synthetic, never the step's own marker.
+describe("the menu dismissal flag", () => {
+  it("keeps dismissed as a flag on a refused step's row and a retarget's, and drops a sentence in its place", () =>
+    fixture((log) => {
+      const id = crypto.randomUUID();
+      const snapshot: Snapshot = {
+        run: {
+          id,
+          task: "save the private attachment",
+          createdAt: new Date().toISOString(),
+          status: "executing",
+          privacy: "PRIVATE_LOCAL",
+          provider: "openai",
+          model: "fixture",
+          synthetic: false,
+          actions: 2,
+          frames: 3,
+          usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          summary: "",
+        },
+        frame: null,
+        message: "",
+        events: [],
+      };
+      const add = (type: string, data: Record<string, unknown>) =>
+        snapshot.events.push({
+          event_id: crypto.randomUUID(),
+          run_id: id,
+          sequence_number: snapshot.events.length + 1,
+          monotonic_timestamp: 0,
+          wall_clock_timestamp: new Date().toISOString(),
+          schema_version: 1,
+          type,
+          data,
+        });
+      add("ActionFailed", {
+        code: "STATE_CHANGED",
+        change: "TARGET_COVERED",
+        dismissed: true,
+      });
+      add("ActionFailed", {
+        code: "STATE_CHANGED",
+        change: "TARGET_COVERED",
+        dismissed: "closed the private menu",
+      });
+      add("ActionRetargetRequested", {
+        actionType: "menu_item",
+        reasonCode: "MENU_ITEM_MISSING",
+        dismissed: true,
+      });
+      add("ActionExecuted", {
+        action: { type: "key", key: "ESC", frame_id: "f" },
+        frame_id: "f",
+        synthetic: true,
+      });
+      log.snapshot(snapshot);
+      const raw = readFileSync(log.file, "utf8");
+      const events = raw
+        .trim()
+        .split("\n")
+        .map((x) => JSON.parse(x));
+      expect(raw).not.toContain("private");
+      expect(events[0].data).toEqual({
+        runId: id,
+        sequence: 1,
+        synthetic: false,
+        code: "STATE_CHANGED",
+        change: "TARGET_COVERED",
+        dismissed: true,
+      });
+      expect(events[1].data).toEqual({
+        runId: id,
+        sequence: 2,
+        synthetic: false,
+        code: "STATE_CHANGED",
+        change: "TARGET_COVERED",
+      });
+      expect(events[2].data).toMatchObject({
+        actionType: "menu_item",
+        reasonCode: "MENU_ITEM_MISSING",
+        dismissed: true,
+      });
+      expect(events[3].data).toMatchObject({
+        actionType: "key",
+        synthetic: false,
+      });
+    }));
+});

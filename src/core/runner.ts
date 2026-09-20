@@ -1080,6 +1080,27 @@ interface Reaim {
  */
 export const reaimNote =
   " Note: the screen moved after that screenshot, so this input was automatically re-aimed at the same control (same role and name) in a fresh screenshot before it ran. Only its position changed, not the control.";
+/**
+ * A context menu left open covers every later target. Market 2/3 at f926928
+ * (cycle 20260920-0553), mail-save-attachment #2: a right_click opened the
+ * attachment's menu, a menu_item named an item that menu does not have
+ * (MENU_ITEM_MISSING: menu_item reaches the menu bar), and the three clicks
+ * after it were refused TARGET_COVERED in a row (~475 ms each) until the
+ * third strike paused the run for a user the bench does not have. The runner
+ * now closes the menu itself, once, with the Escape key proposed as a normal
+ * step (validation, surface, policy, native checks, one counted action) and
+ * says so in the step's history line; the covered refusal that asked for it
+ * is not a strike. The menu is known open when the last executed step was a
+ * right_click and no dismissal was issued for it yet; a second covered
+ * target after the dismissal counts as before, so a menu the Escape did not
+ * close still pauses the run on the third strike.
+ */
+export const MENU_CLOSED_LINE =
+  "Closed the open menu (Escape) so the target is reachable again.";
+/** The retarget reason for a menu item missing after a right_click, with the dismissal on it. */
+export function menuClosedReason(reason: string): string {
+  return `${reason.replace(/\.\s*$/, "")}; the menu was closed.`;
+}
 /** Pause shown while the user's own mouse or keyboard input holds the run. */
 /**
  * The application's own search command to run when typing was refused because
@@ -1716,6 +1737,10 @@ export class Runner {
   private rungMisses = new Map<string, number>();
   /** Points refused in a row because the covered window's picture may be stale: the second goes in front. */
   private coveredStaleRefusals = 0;
+  /** An Escape to propose on the next pass, closing the menu the last right_click left open (MENU_CLOSED_LINE). */
+  private dismissMenu = false;
+  /** Whether that menu already had its one dismissal; cleared by the next executed right_click. */
+  private menuDismissed = false;
   /** What the postcondition reads found this run, for memory (bounded). */
   private backgroundObservations: BackgroundObservation[] = [];
   /** Run steps at which the window had to come in front, for the cap. */
@@ -2647,18 +2672,38 @@ export class Runner {
     if (!this.undoRequest) this.refused = { line: question, checked: false };
     return ++this.declines;
   }
+  /**
+   * Whether a context menu is open as far as the runner knows: the last
+   * executed step was a right_click and its menu was not dismissed yet. A
+   * click, a key or the Escape itself executing after it ends that.
+   */
+  private menuOpen() {
+    return this.executed.at(-1)?.type === "right_click" && !this.menuDismissed;
+  }
+  /** Asks the next pass for the one Escape that closes the open menu. */
+  private requestMenuDismissal() {
+    this.menuDismissed = true;
+    this.dismissMenu = true;
+  }
   private recoverStateChange(error: unknown, action?: Action) {
     if (!(error instanceof ScreenChangedError)) return false;
+    // A target covered by the menu the last right_click opened: the runner
+    // closes it (MENU_CLOSED_LINE) and this refusal is not a strike. Once per
+    // menu; the next covered target counts as any change.
+    const dismiss = error.change === "TARGET_COVERED" && this.menuOpen();
+    if (dismiss) this.requestMenuDismissal();
     // The kind of change as its fixed code; the helper's sentence is not kept.
     this.event("ActionFailed", {
       code: "STATE_CHANGED",
       ...(error.change ? { change: error.change } : {}),
+      ...(dismiss ? { dismissed: true } : {}),
     });
     this.reject({
       type: "rejected",
       ...(action ? { action: echoAction(action) } : {}),
       result: screenChangedResult(error.change, action),
     });
+    if (dismiss) return true;
     if (++this.stateChanges >= 3) {
       this.stateChanges = 0;
       this.pause(
@@ -4081,13 +4126,15 @@ export class Runner {
     executionFrame: Frame,
     actionSurface: Surface,
     outcome: void | ExecutionResult,
-    o: { early?: boolean; reaimed?: boolean } = {},
+    o: { early?: boolean; reaimed?: boolean; dismissal?: boolean } = {},
   ) {
     const run = this.snapshot.run!;
     const { frame_id: _frameId, ...executedAction } = action;
     this.resetCounters();
     run.actions++;
     this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
+    // A new context menu: it may have its one dismissal (menuOpen).
+    if (action.type === "right_click") this.menuDismissed = false;
     this.lastStep = {
       type: action.type,
       confirmed: actionConfirmed(action, actionSurface, outcome),
@@ -4182,6 +4229,9 @@ export class Runner {
       frame_id: executionFrame.id,
       // Taken before this run existed, while the user was still speaking.
       ...(o.early ? { early: true } : {}),
+      // The runner's own step, not the model's: the Escape that closed an
+      // open menu (MENU_CLOSED_LINE). The row's synthetic stays the run's.
+      ...(o.dismissal ? { synthetic: true } : {}),
       // Whether a hotkey was pressed as its menu item or posted as keys; how a
       // click by name reached its control (press or pointer).
       ...(via ? { via } : {}),
@@ -4253,26 +4303,28 @@ export class Runner {
       type: action.type,
       action: executedAction,
       result:
-        (launched
-          ? launched.frontmost
-            ? launched.windows === 0 && !launched.restoredWindow
-              ? windowlessResult(launched.name)
-              : `Opened ${launched.name} (${launched.appId}); frontmost=true. Verify appId on the next screenshot; if no window is visible use the app's New shortcut.`
-            : `Launch requested for ${launched.appId}; not frontmost yet. Wait briefly before retrying.`
-          : opened
-            ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`
-            : navigated
-              ? `Loading ${navigated.host}${navigated.appId ? ` in ${navigated.appId}` : " in the browser"}. Wait briefly if the page is not there yet, and verify the next screenshot.`
-              : outcome?.rung
-                ? backgroundResult(
-                    action,
-                    executedTarget(action, actionSurface, via),
-                    outcome,
-                    this.target?.appName || "the application",
-                  )
-                : ["type_text", "key", "hotkey"].includes(action.type)
-                  ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
-                  : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
+        (o.dismissal
+          ? MENU_CLOSED_LINE
+          : launched
+            ? launched.frontmost
+              ? launched.windows === 0 && !launched.restoredWindow
+                ? windowlessResult(launched.name)
+                : `Opened ${launched.name} (${launched.appId}); frontmost=true. Verify appId on the next screenshot; if no window is visible use the app's New shortcut.`
+              : `Launch requested for ${launched.appId}; not frontmost yet. Wait briefly before retrying.`
+            : opened
+              ? `Opened ${opened.path} (${opened.kind})${opened.appId ? ` in ${opened.appId}` : ""}. Verify the next screenshot.`
+              : navigated
+                ? `Loading ${navigated.host}${navigated.appId ? ` in ${navigated.appId}` : " in the browser"}. Wait briefly if the page is not there yet, and verify the next screenshot.`
+                : outcome?.rung
+                  ? backgroundResult(
+                      action,
+                      executedTarget(action, actionSurface, via),
+                      outcome,
+                      this.target?.appName || "the application",
+                    )
+                  : ["type_text", "key", "hotkey"].includes(action.type)
+                    ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
+                    : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
         clickEffectNote(action, outcome) +
         this.pageToolNote(action, executionFrame) +
         (o.reaimed ? reaimNote : "") +
@@ -4324,6 +4376,8 @@ export class Runner {
     this.wroteByTool = false;
     this.settleBefore = undefined;
     this.streamedPage = undefined;
+    this.dismissMenu = false;
+    this.menuDismissed = false;
     this.resetMemory();
   }
   private newRun(task: string, options: StartOptions): Run {
@@ -4855,6 +4909,8 @@ export class Runner {
         // run; anything else in front (no field, a button, a blind surface)
         // is the model's to work out from the words as they were said.
         let dictated = false;
+        // This pass proposes the Escape that closes an open menu.
+        let dismissing = false;
         if (!result && dictation !== undefined) {
           const text = dictation;
           dictation = undefined;
@@ -4906,6 +4962,20 @@ export class Runner {
             usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
           };
           routed = undefined;
+        }
+        if (!result && this.dismissMenu) {
+          // The Escape that closes the menu the last right_click left open
+          // (recoverStateChange, the menu_item retarget), as a normal
+          // proposed step: policy's dismissal rule and the helper's checks
+          // judge it like a model's key, and it is recorded as executed with
+          // MENU_CLOSED_LINE. No model call and no usage.
+          this.dismissMenu = false;
+          dismissing = true;
+          this.status("thinking", "Closing the open menu.");
+          result = {
+            action: { type: "key", key: "ESC", frame_id: frame.id },
+            usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+          };
         }
         if (!result) {
           this.status("thinking", "Choosing the next action.");
@@ -5213,6 +5283,20 @@ export class Runner {
           continue;
         }
         if (decision.kind === "RETRY") {
+          const reasonCode = retryCode(decision.reason);
+          // A menu item named while the last right_click's menu is open:
+          // menu_item reaches the menu bar, so the item is missing, and the
+          // open menu would cover every target after it. The runner closes
+          // it (the Escape proposed on the next pass, MENU_CLOSED_LINE) and
+          // the reason says so.
+          const dismiss =
+            action.type === "menu_item" &&
+            reasonCode === "MENU_ITEM_MISSING" &&
+            this.menuOpen();
+          if (dismiss) this.requestMenuDismissal();
+          const reason = dismiss
+            ? menuClosedReason(decision.reason)
+            : decision.reason;
           this.event("ActionRetargetRequested", {
             actionType: action.type,
             appId: actionSurface.appId,
@@ -5222,10 +5306,12 @@ export class Runner {
             // Why the step was sent back, as a code: a missing control, a
             // refused address or a wait for the end of the sentence read
             // apart in the trace without the sentence.
-            reasonCode: retryCode(decision.reason),
+            reasonCode,
             // A named control whose point fell through to its own ancestor
             // (native hitCover): the target fields are the control's own.
             ...(actionSurface.hitAncestor ? { hitAncestor: true } : {}),
+            // The open menu is being closed for this refusal (a flag).
+            ...(dismiss ? { dismissed: true } : {}),
           });
           const route = searchRoute(action, actionSurface);
           if (route && !this.searchRoutes.has(actionSurface.appId)) {
@@ -5250,11 +5336,11 @@ export class Runner {
             // last word must survive the longest refusal reason.
             result:
               refused === REFUSED_TARGETS_LAST_WORD
-                ? noInput(decision.reason).slice(
+                ? noInput(reason).slice(
                     0,
                     MODEL_RESULT_CHARS - refusedTargetsWarning.length,
                   ) + refusedTargetsWarning
-                : noInput(decision.reason),
+                : noInput(reason),
           });
           if (refused > REFUSED_TARGETS_LAST_WORD) {
             this.targetingRetries = 0;
@@ -5604,17 +5690,19 @@ export class Runner {
           "executing",
           fallback
             ? toolFallbackLine(fallback)
-            : action.type === "open_app"
-              ? `Opening ${bound(action.name, 100)}.`
-              : action.type === "open_url"
-                ? `Opening ${bound(webAddress(action.url)?.hostname ?? "the page", 100)}.`
-                : action.type === "open_file"
-                  ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}${action.app ? ` in ${bound(action.app, 60)}` : ""}.`
-                  : action.type === "menu_item"
-                    ? `Choosing ${bound(action.path.join(" › "), 100)}.`
-                    : action.type === "click_control"
-                      ? `Clicking ${bound(action.label, 100)}.`
-                      : `Executing ${action.type.replaceAll("_", " ")}.`,
+            : dismissing
+              ? "Closing the open menu."
+              : action.type === "open_app"
+                ? `Opening ${bound(action.name, 100)}.`
+                : action.type === "open_url"
+                  ? `Opening ${bound(webAddress(action.url)?.hostname ?? "the page", 100)}.`
+                  : action.type === "open_file"
+                    ? `Opening ${bound(action.path.split("/").pop() || "the file", 100)}${action.app ? ` in ${bound(action.app, 60)}` : ""}.`
+                    : action.type === "menu_item"
+                      ? `Choosing ${bound(action.path.join(" › "), 100)}.`
+                      : action.type === "click_control"
+                        ? `Clicking ${bound(action.label, 100)}.`
+                        : `Executing ${action.type.replaceAll("_", " ")}.`,
         );
         const { frame_id: _frameId, ...executedAction } = action;
         const interrupted = () => {
@@ -5706,7 +5794,7 @@ export class Runner {
           executionFrame,
           actionSurface,
           outcome,
-          { reaimed },
+          { reaimed, dismissal: dismissing },
         );
         // Native typed every character into the field it verified as it
         // went, so the words are in; a screenshot to check would only be for
