@@ -1655,11 +1655,22 @@ export class Runner {
     let attempts = 0;
     // One retry with the reminder line when the reply was unusable; the
     // audit's own error never fails a run.
+    // The screen at the claim: the last frame's title and visible text.
+    const context = this.snapshot.frame?.context;
+    const screen = context
+      ? { title: context.windowTitle, text: context.visibleText }
+      : undefined;
     for (const retry of [false, true]) {
       attempts += 1;
       try {
         const reply = await this.provider.text!(
-          doneAuditCall(objective, modelHistory(history), summary, retry),
+          doneAuditCall(
+            objective,
+            modelHistory(history),
+            summary,
+            retry,
+            screen,
+          ),
           this.abort.signal,
         );
         this.addUsage(reply.usage);

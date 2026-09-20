@@ -38,6 +38,7 @@ import {
   requirementChallenge,
   requirementsUnmet,
   REQUIREMENT_UNMET,
+  SCREEN_CHARS,
 } from "../src/core/done-audit";
 import type { ProviderTextCall, ProviderTextReply } from "../src/core/schema";
 
@@ -1018,6 +1019,58 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
     expect(m3.of("RunFailed")).toHaveLength(0);
     expect(m3.of("RunCompleted")).toHaveLength(1);
     expect(audits(m3).map((e) => e.data.unmet)).toEqual([2, 0]);
+  });
+  it("shows the audit the screen at done: the window title and the visible text, bounded, and nothing when the frame has no context", async () => {
+    // Market 1/3 at 5e7d433: two check-ins the grader scored complete were
+    // failed by audits reading result lines that say only "Executed";
+    // the confirmation page was on screen and nowhere in the input.
+    policy.evaluate = () => ALLOW;
+    const tail = "TAIL_PAST_THE_BOUND";
+    const text = "a".repeat(SCREEN_CHARS - 10) + "b".repeat(400) + tail;
+    const seeing: Controller = {
+      ...controller(),
+      capture: async () => ({
+        id: `frame-${++captures}`,
+        sha256: `sha-${captures}`,
+        image: "",
+        geometry,
+        capturedAt: 0,
+        synthetic: false,
+        appId: finder.appId,
+        context: {
+          appName: "Safari",
+          windowTitle: "Checked in · token",
+          visibleText: text,
+        },
+      }),
+    };
+    const m = memory();
+    const p = auditing(scripted(threeThenDone()), [ALL_MET]);
+    await new Runner(seeing, p, m.recorder, settings, () => {}).start(
+      TWO_CLAUSES,
+    );
+    expect(p.text).toHaveBeenCalledTimes(1);
+    const input = p.calls[0].input;
+    expect(input).toContain(
+      "Screen at done (window title, then visible text):",
+    );
+    expect(input).toContain("Checked in · token");
+    expect(input).toContain("a".repeat(SCREEN_CHARS - 10));
+    expect(input).not.toContain(tail);
+    // The section comes after the steps and before the summary.
+    expect(input.indexOf("Steps (oldest first):")).toBeLessThan(
+      input.indexOf("Screen at done"),
+    );
+    expect(input.indexOf("Screen at done")).toBeLessThan(
+      input.indexOf("Summary at done:"),
+    );
+    // A frame with no context adds no section.
+    const m2 = memory();
+    const p2 = auditing(scripted(threeThenDone()), [ALL_MET]);
+    await new Runner(controller(), p2, m2.recorder, settings, () => {}).start(
+      TWO_CLAUSES,
+    );
+    expect(p2.calls[0].input).not.toContain("Screen at done");
   });
   it("accepts a done the audit finds complete, with one call and no challenge", async () => {
     policy.evaluate = () => ALLOW;

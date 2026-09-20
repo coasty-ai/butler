@@ -249,7 +249,7 @@ export function auditApplies(scope: DoneAuditScope): boolean {
 
 export const DONE_AUDIT_PROMPT = `You audit whether a computer-use run on a Mac finished its objective. You are given the objective, the run's steps in order (each as the model proposed it, with the result the runner reported) and the model's own summary at done.
 List every requirement the objective states: each distinct outcome or step it asks for (a page or app to open, a value to enter, search or select, a fact to write, a file to save, a message to send, a condition to satisfy). Split a sentence that asks for several things into one requirement each; a fact the objective names is its own requirement.
-For each requirement decide from the steps alone whether the run met it. met is true only when a step shows it happened: a typed or selected value, a submitted form, a tool result, a saved file, a page reached. A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
+For each requirement decide from the steps and the screen at done whether the run met it. met is true only when a step shows it happened (a typed or selected value, a clicked control whose name is the value, a submitted form, a tool result, a saved file, a page reached) or the screen at done shows its outcome (a confirmation, the value in place). A summary claiming it, a page merely opened where it could have been done, or a step whose result says no input was sent or no visible change, is not evidence.
 Reply with strict JSON and nothing else, in this exact shape: {"requirements":[{"text":string,"met":boolean,"evidence":string|null}]}. text is the requirement in a few words from the objective; evidence is the step that met it (its number and kind) or null when unmet. No prose, no code fence.`;
 
 const historyLine = (entry: History[number], index: number): string => {
@@ -263,10 +263,18 @@ const historyLine = (entry: History[number], index: number): string => {
  * reads (oldest first, the oldest dropped when over HISTORY_CHARS) and the
  * claimed summary. Never a screenshot.
  */
+/** Characters of the screen at done the audit reads (the window title and the visible text). */
+export const SCREEN_CHARS = 1_500;
+/** What the run's last frame showed when the claim was made, for the audit. */
+export interface DoneScreen {
+  title?: string;
+  text?: string;
+}
 export function doneAuditInput(
   objective: string,
   history: History,
   summary: string,
+  screen?: DoneScreen,
 ): string {
   const lines = history.map(historyLine);
   const kept: string[] = [];
@@ -281,12 +289,26 @@ export function doneAuditInput(
     length += line.length + 1;
   }
   kept.reverse();
+  // The screen when the claim was made: the steps' result lines say only
+  // that a step executed, so a confirmation page or a value in place shows
+  // here or nowhere (market 1/3 at 5e7d433: two check-ins the grader scored
+  // complete were failed by audits that could not see the confirmation).
+  const shown =
+    screen && (screen.title || screen.text)
+      ? [
+          "",
+          "Screen at done (window title, then visible text):",
+          bound(screen.title ?? "", 200),
+          bound(screen.text ?? "", SCREEN_CHARS),
+        ]
+      : [];
   return [
     "Objective:",
     bound(objective, OBJECTIVE_CHARS),
     "",
     "Steps (oldest first):",
     kept.length ? kept.join("\n") : "(none)",
+    ...shown,
     "",
     "Summary at done:",
     bound(summary, SUMMARY_CHARS),
@@ -307,11 +329,12 @@ export function doneAuditCall(
   history: History,
   summary: string,
   retry = false,
+  screen?: DoneScreen,
 ): ProviderTextCall {
   return {
     system: DONE_AUDIT_PROMPT,
     input:
-      doneAuditInput(objective, history, summary) +
+      doneAuditInput(objective, history, summary, screen) +
       (retry ? `\n\n${DONE_AUDIT_REMINDER}` : ""),
     maxOutputTokens: DONE_AUDIT_MAX_OUTPUT_TOKENS,
     effort: "low",
