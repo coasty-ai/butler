@@ -54,7 +54,7 @@ export const REMEDY: Record<RemedyCode, string> = {
   PRESENCE_UNKNOWN:
     "ps or pmset could not be read, so nothing can say whether another agent or a watched screen is here; try again.",
   SECURE_INPUT:
-    "Secure event input is on: a password field has the keyboard (the gate line names the application when it can), and every attempt would hand off at once. Click somewhere else or close that window. A sign-in fixture page left in the benchmark's own browser is not this: the gate points its fixture tabs at about:blank itself, and quits that browser when the blank tabs still hold it.",
+    "Secure event input is on: a password field has the keyboard (the gate line names the application when it can), and every attempt would hand off at once. Click somewhere else or close that window. A sign-in fixture page left in the benchmark's own browser is not this: the gate points its fixture tabs at about:blank itself, and quits that browser when the blank tabs still hold it (cancelling a Save or Open panel first; a sheet with no Cancel button leaves it standing, SHEET_UP).",
   MISSING_KEY:
     "Put the cell's key in .env under the name the app reads (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY or GOOGLE_API_KEY), or drop the cell from --matrix.",
   NOTHING_TO_RUN:
@@ -72,7 +72,7 @@ export const REMEDY: Record<RemedyCode, string> = {
   FIXTURE_PORT:
     "Free port 47831 on 127.0.0.1 (another fixture server or a forgotten test server holds it); the browser and research tasks need it.",
   APPS_OPEN:
-    "Save your work and quit the application named (TextEdit, Calendar, Reminders, Notes, Music, System Settings, or every browser a web task could use), or leave it open with no window; the harness never quits an application of yours (its own browser, holding secure event input with every fixture tab already blank, is the one it quits), and one an earlier attempt left open with only benchmark windows (titles carrying its token) does not count.",
+    "Save your work and quit the application named (TextEdit, Calendar, Reminders, Notes, Music, System Settings, or every browser a web task could use), or leave it open with no window; the harness never quits an application of yours (its own browser is the one it quits: at the end of every cycle, when its blank fixture tabs hold secure event input, and at the gate when an earlier cycle left it with only blank, start-page or fixture tabs and nobody has typed since it launched), and one an earlier attempt left open with only benchmark windows (titles carrying its token) does not count. A browser with any tab of yours, or one you have used since it launched, is yours: quit it yourself if you want the web tasks to run.",
   BENCH_ROOT_DIRTY:
     "An earlier cycle left benchmark items behind: run npm run cycle -- --cleanup-only, then remove by hand anything it still reports.",
 };
@@ -376,7 +376,7 @@ export interface BrowserChoice {
  */
 export function chooseBrowser(
   task: Pick<BenchTask, "apps">,
-  facts: Pick<StartFacts, "installed" | "running" | "windows">,
+  facts: Pick<StartFacts, "installed" | "running" | "windows" | "leftover">,
 ): BrowserChoice | undefined {
   // Spotlight silent: only Safari (on every Mac) and what is running are
   // known to exist, so no third browser is ever named for open_app to miss.
@@ -395,20 +395,25 @@ export function chooseBrowser(
 }
 
 /**
- * Whether a browser is the benchmark's own, to use and to reset: not
- * running (the attempt launches it, so every window it gets is the
- * fixture's), or running with no window of the person's (safeOpen: none, or
- * only titles carrying a token). The one rule chooseBrowser picks by and
- * browser-reset.ts navigates under; a browser this refuses is the person's,
- * and nothing of the harness ever touches a tab of it. `running` is the
- * start's reading plus what the person opened since (openedByPerson), so a
- * browser an attempt launched stays the benchmark's for the night.
+ * Whether a browser is the benchmark's own, to use, to reset and to quit:
+ * not running (the attempt launches it, so every window it gets is the
+ * fixture's), running with no window of the person's (safeOpen: none, or
+ * only titles carrying a token), or bench leftover (facts.leftover: an
+ * earlier cycle's, with only blank, start-page or fixture tabs and no input
+ * of the person's since it launched, browser-reset.ts benchLeftover). The
+ * one rule chooseBrowser picks by and browser-reset.ts navigates and quits
+ * under; a browser this refuses is the person's, and nothing of the harness
+ * ever touches a tab of it. `running` is the start's reading plus what the
+ * person opened since (openedByPerson), so a browser an attempt launched
+ * stays the benchmark's for the night.
  */
 export function benchOwnBrowser(
   id: string,
-  facts: Pick<StartFacts, "running" | "windows">,
+  facts: Pick<StartFacts, "running" | "windows" | "leftover">,
 ): boolean {
-  return !facts.running?.has(id) || safeOpen(id, facts);
+  return (
+    !facts.running?.has(id) || safeOpen(id, facts) || !!facts.leftover?.has(id)
+  );
 }
 
 /* -------------------------------------------------------------- the agenda */
@@ -458,6 +463,15 @@ export interface StartFacts {
    * not say, and absent altogether when nothing asked (a dry run).
    */
   windows?: Record<string, WindowFacts | undefined>;
+  /**
+   * Browsers an earlier cycle left running that are the benchmark's own by
+   * the leftover rule (browser-reset.ts benchLeftover: every tab blank, the
+   * browser's start page or the fixture's, and no input of the person's
+   * since it launched), judged at the start and again at each gate pass;
+   * the gate quits them. A browser this refuses stays the person's by the
+   * window rule. Absent when nothing was judged (a dry run).
+   */
+  leftover?: Set<string>;
   /** ~/OpenAssistBench or the token ledger holds an earlier attempt's items. */
   benchRootDirty?: boolean;
   /**

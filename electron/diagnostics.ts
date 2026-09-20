@@ -85,9 +85,12 @@ const fields = new Set([
   "taskLength",
   "appId",
   // BrowserQuit (scripts/harness-cycle.mjs): the bundle id of the browser
-  // the benchmark quit to release secure event input, and whether it went.
+  // the benchmark quit to release secure event input, and whether it went;
+  // BrowserSheet: how many buttons the sheet it met had, and whether its
+  // Cancel button was clicked.
   "browser",
   "quit",
+  "buttons",
   "cancelled",
   "timedOut",
   "reason",
@@ -326,6 +329,8 @@ const fields = new Set([
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
+  // BrowserSheet: buttons on the sheet the harness met before a quit.
+  "buttons",
   "loaded",
   "revisits",
   "episode",
@@ -452,8 +457,10 @@ const flagFields = new Set([
   "endsWithBrace",
   "quotedAtEnd",
   "repaired",
-  // BrowserQuit: whether the browser's process had gone.
+  // BrowserQuit: whether the browser's process had gone. BrowserSheet:
+  // whether the sheet's Cancel button was clicked.
   "quit",
+  "cancelled",
   // ForegroundRequested: the detour that releases the window for good.
   "final",
 ]);
@@ -604,13 +611,15 @@ const observerEvents = new Map<string, Set<string>>([
   ["ObserverDropped", new Set(["reason", "dropped"])],
 ]);
 /**
- * The benchmark harness quitting its own browser to release secure event
- * input (scripts/harness-cycle.mjs, src/gym/bench/browser-reset.ts): the
- * browser's bundle id, whether it went and a fixed code; never a title or a
- * URL, whatever a caller passes.
+ * The benchmark harness quitting its own browser (scripts/harness-cycle.mjs,
+ * src/gym/bench/browser-reset.ts): the browser's bundle id, whether it went
+ * and a fixed code; and each sheet the quit met, as the browser's bundle
+ * id, a count of its buttons and whether its Cancel button was clicked.
+ * Never a title, a URL or a button's name, whatever a caller passes.
  */
 const harnessEvents = new Map<string, Set<string>>([
   ["BrowserQuit", new Set(["browser", "quit", "code"])],
+  ["BrowserSheet", new Set(["browser", "buttons", "cancelled"])],
 ]);
 const keyedEvents = new Map([
   ...streamEvents,

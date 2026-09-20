@@ -463,12 +463,24 @@ export type LedgerLine =
       /** SECURE_INPUT: fixture tabs the harness pointed at about:blank in its own browser before waiting on (the remedy). */
       browserReset?: number;
       /**
-       * SECURE_INPUT: the next read after the reset still named that
-       * browser and the harness asked it to quit (the escalation): true when
-       * its process had gone, false when it was asked and still ran. Absent
-       * when no quit was asked.
+       * The harness asked its own browser to quit at this gate (the
+       * escalation): true when its process had gone, false when it was
+       * asked and still ran (or a sheet with no Cancel button kept the quit
+       * from being sent). For SECURE_INPUT, the next read after the reset
+       * still named that browser; for a bench-leftover browser
+       * (browserQuitReason), the gate passed with an earlier cycle's browser
+       * still running. Absent when no quit was asked.
        */
       browserQuit?: boolean;
+      /**
+       * LEFTOVER: the quit was of a browser an earlier cycle left, with only
+       * blank, start-page or fixture tabs and no input of the person's
+       * since it launched (browser-reset.ts benchLeftover), asked when the
+       * gate passed. Absent for a SECURE_INPUT quit, which the line's reason
+       * already names. A line with this and `reasons: []` records a quit at
+       * a gate that passed at once: it is no wait (gateWaitsOf).
+       */
+      browserQuitReason?: "LEFTOVER";
     }
   | ({ kind: "attempt"; at: string } & AttemptResult)
   | { kind: "requeue"; at: string; planIndex: number; requeued: number }
@@ -575,6 +587,8 @@ export function gateWaitsOf(lines: LedgerLine[]): GateWaits {
   };
   for (const line of lines) {
     if (line.kind !== "gate") continue;
+    // A quit of a leftover browser at a gate that passed at once: no wait.
+    if (line.reasons && !line.reasons.length) continue;
     const seconds = Number(line.waitedSeconds) || 0;
     waits.count++;
     waits.totalSeconds += seconds;
@@ -585,6 +599,53 @@ export function gateWaitsOf(lines: LedgerLine[]): GateWaits {
     if (line.userPresentLong) waits.userPresentLong++;
   }
   return waits;
+}
+
+/**
+ * What the harness's own ledgers say about input since a browser launched,
+ * for the leftover rule (browser-reset.ts inputSinceLaunch): the helper's
+ * synthetic input moves HIDIdleTime like a hand would, so a browser a cycle
+ * launched and then drove always shows input after its launch, and the
+ * ledgers are what tell that input from a person's. `lastInputAgoSeconds`
+ * is the age of the newest attempt row that ran (a skipped row posted
+ * nothing; the row is written after the attempt's last step, so its input
+ * is no later); `personSeenSinceLaunch` is any line at or after the launch
+ * that saw a person: an attempt a takeover ended or real input cut short,
+ * or a wait that refused on HID_ACTIVE. Over every ledger the caller reads,
+ * this cycle's included.
+ */
+export function harnessInput(
+  lines: LedgerLine[],
+  launchedAt: number,
+  now: number,
+): { lastInputAgoSeconds?: number; personSeenSinceLaunch: boolean } {
+  let lastInputAt: number | undefined;
+  let personSeenSinceLaunch = false;
+  for (const line of lines) {
+    const at = Date.parse(line.at);
+    if (!Number.isFinite(at)) continue;
+    if (line.kind === "attempt") {
+      if (line.runStatus === "skipped") continue;
+      if (lastInputAt === undefined || at > lastInputAt) lastInputAt = at;
+      if (
+        at >= launchedAt &&
+        (line.manualTakeover || line.reason === "MANUAL_INPUT_UNSEEN")
+      )
+        personSeenSinceLaunch = true;
+    } else if (line.kind === "gate") {
+      if (
+        at >= launchedAt &&
+        (line.reasons ?? [line.reason]).includes("HID_ACTIVE")
+      )
+        personSeenSinceLaunch = true;
+    }
+  }
+  return {
+    ...(lastInputAt !== undefined
+      ? { lastInputAgoSeconds: Math.max(0, (now - lastInputAt) / 1000) }
+      : {}),
+    personSeenSinceLaunch,
+  };
 }
 
 /* ------------------------------------------------------------ the loop */
@@ -622,6 +683,9 @@ export interface LoopState {
 }
 
 export type QueueEntry = PlanEntry & { requeued: number };
+
+/** Why the loop asks the escalation to quit the harness's own browser. */
+export type EscalationCause = "SECURE_INPUT" | "LEFTOVER";
 
 export interface CycleLoopDeps {
   queue: QueueEntry[];
@@ -677,8 +741,22 @@ export interface CycleLoopDeps {
    * harness's to touch). True means the gate is read again at once; anything
    * else waits like any reason, and the hook is not asked again this wait.
    * Never asked while an attempt runs: this is the gate between them.
+   *
+   * Asked once more, with cause LEFTOVER, each time the gate passes, before
+   * the line is written and afterGate runs: the hook looks for a browser an
+   * earlier cycle left (browser-reset.ts benchLeftover: only blank,
+   * start-page or fixture tabs, and no input of the person's since it
+   * launched), quits it, and answers true when it went, false when it was
+   * asked and did not (a sheet with no Cancel button among the reasons),
+   * undefined when there was nothing of the kind. A defined answer goes on
+   * the gate line as browserQuit with browserQuitReason LEFTOVER, written
+   * even when the gate passed at once (then with `reasons: []`, which no
+   * tally counts as a wait). The pass is never held up by the answer.
    */
-  escalate?: (report: GateReport) => Promise<boolean | undefined>;
+  escalate?: (
+    report: GateReport,
+    cause: EscalationCause,
+  ) => Promise<boolean | undefined>;
   /** Every row the loop records, for rules that learn from results (IDE_BLIND). */
   observe?: (row: AttemptResult) => void;
   /** Appends one ledger line. */
@@ -752,25 +830,32 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
     let browserReset: number | undefined;
     let remedied = false;
     let browserQuit: boolean | undefined;
+    let browserQuitReason: "LEFTOVER" | undefined;
     let escalated = false;
     const close = () => {
       const seconds = (d.now() - started) / 1000;
-      if (!reasons.size) return seconds;
-      waits.count++;
-      waits.totalSeconds += seconds;
-      waits.longestSeconds = Math.max(waits.longestSeconds, seconds);
-      for (const reason of reasons)
-        waits.byReason[reason] = (waits.byReason[reason] ?? 0) + 1;
+      // A wait is tallied by its reasons; a quit of a leftover browser at a
+      // gate that passed at once is written, as the record of the quit, and
+      // tallied as nothing.
+      if (!reasons.size && browserQuitReason === undefined) return seconds;
+      if (reasons.size) {
+        waits.count++;
+        waits.totalSeconds += seconds;
+        waits.longestSeconds = Math.max(waits.longestSeconds, seconds);
+        for (const reason of reasons)
+          waits.byReason[reason] = (waits.byReason[reason] ?? 0) + 1;
+      }
       d.write({
         kind: "gate",
         at: new Date(d.now()).toISOString(),
-        reason: last ?? "UNKNOWN",
+        reason: last ?? "NONE",
         reasons: [...reasons],
         waitedSeconds: Math.round(seconds),
         ...(longNoted ? { userPresentLong: true } : {}),
         ...(secureInputOwner ? { secureInputOwner } : {}),
         ...(browserReset !== undefined ? { browserReset } : {}),
         ...(browserQuit !== undefined ? { browserQuit } : {}),
+        ...(browserQuitReason ? { browserQuitReason } : {}),
       });
       return seconds;
     };
@@ -790,6 +875,18 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
       });
       if (decision.ok) {
         gatePassed(gate);
+        // The gate passed: a browser an earlier cycle left with only blank
+        // tabs and nobody's input since it launched is the harness's to
+        // quit now, before the line is written and the attempt is chosen
+        // its browser. Nothing of the kind: undefined, and the line as
+        // before.
+        if (d.escalate) {
+          const quit = await d.escalate(report, "LEFTOVER");
+          if (quit !== undefined) {
+            browserQuit = quit;
+            browserQuitReason = "LEFTOVER";
+          }
+        }
         return { seconds: close(), sawInput: sawInput() };
       }
       last = decision.reason;
@@ -823,7 +920,7 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
           report.secureInputOwner === secureInputOwner
         ) {
           escalated = true;
-          browserQuit = await d.escalate(report);
+          browserQuit = await d.escalate(report, "SECURE_INPUT");
           if (browserQuit) continue;
         }
       }

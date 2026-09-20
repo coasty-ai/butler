@@ -81,6 +81,7 @@ import {
   estimateSeconds,
   fitsTimeBox,
   gateWaitsOf,
+  harnessInput,
   ledgerResults,
   parseAutonomy,
   parseDuration,
@@ -2503,6 +2504,8 @@ function loop(
     afterGate?: (pass: { first: boolean; sawInput: boolean }) => Promise<void>;
     remedy?: (report: GateReport) => Promise<number | undefined>;
     escalate?: (report: GateReport) => Promise<boolean | undefined>;
+    /** The same hook's LEFTOVER cause, asked at every pass. */
+    leftover?: (report: GateReport) => Promise<boolean | undefined>;
   } = {},
 ) {
   let clock = 1_000_000;
@@ -2591,7 +2594,14 @@ function loop(
     ...(over.observe ? { observe: over.observe } : {}),
     ...(over.afterGate ? { afterGate: over.afterGate } : {}),
     ...(over.remedy ? { remedy: over.remedy } : {}),
-    ...(over.escalate ? { escalate: over.escalate } : {}),
+    ...(over.escalate || over.leftover
+      ? {
+          escalate: (gateReport: GateReport, cause: string) =>
+            cause === "LEFTOVER"
+              ? (over.leftover?.(gateReport) ?? Promise.resolve(undefined))
+              : (over.escalate?.(gateReport) ?? Promise.resolve(undefined)),
+        }
+      : {}),
   });
   return { run, lines, ran, state, clockAt: () => clock };
 }
@@ -7067,8 +7077,9 @@ describe("harness-cycle.mjs with the suites", () => {
     expect(only).toBeLessThan(cycle.indexOf('if (values["dry-run"]) {'));
     // Every recount of the skips sees every fact so far: the fixture server
     // failing must not forget what the agenda helper's setup said, nor the
-    // re-read after a gate pass what either said.
-    expect(cycle.match(/startSkips\(tasks, facts\)/g)).toHaveLength(4);
+    // re-read after a gate pass what either said, nor the recount after a
+    // leftover browser is judged at the gate (refreshSkips).
+    expect(cycle.match(/startSkips\(tasks, facts\)/g)).toHaveLength(5);
     expect(cycle).not.toMatch(/startSkips\(tasks, \{/);
     // setup (which writes) runs only after the dry run and preflight exits.
     expect(cycle.indexOf('run(AGENDA_BINARY, ["setup"])')).toBeGreaterThan(
@@ -7925,7 +7936,7 @@ describe("secure event input at the gate", () => {
     // and only its fixture tabs; anything else is named and returns nothing.
     const remedy = cycle.slice(
       cycle.indexOf("remedy: async (report) => {"),
-      cycle.indexOf("escalate: async (report) => {"),
+      cycle.indexOf("escalate: async (report, cause) => {"),
     );
     expect(remedy).toContain(
       "owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);",
@@ -7943,35 +7954,44 @@ describe("secure event input at the gate", () => {
     // forgets a browser that went as running, for the chooser and for the
     // next look at what a person opened.
     const escalate = cycle.slice(
-      cycle.indexOf("escalate: async (report) => {"),
+      cycle.indexOf("escalate: async (report, cause) => {"),
       cycle.indexOf("afterGate: async (pass) => {"),
+    );
+    // The LEFTOVER cause goes to its own helper first; SECURE_INPUT as before.
+    expect(escalate).toContain(
+      'if (cause === "LEFTOVER") return quitLeftoverBrowsers(report);',
     );
     expect(escalate).toContain(
       "owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);",
     );
     expect(escalate).toContain("if (!ours) return undefined;");
-    expect(escalate).toContain(
-      'const quit = await quitOwnBrowser(owner, "gate");',
+    expect(escalate).toMatch(
+      /const quit = await quitOwnBrowser\(\s+owner,\s+"gate",\s+`secure event input is still on in \$\{owner\}, the benchmark's own browser/,
     );
     expect(escalate).toContain("return quit.quit;");
     const helper = cycle.slice(
-      cycle.indexOf("const quitOwnBrowser = async (id, where) => {"),
-      cycle.indexOf("await controller.configure("),
+      cycle.indexOf("const quitOwnBrowser = async (id, where, why) => {"),
+      cycle.indexOf("const refreshSkips = () => {"),
     );
     expect(helper).toContain("quit = await quitBrowser(run, id, facts);");
+    // Each sheet the quit met is traced as counts and a flag, then the quit.
+    expect(helper).toMatch(
+      /for \(const sheet of quit\.sheets \?\? \[\]\)\s+diagnostics\.write\("BrowserSheet", \{\s+browser: id,\s+buttons: sheet\.buttons,\s+cancelled: sheet\.cancelled,\s+\}\);/,
+    );
     expect(helper).toMatch(
       /diagnostics\.write\("BrowserQuit", \{\s+browser: id,\s+quit: quit\.quit,\s+\.\.\.\(quit\.code \? \{ code: quit\.code \} : \{\}\),\s+\}\);/,
     );
     expect(helper).toContain(
-      "secure event input is still on in ${id}, the benchmark's own browser",
+      "no quit was sent (SHEET_UP): dismiss it yourself",
     );
     expect(helper).toMatch(
-      /if \(quit\.quit\) \{\s+facts\.running\?\.delete\(id\);\s+runningAfterLast\?\.delete\(id\);\s+if \(facts\.windows\) delete facts\.windows\[id\];\s+\}/,
+      /if \(quit\.quit\) \{\s+facts\.running\?\.delete\(id\);\s+runningAfterLast\?\.delete\(id\);\s+if \(facts\.windows\) delete facts\.windows\[id\];\s+facts\.leftover\?\.delete\(id\);\s+\}/,
     );
-    // One quit call in the harness, through the helper, from the gate and
-    // from the attempt callback; nothing else quits anything.
+    // One quit call in the harness, through the helper, from the gate (the
+    // secure-input escalation and the leftover one), from the attempt
+    // callback and from the end of the cycle; nothing else quits anything.
     expect(cycle.match(/quitBrowser\(/g)).toHaveLength(1);
-    expect(cycle.match(/quitOwnBrowser\(/g)).toHaveLength(2);
+    expect(cycle.match(/quitOwnBrowser\(/g)).toHaveLength(4);
     expect(cycle).not.toMatch(/\bkillall\b|\bpkill\b/);
     // After each attempt: after the window accounting, before the row, and
     // never after real input or a stop.
@@ -8002,10 +8022,10 @@ describe("secure event input at the gate", () => {
     expect(quitAt).toBeGreaterThan(resetAt);
     expect(quitAt).toBeLessThan(attempt.indexOf("return withWindowFields("));
     expect(attempt).toMatch(
-      /const quit = await quitOwnBrowser\(\s+browser\.browser\.id,\s+`\$\{task\.id\} #\$\{entry\.attempt\}`,\s+\);\s+if \(quit\.quit\) browserReset = \{ \.\.\.browserReset, quit: true \};/,
+      /const quit = await quitOwnBrowser\(\s+browser\.browser\.id,\s+`\$\{task\.id\} #\$\{entry\.attempt\}`,\s+`secure event input is still on in \$\{browser\.browser\.id\}[^`]*`,\s+\);\s+if \(quit\.quit\) browserReset = \{ \.\.\.browserReset, quit: true \};/,
     );
     expect(cycle).toMatch(
-      /const \{ quitBrowser, resetFixtureTabs \} =\s+await import\("\.\.\/src\/gym\/bench\/browser-reset\.ts"\);/,
+      /const \{\s+RESETTABLE_BROWSERS,\s+benchLeftover,\s+browserUptime,\s+quitBrowser,\s+readTabCounts,\s+resetFixtureTabs,\s+\} = await import\("\.\.\/src\/gym\/bench\/browser-reset\.ts"\);/,
     );
     // The origin is the fixture's, running or not (a tab an earlier cycle left).
     expect(cycle).toMatch(
@@ -8032,5 +8052,349 @@ describe("secure event input at the gate", () => {
     expect(bench).toMatch(
       /browser &&\s+!result\.manualTakeover &&\s+result\.reason !== "MANUAL_INPUT_UNSEEN" &&\s+!state\.stopped/,
     );
+  });
+});
+
+describe("a browser an earlier cycle left", () => {
+  const SAFARI = "com.apple.Safari";
+  const CHROME = "com.google.Chrome";
+  const at = (ms: number) => new Date(ms).toISOString();
+
+  it("asks the escalation with cause LEFTOVER at every pass, writes the quit on the gate line, and counts no wait for it", async () => {
+    // Cycles 20260919-2032 and -2038: the gate passed at once with cycle
+    // 1952's Safari still running. Now the pass asks the hook, which quits
+    // it, and the line records the quit under its own reason with no wait.
+    let asked = 0;
+    let secureAsked = 0;
+    const quit = loop({
+      leftover: async (gateReport) => {
+        asked++;
+        expect(gateReport.hidIdleSeconds).toBe(999);
+        return asked === 1 ? true : undefined;
+      },
+      escalate: async () => {
+        secureAsked++;
+        return true;
+      },
+    });
+    const outcome = await quit.run;
+    expect(quit.ran).toHaveLength(4);
+    // Once per pass, four passes; the secure-input cause never asked.
+    expect(asked).toBe(4);
+    expect(secureAsked).toBe(0);
+    const gates = quit.lines.filter((line) => line.kind === "gate");
+    expect(gates).toEqual([
+      {
+        kind: "gate",
+        at: expect.any(String),
+        reason: "NONE",
+        reasons: [],
+        waitedSeconds: 0,
+        browserQuit: true,
+        browserQuitReason: "LEFTOVER",
+      },
+    ]);
+    // No wait: not in the loop's tally, not in the ledger's.
+    expect(outcome.gateWaits).toEqual({
+      count: 0,
+      totalSeconds: 0,
+      byReason: {},
+      longestSeconds: 0,
+      userPresentLong: 0,
+    });
+    expect(gateWaitsOf(gates).count).toBe(0);
+    expect(gateWaitsOf(gates).byReason).toEqual({});
+    // Nothing of the kind running: no line at all, as before.
+    const none = loop({ leftover: async () => undefined });
+    await none.run;
+    expect(none.lines.filter((line) => line.kind === "gate")).toEqual([]);
+    // Asked and it did not go (a sheet with no Cancel button): false on the
+    // line, and the attempt runs anyway.
+    const held = loop({ leftover: async () => false });
+    await held.run;
+    expect(held.ran).toHaveLength(4);
+    expect(
+      held.lines
+        .filter((line) => line.kind === "gate")
+        .map((l) => l.browserQuit),
+    ).toEqual([false, false, false, false]);
+    // After a real wait the quit joins that wait's line, which counts as
+    // the wait it was.
+    const start = 1_000_000;
+    let quits = 0;
+    const waited = loop({
+      gate: (now) => ({ tapIdleSeconds: (now - start) / 1000 + 10 }),
+      leftover: async () => (quits++ === 0 ? true : undefined),
+    });
+    const waitedOutcome = await waited.run;
+    const first = waited.lines.filter((line) => line.kind === "gate")[0];
+    expect(first).toMatchObject({
+      reason: "HID_ACTIVE",
+      reasons: ["HID_ACTIVE"],
+      browserQuit: true,
+      browserQuitReason: "LEFTOVER",
+    });
+    expect(first.waitedSeconds).toBeGreaterThan(0);
+    expect(waitedOutcome.gateWaits.count).toBe(1);
+    expect(waitedOutcome.gateWaits.byReason).toEqual({ HID_ACTIVE: 1 });
+    expect(
+      gateWaitsOf(waited.lines.filter((line) => line.kind === "gate")).count,
+    ).toBe(1);
+    // A quit-only line from an older ledger shape (no `reasons`) still
+    // counts as its reason says; one with `reasons: []` never does.
+    expect(
+      gateWaitsOf([
+        {
+          kind: "gate",
+          at: at(0),
+          reason: "LOCKED",
+          waitedSeconds: 30,
+        },
+        {
+          kind: "gate",
+          at: at(0),
+          reason: "NONE",
+          reasons: [],
+          waitedSeconds: 0,
+          browserQuit: true,
+          browserQuitReason: "LEFTOVER",
+        },
+      ]),
+    ).toMatchObject({ count: 1, byReason: { LOCKED: 1 }, totalSeconds: 30 });
+  });
+
+  it("reads the harness's own input and any person seen since a launch from the ledgers", () => {
+    const launch = 10_000_000;
+    const now = launch + 35 * 60_000;
+    const attempt = (when: number, over: Partial<AttemptResult> = {}) =>
+      ({
+        kind: "attempt",
+        at: at(when),
+        ...row({ taskId: "a", cell: "m1", ...over }),
+      }) as LedgerLine;
+    const gate = (when: number, reasons: string[]) =>
+      ({
+        kind: "gate",
+        at: at(when),
+        reason: reasons[reasons.length - 1] ?? "NONE",
+        reasons,
+        waitedSeconds: 15,
+      }) as LedgerLine;
+    // The evidence: attempts after the launch, the last two minutes ago,
+    // nobody seen.
+    expect(
+      harnessInput(
+        [
+          attempt(launch - 60_000),
+          attempt(launch + 5 * 60_000),
+          attempt(now - 2 * 60_000),
+          gate(launch + 60_000, ["LOCKED"]),
+        ],
+        launch,
+        now,
+      ),
+    ).toEqual({ lastInputAgoSeconds: 120, personSeenSinceLaunch: false });
+    // A skipped row posted nothing and is not input.
+    expect(
+      harnessInput(
+        [
+          attempt(launch + 60_000),
+          attempt(now, { runStatus: "skipped", reason: "APPS_OPEN" }),
+        ],
+        launch,
+        now,
+      ),
+    ).toEqual({
+      lastInputAgoSeconds: 34 * 60,
+      personSeenSinceLaunch: false,
+    });
+    // A person seen since the launch: a takeover, real input that cut an
+    // attempt short, or a wait on HID_ACTIVE.
+    for (const lines of [
+      [attempt(launch + 60_000, { manualTakeover: true })],
+      [attempt(launch + 60_000, { reason: "MANUAL_INPUT_UNSEEN" })],
+      [gate(launch + 60_000, ["LOCKED", "HID_ACTIVE"])],
+      [gate(launch, ["HID_ACTIVE"])],
+    ])
+      expect(harnessInput(lines, launch, now).personSeenSinceLaunch).toBe(true);
+    // Seen before the launch: not since it.
+    expect(
+      harnessInput(
+        [
+          attempt(launch - 60_000, { manualTakeover: true }),
+          gate(launch - 1, ["HID_ACTIVE"]),
+          attempt(launch + 60_000),
+        ],
+        launch,
+        now,
+      ),
+    ).toEqual({
+      lastInputAgoSeconds: 34 * 60,
+      personSeenSinceLaunch: false,
+    });
+    // No ledger, or none with an attempt: nothing explained, nobody seen.
+    expect(harnessInput([], launch, now)).toEqual({
+      personSeenSinceLaunch: false,
+    });
+    expect(
+      harnessInput(
+        [
+          {
+            kind: "start",
+            at: at(launch),
+            cycle: "c",
+            planHash: "",
+            gitRev: "",
+          },
+        ],
+        launch,
+        now,
+      ),
+    ).toEqual({ personSeenSinceLaunch: false });
+    // A malformed time is skipped, never NaN.
+    expect(
+      harnessInput([{ ...attempt(now), at: "yesterday" }], launch, now),
+    ).toEqual({ personSeenSinceLaunch: false });
+  });
+
+  it("treats a leftover browser as the benchmark's own for the choice and the skip, and one with any other tab as the person's", () => {
+    const task = LONG_CATALOGUE.find((t) => t.id === "browser-nav-chain")!;
+    expect(task.apps).toContain(SAFARI);
+    expect(task.apps).toContain(CHROME);
+    // Only these two browsers are installed, so no third one is free.
+    const installed = new Set([SAFARI, CHROME]);
+    // Cycle 2032: Safari (an earlier cycle's, about:blank windows: foreign
+    // by the window rule) and Chrome (the person's) both running.
+    const theirs = {
+      installed,
+      running: new Set([SAFARI, CHROME]),
+      windows: {
+        [SAFARI]: { windows: 2, foreign: 2 },
+        [CHROME]: { windows: 3, foreign: 3 },
+      },
+    };
+    expect(chooseBrowser(task, theirs)).toBeUndefined();
+    expect(startSkipDetail(task, theirs)).toEqual({
+      code: "APPS_OPEN",
+      apps: [SAFARI, CHROME],
+    });
+    // The leftover rule found Safari the benchmark's: chosen, no skip.
+    const leftover = { ...theirs, leftover: new Set([SAFARI]) };
+    expect(benchOwnBrowser(SAFARI, leftover)).toBe(true);
+    expect(benchOwnBrowser(CHROME, leftover)).toBe(false);
+    expect(chooseBrowser(task, leftover)?.id).toBe(SAFARI);
+    expect(appsOpen(task, leftover)).toEqual([]);
+    expect(startSkipDetail(task, leftover)).toBeUndefined();
+    // Quit at the gate: not running, the choice falls to it as a fresh
+    // launch and nothing is skipped.
+    const quit = {
+      installed,
+      running: new Set([CHROME]),
+      windows: { [CHROME]: { windows: 3, foreign: 3 } },
+      leftover: new Set<string>(),
+    };
+    expect(chooseBrowser(task, quit)?.id).toBe(SAFARI);
+    expect(startSkipDetail(task, quit)).toBeUndefined();
+    // The rule refused it (a tab of the person's, or input since it
+    // launched): the person's, APPS_OPEN as before.
+    expect(
+      startSkipDetail(task, { ...theirs, leftover: new Set<string>() }),
+    ).toEqual({ code: "APPS_OPEN", apps: [SAFARI, CHROME] });
+    // The remedy says what the harness quits and what it never does.
+    expect(REMEDY.APPS_OPEN).toMatch(/at the end of every cycle/);
+    expect(REMEDY.APPS_OPEN).toMatch(/nobody has typed since it launched/);
+    expect(REMEDY.APPS_OPEN).toMatch(/never quits an application of yours/);
+    expect(REMEDY.SECURE_INPUT).toMatch(/SHEET_UP/);
+  });
+
+  it("judges leftovers at the start and at every pass, quits them at the gate and at the end, and never in a dry run", () => {
+    const cycle = readFileSync(join(root, "scripts/harness-cycle.mjs"), "utf8");
+    // At the start, after the facts and before the secure-input rule and
+    // the skips, on the system's HID idle; nothing in a dry run.
+    const factsAt = cycle.indexOf(
+      "const facts = await readStartFacts(tasks, {",
+    );
+    const startAt = cycle.indexOf('const leftoverAtStart = values["dry-run"]');
+    expect(startAt).toBeGreaterThan(factsAt);
+    expect(startAt).toBeLessThan(cycle.indexOf("const personsSecureInput ="));
+    expect(startAt).toBeLessThan(
+      cycle.indexOf("let skips = startSkips(tasks, facts);"),
+    );
+    expect(cycle.slice(startAt, startAt + 120)).toMatch(
+      /\? \[\]\s+: await judgeLeftovers\(system\.hidIdleSeconds \?\? 0\);/,
+    );
+    // The judgement: the clocks first (ps etime against the idle given and
+    // the ledgers), the read-only tab count only when they allow it, a
+    // browser the person's by its tabs never read again while its process
+    // lives, and the fixture origin the fixed one.
+    const judge = cycle.slice(
+      cycle.indexOf("const leftoverBrowser = async (id, idleSeconds) => {"),
+      cycle.indexOf("const leftoverCandidates = () =>"),
+    );
+    expect(judge).toMatch(
+      /browserUptime\(\s+await run\("ps", \["-axo", "pid=,etime=,command="\]\),\s+id,\s+\)/,
+    );
+    expect(judge).toContain(
+      'if (earlier && earlier.pid === up.pid && earlier.code === "OTHER_TABS")',
+    );
+    expect(judge).toContain(
+      "harness: harnessInput(allLedgerLines(), now - up.seconds * 1000, now),",
+    );
+    expect(
+      judge.indexOf("benchLeftover({ tabs: noTabs, ...clocks })"),
+    ).toBeLessThan(judge.indexOf("readTabCounts(run, id, FIXTURE_ORIGIN)"));
+    expect(cycle).toContain(
+      "const FIXTURE_ORIGIN = `http://${FIXTURE_HOST}:${FIXTURE_PORT}`;",
+    );
+    // Candidates: running browsers a selected task lists that the window
+    // rule reads as the person's, and only ones the scripts can read.
+    expect(cycle).toMatch(
+      /const leftoverCandidates = \(\) =>\s+appsToWatch\(tasks, facts\.running \?\? \[\]\)\.filter\(\s+\(id\) => RESETTABLE_BROWSERS\.includes\(id\) && !safeOpen\(id, facts\),\s+\);/,
+    );
+    // At the gate: the LEFTOVER cause, on the gate's own idle (the larger
+    // of the tap's clock and HID idle), blanks the tabs, quits through the
+    // one helper, and recomputes the skips in place.
+    const gate = cycle.slice(
+      cycle.indexOf("const quitLeftoverBrowsers = async (report) => {"),
+      cycle.indexOf("try {\n  // The fixture server runs as a child process"),
+    );
+    expect(gate).toContain(
+      "Math.max(report.tapIdleSeconds ?? 0, report.hidIdleSeconds ?? 0),",
+    );
+    expect(gate.indexOf("await resetOwnTabs(entry.id);")).toBeLessThan(
+      gate.indexOf(
+        'const quit = await quitOwnBrowser(\n      entry.id,\n      "gate",',
+      ),
+    );
+    expect(gate).toContain("if (judged.length) refreshSkips();");
+    expect(gate).toContain("return asked;");
+    const refresh = cycle.slice(
+      cycle.indexOf("const refreshSkips = () => {"),
+      cycle.indexOf("const quitLeftoverBrowsers = async (report) => {"),
+    );
+    expect(refresh).toContain("const fresh = startSkips(tasks, facts);");
+    expect(refresh).toContain("skips.delete(id);");
+    // The attempt remembers its browser for the end.
+    expect(cycle).toContain(
+      "if (browser.browser) attemptBrowsers.add(browser.browser.id);",
+    );
+    // At the end, after the window sweep and before the lock goes back:
+    // the attempts' browsers and any leftover, each under benchOwnBrowser,
+    // tabs blanked first; a browser of the person's never.
+    const finallyAt = cycle.indexOf(
+      "} finally {\n  try {\n    await fixture?.close();",
+    );
+    const end = cycle.slice(
+      cycle.indexOf("windowSweep = await closeBenchWindows({", finallyAt),
+      cycle.indexOf("releaseDesktopLock(lockFile, process.pid);\n}", finallyAt),
+    );
+    expect(end).toMatch(
+      /for \(const id of new Set\(\[\.\.\.attemptBrowsers, \.\.\.\(facts\.leftover \?\? \[\]\)\]\)\) \{\s+if \(!RESETTABLE_BROWSERS\.includes\(id\) \|\| !benchOwnBrowser\(id, facts\)\)\s+continue;\s+await resetOwnTabs\(id\);\s+await quitOwnBrowser\(\s+id,\s+"end",/,
+    );
+    // The gate line and the terminal name the leftover as such.
+    expect(cycle).toContain(
+      ', leftover browsers ${leftoverAtStart.length ? leftoverAtStart.map(describeLeftover).join("; ") : ',
+    );
+    expect(cycle).toContain("not judged in a dry run");
   });
 });

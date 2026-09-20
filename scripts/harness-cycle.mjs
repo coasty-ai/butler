@@ -60,8 +60,14 @@ const { catalogueFor, categoriesFor, longHorizon, selectSuite, suiteOf } =
   await import("../src/gym/bench/suites.ts");
 const { BROWSER_APPS, FIXTURE_HOST, FIXTURE_PORT } =
   await import("../src/gym/bench/graders.ts");
-const { quitBrowser, resetFixtureTabs } =
-  await import("../src/gym/bench/browser-reset.ts");
+const {
+  RESETTABLE_BROWSERS,
+  benchLeftover,
+  browserUptime,
+  quitBrowser,
+  readTabCounts,
+  resetFixtureTabs,
+} = await import("../src/gym/bench/browser-reset.ts");
 const {
   CYCLE_ID,
   DEFAULT_AUTONOMY,
@@ -76,6 +82,7 @@ const {
   estimateSeconds,
   fitsTimeBox,
   gateWaitsOf,
+  harnessInput,
   ledgerResults,
   parseAutonomy,
   parseDuration,
@@ -112,6 +119,7 @@ const {
   readStartFacts,
   readWindowFacts,
   runningApps,
+  safeOpen,
   skipRemedy,
   startSkipDetail,
   startSkips,
@@ -817,6 +825,117 @@ const facts = await readStartFacts(tasks, {
   fixture: fixturePortFree,
   appleEvents: !values["dry-run"],
 });
+
+/* ------------------------------------------------------- leftover browser */
+
+/**
+ * A browser an earlier cycle left running reads as the person's by the
+ * window rule (about:blank titles carry no token), and with the other
+ * browser the person's every web task is skipped APPS_OPEN: cycles
+ * 20260919-2032 and -2038 lost every browser task to the Safari cycle 1952's
+ * attempt had launched, a Save panel sheet on one window having blocked the
+ * queue's plain `quit`. browser-reset.ts benchLeftover judges such a browser
+ * the benchmark's own by two facts, never a title: every tab is blank, its
+ * start page or the fixture's (one read-only Apple Event to the browser,
+ * answering four counts; no URL leaves it), and no input since its launch
+ * was the person's, by the idle the gate reads against the process's age
+ * (`ps -o etime`), the click that launched it excepted, or by this
+ * harness's own ledgers explaining that input (the helper's synthetic input
+ * moves HIDIdleTime like a hand would, so a browser a cycle drove always
+ * shows input after its launch): the last input of any kind fell no later
+ * than the harness's last attempt ended, and no ledger line since the
+ * launch saw a person. The clocks are read first, so a browser someone has
+ * used since it launched is never sent even the read. Judged here for the
+ * plan (a leftover is the benchmark's own for chooseBrowser and appsOpen,
+ * so its tasks are not skipped) and again, on fresh clocks, at every gate
+ * pass, where the loop's escalation quits it (below); a dry run judges
+ * nothing.
+ */
+const FIXTURE_ORIGIN = `http://${FIXTURE_HOST}:${FIXTURE_PORT}`;
+/** Every line of every cycle's ledger under --out-dir, this cycle's included; [] when none can be read. */
+const allLedgerLines = () => {
+  const lines = [];
+  try {
+    for (const name of readdirSync(outDir)) {
+      if (!CYCLE_ID.test(name)) continue;
+      const file = join(outDir, name, "ledger.jsonl");
+      if (existsSync(file))
+        lines.push(...parseLedger(readFileSync(file, "utf8")));
+    }
+  } catch {
+    return [];
+  }
+  return lines;
+};
+/** The last verdict per browser, with the pid it was for: a browser found the person's by its tabs is not read again while that process lives. */
+const judgedBrowsers = new Map();
+/** One browser's verdict now, at the idle given (the gate's reading); the pid and, once read, the tab counts come along for the terminal. */
+const leftoverBrowser = async (id, idleSeconds) => {
+  const up = browserUptime(
+    await run("ps", ["-axo", "pid=,etime=,command="]),
+    id,
+  );
+  if (!up) return { leftover: false, code: "NOT_RUNNING" };
+  const earlier = judgedBrowsers.get(id);
+  if (earlier && earlier.pid === up.pid && earlier.code === "OTHER_TABS")
+    return earlier;
+  const now = Date.now();
+  const clocks = {
+    uptimeSeconds: up.seconds,
+    idleSeconds,
+    harness: harnessInput(allLedgerLines(), now - up.seconds * 1000, now),
+  };
+  // The clocks first: a browser the person has used since it launched is
+  // never sent the read.
+  const noTabs = { blank: 0, start: 0, fixture: 0, other: 0 };
+  const byClocks = benchLeftover({ tabs: noTabs, ...clocks });
+  if (!byClocks.leftover) {
+    const verdict = { ...byClocks, pid: up.pid };
+    judgedBrowsers.set(id, verdict);
+    return verdict;
+  }
+  let read;
+  try {
+    read = await readTabCounts(run, id, FIXTURE_ORIGIN);
+  } catch {
+    read = { code: "UNREAD" };
+  }
+  if (!read.tabs) {
+    const verdict = { leftover: false, code: read.code, pid: up.pid };
+    judgedBrowsers.set(id, verdict);
+    return verdict;
+  }
+  const verdict = {
+    ...benchLeftover({ tabs: read.tabs, ...clocks }),
+    pid: up.pid,
+    tabs: read.tabs,
+  };
+  judgedBrowsers.set(id, verdict);
+  return verdict;
+};
+/** The running browsers a selected long or market task lists that the window rule reads as the person's: the ones the leftover rule may overrule. */
+const leftoverCandidates = () =>
+  appsToWatch(tasks, facts.running ?? []).filter(
+    (id) => RESETTABLE_BROWSERS.includes(id) && !safeOpen(id, facts),
+  );
+/** Judges every candidate at the idle given and keeps facts.leftover current; answers each verdict for the terminal. */
+const judgeLeftovers = async (idleSeconds) => {
+  const judged = [];
+  for (const id of leftoverCandidates()) {
+    const verdict = await leftoverBrowser(id, idleSeconds);
+    if (verdict.leftover) (facts.leftover ??= new Set()).add(id);
+    else facts.leftover?.delete(id);
+    judged.push({ id, verdict });
+  }
+  return judged;
+};
+/** One clause for the terminal: the browser, its verdict and the tab counts (counts only). */
+const describeLeftover = ({ id, verdict }) =>
+  `${id} ${verdict.leftover ? "left by an earlier cycle: the benchmark's own" : `the person's (${verdict.code})`}${verdict.tabs ? ` [tabs: ${verdict.tabs.blank} blank, ${verdict.tabs.start} start page, ${verdict.tabs.fixture} fixture, ${verdict.tabs.other} other]` : ""}`;
+const leftoverAtStart = values["dry-run"]
+  ? []
+  : await judgeLeftovers(system.hidIdleSeconds ?? 0);
+
 /**
  * Whether secure event input is the person's to clear: on, and held by
  * anything but a browser that is the benchmark's own (not running, or with
@@ -896,6 +1015,7 @@ function printGate() {
       `, app processes ${system.appPids.length}` +
       `, other harnesses ${system.harnessPids.length}` +
       `, secure input ${system.secureInput.on ? `on (${system.secureInput.owner ?? "holder unknown"}${personsSecureInput(system.secureInput) ? "" : ", the benchmark's browser: the gate resets its fixture tabs, and quits it should they be blank already"})` : "off"}` +
+      `, leftover browsers ${leftoverAtStart.length ? leftoverAtStart.map(describeLeftover).join("; ") : values["dry-run"] ? "not judged in a dry run" : "none"}` +
       `, app log ${appLog ? (unsettled ? `${unsettled} run(s) unsettled` : "settled") : "absent"}` +
       (facts.agendaAccess && runnable().some((task) => agendaKinds(task).length)
         ? ", agenda local source checked at the start (setup)"
@@ -1373,6 +1493,122 @@ let windowSweep;
 // that hold nothing. A document saved outside the bench folder is also on
 // its row (strayDocuments), which is how a resumed cycle still knows it.
 const attemptDocuments = [];
+/** The browsers chosen for this process's attempts, by bundle id: the benchmark's own, for the end of the cycle to quit. */
+const attemptBrowsers = new Set();
+// What was open when the last attempt ended: the benchmark's own from
+// then on (an attempt leaves what it opened open).
+let runningAfterLast;
+/** Points the fixture tabs of the harness's own browser at about:blank before a quit; nothing when it fails. */
+const resetOwnTabs = async (id) => {
+  try {
+    return await resetFixtureTabs(run, id, fixtureUrl());
+  } catch {
+    return undefined;
+  }
+};
+/**
+ * Quits the harness's own browser: when its fixture tabs, blank already,
+ * still hold secure event input (a blank tab's WebContent keeps the focused
+ * field's state until its window goes: cycle 20260919-1522 waited 50
+ * minutes on Safari that way, until the operator quit it by hand); when an
+ * earlier cycle left it (leftoverBrowser, at the gate); and at the end of
+ * the cycle, so the next one starts clean. browser-reset.ts quitBrowser
+ * applies the benchOwnBrowser rule itself over the facts, so a browser of
+ * the person's is never quit and no other application ever is, and it
+ * cancels a sheet with a Cancel button (a Save panel: cycle 1952's left one
+ * that blocked two plain quits) before the quit, sending nothing to a
+ * browser whose sheet it would not dismiss (SHEET_UP). The terminal says
+ * what was quit and why, the diagnostics trace each sheet as BrowserSheet
+ * (the bundle id, a count of buttons, whether Cancel was clicked) and the
+ * quit as BrowserQuit (the bundle id, the flag and the code; never a title
+ * or a button's name), and once the browser has gone it is forgotten as
+ * running, as at a cycle's start: chooseBrowser treats it as not running
+ * (safe), and a relaunch by a person during a wait counts as theirs
+ * (openedByPerson compares with what ran after the last attempt).
+ */
+const quitOwnBrowser = async (id, where, why) => {
+  let quit;
+  try {
+    quit = await quitBrowser(run, id, facts);
+  } catch {
+    quit = { quit: false, code: "UNREAD" };
+  }
+  for (const sheet of quit.sheets ?? [])
+    diagnostics.write("BrowserSheet", {
+      browser: id,
+      buttons: sheet.buttons,
+      cancelled: sheet.cancelled,
+    });
+  diagnostics.write("BrowserQuit", {
+    browser: id,
+    quit: quit.quit,
+    ...(quit.code ? { code: quit.code } : {}),
+  });
+  const sheets = quit.sheets?.length
+    ? ` (${quit.sheets.filter((sheet) => sheet.cancelled).length} of ${quit.sheets.length} sheet(s) cancelled first)`
+    : "";
+  console.warn(
+    `${where}: ${why}: ${
+      quit.quit
+        ? `quit ${id}${sheets}`
+        : quit.code === "SHEET_UP"
+          ? `a sheet the harness would not dismiss stands on a window of ${id}${sheets}; no quit was sent (SHEET_UP): dismiss it yourself`
+          : `asked ${id} to quit, but it did not go (${quit.code})${sheets}`
+    }.`,
+  );
+  if (quit.quit) {
+    facts.running?.delete(id);
+    runningAfterLast?.delete(id);
+    if (facts.windows) delete facts.windows[id];
+    facts.leftover?.delete(id);
+  }
+  return quit;
+};
+/**
+ * Recomputes every start skip from the facts as they stand, in place (the
+ * task gate holds this map): a leftover browser quit at the gate frees the
+ * web tasks it kept from running, and one found the person's after all
+ * (someone typed since the start) skips them.
+ */
+const refreshSkips = () => {
+  const fresh = startSkips(tasks, facts);
+  for (const id of [...skips.keys()])
+    if (!fresh.has(id)) {
+      skips.delete(id);
+      console.log(`${id}: can run now.`);
+    }
+  for (const [id, code] of fresh)
+    if (skips.get(id) !== code) {
+      skips.set(id, code);
+      console.warn(`${id}: skipped, ${code}. ${remedyFor(id, code)}`);
+    }
+};
+/**
+ * The gate passed: a browser an earlier cycle left (leftoverBrowser, on the
+ * gate's own idle reading: the helper's human-only tap clock or HIDIdleTime,
+ * whichever is longer) has its fixture tabs blanked and is quit, once per
+ * pass, and the skips are recomputed either way, since a browser judged
+ * leftover at the start may be the person's now. Undefined when nothing of
+ * the kind was running; else whether every leftover browser went.
+ */
+const quitLeftoverBrowsers = async (report) => {
+  const judged = await judgeLeftovers(
+    Math.max(report.tapIdleSeconds ?? 0, report.hidIdleSeconds ?? 0),
+  );
+  let asked;
+  for (const entry of judged) {
+    if (!entry.verdict.leftover) continue;
+    await resetOwnTabs(entry.id);
+    const quit = await quitOwnBrowser(
+      entry.id,
+      "gate",
+      `${describeLeftover(entry)}, and nobody's input since it launched`,
+    );
+    asked = (asked ?? true) && quit.quit;
+  }
+  if (judged.length) refreshSkips();
+  return asked;
+};
 try {
   // The fixture server runs as a child process for the cycle, on the
   // loopback address only, when a task that can run tonight reads its log.
@@ -1392,45 +1628,6 @@ try {
     }
   }
   const gate = taskGate(byId, skips, () => new Date());
-  // What was open when the last attempt ended: the benchmark's own from
-  // then on (an attempt leaves what it opened open).
-  let runningAfterLast;
-  /**
-   * Quits the harness's own browser when its fixture tabs, blank already,
-   * still hold secure event input: a blank tab's WebContent keeps the
-   * focused field's state until its window goes (cycle 20260919-1522 waited
-   * 50 minutes on Safari that way, until the operator quit it by hand).
-   * browser-reset.ts quitBrowser applies the benchOwnBrowser rule itself
-   * over the facts, so a browser of the person's is never quit and no other
-   * application ever is. The terminal says what was quit and why, the
-   * diagnostics trace BrowserQuit with the bundle id, the flag and the code
-   * (never a title), and once the browser has gone it is forgotten as
-   * running, as at a cycle's start: chooseBrowser treats it as not running
-   * (safe), and a relaunch by a person during a wait counts as theirs
-   * (openedByPerson compares with what ran after the last attempt).
-   */
-  const quitOwnBrowser = async (id, where) => {
-    let quit;
-    try {
-      quit = await quitBrowser(run, id, facts);
-    } catch {
-      quit = { quit: false, code: "UNREAD" };
-    }
-    diagnostics.write("BrowserQuit", {
-      browser: id,
-      quit: quit.quit,
-      ...(quit.code ? { code: quit.code } : {}),
-    });
-    console.warn(
-      `${where}: secure event input is still on in ${id}, the benchmark's own browser, with its fixture tabs already blank (a blank tab keeps the field's state until its window goes): ${quit.quit ? "quit it to release the keyboard" : `asked it to quit, but it did not go (${quit.code})`}.`,
-    );
-    if (quit.quit) {
-      facts.running?.delete(id);
-      runningAfterLast?.delete(id);
-      if (facts.windows) delete facts.windows[id];
-    }
-    return quit;
-  };
   await controller.configure(cellInfo.get(cells[0].cell).settings);
   // Arm the emergency tap now, latched: from here on its idle clock counts
   // every unmarked input, so the first gate and the first attempt's
@@ -1516,12 +1713,19 @@ try {
     // again, never a browser of the person's, never another application)
     // and the gate reads again at once. Whatever holds the keyboard after
     // that is named and waited on as today. Never during an attempt.
-    escalate: async (report) => {
+    escalate: async (report, cause) => {
+      // The gate passed: a browser an earlier cycle left is quit now, its
+      // fixture tabs blanked first, and the skips recomputed.
+      if (cause === "LEFTOVER") return quitLeftoverBrowsers(report);
       const owner = report.secureInputOwner;
       const ours =
         owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);
       if (!ours) return undefined;
-      const quit = await quitOwnBrowser(owner, "gate");
+      const quit = await quitOwnBrowser(
+        owner,
+        "gate",
+        `secure event input is still on in ${owner}, the benchmark's own browser, with its fixture tabs already blank (a blank tab keeps the field's state until its window goes)`,
+      );
       return quit.quit;
     },
     // The start read ps once, and the gate may then wait for hours while
@@ -1556,6 +1760,7 @@ try {
       // Chosen now, from the facts so far: a browser the person opened
       // during a wait is theirs from this attempt on.
       const browser = browserFor(task);
+      if (browser.browser) attemptBrowsers.add(browser.browser.id);
       // The windows of the task's applications (and the Finder, which the
       // neutral start activates) before and after: what is there after and
       // was not before is this attempt's, for the final sweep to close and
@@ -1624,6 +1829,7 @@ try {
             const quit = await quitOwnBrowser(
               browser.browser.id,
               `${task.id} #${entry.attempt}`,
+              `secure event input is still on in ${browser.browser.id}, the benchmark's own browser, with its fixture tabs already blank (a blank tab keeps the field's state until its window goes)`,
             );
             if (quit.quit) browserReset = { ...browserReset, quit: true };
           }
@@ -1738,6 +1944,28 @@ try {
     });
   } catch {
     windowSweep = undefined;
+  }
+  // Then the benchmark's own browsers, still under the lock: the ones its
+  // attempts used (the benchmark's own by chooseBrowser's rule) and any an
+  // earlier cycle left that the leftover rule found the benchmark's, each
+  // with its fixture tabs blanked first and a Save panel cancelled before
+  // the quit (browser-reset.ts), so the next cycle starts clean instead of
+  // reading this one's browser as the person's (cycles 20260919-2032 and
+  // -2038). A browser of the person's is never quit: quitBrowser applies
+  // benchOwnBrowser itself. Never throws.
+  try {
+    for (const id of new Set([...attemptBrowsers, ...(facts.leftover ?? [])])) {
+      if (!RESETTABLE_BROWSERS.includes(id) || !benchOwnBrowser(id, facts))
+        continue;
+      await resetOwnTabs(id);
+      await quitOwnBrowser(
+        id,
+        "end",
+        `${id} is the benchmark's own browser and the cycle is over`,
+      );
+    }
+  } catch {
+    // Reported by quitOwnBrowser where it could be; nothing else to do here.
   }
   releaseDesktopLock(lockFile, process.pid);
 }

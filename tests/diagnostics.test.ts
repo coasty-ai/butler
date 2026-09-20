@@ -2114,6 +2114,43 @@ describe("the benchmark harness's browser quit", () => {
         /benchnote|127\.0\.0\.1|password|would not go|Safari,/,
       );
     }));
+
+  it("keeps BrowserSheet's bundle id, button count and flag, never a title, a URL or a button's name", () =>
+    fixture((log) => {
+      log.write("BrowserSheet", {
+        browser: "com.apple.Safari",
+        buttons: 2,
+        cancelled: true,
+        // Smuggled extras: never written, whatever a caller passes.
+        title: "Save · benchnote1a2b-invoice.pdf",
+        url: "http://127.0.0.1:47831/benchnote1a2b/mail",
+        names: ["Cancel", "Save"],
+        button: "Save",
+      });
+      // Only a bundle id, a count and a boolean pass through each field.
+      log.write("BrowserSheet", {
+        browser: "Safari, the one with the Save panel",
+        buttons: "two",
+        cancelled: "clicked Cancel",
+      });
+      log.write("BrowserSheet", {
+        browser: "com.google.Chrome",
+        buttons: 0,
+        cancelled: false,
+      });
+      const lines = readFileSync(log.file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).data);
+      expect(lines).toEqual([
+        { browser: "com.apple.Safari", buttons: 2, cancelled: true },
+        {},
+        { browser: "com.google.Chrome", buttons: 0, cancelled: false },
+      ]);
+      expect(readFileSync(log.file, "utf8")).not.toMatch(
+        /benchnote|127\.0\.0\.1|invoice|Cancel|Save|clicked|Safari,/,
+      );
+    }));
 });
 
 /**
