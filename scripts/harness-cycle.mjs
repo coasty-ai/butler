@@ -156,6 +156,7 @@ const { compareCycles, compareProbe, selectBaseline, timingCycles } =
 const { analyze, ownerOf, parseDiagnostics } =
   await import("../src/gym/bench/analyze.ts");
 const { median, renderSummary } = await import("../src/gym/bench/report.ts");
+const { fileFactsReader } = await import("../src/storage/files.ts");
 // The whole module: its per-model price table, where it has one, prices the
 // cells (cellPrices).
 const catalog = await import("../src/providers/catalog.ts");
@@ -1354,6 +1355,10 @@ const deps = {
   // Asked per attempt: the task's own stores, ready right now.
   agendaFor: readers.agendaFor,
   tokens: tokenLedger,
+  // A done said with the task's named file unchanged is sent back once and
+  // fails the run the second time (src/core/deliverables.ts); the reader
+  // sees existence, size and time under this home, never contents.
+  deliverables: fileFactsReader(homedir()),
   launch: launchServices(),
 };
 const deadline = Date.now() + timeBoxSeconds * 1000;

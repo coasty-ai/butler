@@ -10,6 +10,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import type { PresenceReport } from "../../../electron/controller";
+import type { FileFactsReader } from "../../core/deliverables";
 import type { MemoryAccess } from "../../core/memory";
 import { nullRecorder } from "../../core/recorder";
 import type { ToolAccess } from "../../core/tools";
@@ -45,6 +46,7 @@ import {
 import { needsBenchDir, type BrowserChoice } from "./preflight";
 import { sweepsStrayFiles } from "./readers";
 import {
+  doneChallengeCode,
   endingCode,
   honesty,
   pausedAfterCode,
@@ -162,6 +164,14 @@ export interface AttemptDeps {
   /** End-state readers from the suite lane; null until it lands. */
   readEvidence?: EvidenceReaders | null;
   cleanupAttempt?: Cleanup | null;
+  /**
+   * The runner's deliverable reader (src/storage/files.ts fileFactsReader),
+   * handed to the Runner as RunnerExtras.deliverables: a done said while
+   * the file the task asks to write is unchanged is sent back once and
+   * fails the run the second time. Without it the runner checks no done
+   * against a file, as in the app without the reader.
+   */
+  deliverables?: FileFactsReader;
   launch: Launch;
   fixture?: FixtureHandle;
   /**
@@ -487,6 +497,10 @@ export async function runAttempt(
     paused: false,
     pausedAfter: undefined as string | undefined,
     failures: {} as Record<string, number>,
+    /** The runner's checks of a done, by reason as a code (report.ts doneChallengeCode). */
+    doneChallenged: {} as Record<string, number>,
+    /** RunFailed's code: DELIVERABLE_MISSING when the runner failed the run itself. */
+    runFailedCode: undefined as string | undefined,
   };
   // Input reported during an earlier attempt belonged to that attempt. From
   // here on the flag is this one's, so input during the settle or prepare
@@ -742,6 +756,15 @@ export async function runAttempt(
                 : {}),
             });
         }
+        // A done the runner sent back, by why: a step refused earlier, or
+        // the file the task asks to write unchanged since the run began.
+        if (event.type === "ActionFailed" && d.code === "DONE_CHALLENGED") {
+          const why = doneChallengeCode(d.reason);
+          counters.doneChallenged[why] =
+            (counters.doneChallenged[why] ?? 0) + 1;
+        }
+        if (event.type === "RunFailed" && typeof d.code === "string")
+          counters.runFailedCode = d.code;
       }
       printed = snapshot.events.length;
       message = snapshot.message;
@@ -798,7 +821,11 @@ export async function runAttempt(
       emit,
       [],
       deps.memoryAccess,
-      deps.tools ? { tools: deps.tools } : {},
+      // The files tool and the reader: a bench run has no monitor hook.
+      {
+        ...(deps.tools ? { tools: deps.tools } : {}),
+        ...(deps.deliverables ? { deliverables: deps.deliverables } : {}),
+      },
     );
     state.runner = runner;
     const started = now().getTime();
@@ -831,6 +858,7 @@ export async function runAttempt(
         emergencyStop: state.emergency,
         interrupted: state.stopped,
         modelFailed: counters.modelFailed,
+        deliverableMissing: counters.runFailedCode === "DELIVERABLE_MISSING",
       });
     // A stop from the terminal (SIGTERM, or Ctrl-C with no touch on this
     // Mac) cut the run short and nothing else explains the ending: the model
@@ -973,6 +1001,9 @@ export async function runAttempt(
       loops: journal.loops,
       noProgress: journal.noProgress,
       failures: journal.failures,
+      ...(Object.keys(counters.doneChallenged).length
+        ? { doneChallenged: counters.doneChallenged }
+        : {}),
       ...(await cleanupOnce()),
     };
   } finally {

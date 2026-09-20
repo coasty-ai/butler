@@ -34,6 +34,7 @@ const { catalogueFor, categoriesFor, longHorizon, selectSuite } =
   await import("../src/gym/bench/suites.ts");
 const { aggregate, renderSummary, renderTable } =
   await import("../src/gym/bench/report.ts");
+const { fileFactsReader } = await import("../src/storage/files.ts");
 
 const { values } = parseArgs({
   options: {
@@ -389,6 +390,10 @@ const deps = {
   agendaFor: readers.agendaFor,
   tokens: tokenLedger,
   ...(fixture ? { fixture } : {}),
+  // A done said with the task's named file unchanged is sent back once and
+  // fails the run the second time (src/core/deliverables.ts); the reader
+  // sees existence, size and time under this home, never contents.
+  deliverables: fileFactsReader(homedir()),
   launch: launchServices(),
 };
 const attemptCell = {

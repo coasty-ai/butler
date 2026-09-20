@@ -67,6 +67,14 @@ import {
   utf16Prefix,
 } from "./labels";
 import {
+  DeliverableMissingError,
+  deliverableChallenge,
+  deliverablePaths,
+  sameFacts,
+  type Deliverable,
+  type FileFactsReader,
+} from "./deliverables";
+import {
   evaluate,
   focusedTextField,
   normalizeAppName,
@@ -566,7 +574,7 @@ export const declinedResult = (question: string) =>
  * which would only move a false done into the honest-failure column.
  */
 export const doneChallenge = (refusal: string) =>
-  `Not accepted yet. Earlier in this run a step was not allowed (${bound(refusal, 240)}), so this done is checked once against a fresh screenshot. If the outcome the objective asked for is visible on it, say done again with a summary that leads with what on screen shows it. If that step was needed to finish, say fail and name what needed approval; never claim done for work the screen does not show.`;
+  `Not accepted yet. Earlier in this run a step was not allowed (${bound(refusal, 240)}), so this done is checked once against a fresh screenshot. If the outcome the objective asked for is visible on it, say done again with a summary that leads with what on screen, or in the file the objective names, shows the objective met. If that step was needed to finish, say fail and name what needed approval; never claim done for work the screen does not show.`;
 /**
  * The history result for an open_app that brought a running application to
  * the front with no window, after its own Window menu showed none either
@@ -1171,6 +1179,15 @@ export interface RunnerExtras {
   tools?: ToolAccess;
   /** The wait after a transition before the next capture; TRANSITION_SETTLE_MS unless a test shortens it. */
   transitionSettleMs?: number;
+  /**
+   * Reads a file's existence, size and modification time by path, never its
+   * contents (src/storage/files.ts fileFactsReader, under the home folder
+   * only). With it, a done said while a file the task asks to write
+   * (src/core/deliverables.ts) is unchanged since the run began is sent
+   * back once and fails the run the second time. Without it no done is
+   * checked against a file.
+   */
+  deliverables?: FileFactsReader;
 }
 export class Runner {
   settled = true;
@@ -1202,6 +1219,14 @@ export class Runner {
    * counters, but does not make the objective complete.
    */
   private refused?: { line: string; checked: boolean };
+  /**
+   * The files the task asks to write, with their facts as the run began
+   * (watchDeliverables); undefined for a run that watches none. A done is
+   * read against them once (deliverableChecked) and fails the run the
+   * second time the file is still unchanged.
+   */
+  private deliverables?: Promise<Deliverable[]>;
+  private deliverableChecked = false;
   /** Applications whose search route the runner already took this run. */
   private searchRoutes = new Set<string>();
   private stateChanges = 0;
@@ -1350,6 +1375,47 @@ export class Runner {
   updateSettings(next: Settings) {
     this.settings = next;
     if (this.active()) this.schedule();
+  }
+  /**
+   * The files the task asks to write (src/core/deliverables.ts) with their
+   * existence, size and modification time as the run begins, read through
+   * extras.deliverables; never the contents. A path the reader declines
+   * (outside the home folder) or fails on is not watched, and nothing here
+   * can end a run: the promise never rejects.
+   */
+  private async watchDeliverables(task: string): Promise<Deliverable[]> {
+    const read = this.extras.deliverables;
+    if (!read) return [];
+    const watched: Deliverable[] = [];
+    for (const path of deliverablePaths(task)) {
+      try {
+        const before = await read(path);
+        if (before) watched.push({ path, before });
+      } catch {
+        // Unread now means unchecked later.
+      }
+    }
+    return watched;
+  }
+  /**
+   * The watched files whose facts are what they were as the run began: both
+   * absent, or the same size and modification time. A read that fails now
+   * is not evidence either way, and the file is not counted.
+   */
+  private async unchangedDeliverables(): Promise<Deliverable[]> {
+    const read = this.extras.deliverables;
+    const watched = (await this.deliverables) ?? [];
+    if (!read || !watched.length) return [];
+    const unchanged: Deliverable[] = [];
+    for (const item of watched) {
+      try {
+        const now = await read(item.path);
+        if (now && sameFacts(item.before, now)) unchanged.push(item);
+      } catch {
+        // Not evidence either way.
+      }
+    }
+    return unchanged;
   }
   private resetLoop() {
     this.signatures = [];
@@ -3439,6 +3505,8 @@ export class Runner {
     this.voiceApproval = false;
     this.history = [];
     this.refused = undefined;
+    this.deliverables = undefined;
+    this.deliverableChecked = false;
     this.resetCounters();
     this.resetLoop();
     this.cycle = [];
@@ -3747,6 +3815,13 @@ export class Runner {
       origin: run.origin,
     });
     this.schedule();
+    // The files the words ask to write, read now (existence, size, time,
+    // never contents) so a done can be held to them. An adopted preparation
+    // shares the run's task, so the read is the same; never for the tutorial.
+    this.deliverableChecked = false;
+    this.deliverables = run.synthetic
+      ? undefined
+      : this.watchDeliverables(task);
     const history = this.history;
     this.memoryRun = this.usesMemory(run, options);
     if (offered && rejected)
@@ -4541,6 +4616,7 @@ export class Runner {
             this.event("ActionFailed", {
               code: "DONE_CHALLENGED",
               actionType: action.type,
+              reason: "refused_step",
             });
             history.push({
               type: "rejected",
@@ -4548,6 +4624,33 @@ export class Runner {
               result: doneChallenge(refused.line),
             });
             continue;
+          }
+          // The file the objective asks to write is read again (existence,
+          // size, time; never contents). Unchanged since the run began, the
+          // claim is sent back once with that fact; unchanged at the next
+          // done, the run fails (cycle 20260919-1646-09c5412: five of six
+          // dones false, four with the named file not changed as asked).
+          const unchanged = await this.unchangedDeliverables();
+          if (this.held || epoch !== this.epoch) {
+            planFail("interrupted");
+            continue;
+          }
+          if (unchanged.length) {
+            if (!this.deliverableChecked) {
+              this.deliverableChecked = true;
+              this.event("ActionFailed", {
+                code: "DONE_CHALLENGED",
+                actionType: action.type,
+                reason: "deliverable_unchanged",
+              });
+              history.push({
+                type: "rejected",
+                action: echoAction(action),
+                result: deliverableChallenge(unchanged),
+              });
+              continue;
+            }
+            throw new DeliverableMissingError(unchanged);
           }
           run.summary = action.summary;
           this.event("RunCompleted");
@@ -4695,7 +4798,11 @@ export class Runner {
       if (this.active()) {
         const message = e instanceof Error ? e.message : "Run failed.";
         run.summary = message;
-        this.event("RunFailed", { code: "RUN_ERROR" });
+        // The runner's own verdict on a done said twice with the named file
+        // unchanged carries its code; everything else is RUN_ERROR.
+        this.event("RunFailed", {
+          code: e instanceof DeliverableMissingError ? e.code : "RUN_ERROR",
+        });
         this.status("failed", message);
       }
     } finally {

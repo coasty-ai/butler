@@ -85,6 +85,7 @@ import { answerByTool, createToolLayer, type ToolLayer } from "./tools";
 import { networkFailure } from "../src/providers/network";
 import { scanText } from "../src/core/sanitize";
 import { Vault, seal, unseal, digest } from "../src/storage/vault";
+import { fileFactsReader } from "../src/storage/files";
 import {
   prepareBundle,
   reviewSchema,
@@ -4231,6 +4232,10 @@ async function buildRunner(tutorial: boolean): Promise<Runner> {
       : {
           // Connected tools do the steps they can; the screen is the fallback.
           tools: getTools().access({ synthetic: false }),
+          // A done said while a file the words ask to write is unchanged is
+          // sent back once and fails the run the second time; only the
+          // file's existence, size and time are read, under the home folder.
+          deliverables: fileFactsReader(app.getPath("home")),
           onMonitor: (binding, spec, run) =>
             watchers.start(binding, {
               ...spec,

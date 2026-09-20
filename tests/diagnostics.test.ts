@@ -583,6 +583,14 @@ describe("local diagnostic stream", () => {
         frame_id: "f",
         via: "menu",
       });
+      // The runner's check of a done against the task's file: its code and
+      // reason are fixed words; the path stays in the journal's history.
+      add("ActionFailed", {
+        code: "DONE_CHALLENGED",
+        actionType: "done",
+        reason: "deliverable_unchanged",
+      });
+      add("RunFailed", { code: "DELIVERABLE_MISSING" });
       log.snapshot(snapshot);
       const raw = readFileSync(log.file, "utf8");
       const events = raw
@@ -600,6 +608,13 @@ describe("local diagnostic stream", () => {
         actionType: "hotkey",
         via: "menu",
       });
+      expect(events[3].data).toMatchObject({
+        code: "DONE_CHALLENGED",
+        actionType: "done",
+        reason: "deliverable_unchanged",
+      });
+      expect(events[4].event).toBe("RunFailed");
+      expect(events[4].data.code).toBe("DELIVERABLE_MISSING");
     }));
   it("logs memory recall and replay plans as counts and codes, never task text or paths", () =>
     fixture((log) => {

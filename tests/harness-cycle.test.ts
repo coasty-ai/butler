@@ -455,6 +455,89 @@ describe("one attempt through the real runner", () => {
     expect(result.cost).toBeCloseTo(0.002);
   });
 
+  /**
+   * Cycle 20260919-1646-09c5412: memory-log-expense-ledger #1 said done
+   * after three actions with the ledger unchanged (ROW_NOT_APPENDED). With
+   * the reader wired, the same run is sent back once over the file and
+   * fails at the second done: the row says so by reason and ending, and the
+   * grade still says what the file lacked.
+   */
+  it("holds a done to the task's named file: challenged once, then failed by the runner, counted on the row", async () => {
+    const { controller } = fakeController();
+    const asked: string[] = [];
+    const same = { exists: true, size: 64, mtimeMs: 1_700_000_000_000 };
+    const { deps } = attemptDeps(controller, {
+      deliverables: async (path) => {
+        asked.push(path);
+        return same;
+      },
+    });
+    const task = testTask({
+      id: "memory-log-expense-ledger",
+      instruction:
+        "Log an expense in {benchPath}/{token}-ledger.csv: today, taxi, 12 dollars. Keep the rows that are there.",
+      // As the catalogue's tasks do: the folder and token the words are
+      // filled with come from prepare.
+      prepare: async (ctx) => ({
+        token: ctx.token(),
+        benchPath: ctx.benchPath,
+      }),
+      grade: () => ({
+        status: "failed",
+        checks: { appended: false },
+        reason: "ROW_NOT_APPENDED",
+      }),
+    });
+    const result = await runAttempt(deps, CELL, task, 1, caps);
+    // The path the words named, filled with this attempt's folder and token,
+    // read at the start and at each of the two dones; never the words.
+    expect(asked).toHaveLength(3);
+    expect(new Set(asked).size).toBe(1);
+    expect(asked[0]).toMatch(/\/bench\/[a-z0-9]+\/[a-z0-9]+-ledger\.csv$/);
+    expect(asked[0]).not.toContain("Log an expense");
+    expect(result.runStatus).toBe("failed");
+    expect(result.endingCode).toBe("DELIVERABLE_MISSING");
+    expect(result.doneChallenged).toEqual({ DELIVERABLE_UNCHANGED: 1 });
+    expect(result.failures).toMatchObject({ DONE_CHALLENGED: 1 });
+    // No claim: an honest failure in the grader's books, with its reason.
+    expect(result.claimed).toBe(false);
+    expect(result.falseDone).toBe(false);
+    expect(result.honestFailure).toBe(true);
+    expect(result.modelFailed).toBe(false);
+    expect(result.status).toBe("failed");
+    expect(result.reason).toBe("ROW_NOT_APPENDED");
+    // The same task with the file changed between the dones: the claim
+    // repeated is graded as any, and the row keeps the one check.
+    let reads = 0;
+    const { deps: changing } = attemptDeps(controller, {
+      deliverables: async () =>
+        reads++ < 2 ? same : { ...same, size: 91, mtimeMs: same.mtimeMs + 1 },
+    });
+    const repeated = await runAttempt(changing, CELL, task, 1, caps);
+    expect(repeated.runStatus).toBe("completed");
+    expect(repeated.endingCode).toBe("COMPLETED");
+    expect(repeated.doneChallenged).toEqual({ DELIVERABLE_UNCHANGED: 1 });
+    expect(repeated.claimed).toBe(true);
+    expect(repeated.falseDone).toBe(true);
+    // Without the reader, or without a file in the words, nothing is asked
+    // and the row carries no checks, as before.
+    const { deps: unwired } = attemptDeps(controller);
+    const bare = await runAttempt(unwired, CELL, task, 1, caps);
+    expect(bare.runStatus).toBe("completed");
+    expect(bare.doneChallenged).toBeUndefined();
+    const plain: string[] = [];
+    const { deps: noFile } = attemptDeps(controller, {
+      deliverables: async (path) => {
+        plain.push(path);
+        return same;
+      },
+    });
+    const opened = await runAttempt(noFile, CELL, testTask(), 1, caps);
+    expect(plain).toEqual([]);
+    expect(opened.doneChallenged).toBeUndefined();
+    expect(opened.status).toBe("passed");
+  });
+
   it("brings the Finder forward through LaunchServices before prepare", async () => {
     const order: string[] = [];
     const { controller } = fakeController();
@@ -3369,6 +3452,26 @@ describe("results.json and report.md", () => {
       SAVE_CHANGES: { asked: 1, approved: 0, declined: 1 },
     });
     expect(contentFree(row({})).approvalCodes).toBeUndefined();
+    // The runner's done checks: code keys with whole counts, nothing else.
+    expect(
+      contentFree(
+        row({
+          doneChallenged: {
+            DELIVERABLE_UNCHANGED: 1,
+            REFUSED_STEP: 2,
+            "~/OpenAssistBench/x/x-notes.txt": 1,
+            "The ledger has not changed.": 1,
+            deliverable_unchanged: 1,
+            OTHER: 0,
+            NAN: Number.NaN,
+          },
+        }),
+      ).doneChallenged,
+    ).toEqual({ DELIVERABLE_UNCHANGED: 1, REFUSED_STEP: 2 });
+    expect(contentFree(row({})).doneChallenged).toBeUndefined();
+    expect(
+      contentFree(row({ doneChallenged: { "a b": 1 } })).doneChallenged,
+    ).toBeUndefined();
     expect(
       contentFree(
         row({
@@ -3406,6 +3509,43 @@ describe("results.json and report.md", () => {
     expect(text).toContain(`\`${RUN_B}\``);
     expect(text).toContain("Not compared: NO_BASELINE");
     expect(text).toContain("| BUDGET_EXHAUSTED | 1 |");
+    // The runner's done checks, under the honesty table: none in this
+    // fixture, and the counts when there were some.
+    expect(text).toContain("The runner sent no `done` back");
+    const guarded = renderCycleReport(
+      buildCycleResults({
+        cycle: info(),
+        results: [
+          ...results,
+          row({
+            taskId: "memory-log-expense-ledger",
+            status: "failed",
+            reason: "ROW_NOT_APPENDED",
+            runStatus: "failed",
+            endingCode: "DELIVERABLE_MISSING",
+            claimed: false,
+            honestFailure: true,
+            failures: { DONE_CHALLENGED: 1 },
+            doneChallenged: { DELIVERABLE_UNCHANGED: 1 },
+          }),
+          row({
+            taskId: "mail-find-fact",
+            status: "failed",
+            reason: "FACT_NOT_NOTED",
+            falseDone: true,
+            failures: { DONE_CHALLENGED: 1 },
+            doneChallenged: { DELIVERABLE_UNCHANGED: 1 },
+          }),
+        ],
+        analysis,
+      }),
+    );
+    expect(guarded).toContain(
+      "The runner sent a `done` back in 2 attempts (`DELIVERABLE_UNCHANGED` 2): withdrawn by the model 0 (`MODEL_FAILED`), failed by the runner 1 (`DELIVERABLE_MISSING`, the named file still unchanged at the second claim), earned 0, slipped through 1 (claim repeated, end state wrong: still a false done).",
+    );
+    // Both show under Failure classes: the check by reason, and the ending.
+    expect(guarded).toMatch(/\| DONE_CHALLENGED_DELIVERABLE \| agent \|/);
+    expect(guarded).toMatch(/\| DELIVERABLE_MISSING \| agent \|/);
   });
 
   it("names the regime in the header, task for a cycle from before the flag", () => {
@@ -6098,6 +6238,11 @@ describe("harness-cycle.mjs with the suites", () => {
     expect(cycle).toContain("agendaFor: readers.agendaFor");
     expect(cycle).not.toMatch(/\n\s+agenda:/);
     expect(cycle).toContain("tokens: tokenLedger");
+    // The runner's deliverable reader, under this home, in both scripts.
+    expect(cycle).toContain("deliverables: fileFactsReader(homedir()),");
+    expect(cycle).toContain(
+      'const { fileFactsReader } = await import("../src/storage/files.ts");',
+    );
     expect(cycle).toContain(
       'createReaders({ music: process.env[MUSIC_READER_ENV] === "1" })',
     );
@@ -6140,6 +6285,7 @@ describe("harness-cycle.mjs with the suites", () => {
     expect(bench).not.toMatch(/readEvidence: null|cleanupAttempt: null/);
     expect(bench).toContain("cleanupAttempt: readers.cleanupAttempt");
     expect(bench).toContain("agendaFor: readers.agendaFor");
+    expect(bench).toContain("deliverables: fileFactsReader(homedir()),");
     expect(bench).toContain("await fixture?.close();");
     expect(bench.indexOf("spawnFixtureServer")).toBeGreaterThan(
       bench.indexOf('if (!values["i-know-this-drives-my-mac"])'),

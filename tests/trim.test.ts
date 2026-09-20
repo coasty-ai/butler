@@ -500,12 +500,14 @@ describe("what one step costs", () => {
     // declined, and the note that carries a value between steps;
     // 16,331 with open_url (one sentence beside the CMD+L route and its
     // entry in the action list, .data/design/streaming-execution.md §3.3);
-    // 16,801 with the actions left (context.budget.actionsLeft: finish the
+    // 16,952 with the actions left (context.budget.actionsLeft: finish the
     // last visible step or fail, never keep exploring; the ACTION_BUDGET
-    // lane of cycle 20260919-1646) and the files tool (one sentence in the
+    // lane of cycle 20260919-1646), the files tool (one sentence in the
     // tools paragraph: a file the objective names is written through
-    // append_text_file, not an editor, docs/TOOLS.md).
-    expect(instruction.length).toBeLessThan(16900);
+    // append_text_file, not an editor, docs/TOOLS.md) and the sentence on
+    // what a done summary names and the named file's check
+    // (src/core/deliverables.ts), the three landed the same evening.
+    expect(instruction.length).toBeLessThan(17000);
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
     expect(instruction).not.toContain('{"type":"menu_item"');
@@ -533,7 +535,8 @@ describe("what one step costs", () => {
     const paragraph: string = boundSystem[1].text;
     expect(paragraph).toMatch(/^The target window is in the background/);
     expect(paragraph.length).toBeLessThan(1900);
-    expect(instruction.length + paragraph.length).toBeLessThan(18600);
+    // 18,738 with the three sentences the instruction gained on 2026-09-19.
+    expect(instruction.length + paragraph.length).toBeLessThan(18900);
     expect(instruction.indexOf(" Return exactly one action")).toBeGreaterThan(
       15000,
     );

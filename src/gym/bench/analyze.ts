@@ -145,8 +145,20 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       if (failure === "STATE_CHANGED") return ["SCREEN_CHANGED"];
       if (failure === "MALFORMED_RESPONSE") return ["MALFORMED_RESPONSE"];
       if (failure === "REFUSED") return ["MODEL_REFUSED"];
+      // A done sent back over the task's own file is its own class beside
+      // the check as a whole; the reason is the runner's fixed code.
+      if (failure === "DONE_CHALLENGED")
+        return code(d.reason) === "deliverable_unchanged"
+          ? ["DONE_CHALLENGED", "DONE_CHALLENGED_DELIVERABLE"]
+          : ["DONE_CHALLENGED"];
       return [failure ?? "ACTION_FAILED"];
     }
+    // The runner's own verdict on a run: a second done with the named file
+    // still unchanged. Any other RunFailed is read from the status.
+    case "RunFailed":
+      return code(d.code) === "DELIVERABLE_MISSING"
+        ? ["DELIVERABLE_MISSING"]
+        : [];
     case "ActionLoopDetected":
       // The app-switch rule's event carries period 0 and no revisit count; a
       // revisit detection carries its count beside period 0.
@@ -499,7 +511,11 @@ const NOTE: Record<string, string> = {
   LOOP_STUCK:
     "A loop formed again after the reflection step; the run was failed as stuck.",
   DONE_CHALLENGED:
-    "The model said done after a step of the run was declined or refused; the runner sent the claim back once with a fresh screenshot. The run's ending says what the model then did: COMPLETED is the claim repeated, MODEL_FAILED is the claim withdrawn.",
+    "The model said done and the runner sent the claim back once: after a step of the run was declined or refused (with a fresh screenshot), or with the file the task asks to write unchanged since the run began (DONE_CHALLENGED_DELIVERABLE). The run's ending says what followed: COMPLETED is the claim repeated, MODEL_FAILED the claim withdrawn, DELIVERABLE_MISSING the runner's own verdict at a second done with the file still unchanged.",
+  DONE_CHALLENGED_DELIVERABLE:
+    "The model said done while the file the task asks to write (a ~/… path in the words) still had the size and modification time it had as the run began, or still did not exist; the runner sent the claim back once with that fact. Only existence, size and time were read, never the contents.",
+  DELIVERABLE_MISSING:
+    "The model said done a second time with the task's named file still unchanged since the run began, and the runner failed the run itself: a false done turned into an honest failure. The grader's own reason names what the file lacked.",
   MODEL_FAILED:
     "The model gave up honestly with fail instead of claiming done.",
   FALSE_DONE:
@@ -545,6 +561,7 @@ export function endingCode(run: RunState): string {
   if (run.outcome === "failed") {
     if (run.budget) return run.budget;
     if (has("EMERGENCY_STOP")) return "EMERGENCY_STOP";
+    if (has("DELIVERABLE_MISSING")) return "DELIVERABLE_MISSING";
     const tail = run.tail.map((entry) => entry.code);
     for (const entry of tail.slice(-6).reverse()) {
       if (entry === "HELPER_UNAVAILABLE") return "HELPER_UNAVAILABLE";

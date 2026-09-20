@@ -64,6 +64,9 @@ import {
   HARNESS_CODES,
   aggregate,
   declinedCodes,
+  doneChallengeCode,
+  doneChallengeLine,
+  doneChallengeTotals,
   endingCode,
   honesty,
   median,
@@ -1745,8 +1748,8 @@ describe("bench --dry-run", () => {
 describe("attempt.ts and the tool layer", () => {
   const source = readFileSync(join(root, "src/gym/bench/attempt.ts"), "utf8");
   it("hands the runner the tool layer it is given, and journals a tool step by type, app and first-party id only", () => {
-    // RunnerExtras.tools, and nothing else in the extras.
-    expect(source).toContain("deps.tools ? { tools: deps.tools } : {},");
+    // RunnerExtras.tools, beside the deliverables reader and nothing else.
+    expect(source).toContain("...(deps.tools ? { tools: deps.tools } : {}),");
     expect(source).toContain("tools?: ToolAccess;");
     // A tool step never reaches the controller, so the journal learns of it
     // from the ActionExecuted event: its type, the frontmost app and, for a
@@ -2206,6 +2209,237 @@ describe("run analyzer", () => {
     expect(endings).toContain("STOPPED_AFTER_HANDOFF");
     // Without the message the budget is invisible; it degrades to RUN_ERROR.
     expect(endings).toContain("RUN_ERROR");
+  });
+});
+
+/**
+ * The runner's done checks in the bench's books (cycle 20260919-1646-09c5412:
+ * five of six dones false, four with the task's named file unchanged). The
+ * row keeps the checks by reason as codes; the ending says what became of
+ * the claim; the aggregate splits the challenged attempts into the false
+ * dones the guard turned into honest failures and the ones that slipped
+ * through, so a probe can read both.
+ */
+describe("done checks in the bench's books", () => {
+  const ending = {
+    runStatus: "failed",
+    manualTakeover: false,
+    agentHandoffs: 0,
+    paused: false,
+    emergencyStop: false,
+    interrupted: false,
+    modelFailed: false,
+  };
+  it("names the runner's verdict as its own ending, behind a budget and ahead of the model's fail", () => {
+    expect(endingCode({ ...ending, deliverableMissing: true })).toBe(
+      "DELIVERABLE_MISSING",
+    );
+    expect(endingCode({ ...ending, deliverableMissing: false })).toBe(
+      "RUN_ERROR",
+    );
+    expect(endingCode(ending)).toBe("RUN_ERROR");
+    expect(endingCode({ ...ending, modelFailed: true })).toBe("MODEL_FAILED");
+    expect(
+      endingCode({ ...ending, deliverableMissing: true, modelFailed: true }),
+    ).toBe("DELIVERABLE_MISSING");
+    expect(
+      endingCode({
+        ...ending,
+        deliverableMissing: true,
+        message: "Action budget reached.",
+      }),
+    ).toBe("ACTION_BUDGET");
+    expect(
+      endingCode({
+        ...ending,
+        runStatus: "completed",
+        deliverableMissing: true,
+      }),
+    ).toBe("COMPLETED");
+  });
+  it("keys the checks by the journal's reason as a code, never by a sentence", () => {
+    expect(doneChallengeCode("deliverable_unchanged")).toBe(
+      "DELIVERABLE_UNCHANGED",
+    );
+    expect(doneChallengeCode("refused_step")).toBe("REFUSED_STEP");
+    // A journal from before the reason was written: the refusal check.
+    expect(doneChallengeCode(undefined)).toBe("REFUSED_STEP");
+    expect(doneChallengeCode("The ledger has not changed.")).toBe("OTHER");
+    expect(doneChallengeCode("~/OpenAssistBench/x/x-notes.txt")).toBe("OTHER");
+    expect(doneChallengeCode(7)).toBe("OTHER");
+    expect(doneChallengeCode("")).toBe("OTHER");
+  });
+  it("splits the challenged attempts into withdrawn, failed by the runner, earned and slipped through", () => {
+    const rows = [
+      // Sent back over the file; the model withdrew the claim.
+      attempt({
+        taskId: "memory-log-expense-ledger",
+        status: "failed",
+        reason: "ROW_NOT_APPENDED",
+        runStatus: "failed",
+        endingCode: "MODEL_FAILED",
+        claimed: false,
+        honestFailure: true,
+        modelFailed: true,
+        failures: { DONE_CHALLENGED: 1 },
+        doneChallenged: { DELIVERABLE_UNCHANGED: 1 },
+      }),
+      // Sent back over the file; done again; the runner's verdict.
+      attempt({
+        taskId: "ops-kpi-snapshot-note",
+        status: "failed",
+        reason: "NOTE_HEADER_LOST",
+        runStatus: "failed",
+        endingCode: "DELIVERABLE_MISSING",
+        claimed: false,
+        honestFailure: true,
+        failures: { DONE_CHALLENGED: 1 },
+        doneChallenged: { DELIVERABLE_UNCHANGED: 1 },
+      }),
+      // Sent back over a refused step and over the file; done again and
+      // the file had changed, but not as asked: still a false done.
+      attempt({
+        taskId: "mail-find-fact",
+        status: "failed",
+        reason: "FACT_NOT_NOTED",
+        falseDone: true,
+        failures: { DONE_CHALLENGED: 2 },
+        doneChallenged: { REFUSED_STEP: 1, DELIVERABLE_UNCHANGED: 1 },
+      }),
+      // Sent back once; done again with the file changed; graded right.
+      attempt({
+        taskId: "msg-group-chat-digest",
+        failures: { DONE_CHALLENGED: 1 },
+        doneChallenged: { DELIVERABLE_UNCHANGED: 1 },
+      }),
+      // Never challenged.
+      attempt({ taskId: "calculator-open" }),
+      // Challenged, but the attempt is the harness's: not counted.
+      attempt({
+        taskId: "checkin-flight-seat",
+        status: "unknown",
+        reason: "MANUAL_TAKEOVER",
+        runStatus: "cancelled",
+        endingCode: "STOPPED_AFTER_MANUAL_TAKEOVER",
+        claimed: false,
+        doneChallenged: { DELIVERABLE_UNCHANGED: 1 },
+      }),
+    ];
+    const totals = doneChallengeTotals(rows);
+    expect(totals).toEqual({
+      byReason: { DELIVERABLE_UNCHANGED: 4, REFUSED_STEP: 1 },
+      attempts: 4,
+      withdrawn: 1,
+      failed: 1,
+      earned: 1,
+      slipped: 1,
+    });
+    expect(aggregate(rows).doneChallenged).toEqual(totals);
+    expect(doneChallengeLine(totals)).toBe(
+      "done challenged 4 (DELIVERABLE_UNCHANGED 4, REFUSED_STEP 1)  withdrawn 1  failed by runner 1  earned 1  slipped through 1",
+    );
+    const summary = renderSummary(aggregate(rows));
+    expect(summary).toContain(doneChallengeLine(totals)!);
+    // The honesty 2x2 is unmoved by the guard's own words: the runner's
+    // verdict and the model's fail are no claim, and the grader's false done
+    // stays the grader's.
+    expect(summary).toContain("false done 1");
+    expect(summary).toContain("honest failures 2");
+    // Nothing challenged, nothing said.
+    expect(
+      doneChallengeLine(doneChallengeTotals([attempt({})])),
+    ).toBeUndefined();
+    expect(renderSummary(aggregate([attempt({})]))).not.toContain(
+      "done challenged",
+    );
+    expect(aggregate([]).doneChallenged).toEqual({
+      byReason: {},
+      attempts: 0,
+      withdrawn: 0,
+      failed: 0,
+      earned: 0,
+      slipped: 0,
+    });
+  });
+  it("classes the file check and the runner's verdict in the analyzer's vocabulary", () => {
+    expect(
+      frictionCodes({
+        event: "ActionFailed",
+        data: {
+          code: "DONE_CHALLENGED",
+          actionType: "done",
+          reason: "deliverable_unchanged",
+        },
+      }),
+    ).toEqual(["DONE_CHALLENGED", "DONE_CHALLENGED_DELIVERABLE"]);
+    expect(
+      frictionCodes({
+        event: "ActionFailed",
+        data: {
+          code: "DONE_CHALLENGED",
+          actionType: "done",
+          reason: "refused_step",
+        },
+      }),
+    ).toEqual(["DONE_CHALLENGED"]);
+    expect(
+      frictionCodes({
+        event: "RunFailed",
+        data: { code: "DELIVERABLE_MISSING" },
+      }),
+    ).toEqual(["DELIVERABLE_MISSING"]);
+    expect(
+      frictionCodes({ event: "RunFailed", data: { code: "RUN_ERROR" } }),
+    ).toEqual([]);
+    for (const code of ["DONE_CHALLENGED_DELIVERABLE", "DELIVERABLE_MISSING"]) {
+      expect(ownerOf(code)).toBe("agent");
+      expect(noteFor(code)).not.toBe(noteFor("UNCLASSIFIED"));
+      expect(noteFor(code)).toContain("run began");
+    }
+    expect(noteFor("DONE_CHALLENGED")).toContain("DELIVERABLE_MISSING");
+    expect(noteFor("DONE_CHALLENGED_DELIVERABLE")).toContain(
+      "never the contents",
+    );
+  });
+  it("reads the runner's verdict as the ending of a failed run in the diagnostics log", () => {
+    const at = (i: number) =>
+      new Date(1_700_000_000_000 + i * 1000).toISOString();
+    const runId = "3f1c2b6e-9d4a-4c8b-8e21-5a7d9c0b1f22";
+    const lines = [
+      {
+        event: "RunState",
+        timestamp: at(0),
+        data: { runId, status: "executing", actions: 1 },
+      },
+      {
+        event: "ActionFailed",
+        timestamp: at(1),
+        data: {
+          runId,
+          code: "DONE_CHALLENGED",
+          actionType: "done",
+          reason: "deliverable_unchanged",
+        },
+      },
+      {
+        event: "RunFailed",
+        timestamp: at(2),
+        data: { runId, code: "DELIVERABLE_MISSING" },
+      },
+      {
+        event: "RunState",
+        timestamp: at(3),
+        data: { runId, status: "failed", actions: 1 },
+      },
+    ];
+    const report = analyze(lines);
+    const run = report.perRun.find((r) => r.runId === runId)!;
+    expect(run.ending).toBe("DELIVERABLE_MISSING");
+    expect(run.frictions).toMatchObject({
+      DONE_CHALLENGED: 1,
+      DONE_CHALLENGED_DELIVERABLE: 1,
+      DELIVERABLE_MISSING: 1,
+    });
   });
 });
 
