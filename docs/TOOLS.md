@@ -10,17 +10,17 @@ shared contract is `src/core/tools.ts`.
 
 ## Components
 
-| Layer    | Where                                                                                                                                             | What it does                                                                                                                                                                                                                            |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rules    | `native/macos/AppleRules.swift`                                                                                                                   | Pure, tested: argument parsing and bounds, dates, which calendar or list an add lands in, duplicates, read-back matching, what may be undone, the spoken line shapes, AppleScript escaping, the two fixed Apple-events targets. No I/O. |
-| Protocol | `native/macos/AppleProtocol.swift`                                                                                                                | The MCP framing (JSON-RPC 2.0 over stdio, one line each way), the catalogue of the nine tools with schemas and annotations, the hidden `undo`, and each tool's flow over an abstract store. No EventKit, no Apple events.               |
-| Bridge   | `native/macos/Apple.swift` (`coarena-apple`), `Apple-Info.plist`                                                                                  | The live store: EventKit for Calendar and Reminders, `NSAppleScript` from fixed templates for Notes and Mail, the non-prompting Automation preflight before every Apple event, the `status` and `request` commands.                     |
-| Shim     | `native/macos/Launch.swift` (`coarena-launch`)                                                                                                    | Starts a user-added server with TCC responsibility disclaimed and, when asked, without network. Passes stdio through, returns the child's status.                                                                                       |
-| Table    | `src/tools/providers/apple.ts`                                                                                                                    | The bridge as the registry sees it: title, description, tier, consent, date keys, the approval question, and parsers for exactly the recorded result shapes.                                                                            |
-| Files    | `src/tools/providers/files.ts`, `src/tools/local.ts`                                                                                              | The built-in files tool: four tools over plain-text files inside the home folder, run in the app's own process (no binary, no MCP framing) under open_file's path rules, read back after every write, with an undo of its own.          |
-| Recipes  | `src/tools/providers/recipes.ts`                                                                                                                  | The community servers and the coding agent the pane offers by name, with their argv, consent text, install note, default tools and tier overrides; `serverFromRecipe` shapes one into a settings row.                                   |
-| Install  | `src/tools/install.ts`                                                                                                                            | The app's own install of a recipe's pinned Node package (npm into `<userData>/mcp/<rowId>`), the live argv that runs its bin with `node`, and `--offline` for a pasted npx row that may not reach the network. npx never runs a recipe. |
-| Tests    | `tests/native/AppleRulesTests.swift`, `AppleProtocolTests.swift`, `LaunchTests.swift`, `tests/tools-apple.test.ts`, `tests/tools-recipes.test.ts` | The fixtures under `tests/fixtures/apple` are the contract: the Swift tests replay every exchange against a fixture store and compare bytes; the app's tests parse the same replies.                                                    |
+| Layer    | Where                                                                                                                                             | What it does                                                                                                                                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rules    | `native/macos/AppleRules.swift`                                                                                                                   | Pure, tested: argument parsing and bounds, dates, which calendar or list an add lands in, duplicates, read-back matching, what may be undone, the spoken line shapes, AppleScript escaping, the two fixed Apple-events targets. No I/O.                        |
+| Protocol | `native/macos/AppleProtocol.swift`                                                                                                                | The MCP framing (JSON-RPC 2.0 over stdio, one line each way), the catalogue of the nine tools with schemas and annotations, the hidden `undo`, and each tool's flow over an abstract store. No EventKit, no Apple events.                                      |
+| Bridge   | `native/macos/Apple.swift` (`coarena-apple`), `Apple-Info.plist`                                                                                  | The live store: EventKit for Calendar and Reminders, `NSAppleScript` from fixed templates for Notes and Mail, the non-prompting Automation preflight before every Apple event, the `status` and `request` commands.                                            |
+| Shim     | `native/macos/Launch.swift` (`coarena-launch`)                                                                                                    | Starts a user-added server with TCC responsibility disclaimed and, when asked, without network. Passes stdio through, returns the child's status.                                                                                                              |
+| Table    | `src/tools/providers/apple.ts`                                                                                                                    | The bridge as the registry sees it: title, description, tier, consent, date keys, the approval question, and parsers for exactly the recorded result shapes.                                                                                                   |
+| Files    | `src/tools/providers/files.ts`, `src/tools/local.ts`                                                                                              | The built-in files tool: six tools over files inside the home folder (read, append, replace, list, rename, move), run in the app's own process (no binary, no MCP framing) under open_file's path rules, verified after every change, with an undo of its own. |
+| Recipes  | `src/tools/providers/recipes.ts`                                                                                                                  | The community servers and the coding agent the pane offers by name, with their argv, consent text, install note, default tools and tier overrides; `serverFromRecipe` shapes one into a settings row.                                                          |
+| Install  | `src/tools/install.ts`                                                                                                                            | The app's own install of a recipe's pinned Node package (npm into `<userData>/mcp/<rowId>`), the live argv that runs its bin with `node`, and `--offline` for a pasted npx row that may not reach the network. npx never runs a recipe.                        |
+| Tests    | `tests/native/AppleRulesTests.swift`, `AppleProtocolTests.swift`, `LaunchTests.swift`, `tests/tools-apple.test.ts`, `tests/tools-recipes.test.ts` | The fixtures under `tests/fixtures/apple` are the contract: the Swift tests replay every exchange against a fixture store and compare bytes; the app's tests parse the same replies.                                                                           |
 
 `npm run test:native-safety` runs the Swift tests; `node scripts/build-native.mjs`
 builds `coarena-apple` and `coarena-launch` beside the other helpers, and
@@ -181,6 +181,8 @@ they list in Private local too; nothing leaves the Mac through them.
 | `files__append_text_file`  | `path`, `text`, `newline?` (default true) | additive, undoable | `verified: true` after read-back; `facts { kind: "file", name, change: "appended" \| "created", lines }`; `undoToken`                                                                              |
 | `files__replace_file_text` | `path`, `text`                            | write, undoable    | the same, `change: "replaced"` (or `"created"`); the previous contents are what undo puts back; `would_erase` at `prepare` when the file holds text and the user's words did not ask to replace it |
 | `files__list_directory`    | `path`                                    | read               | one visible entry per line (`name/` for a folder, `name (N bytes)` for a file), up to 200, dotfiles and credential-like names hidden                                                               |
+| `files__rename_file`       | `path`, `newName`                         | write, undoable    | the file under its new name in the same folder, verified by stat; `facts { kind: "file", name: newName, change: "renamed", from }`; `undoToken` (undo moves it back); never over an existing item  |
+| `files__move_file`         | `path`, `toFolder`                        | write, undoable    | the file, name kept, inside a folder that already exists, verified by stat; `facts { kind: "file", name, change: "moved", folder }`; `undoToken`; never over an existing item                      |
 
 The tool that erases is named for it. In probe cycle 20260919-1952 the note
 tasks said "write <fact> into <path>", gpt-5.4-mini matched the verb to the
@@ -210,7 +212,27 @@ header line the file already has stays intact and the fact lands under it;
 it does not exist (its folder must), refuse a file that would pass 1 MiB, and
 are reported only after the file reads back as written (`READBACK_MISMATCH`
 otherwise), which is what makes `finish: true` end a run with "Added a line to
-notes.txt." (`toolDoneLine`, never "wrote"). The model's core instruction
+notes.txt." (`toolDoneLine`, never "wrote").
+
+`rename_file` and `move_file` are one call per file. In cycle 20260919-2044
+(autonomy all, gpt-5.4-mini) `files-rename-receipts` #2 listed and read the
+receipts through the tool (10 tool calls, 0 tool writes), found nothing here
+that renames, fell back to Finder clicks and keys and back to the tool, and
+was ended `STUCK_LOOP` at 25 actions with nothing renamed. A rename keeps the
+file in its folder and takes `newName` as a bare file name (`fileName`: no
+slash, not empty, `.` or `..`, at most 255 characters, `BAD_NAME` otherwise;
+hidden, excluded or credential-like names are `PROTECTED_PATH`; an executable,
+installer, script, bundle or location kind is `EXECUTABLE`, on the new name as
+on the old). A move keeps the name and takes `toFolder` as a `~/` folder under
+the same path rules, which must exist (`NOT_FOUND`) and be a folder
+(`NOT_A_FOLDER`); a bundle kind of folder is `EXECUTABLE`. Neither ever lands
+on an existing item, whatever it is (`EXISTS`: nothing is replaced; on a
+case-insensitive volume a change of case alone reads as taken), neither acts
+on a link (`NOT_A_FILE`: renaming a link's target behind its name, or the link
+away from what it points at, stays manual), and both are verified by stat
+afterwards (at the new place, gone from the old; `MOVE_FAILED` otherwise).
+`finish: true` ends the run with "Renamed receipt-1.txt to its new name." or
+"Moved the file to Archive." (the names spoken only when the user said them). The model's core instruction
 says to use the tool with the path exactly as the objective writes it when the
 objective names a file, instead of opening an editor; the voice fast path
 (`src/assistant/tool-answers.ts`) turns "write/add/append/log/put/note `<text>`
@@ -245,7 +267,9 @@ model through the registry's `sanitizeResult` like every result.
 The path alone grounds a call (`prepare` returns it in its `~/` form as the
 only `groundText`, whatever form the model wrote): the text is the file's
 content, read off a page the user's words cannot be expected to carry, and the
-tool is closed-world. With that, the tier table of `src/core/tool-policy.ts`
+tool is closed-world. A rename's new name is content too (read off the file,
+as the receipts' dates were); a move grounds on the file and the folder it
+goes to, both places the words can name. With that, the tier table of `src/core/tool-policy.ts`
 reads as follows for the files tool. A read is trusted and runs in every
 mode. An append the user's own words named by its path runs under "task"
 (`TOOL_ALLOWED.grounded`), "flow" and "all"; one they did not name asks
@@ -255,10 +279,14 @@ the file and the tool can undo it (`TOOL_ALLOWED.grounded_write`: the rule the
 Save button runs under, `askedForLabel`), asks `Change <name>, replacing what
 it holds with: <text>?` otherwise, and runs under "all"; before any of that,
 a file that holds text is replaced only when the words asked for it
-(`would_erase`, above). The questions are
-`TOOL_FILE_APPEND`, `TOOL_FILE_WRITE` and `TOOL_FILE_READ` in the approval
-codes, open with the closed verbs, and can be approved neither by a follow-up
-"yes" nor from the phone. No floor moves: a credential in the arguments is
+(`would_erase`, above). A rename or a move is a write under the same
+`grounded_write` rule: it runs unasked under "task" and "flow" when the words
+named the file (and, for a move, the folder), asks `Rename <name> to
+<newName>?` or `Move <name> to <folder>?` otherwise, and runs under "all". The
+questions are `TOOL_FILE_APPEND`, `TOOL_FILE_WRITE`, `TOOL_FILE_RENAME`,
+`TOOL_FILE_MOVE` and `TOOL_FILE_READ` in the approval codes, open with the
+closed verbs (Rename and Move joined Add, Change, Delete, Use, Send and Run),
+and can be approved neither by a follow-up "yes" nor from the phone. No floor moves: a credential in the arguments is
 denied in every mode, the per-run budget and the master switch hold, and
 nothing here touches a protected application or host.
 
@@ -270,13 +298,16 @@ exist) under its `undoToken` for `TOOL_LIMITS.undoWindowMs`, at most
 removes a file the write created, and refuses with `CHANGED_SINCE` when the
 file no longer holds what the write left, so nothing a person typed since is
 lost. A file too large to keep (over 1 MiB before the write) changes without
-a token. Tokens die with the provider.
+a token. A rename or a move keeps the file's old place under its token and
+moves it back, refusing with `CHANGED_SINCE` when the file moved again or
+something else has taken its old place. Tokens die with the provider.
 
 ### Refusal codes
 
-`BAD_ARGS`, `BAD_PATH`, `OUTSIDE_HOME`, `PROTECTED_PATH`, `EXECUTABLE`,
-`NOT_FOUND`, `NOT_A_FILE`, `NOT_A_FOLDER`, `NOT_TEXT`, `TOO_LARGE`,
-`CREDENTIAL`, `WRITE_FAILED`, `READBACK_MISMATCH`, `CHANGED_SINCE`, `FAILED`:
+`BAD_ARGS`, `BAD_PATH`, `BAD_NAME`, `OUTSIDE_HOME`, `PROTECTED_PATH`,
+`EXECUTABLE`, `NOT_FOUND`, `NOT_A_FILE`, `NOT_A_FOLDER`, `NOT_TEXT`,
+`TOO_LARGE`, `EXISTS`, `CREDENTIAL`, `WRITE_FAILED`, `MOVE_FAILED`,
+`READBACK_MISMATCH`, `CHANGED_SINCE`, `FAILED`:
 each an `error` outcome whose body begins with the code and one sentence the
 model can act on, as the Apple bridge's do.
 
@@ -289,7 +320,20 @@ folder, so a note task can be done by one `append_text_file` call under the
 cycle's regime. The journal records a `tool_call` step with the frontmost
 app and the first-party tool id (never an argument or a result);
 `browserThenNote` accepts the tool write after the browser steps where
-TextEdit steps were required, and `savedNote` counts it as the save.
+TextEdit steps were required, and `savedNote` counts it as the save (a rename
+or move is not a save and is not in `FILE_WRITE_TOOLS`). `files-rename-
+receipts` grades the folder's names and hashes, never the steps, so four
+`rename_file` calls pass it as Finder renames would.
+
+The loop rule reads the tool's tier (`src/core/runner.ts trackLoop`): a
+read-tier tool call (list, read, search) is no revisit, as scroll and wait
+are not, and is a loop only when the same read with the same arguments comes
+three times running with nothing else executed between (`readSpin`); a write
+with the same arguments is a revisit like any step. Cycle 20260919-2044
+`files-receipts-to-csv` #1 listed the folder and read receipts one at a time,
+and the third `list_directory` of the same folder within twelve steps ended
+the run `STUCK_LOOP` at 20 actions with 7 tool calls and no write, while it
+was still making progress.
 
 ### What only a live run can confirm
 
@@ -306,6 +350,11 @@ TextEdit steps were required, and `savedNote` counts it as the save.
   note graders' `single` (no other item in the folder) and `headerKept` checks
   on a real disk write, and that TextEdit, when the person has the file open,
   shows the appended line (it re-reads a changed file; not a grading concern).
+
+- That `files-rename-receipts` is done by one `rename_file` call per receipt
+  (four tool writes, no Finder click or key, `renamed` true) and that
+  `files-receipts-to-csv` finishes without a `STUCK_LOOP` ending: its lists
+  and reads no longer count as revisits, so the run reaches its appends.
 
 ## The launcher shim (`coarena-launch`)
 

@@ -539,7 +539,7 @@ describe("tool registry: the in-process files tool", () => {
     );
     return home;
   };
-  it("lists the four files tools after the bridge's, gated by settings.tools.files and the master switch", async () => {
+  it("lists the six files tools after the bridge's, gated by settings.tools.files and the master switch", async () => {
     const { reg, state } = registry({
       settings: byom({
         servers: [row({ tools: { dummy: { on: true, pin: "x" } } })],
@@ -561,6 +561,8 @@ describe("tool registry: the in-process files tool", () => {
       "files__append_text_file",
       "files__replace_file_text",
       "files__list_directory",
+      "files__rename_file",
+      "files__move_file",
       "memo__dummy",
     ]);
     const files = list.tools.filter((t) => t.provider === "files");
@@ -588,7 +590,7 @@ describe("tool registry: the in-process files tool", () => {
       (await access.list("anything", signal)).tools.filter(
         (t) => t.provider === "files",
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(6);
     // The bridge's status is untouched by it.
     expect(reg.status().apple.state).toBe("on");
   });

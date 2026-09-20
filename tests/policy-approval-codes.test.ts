@@ -125,6 +125,18 @@ const toolCases: [ToolQuestion, ApprovalCode][] = [
     { kind: "file_write", name: "compare.csv", text: "name,price" },
     "TOOL_FILE_WRITE",
   ],
+  [
+    {
+      kind: "file_rename",
+      name: "receipt-1.txt",
+      newName: "2026-03-04-acme-42.txt",
+    },
+    "TOOL_FILE_RENAME",
+  ],
+  [
+    { kind: "file_move", name: "receipt-1.txt", folder: "Archive" },
+    "TOOL_FILE_MOVE",
+  ],
 ];
 
 describe("approval codes", () => {

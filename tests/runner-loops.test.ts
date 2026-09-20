@@ -24,10 +24,18 @@ import {
   type StartOptions,
   TRANSITION_SETTLE_MS,
   loopWarning,
+  readSpin,
   reflectionNote,
   repetitionPeriod,
   screenKey,
 } from "../src/core/runner";
+import {
+  FILES_APPEND,
+  FILES_LIST,
+  FILES_READ,
+  FILES_TOOLS,
+  fakeTools,
+} from "./tool-fakes";
 
 /**
  * The loop breaker, the budget context and the settle rule of
@@ -712,6 +720,139 @@ describe("the revisit rule", () => {
       JSON.stringify(["click", "x", 0.3, "y", 0.5]) + "\u0000abcd1234";
     expect(repetitionPeriod([click, click, click, click])).toBe(1);
     expect(LOOP_WINDOW).toBe(12);
+  });
+});
+
+describe("read-only tool calls and the loop rules", () => {
+  // Cycle 20260919-2044 files-receipts-to-csv #1 (autonomy all): the model
+  // listed the folder and read receipts one at a time, and the third
+  // list_directory of the same folder within twelve steps was the revisit
+  // rule's loop while the run was still making progress (7 tool calls, 0
+  // writes, STUCK_LOOP at 20 actions). Content-free: fixed paths.
+  const FOLDER = "~/OpenAssistBench/benchnote0a1b";
+  const tool = (id: string, args: Record<string, unknown>) =>
+    act({ type: "tool_call", tool: id, args, finish: false });
+  const list = tool(FILES_LIST.id, { path: FOLDER });
+  const read = (n: number) =>
+    tool(FILES_READ.id, { path: `${FOLDER}/receipt-${n}.txt` });
+  const append = (n: number) =>
+    tool(FILES_APPEND.id, { path: `${FOLDER}/x-expenses.csv`, text: `${n}` });
+  const withTools = () => ({
+    ...settle,
+    tools: fakeTools({ tools: FILES_TOOLS }).access,
+  });
+  it("counts the same read coming round with other reads between as work, not a revisit", async () => {
+    allowAll();
+    const m = memory();
+    // The receipts job: list, read one, list, read the next … four times
+    // over, the same list_directory five times in twelve steps.
+    const p = scripted([
+      list,
+      read(1),
+      list,
+      read(2),
+      list,
+      read(3),
+      list,
+      read(4),
+      list,
+      append(1),
+    ]);
+    const runner = new Runner(
+      controller(),
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      withTools(),
+    );
+    await runner.start("test", bench);
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+    expect(m.of("ActionLoopBroken")).toHaveLength(0);
+    expect(
+      p.observations
+        .at(-1)!
+        .history.some((h) => h.result.includes(loopWarning.trim())),
+    ).toBe(false);
+    expect(runner.snapshot.run?.tools).toEqual({ calls: 10, writes: 1 });
+  });
+  it("still calls the same read with the same arguments three times running a loop: the period rule for a spin", async () => {
+    allowAll();
+    const m = memory();
+    const p = scripted([list, list, list, read(1)]);
+    const runner = new Runner(
+      controller(),
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      withTools(),
+    );
+    await runner.start("test", bench);
+    // Warned at the third list (period 1, no revisit count), the warning on
+    // its history line; the read after it is not a fourth cycling step.
+    expect(m.of("ActionLoopDetected").map((e) => e.data)).toEqual([
+      { actionType: "tool_call", period: 1 },
+    ]);
+    const history = p.observations.at(-1)!.history;
+    expect(history.map((h) => h.result.includes(loopWarning.trim()))).toEqual([
+      false,
+      false,
+      true,
+      false,
+    ]);
+    expect(m.of("ActionLoopBroken")).toHaveLength(0);
+    expect(runner.snapshot.run?.status).toBe("completed");
+  });
+  it("is not a spin when a write or another read comes between", async () => {
+    allowAll();
+    const m = memory();
+    const p = scripted([list, list, append(1), list, list, read(1), list]);
+    const runner = new Runner(
+      controller(),
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      withTools(),
+    );
+    await runner.start("test", bench);
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+    expect(runner.snapshot.run?.status).toBe("completed");
+  });
+  it("keeps a write with the same arguments a revisit, as any step", async () => {
+    allowAll();
+    const m = memory();
+    const p = scripted([append(1), read(1), append(1), read(2), append(1)]);
+    const runner = new Runner(
+      controller(),
+      p,
+      m.recorder,
+      settings,
+      () => {},
+      [],
+      undefined,
+      withTools(),
+    );
+    await runner.start("test", bench);
+    expect(m.of("ActionLoopDetected").map((e) => e.data)).toEqual([
+      { actionType: "tool_call", period: 0, revisits: LOOP_REVISITS },
+    ]);
+  });
+  it("reads a spin off the last three signatures alone", () => {
+    expect(readSpin([])).toBe(false);
+    expect(readSpin(["a", "a"])).toBe(false);
+    expect(readSpin(["a", "a", "a"])).toBe(true);
+    expect(readSpin(["b", "a", "a", "a"])).toBe(true);
+    expect(readSpin(["a", "a", "b"])).toBe(false);
+    expect(readSpin(["a", "b", "a", "b"])).toBe(false);
   });
 });
 

@@ -450,6 +450,24 @@ export function repetitionPeriod(signatures: string[]): 0 | 1 | 2 {
     return 0;
   return 1;
 }
+/**
+ * The period rule for a read-only tool call, which the revisit rule leaves
+ * alone: the same read with the same arguments READ_SPIN times running
+ * (captures are not steps; a write or any other step between breaks the
+ * run) is a spin, whatever the screen did. Cycle 20260919-2044
+ * files-receipts-to-csv #1: a per-file read-and-append job listed the folder
+ * and read receipts one at a time, and the third list_directory of the same
+ * folder within twelve steps was the revisit rule's loop while the run was
+ * still making progress (7 tool calls, 0 writes, STUCK_LOOP at 20 actions).
+ * Listing, reading and searching change nothing, so coming back to one is
+ * work, not a loop, until nothing else happens between.
+ */
+export const READ_SPIN = 3;
+export function readSpin(signatures: string[]): boolean {
+  if (signatures.length < READ_SPIN) return false;
+  const last = signatures.slice(-READ_SPIN);
+  return last.every((s) => s === last[0]);
+}
 export const loopWarning =
   " Warning: you have repeated the same actions several times without finishing. The last steps did not make progress; re-read the screenshot and context.controls and choose a different approach.";
 export const appSwitchWarning =
@@ -1537,10 +1555,16 @@ export class Runner {
       : signature;
     this.signatures = [...this.signatures.slice(-3), key];
     this.steps = [...this.steps.slice(-(LOOP_WINDOW - 1)), key];
-    const period = repetitionPeriod(this.signatures);
-    const revisits = revisitable(signature)
-      ? this.steps.filter((s) => s === key).length
-      : 0;
+    // A read-only tool call is no revisit (readSpin); a write with the same
+    // arguments is one, as any other step.
+    const readTool = this.readToolCall(action);
+    const period =
+      repetitionPeriod(this.signatures) ||
+      (readTool && readSpin(this.signatures) ? 1 : 0);
+    const revisits =
+      !readTool && revisitable(signature)
+        ? this.steps.filter((s) => s === key).length
+        : 0;
     if (!period && revisits < LOOP_REVISITS) {
       const fresh = this.steps
         .slice(-4)
@@ -1581,6 +1605,13 @@ export class Runner {
       return "stuck";
     }
     return undefined;
+  }
+  /** A tool_call whose tool this run's frozen list has as read-tier: list, read or search. */
+  private readToolCall(action: Action): boolean {
+    return (
+      action.type === "tool_call" &&
+      this.toolList?.tools.find((t) => t.id === action.tool)?.tier === "read"
+    );
   }
   /**
    * The loop continued past its warning. While someone at the Mac can answer,

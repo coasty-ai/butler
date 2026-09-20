@@ -9,6 +9,7 @@ import {
   readSync,
   readdirSync,
   realpathSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -29,12 +30,22 @@ import type { LocalProviderOptions, LocalServer } from "../local";
 import type { McpProvider } from "../mcp";
 
 /**
- * The files tool: four builtin tools over plain-text files inside the home
- * folder, run in the app's own process. It exists because "write X into
- * notes.txt and save" is a step a tool does in one call and an editor in
- * twenty (cycle 20260919-1646: 8 of 28 attempts found the fact and then lost
- * it between TextEdit's window, the header and Save). Tools first, the
- * screen as fallback (docs/TOOLS.md).
+ * The files tool: six builtin tools over files inside the home folder, run
+ * in the app's own process: four over a plain-text file's contents and a
+ * folder's listing, and two that rename or move a file. It exists because
+ * "write X into notes.txt and save" is a step a tool does in one call and an
+ * editor in twenty (cycle 20260919-1646: 8 of 28 attempts found the fact and
+ * then lost it between TextEdit's window, the header and Save). Tools first,
+ * the screen as fallback (docs/TOOLS.md).
+ *
+ * rename_file and move_file came with cycle 20260919-2044 (autonomy all,
+ * gpt-5.4-mini): files-rename-receipts #2 listed and read through the tool
+ * (10 tool calls, 0 tool writes), found nothing here that renames, fell back
+ * to Finder clicks and keys and back to the tool, and was ended STUCK_LOOP
+ * at 25 actions with nothing renamed. A rename is one call per file: the new
+ * name is a bare file name in the same folder, a move keeps the name and
+ * needs the folder to exist, neither ever lands on an existing item, both
+ * are verified by stat afterwards and undone by moving the file back.
  *
  * Paths follow open_file's rules (native/macos/FileSafety.swift
  * indexExcluded), applied to the path as written and again to its realpath:
@@ -64,6 +75,8 @@ export const FILES_TITLE = "Files";
 export const FILE_LIMITS = {
   /** A read returns at most this many bytes; a larger file is refused, not cut. */
   readBytes: TOOL_LIMITS.rawResultBytes,
+  /** A new file name (rename_file newName) is at most this long. */
+  nameChars: 255,
   /** A file a write leaves behind is at most this large. */
   fileBytes: 1_048_576,
   /** Bytes of a file's head read to tell text from binary before an append. */
@@ -77,7 +90,9 @@ export type FileToolName =
   | "read_text_file"
   | "append_text_file"
   | "replace_file_text"
-  | "list_directory";
+  | "list_directory"
+  | "rename_file"
+  | "move_file";
 export interface FileTool {
   does: string;
   params: string;
@@ -121,10 +136,31 @@ export const FILE_TOOLS: Record<FileToolName, FileTool> = {
     keys: ["path"],
     required: ["path"],
   },
+  rename_file: {
+    does: "Renames a file in your home folder in place: newName is the bare new file name (no slash), kept in the same folder; never over an existing file. One call per file to rename.",
+    params: "path (text, a ~/ path), newName (text, a file name with no slash)",
+    tier: "write",
+    undoable: true,
+    keys: ["path", "newName"],
+    required: ["path", "newName"],
+  },
+  move_file: {
+    does: "Moves a file in your home folder into another folder there, keeping its name; the folder must already exist; never over an existing file. One call per file to move.",
+    params: "path (text, a ~/ path), toFolder (text, a ~/ folder path)",
+    tier: "write",
+    undoable: true,
+    keys: ["path", "toFolder"],
+    required: ["path", "toFolder"],
+  },
 };
 export const FILE_TOOL_NAMES = Object.keys(FILE_TOOLS) as FileToolName[];
 export const FILE_TOOL_IDS = FILE_TOOL_NAMES.map((n) => `${FILES_ID}__${n}`);
-/** The two tools that change a file, by id: what a grader or a step namer counts as the note written. */
+/**
+ * The two tools that change a file's contents, by id: what a grader or a
+ * step namer counts as the note written. rename_file and move_file change
+ * where a file is or what it is called, never what it holds, so they are not
+ * here: a grader's rename check reads the folder, not the step.
+ */
 export const FILE_WRITE_TOOL_IDS = [
   `${FILES_ID}__append_text_file`,
   `${FILES_ID}__replace_file_text`,
@@ -317,6 +353,36 @@ export function refusedExtension(name: string): boolean {
   return REFUSED_EXTENSIONS.has(extensionOf(name.toLowerCase()));
 }
 const normalizedHome = (home: string) => home.replace(/\/+$/, "");
+export type NameProblem = "BAD_NAME" | "PROTECTED_PATH" | "EXECUTABLE";
+/**
+ * A bare file name a rename may give, or the problem with it: one component
+ * (no slash), not empty, ".", ".." or over FILE_LIMITS.nameChars, no control
+ * character (BAD_NAME); not hidden, a component the path rules exclude or a
+ * credential-like name (PROTECTED_PATH); not a kind a write never touches
+ * (EXECUTABLE). Pure, like homePath.
+ */
+export function fileName(
+  name: unknown,
+): { name: string } | { problem: NameProblem } {
+  if (
+    typeof name !== "string" ||
+    !name.trim() ||
+    name.length > FILE_LIMITS.nameChars ||
+    CONTROL.test(name) ||
+    name.includes("/") ||
+    name === "." ||
+    name === ".."
+  )
+    return { problem: "BAD_NAME" };
+  if (
+    name.startsWith(".") ||
+    EXCLUDED_COMPONENTS.has(name.toLowerCase()) ||
+    credentialLikeName(name)
+  )
+    return { problem: "PROTECTED_PATH" };
+  if (refusedExtension(name)) return { problem: "EXECUTABLE" };
+  return { name };
+}
 /**
  * The path as the tool may touch it, or the problem with it. Pure: the
  * filesystem is not consulted here; call time applies the same rules to the
@@ -426,6 +492,19 @@ interface Checked {
   path: HomePath;
   text: string;
   newline: boolean;
+  /** rename_file: the bare new name, checked by fileName. */
+  newName?: string;
+  /** move_file: the folder the file goes into, under the path rules. */
+  toFolder?: HomePath;
+}
+export interface ArgsProblem {
+  problem: "invalid_args" | "bad_path";
+  /**
+   * The refusal code call() answers with when it is finer than the problem:
+   * a new name or a folder the rules refuse (BAD_NAME, OUTSIDE_HOME,
+   * PROTECTED_PATH, EXECUTABLE). The path itself keeps BAD_PATH, as before.
+   */
+  code?: NameProblem | PathProblem;
 }
 /**
  * The arguments checked against the tool's own keys and the path rules;
@@ -436,7 +515,7 @@ export function checkArgs(
   name: string,
   args: Record<string, unknown>,
   home: string,
-): Checked | { problem: "invalid_args" | "bad_path" } {
+): Checked | ArgsProblem {
   if (!isToolName(name)) return { problem: "invalid_args" };
   const tool = FILE_TOOLS[name];
   if (Object.keys(args).some((key) => !tool.keys.includes(key)))
@@ -451,12 +530,29 @@ export function checkArgs(
   if (isProblem(path)) return { problem: "bad_path" };
   const writes = tool.tier !== "read";
   if (writes && refusedExtension(path.name)) return { problem: "bad_path" };
-  return {
+  const checked: Checked = {
     name,
     path,
     text: typeof args.text === "string" ? args.text : "",
     newline: args.newline !== false,
   };
+  if (name === "rename_file") {
+    const named = fileName(args.newName);
+    if ("problem" in named)
+      return named.problem === "BAD_NAME"
+        ? { problem: "invalid_args", code: "BAD_NAME" }
+        : { problem: "bad_path", code: named.problem };
+    checked.newName = named.name;
+  }
+  if (name === "move_file") {
+    const folder = homePath(args.toFolder, home);
+    if (isProblem(folder)) return { problem: "bad_path", code: folder.problem };
+    // A folder of a bundle kind (x.app) is a bundle: nothing is moved into it.
+    if (refusedExtension(folder.name))
+      return { problem: "bad_path", code: "EXECUTABLE" };
+    checked.toFolder = folder;
+  }
+  return checked;
 }
 function questionOf(checked: Checked): ToolQuestion {
   const name = checked.path.name;
@@ -469,6 +565,10 @@ function questionOf(checked: Checked): ToolQuestion {
       return { kind: "file_append", name, text: checked.text };
     case "replace_file_text":
       return { kind: "file_write", name, text: checked.text };
+    case "rename_file":
+      return { kind: "file_rename", name, newName: checked.newName ?? "" };
+    case "move_file":
+      return { kind: "file_move", name, folder: checked.toFolder?.name ?? "" };
   }
 }
 const refuse = (code: string, sentence: string): ProviderResult => ({
@@ -483,15 +583,42 @@ const PATH_SENTENCES: Record<PathProblem, string> = {
     "That path is under ~/Library, hidden, or named like a credential; it stays manual.",
   EXECUTABLE: "That file's kind is never written here.",
 };
-interface Undo {
-  token: string;
-  path: string;
-  /** The bytes before the write; undefined when the file did not exist. */
-  before?: Buffer;
-  /** The bytes the write left, so a file changed since is left alone. */
-  after: Buffer;
-  expiresAt: number;
-}
+const NAME_SENTENCES: Record<NameProblem, string> = {
+  BAD_NAME:
+    "The new name must be a bare file name: no slash, not empty, not . or ..",
+  PROTECTED_PATH: PATH_SENTENCES.PROTECTED_PATH,
+  EXECUTABLE: PATH_SENTENCES.EXECUTABLE,
+};
+/** What a refused checkArgs answers at call(): the finer code when there is one. */
+const argsRefusal = (problem: ArgsProblem): ProviderResult => {
+  if (problem.code === "BAD_NAME")
+    return refuse("BAD_NAME", NAME_SENTENCES.BAD_NAME);
+  if (problem.code) return refuse(problem.code, PATH_SENTENCES[problem.code]);
+  return problem.problem === "bad_path"
+    ? refuse("BAD_PATH", PATH_SENTENCES.BAD_PATH)
+    : refuse("BAD_ARGS", "The arguments do not match the tool's parameters.");
+};
+/**
+ * What an undo puts back: a write's previous bytes (or the file's absence),
+ * or a renamed or moved file's old place.
+ */
+type Undo = { token: string; expiresAt: number } & (
+  | {
+      kind: "write";
+      path: string;
+      /** The bytes before the write; undefined when the file did not exist. */
+      before?: Buffer;
+      /** The bytes the write left, so a file changed since is left alone. */
+      after: Buffer;
+    }
+  | {
+      kind: "move";
+      /** Where the rename or move put the file. */
+      from: string;
+      /** Where it was. */
+      to: string;
+    }
+);
 
 export function createFilesProvider(o: LocalProviderOptions): McpProvider {
   const now = o.now ?? Date.now;
@@ -557,6 +684,15 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
   };
   const isResult = (value: unknown): value is ProviderResult =>
     !!value && typeof value === "object" && "code" in value;
+  /** Whether anything at all is at the path: a file, a folder, a link (broken or not). */
+  const exists = (path: string): boolean => {
+    try {
+      lstatSync(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   /**
    * Whether the path is a file with bytes in it: what replace_file_text
    * would erase. A missing file, an empty one, a folder or one that cannot
@@ -709,6 +845,7 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
     if (undoable)
       remember({
         token,
+        kind: "write",
         path: found.real,
         before,
         after,
@@ -735,6 +872,131 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
       facts: { kind: "file", name: checked.path.name, change, lines },
       ...(undoable ? { undoToken: token } : {}),
     };
+  };
+
+  /**
+   * The file a rename or move acts on, by its realpath: a regular file the
+   * rules allow, never a link (renaming a link's target behind its name, or
+   * the link itself away from what it points at, is nobody's intent; it
+   * stays manual) and never an executable kind by its real name.
+   */
+  const source = (
+    path: HomePath,
+  ): { real: string; name: string } | ProviderResult => {
+    let stat;
+    try {
+      stat = lstatSync(path.absolute);
+    } catch {
+      return refuse("NOT_FOUND", "That file does not exist.");
+    }
+    if (stat.isSymbolicLink())
+      return refuse(
+        "NOT_A_FILE",
+        "That path is a link, not a file; it stays manual.",
+      );
+    const found = resolveReal(path);
+    if (isResult(found)) return found;
+    if (!found.exists) return refuse("NOT_FOUND", "That file does not exist.");
+    if (found.kind !== "file")
+      return refuse("NOT_A_FILE", "That path is a folder, not a file.");
+    const name = found.real.split("/").pop() ?? "";
+    if (refusedExtension(name))
+      return refuse("EXECUTABLE", PATH_SENTENCES.EXECUTABLE);
+    return { real: found.real, name };
+  };
+  /**
+   * Puts the file at `to`: never over anything that exists there (a case-only
+   * change of name reads as taken on a case-insensitive volume), verified by
+   * stat afterwards (at its new place, gone from the old), and remembered so
+   * undo can move it back within the window.
+   */
+  const relocate = (
+    from: { real: string; name: string },
+    to: string,
+    change: "renamed" | "moved",
+    said: string,
+    facts: { from?: string; folder?: string },
+  ): ProviderResult => {
+    if (exists(to))
+      return refuse(
+        "EXISTS",
+        "Something is already at that name; nothing was replaced.",
+      );
+    try {
+      renameSync(from.real, to);
+    } catch (error) {
+      return refuse(
+        "MOVE_FAILED",
+        error instanceof Error && "code" in error
+          ? `The file could not be moved (${String((error as { code?: unknown }).code)}).`
+          : "The file could not be moved.",
+      );
+    }
+    let landed = false;
+    try {
+      landed = statSync(to).isFile();
+    } catch {
+      landed = false;
+    }
+    if (!landed || exists(from.real))
+      return refuse(
+        "MOVE_FAILED",
+        "The file did not end up where it was sent; check it on screen.",
+      );
+    const token = randomUUID();
+    remember({
+      token,
+      kind: "move",
+      from: to,
+      to: from.real,
+      expiresAt: now() + TOOL_LIMITS.undoWindowMs,
+    });
+    return {
+      code: "ok",
+      raw: said,
+      items: 1,
+      verified: true,
+      facts: {
+        kind: "file",
+        name: to.split("/").pop() ?? from.name,
+        change,
+        ...facts,
+      },
+      undoToken: token,
+    };
+  };
+  const rename = (checked: Checked): ProviderResult => {
+    const from = source(checked.path);
+    if (isResult(from)) return from;
+    const newName = checked.newName ?? "";
+    return relocate(
+      from,
+      resolve(dirname(from.real), newName),
+      "renamed",
+      `Renamed ${checked.path.relative} to ${newName}.`,
+      { from: from.name },
+    );
+  };
+  const move = (checked: Checked): ProviderResult => {
+    const from = source(checked.path);
+    if (isResult(from)) return from;
+    const target = checked.toFolder!;
+    const folder = resolveReal(target);
+    if (isResult(folder)) return folder;
+    if (!folder.exists)
+      return refuse("NOT_FOUND", "That folder does not exist.");
+    if (folder.kind !== "folder")
+      return refuse("NOT_A_FOLDER", "That path is a file, not a folder.");
+    const to = resolve(folder.real, from.name);
+    if (to === from.real)
+      return refuse("EXISTS", "The file is already in that folder.");
+    return relocate(
+      from,
+      to,
+      "moved",
+      `Moved ${checked.path.relative} to ${target.relative}/.`,
+      { folder: target.name },
+    );
   };
 
   return {
@@ -772,24 +1034,24 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
       // The path alone grounds the call, in its ~/ form whatever way the
       // model wrote it: the text is the file's content, which the words
       // cannot be expected to carry (it was read off a page), and the tool
-      // is closed-world, so nothing in it leaves the Mac.
+      // is closed-world, so nothing in it leaves the Mac. A new name is
+      // content too (read off the file, as the receipts' dates were); a
+      // move's folder is a place the words can name, so it grounds with the
+      // file.
       return {
         ok: true,
         question: questionOf(checked),
-        groundText: [checked.path.relative],
+        groundText: [
+          checked.path.relative,
+          ...(checked.toFolder ? [checked.toFolder.relative] : []),
+        ],
         argsBytes: Buffer.byteLength(JSON.stringify(args)),
       };
     },
     async call(spec, args) {
       if (!on()) return { code: "unavailable", raw: "", items: 0 };
       const checked = checkArgs(spec.name, args, home);
-      if ("problem" in checked)
-        return refuse(
-          checked.problem === "bad_path" ? "BAD_PATH" : "BAD_ARGS",
-          checked.problem === "bad_path"
-            ? PATH_SENTENCES.BAD_PATH
-            : "The arguments do not match the tool's parameters.",
-        );
+      if ("problem" in checked) return argsRefusal(checked);
       try {
         switch (checked.name) {
           case "read_text_file":
@@ -800,6 +1062,10 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
             return write(checked, "append");
           case "replace_file_text":
             return write(checked, "replace");
+          case "rename_file":
+            return rename(checked);
+          case "move_file":
+            return move(checked);
         }
       } catch (error) {
         return refuse(
@@ -820,6 +1086,21 @@ export function createFilesProvider(o: LocalProviderOptions): McpProvider {
           "NOT_FOUND",
           "There is no write of this session to take back.",
         );
+      if (undo.kind === "move") {
+        // Back to where it was, unless it moved again or something else has
+        // taken its old place since.
+        if (!exists(undo.from) || exists(undo.to))
+          return refuse(
+            "CHANGED_SINCE",
+            "The file moved again since, or something is at its old place; it is left as it is.",
+          );
+        try {
+          renameSync(undo.from, undo.to);
+        } catch {
+          return refuse("FAILED", "The file could not be put back.");
+        }
+        return { code: "ok", raw: "Put the file back where it was.", items: 1 };
+      }
       try {
         const current = readFileSync(undo.path);
         if (!current.equals(undo.after))

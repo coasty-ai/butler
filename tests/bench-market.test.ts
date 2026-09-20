@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -115,6 +116,7 @@ import { CLOCK } from "./tool-fakes";
 import {
   actionSchema,
   defaultSettings,
+  type Settings,
   type Surface,
 } from "../src/core/schema";
 import type {
@@ -1191,6 +1193,88 @@ describe("market suite catalogue", () => {
     }
   });
 
+  it("passes files-rename-receipts on four rename_file calls through the real files tool: the folder's names and hashes, never the steps", async () => {
+    // Cycle 20260919-2044 #2 (autonomy all): the tool could list and read
+    // but not rename, and the run ended STUCK_LOOP with nothing renamed. The
+    // grader reads the folder, so the tool route passes as Finder renames do.
+    const task = byId("files-rename-receipts");
+    const a = await prepare(task);
+    // The temp home is under a symlinked tmpdir on macOS; the tool compares
+    // realpaths against the home it is given.
+    const home = realpathSync(dirname(dirname(a.benchDir)));
+    const provider = createFilesProvider({ home });
+    await provider.start();
+    const spec = fileToolSpec("rename_file");
+    const receipts = JSON.parse(a.parameters.receipts) as {
+      name: string;
+      date: string;
+      vendor: string;
+      amount: number;
+    }[];
+    const words = fillInstruction(task.instruction, a.parameters);
+    for (const r of receipts) {
+      const args = {
+        path: `~/OpenAssistBench/${a.token}/${r.name}`,
+        newName: `${r.date}-${r.vendor}-${r.amount}.txt`,
+      };
+      const prepared = provider.prepare(spec, args, { userWords: words });
+      expect(prepared.ok, r.name).toBe(true);
+      // The instruction names the folder and says "receipt", never
+      // receipt-n.txt, so under the default "task" mode each rename is the
+      // Rename question; under the cycle's "all" it runs unasked.
+      const decide = (settings: Settings) =>
+        evaluate(
+          actionSchema.parse({
+            type: "tool_call",
+            frame_id: "f",
+            tool: spec.id,
+            args,
+          }),
+          {
+            appId: "com.apple.finder",
+            pid: 1,
+            secureInput: false,
+            unknown: false,
+          },
+          settings,
+          false,
+          {
+            tool: { spec, prepared, calls: 0 },
+            clock: CLOCK,
+            userWords: words,
+          },
+        );
+      expect(decide(structuredClone(defaultSettings)), r.name).toEqual({
+        kind: "CONFIRM",
+        reason: `Rename ${r.name} to ${args.newName}?`,
+      });
+      expect(
+        decide({
+          ...structuredClone(defaultSettings),
+          autonomy: "all",
+          autonomyAllAcknowledged: true,
+        }),
+        r.name,
+      ).toEqual({ kind: "ALLOW", reason: TOOL_ALLOWED.unasked });
+      const outcome = await provider.call(spec, args, {
+        signal: new AbortController().signal,
+        timeoutMs: 1000,
+      });
+      expect(outcome, r.name).toMatchObject({
+        code: "ok",
+        verified: true,
+        facts: { change: "renamed", name: args.newName },
+      });
+    }
+    await provider.close();
+    const grade = gradeTask(task, evidenceOf(a, { files: await files(a) }));
+    expect(grade.status, JSON.stringify(grade)).toBe("passed");
+    expect(grade.checks).toEqual({
+      renamed: true,
+      noOriginals: true,
+      nothingElse: true,
+    });
+  });
   it("names every note file by a ~/ path the files tool accepts, and the default mode lets the append run on the task's own words", async () => {
     // The tool route for FACT_NOT_NOTED (cycle 20260919-1646): the model
     // reads the fact off the page and calls files__append_text_file with the

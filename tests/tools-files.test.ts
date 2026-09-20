@@ -32,6 +32,7 @@ import {
   checkArgs,
   createFilesProvider,
   credentialLikeName,
+  fileName,
   fileToolSpec,
   homePath,
   refusedExtension,
@@ -87,7 +88,7 @@ afterEach(async () => {
 });
 
 describe("the files tool's table", () => {
-  it("is four builtin, trusted, local, closed-world tools under a reserved id", () => {
+  it("is six builtin, trusted, local, closed-world tools under a reserved id", () => {
     expect(RESERVED_PROVIDERS.has("files")).toBe(true);
     expect(LOCAL_SERVERS).toEqual([FILES]);
     expect(FILE_TOOL_NAMES).toEqual([
@@ -95,17 +96,24 @@ describe("the files tool's table", () => {
       "append_text_file",
       "replace_file_text",
       "list_directory",
+      "rename_file",
+      "move_file",
     ]);
     expect(FILE_TOOL_IDS).toEqual([
       "files__read_text_file",
       "files__append_text_file",
       "files__replace_file_text",
       "files__list_directory",
+      "files__rename_file",
+      "files__move_file",
     ]);
+    // The content writes alone: a rename or move is not a note written.
     expect(FILE_WRITE_TOOL_IDS).toEqual([
       "files__append_text_file",
       "files__replace_file_text",
     ]);
+    // Nine Apple tools and six files tools fit the model's list.
+    expect(9 + FILE_TOOL_NAMES.length).toBeLessThanOrEqual(TOOL_LIMITS.list);
     for (const name of FILE_TOOL_NAMES) {
       const s = spec(name);
       expect(TOOL_ID.test(s.id)).toBe(true);
@@ -134,6 +142,11 @@ describe("the files tool's table", () => {
       tier: "write",
       undoable: true,
     });
+    for (const name of ["rename_file", "move_file"] as const) {
+      expect(spec(name)).toMatchObject({ tier: "write", undoable: true });
+      expect(FILE_TOOLS[name].does).toContain("never over an existing file");
+      expect(FILE_TOOLS[name].does).toContain("One call per file");
+    }
     expect(FILE_TOOLS.append_text_file.does).toContain("keeping what is there");
     // Naming that steers a small model (probe cycle 20260919-1952: "write
     // <fact> into <path>" matched the tool then named write_text_file, and
@@ -159,7 +172,7 @@ describe("the files tool's table", () => {
     );
     expect(provider.state()).toEqual({
       state: "on",
-      toolCount: 4,
+      toolCount: 6,
       restarts: 0,
     });
     await provider.close();
@@ -305,12 +318,75 @@ describe("paths", () => {
       ["read_text_file", { path: "~/a.txt", text: "x" }],
       ["read_text_file", {}],
       ["list_directory", { path: ["~/"] }],
+      ["rename_file", { path: "~/a.txt" }],
+      ["rename_file", { path: "~/a.txt", newName: 3 }],
+      ["rename_file", { path: "~/a.txt", newName: "b.txt", text: "x" }],
+      ["move_file", { path: "~/a.txt" }],
+      ["move_file", { path: "~/a.txt", toFolder: ["~/b"] }],
       ["undo", { token: "t" }],
       ["bash", { path: "~/a.txt" }],
     ] as const)
       expect(checkArgs(name, args as never, HOME), name).toEqual({
         problem: "invalid_args",
       });
+    // A new name that is not a bare file name is invalid_args (BAD_NAME at
+    // call); one the path rules refuse is bad_path with the finer code.
+    for (const newName of ["", "  ", "a/b.txt", ".", "..", "sub/", "a\nb"])
+      expect(
+        checkArgs("rename_file", { path: "~/a.txt", newName }, HOME),
+        JSON.stringify(newName),
+      ).toEqual({ problem: "invalid_args", code: "BAD_NAME" });
+    for (const [newName, code] of [
+      [".hidden.txt", "PROTECTED_PATH"],
+      ["passwords.txt", "PROTECTED_PATH"],
+      ["node_modules", "PROTECTED_PATH"],
+      ["run.sh", "EXECUTABLE"],
+      ["Thing.app", "EXECUTABLE"],
+      ["link.webloc", "EXECUTABLE"],
+    ] as const)
+      expect(
+        checkArgs("rename_file", { path: "~/a.txt", newName }, HOME),
+        newName,
+      ).toEqual({ problem: "bad_path", code });
+    expect(
+      checkArgs("rename_file", { path: "~/a.txt", newName: "b.txt" }, HOME),
+    ).toMatchObject({ name: "rename_file", newName: "b.txt" });
+    expect(fileName("x".repeat(FILE_LIMITS.nameChars + 1))).toEqual({
+      problem: "BAD_NAME",
+    });
+    expect(fileName("2026-03-04-acme-42.txt")).toEqual({
+      name: "2026-03-04-acme-42.txt",
+    });
+    // The folder a move goes to follows the path rules, with its code.
+    for (const [toFolder, code] of [
+      ["/etc", "OUTSIDE_HOME"],
+      ["~/Library/Preferences", "PROTECTED_PATH"],
+      ["~/.hidden", "PROTECTED_PATH"],
+      ["~", "PROTECTED_PATH"],
+      ["~/Documents/../x", "BAD_PATH"],
+      ["~/Apps/Thing.app", "EXECUTABLE"],
+    ] as const)
+      expect(
+        checkArgs("move_file", { path: "~/a.txt", toFolder }, HOME),
+        toFolder,
+      ).toEqual({ problem: "bad_path", code });
+    expect(
+      checkArgs("move_file", { path: "~/a.txt", toFolder: "~/Archive/" }, HOME),
+    ).toMatchObject({
+      name: "move_file",
+      toFolder: { relative: "~/Archive", name: "Archive" },
+    });
+    // The source of a rename or move is a write: an executable kind is refused.
+    expect(
+      checkArgs(
+        "rename_file",
+        { path: "~/bin/run.sh", newName: "x.txt" },
+        HOME,
+      ),
+    ).toEqual({ problem: "bad_path" });
+    expect(
+      checkArgs("move_file", { path: "~/setup.pkg", toFolder: "~/Old" }, HOME),
+    ).toEqual({ problem: "bad_path" });
     for (const path of [
       "/etc/hosts",
       "~/.ssh/id_rsa",
@@ -361,6 +437,52 @@ describe("paths", () => {
     expect(
       provider.prepare(spec("list_directory"), { path: "~/Documents/" }),
     ).toMatchObject({ question: { kind: "file_list", name: "Documents" } });
+    // A rename grounds on the path alone (the new name is content); a move
+    // grounds on the file and the folder.
+    expect(
+      provider.prepare(spec("rename_file"), {
+        path: "~/Documents/receipt-1.txt",
+        newName: "2026-03-04-acme-42.txt",
+      }),
+    ).toEqual({
+      ok: true,
+      question: {
+        kind: "file_rename",
+        name: "receipt-1.txt",
+        newName: "2026-03-04-acme-42.txt",
+      },
+      groundText: ["~/Documents/receipt-1.txt"],
+      argsBytes: expect.any(Number),
+    });
+    expect(
+      provider.prepare(spec("move_file"), {
+        path: "~/Documents/receipt-1.txt",
+        toFolder: "~/Documents/Archive",
+      }),
+    ).toEqual({
+      ok: true,
+      question: { kind: "file_move", name: "receipt-1.txt", folder: "Archive" },
+      groundText: ["~/Documents/receipt-1.txt", "~/Documents/Archive"],
+      argsBytes: expect.any(Number),
+    });
+    expect(
+      provider.prepare(spec("rename_file"), {
+        path: "~/Documents/a.txt",
+        newName: "a/b.txt",
+      }),
+    ).toEqual({ ok: false, problem: "invalid_args" });
+    expect(
+      provider.prepare(spec("rename_file"), {
+        path: "~/Documents/a.txt",
+        newName: "run.sh",
+      }),
+    ).toEqual({ ok: false, problem: "bad_path" });
+    expect(
+      provider.prepare(spec("move_file"), {
+        path: "~/Documents/a.txt",
+        toFolder: "/tmp",
+      }),
+    ).toEqual({ ok: false, problem: "bad_path" });
     expect(
       provider.prepare(spec("read_text_file"), { path: "~/.ssh/config" }),
     ).toEqual({ ok: false, problem: "bad_path" });
@@ -790,6 +912,318 @@ describe("append, write, read and list", () => {
         { signal, timeoutMs: 1000 },
       ),
     ).toMatchObject({ code: "error" });
+  });
+});
+
+describe("rename and move", () => {
+  const BENCH = "~/OpenAssistBench/benchnote0a1b";
+  const bench = "OpenAssistBench/benchnote0a1b";
+  const receipt = (n: number) => `${bench}/receipt-${n}.txt`;
+  beforeEach(() => {
+    for (const n of [1, 2])
+      writeFileSync(
+        file(receipt(n)),
+        `Date: 2026-03-0${n}\nVendor: Acme\nTotal: $4${n}\n`,
+      );
+    mkdirSync(file(`${bench}/Archive`));
+  });
+  it("renames a file in place, verified by stat, with the facts and an undo token; one call per file", async () => {
+    // Cycle 20260919-2044 files-rename-receipts: the receipt under its
+    // date-vendor-amount name, its bytes untouched.
+    const before = readFileSync(file(receipt(1)));
+    const result = await call("rename_file", {
+      path: `${BENCH}/receipt-1.txt`,
+      newName: "2026-03-01-acme-41.txt",
+    });
+    expect(result).toMatchObject({
+      code: "ok",
+      items: 1,
+      verified: true,
+      facts: {
+        kind: "file",
+        name: "2026-03-01-acme-41.txt",
+        change: "renamed",
+        from: "receipt-1.txt",
+      },
+    });
+    expect(result.facts).not.toHaveProperty("lines");
+    expect(result.undoToken).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.raw).toBe(
+      `Renamed ${BENCH}/receipt-1.txt to 2026-03-01-acme-41.txt.`,
+    );
+    expect(existsSync(file(receipt(1)))).toBe(false);
+    expect(readFileSync(file(`${bench}/2026-03-01-acme-41.txt`))).toEqual(
+      before,
+    );
+    // The other receipt is untouched: nothing else in the folder moved.
+    expect(existsSync(file(receipt(2)))).toBe(true);
+  });
+  it("moves a file into an existing folder, keeping its name", async () => {
+    const result = await call("move_file", {
+      path: `${BENCH}/receipt-2.txt`,
+      toFolder: `${BENCH}/Archive/`,
+    });
+    expect(result).toMatchObject({
+      code: "ok",
+      verified: true,
+      facts: {
+        kind: "file",
+        name: "receipt-2.txt",
+        change: "moved",
+        folder: "Archive",
+      },
+    });
+    expect(result.raw).toBe(
+      `Moved ${BENCH}/receipt-2.txt to ${BENCH}/Archive/.`,
+    );
+    expect(existsSync(file(receipt(2)))).toBe(false);
+    expect(text(`${bench}/Archive/receipt-2.txt`)).toContain("Vendor: Acme");
+  });
+  it("never lands on an existing item, whatever it is", async () => {
+    expect(
+      code(
+        await call("rename_file", {
+          path: `${BENCH}/receipt-1.txt`,
+          newName: "receipt-2.txt",
+        }),
+      ),
+    ).toBe("EXISTS");
+    // A folder, a broken link, the file's own name: all taken.
+    expect(
+      code(
+        await call("rename_file", {
+          path: `${BENCH}/receipt-1.txt`,
+          newName: "Archive",
+        }),
+      ),
+    ).toBe("EXISTS");
+    symlinkSync(file(`${bench}/nowhere`), file(`${bench}/dangling.txt`));
+    expect(
+      code(
+        await call("rename_file", {
+          path: `${BENCH}/receipt-1.txt`,
+          newName: "dangling.txt",
+        }),
+      ),
+    ).toBe("EXISTS");
+    expect(
+      code(
+        await call("rename_file", {
+          path: `${BENCH}/receipt-1.txt`,
+          newName: "receipt-1.txt",
+        }),
+      ),
+    ).toBe("EXISTS");
+    writeFileSync(file(`${bench}/Archive/receipt-1.txt`), "older\n");
+    expect(
+      code(
+        await call("move_file", {
+          path: `${BENCH}/receipt-1.txt`,
+          toFolder: `${BENCH}/Archive`,
+        }),
+      ),
+    ).toBe("EXISTS");
+    expect(
+      code(
+        await call("move_file", {
+          path: `${BENCH}/receipt-1.txt`,
+          toFolder: BENCH,
+        }),
+      ),
+    ).toBe("EXISTS");
+    // Nothing moved or was replaced.
+    expect(text(receipt(1))).toContain("Total: $41");
+    expect(text(receipt(2))).toContain("Total: $42");
+    expect(text(`${bench}/Archive/receipt-1.txt`)).toBe("older\n");
+  });
+  it("refuses a missing file, a folder, a link, a missing or non-folder destination, and a bad new name, each with its code", async () => {
+    expect(
+      code(
+        await call("rename_file", {
+          path: `${BENCH}/receipt-9.txt`,
+          newName: "x.txt",
+        }),
+      ),
+    ).toBe("NOT_FOUND");
+    expect(
+      code(
+        await call("rename_file", { path: `${BENCH}/Archive`, newName: "Old" }),
+      ),
+    ).toBe("NOT_A_FILE");
+    symlinkSync(file(receipt(1)), file(`${bench}/alias.txt`));
+    expect(
+      code(
+        await call("rename_file", {
+          path: `${BENCH}/alias.txt`,
+          newName: "x.txt",
+        }),
+      ),
+    ).toBe("NOT_A_FILE");
+    expect(
+      code(
+        await call("move_file", {
+          path: `${BENCH}/alias.txt`,
+          toFolder: `${BENCH}/Archive`,
+        }),
+      ),
+    ).toBe("NOT_A_FILE");
+    expect(existsSync(file(`${bench}/alias.txt`))).toBe(true);
+    expect(existsSync(file(receipt(1)))).toBe(true);
+    expect(
+      code(
+        await call("move_file", {
+          path: `${BENCH}/receipt-1.txt`,
+          toFolder: `${BENCH}/Nowhere`,
+        }),
+      ),
+    ).toBe("NOT_FOUND");
+    expect(
+      code(
+        await call("move_file", {
+          path: `${BENCH}/receipt-1.txt`,
+          toFolder: `${BENCH}/receipt-2.txt`,
+        }),
+      ),
+    ).toBe("NOT_A_FOLDER");
+    for (const [newName, expected] of [
+      ["a/b.txt", "BAD_NAME"],
+      ["", "BAD_NAME"],
+      ["..", "BAD_NAME"],
+      [".hidden", "PROTECTED_PATH"],
+      ["secrets.txt", "PROTECTED_PATH"],
+      ["run.sh", "EXECUTABLE"],
+      ["x.webloc", "EXECUTABLE"],
+    ] as const) {
+      const result = await call("rename_file", {
+        path: `${BENCH}/receipt-1.txt`,
+        newName,
+      });
+      expect(code(result), newName).toBe(expected);
+      expect(result.code).toBe("error");
+    }
+    // The old side of the rule: an executable kind is never renamed or
+    // moved either, by the path as written and by its real name.
+    writeFileSync(file(`${bench}/run.sh`), "#!/bin/sh\n");
+    expect(
+      code(
+        await call("rename_file", {
+          path: `${BENCH}/run.sh`,
+          newName: "a.txt",
+        }),
+      ),
+    ).toBe("BAD_PATH");
+    expect(
+      code(
+        await call("move_file", {
+          path: `${BENCH}/run.sh`,
+          toFolder: `${BENCH}/Archive`,
+        }),
+      ),
+    ).toBe("BAD_PATH");
+    expect(existsSync(file(`${bench}/run.sh`))).toBe(true);
+    for (const toFolder of ["/tmp", "~/Library/Preferences", "~/.Trash"])
+      expect(
+        (
+          await call("move_file", {
+            path: `${BENCH}/receipt-1.txt`,
+            toFolder,
+          })
+        ).code,
+        toFolder,
+      ).toBe("error");
+    expect(existsSync(file(receipt(1)))).toBe(true);
+  });
+  it("holds a folder given as a link to the same rules by its realpath, and moves into a linked folder inside the home", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "butler-outside-"));
+    try {
+      symlinkSync(outside, file(`${bench}/elsewhere`));
+      expect(
+        code(
+          await call("move_file", {
+            path: `${BENCH}/receipt-1.txt`,
+            toFolder: `${BENCH}/elsewhere`,
+          }),
+        ),
+      ).toBe("OUTSIDE_HOME");
+      expect(existsSync(join(outside, "receipt-1.txt"))).toBe(false);
+      symlinkSync(file("Library/Keychains"), file(`${bench}/keys`));
+      expect(
+        code(
+          await call("move_file", {
+            path: `${BENCH}/receipt-1.txt`,
+            toFolder: `${BENCH}/keys`,
+          }),
+        ),
+      ).toBe("PROTECTED_PATH");
+      // A link to a folder inside the home is that folder.
+      symlinkSync(file(`${bench}/Archive`), file(`${bench}/shelf`));
+      const moved = await call("move_file", {
+        path: `${BENCH}/receipt-1.txt`,
+        toFolder: `${BENCH}/shelf`,
+      });
+      expect(moved).toMatchObject({
+        code: "ok",
+        facts: { change: "moved", folder: "shelf" },
+      });
+      expect(existsSync(file(`${bench}/Archive/receipt-1.txt`))).toBe(true);
+      expect(existsSync(file(receipt(1)))).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+  it("undoes a rename or a move by moving the file back, unless it moved again or its old place is taken", async () => {
+    const renamed = await call("rename_file", {
+      path: `${BENCH}/receipt-1.txt`,
+      newName: "2026-03-01-acme-41.txt",
+    });
+    expect(await provider.undo(renamed.undoToken!, signal)).toEqual({
+      code: "ok",
+      raw: "Put the file back where it was.",
+      items: 1,
+    });
+    expect(existsSync(file(receipt(1)))).toBe(true);
+    expect(existsSync(file(`${bench}/2026-03-01-acme-41.txt`))).toBe(false);
+    expect(code(await provider.undo(renamed.undoToken!, signal))).toBe(
+      "NOT_FOUND",
+    );
+    const moved = await call("move_file", {
+      path: `${BENCH}/receipt-2.txt`,
+      toFolder: `${BENCH}/Archive`,
+    });
+    expect((await provider.undo(moved.undoToken!, signal)).code).toBe("ok");
+    expect(existsSync(file(receipt(2)))).toBe(true);
+    expect(existsSync(file(`${bench}/Archive/receipt-2.txt`))).toBe(false);
+    // Moved again since: left where it is.
+    const again = await call("rename_file", {
+      path: `${BENCH}/receipt-1.txt`,
+      newName: "a.txt",
+    });
+    await call("rename_file", { path: `${BENCH}/a.txt`, newName: "b.txt" });
+    expect(code(await provider.undo(again.undoToken!, signal))).toBe(
+      "CHANGED_SINCE",
+    );
+    expect(existsSync(file(`${bench}/b.txt`))).toBe(true);
+    // Its old place taken since: left where it is.
+    const third = await call("rename_file", {
+      path: `${BENCH}/receipt-2.txt`,
+      newName: "c.txt",
+    });
+    writeFileSync(file(receipt(2)), "the user made a new one\n");
+    expect(code(await provider.undo(third.undoToken!, signal))).toBe(
+      "CHANGED_SINCE",
+    );
+    expect(text(receipt(2))).toBe("the user made a new one\n");
+    expect(existsSync(file(`${bench}/c.txt`))).toBe(true);
+    // The window closes on a move as on a write.
+    const late = await call("rename_file", {
+      path: `${BENCH}/c.txt`,
+      newName: "d.txt",
+    });
+    now += TOOL_LIMITS.undoWindowMs;
+    expect(code(await provider.undo(late.undoToken!, signal))).toBe(
+      "NOT_FOUND",
+    );
+    expect(existsSync(file(`${bench}/d.txt`))).toBe(true);
   });
 });
 

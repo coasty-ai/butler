@@ -16,7 +16,10 @@ import {
   CLOCK,
   FAKE_HOME,
   FILES_APPEND,
+  FILES_LIST,
+  FILES_MOVE,
   FILES_READ,
+  FILES_RENAME,
   FILES_REPLACE,
   FS_LIST,
   FS_WRITE,
@@ -414,6 +417,94 @@ describe("toolDecision: the files tool", () => {
         userWords: "write hi to /tmp/a",
       }).kind,
     ).toBe("CONFIRM");
+  });
+  it("runs a rename or a move as a grounded write: unasked under task and flow when the words named the file (and the folder), the question otherwise, always under all", () => {
+    // The new name is read off the file, so the words cannot carry it and
+    // do not have to: the file's path alone grounds the call.
+    const RENAME_WORDS =
+      "rename ~/OpenAssistBench/benchnote0a1b/receipt-1.txt to its date, vendor and amount";
+    const rename = {
+      path: "~/OpenAssistBench/benchnote0a1b/receipt-1.txt",
+      newName: "2026-05-11-bramble-73.txt",
+    };
+    expect(kinds(FILES_RENAME, rename, { userWords: RENAME_WORDS })).toEqual({
+      ask: "CONFIRM",
+      task: "ALLOW",
+      flow: "ALLOW",
+      all: "ALLOW",
+    });
+    expect(
+      decide(FILES_RENAME, rename, "task", { userWords: RENAME_WORDS }).reason,
+    ).toBe(TOOL_ALLOWED.grounded_write);
+    expect(
+      decide(FILES_RENAME, rename, "ask", { userWords: RENAME_WORDS }).reason,
+    ).toBe("Rename receipt-1.txt to 2026-05-11-bramble-73.txt?");
+    // A file the words did not name asks, except under all. Cycle
+    // 20260919-2044 files-rename-receipts names the folder and says
+    // "receipt", never receipt-1.txt (its "1" is an entity the words lack),
+    // so under task each rename is a question and under the cycle's "all"
+    // it runs: the same rule as an append to a file the words did not name.
+    const INSTRUCTION =
+      "In ~/OpenAssistBench/benchnote0a1b, which is open in the Finder, rename each receipt to date-vendor-amount using what's written inside it, like 2026-03-04-acme-42.txt.";
+    for (const userWords of [INSTRUCTION, "tidy up my receipts"])
+      expect(kinds(FILES_RENAME, rename, { userWords }), userWords).toEqual({
+        ask: "CONFIRM",
+        task: "CONFIRM",
+        flow: "CONFIRM",
+        all: "ALLOW",
+      });
+    expect(
+      decide(FILES_RENAME, rename, "task", { userWords: INSTRUCTION }).reason,
+    ).toBe("Rename receipt-1.txt to 2026-05-11-bramble-73.txt?");
+    expect(
+      decide(FILES_RENAME, rename, "all", { userWords: INSTRUCTION }).reason,
+    ).toBe(TOOL_ALLOWED.unasked);
+    expect(kinds(FILES_RENAME, rename, {})).toMatchObject({
+      task: "CONFIRM",
+      all: "ALLOW",
+    });
+    // A move grounds on the file and the folder; naming the file alone asks.
+    const move = {
+      path: "~/OpenAssistBench/benchnote0a1b/receipt-1.txt",
+      toFolder: "~/OpenAssistBench/benchnote0a1b/Archive",
+    };
+    const MOVE_WORDS =
+      "move ~/OpenAssistBench/benchnote0a1b/receipt-1.txt into ~/OpenAssistBench/benchnote0a1b/Archive";
+    expect(kinds(FILES_MOVE, move, { userWords: MOVE_WORDS })).toEqual({
+      ask: "CONFIRM",
+      task: "ALLOW",
+      flow: "ALLOW",
+      all: "ALLOW",
+    });
+    expect(
+      decide(FILES_MOVE, move, "task", { userWords: MOVE_WORDS }).reason,
+    ).toBe(TOOL_ALLOWED.grounded_write);
+    expect(
+      kinds(FILES_MOVE, move, {
+        userWords: "move ~/OpenAssistBench/benchnote0a1b/receipt-1.txt away",
+      }),
+    ).toEqual({
+      ask: "CONFIRM",
+      task: "CONFIRM",
+      flow: "CONFIRM",
+      all: "ALLOW",
+    });
+    expect(
+      decide(FILES_MOVE, move, "task", { userWords: "tidy up" }).reason,
+    ).toBe("Move receipt-1.txt to Archive?");
+    // Without an undo of its own, untrusted or open-world, a rename asks.
+    for (const spec of [
+      { ...FILES_RENAME, undoable: false },
+      { ...FILES_RENAME, trusted: false },
+      { ...FILES_RENAME, openWorld: true },
+    ])
+      expect(kinds(spec, rename, { userWords: RENAME_WORDS }).task).toBe(
+        "CONFIRM",
+      );
+    // The list is a trusted read: it runs in every mode.
+    expect(
+      kinds(FILES_LIST, { path: "~/OpenAssistBench/benchnote0a1b" }),
+    ).toEqual({ ask: "ALLOW", task: "ALLOW", flow: "ALLOW", all: "ALLOW" });
   });
   it("retries a refused path with the fixed sentence in every mode, before any question", () => {
     for (const path of [

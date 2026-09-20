@@ -69,6 +69,8 @@ const QUESTIONS = (title: string): ToolQuestion[] => [
   { kind: "file_list", name: title },
   { kind: "file_append", name: title, text: title },
   { kind: "file_write", name: title, text: title },
+  { kind: "file_rename", name: title, newName: title },
+  { kind: "file_move", name: title, folder: title },
 ];
 const ENTITIES: ((title: string) => string)[] = [
   (title) => title,
@@ -89,7 +91,12 @@ describe("tool questions", () => {
           expect(text.length).toBeLessThanOrEqual(160);
           expect(text).not.toMatch(/[\n\r​‮\u{e0041}]/u);
           expect(text).not.toContain("hunter22");
-          expect(text).toMatch(/^(?:Add|Change|Delete|Use|Send|Run) .*\?$/);
+          // The closed set of first verbs: Rename and Move joined it with
+          // the files tool's rename_file and move_file; neither gate below
+          // lists them, so a title can never make one approvable.
+          expect(text).toMatch(
+            /^(?:Add|Change|Delete|Use|Send|Run|Rename|Move) .*\?$/,
+          );
           expect(followUpApprovalAllowed(text)).toBe(false);
           expect(remoteApprovalTier({ reason: text })).toBe("never");
         }
@@ -238,6 +245,30 @@ describe("tool questions", () => {
     expect(
       toolQuestion({ kind: "file_append", name: "", text: "" }, [], CLOCK),
     ).toBe("Add to the file: the text?");
+    expect(
+      toolQuestion(
+        {
+          kind: "file_rename",
+          name: "receipt-1.txt",
+          newName: "2026-03-04-acme-42.txt",
+        },
+        [],
+        CLOCK,
+      ),
+    ).toBe("Rename receipt-1.txt to 2026-03-04-acme-42.txt?");
+    expect(
+      toolQuestion(
+        { kind: "file_move", name: "receipt-1.txt", folder: "Archive" },
+        [],
+        CLOCK,
+      ),
+    ).toBe("Move receipt-1.txt to Archive?");
+    expect(
+      toolQuestion({ kind: "file_rename", name: "", newName: "" }, [], CLOCK),
+    ).toBe("Rename the file to the new name?");
+    expect(
+      toolQuestion({ kind: "file_move", name: "", folder: "" }, [], CLOCK),
+    ).toBe("Move the file to that folder?");
     // A credential in the text is redacted before it is shown.
     expect(
       toolQuestion(
@@ -459,6 +490,52 @@ describe("the done line", () => {
       change,
       lines,
     });
+    // A rename says both names, a move the folder, each only when the user
+    // said it; the generic nouns otherwise.
+    const renamed: ToolFacts = {
+      kind: "file",
+      name: "2026-03-04-acme-42.txt",
+      change: "renamed",
+      from: "receipt-1.txt",
+    };
+    const moved: ToolFacts = {
+      kind: "file",
+      name: "receipt-1.txt",
+      change: "moved",
+      folder: "Archive",
+    };
+    expect(
+      toolDoneLine(
+        renamed,
+        CLOCK,
+        "rename receipt-1.txt to 2026-03-04-acme-42.txt",
+      ),
+    ).toBe("Renamed receipt-1.txt to 2026-03-04-acme-42.txt.");
+    expect(
+      toolDoneLine(renamed, CLOCK, "rename each receipt by its date"),
+    ).toBe("Renamed the file to its new name.");
+    expect(toolDoneLine(renamed, CLOCK, undefined)).toBe(
+      "Renamed the file to its new name.",
+    );
+    expect(toolDoneLine(moved, CLOCK, "move receipt-1.txt into Archive")).toBe(
+      "Moved receipt-1.txt to Archive.",
+    );
+    expect(toolDoneLine(moved, CLOCK, "tidy up")).toBe(
+      "Moved the file to the folder.",
+    );
+    for (const facts of [renamed, moved])
+      for (const said of [
+        "rename receipt-1.txt to 2026-03-04-acme-42.txt into Archive",
+        undefined,
+      ])
+        expect(speakableSummary(toolDoneLine(facts, CLOCK, said))).toBe(
+          toolDoneLine(facts, CLOCK, said),
+        );
+    expect(toolUndoLine(renamed)).toBe("the file was put back where it was.");
+    expect(toolUndoLine(moved)).toBe("the file was put back where it was.");
+    expect(toolUndoLine(file("appended"))).toBe(
+      "the file was put back as it was.",
+    );
     expect(toolDoneLine(file("appended"), CLOCK, words)).toBe(
       "Added a line to benchnote0a1b-notes.txt.",
     );

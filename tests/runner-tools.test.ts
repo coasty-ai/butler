@@ -31,6 +31,10 @@ import {
   CALENDAR_LIST,
   CATALOGUE,
   DENTIST_FACTS,
+  FILES_APPEND,
+  FILES_LIST,
+  FILES_READ,
+  FILES_TOOLS,
   FS_LIST,
   FS_WRITE,
   REMINDERS_LIST,
@@ -508,15 +512,16 @@ describe("a tool step the model proposes", () => {
       result: TOOL_RESULT_TEXT.interrupted,
     });
   });
-  it("trips loop detection on the same call twice over, and never a no-progress note on different reads", async () => {
+  it("trips loop detection on the same read three times running, and never a no-progress note on different reads", async () => {
     const same = call(CALENDAR_LIST.id, LIST_ARGS);
     const h = harness({ replies: [same, same, same, same] });
     await h.runner.start("check my calendar", voice);
-    // The third identical call is the revisit rule's loop (a tool call has no
-    // screen, so the same arguments are the same step); the fourth is the
-    // period rule's, and the warning is given once.
+    // A read-tier call is no revisit (it changes nothing; coming back to it
+    // is work), so the third identical call is the period rule's spin (the
+    // same read, the same arguments, nothing between); the fourth is the
+    // same loop, and the warning is given once.
     expect(h.m.of("ActionLoopDetected").map((e) => e.data)).toEqual([
-      { actionType: "tool_call", period: 0, revisits: 3 },
+      { actionType: "tool_call", period: 1 },
     ]);
     const entries = h.provider.observations.at(-1)!.history;
     expect(entries[2].result).toContain(loopWarning.trim());
@@ -538,6 +543,63 @@ describe("a tool step the model proposes", () => {
         .history.some((e) => e.result.includes(noProgressWarning.trim())),
     ).toBe(false);
     expect(other.runner.snapshot.run?.tools).toEqual({ calls: 3, writes: 0 });
+  });
+  it("lets a per-file read-and-append job list the folder again and again, and keeps a repeated write a revisit", async () => {
+    // Cycle 20260919-2044 files-receipts-to-csv #1: list, read a receipt,
+    // append its row, list again … the same list_directory every third
+    // step was the revisit rule's loop at the third one, while the run was
+    // making progress. Here the job runs to its end.
+    const folder = "~/OpenAssistBench/benchnote0a1b";
+    const list = call(FILES_LIST.id, { path: folder });
+    const read = (n: number) =>
+      call(FILES_READ.id, { path: `${folder}/receipt-${n}.txt` });
+    const row = (n: number) =>
+      call(FILES_APPEND.id, {
+        path: `${folder}/benchnote0a1b-expenses.csv`,
+        text: `2026-0${n}-01,acme,${n}0`,
+      });
+    const h = harness({
+      replies: [
+        list,
+        read(1),
+        row(1),
+        list,
+        read(2),
+        row(2),
+        list,
+        read(3),
+        row(3),
+        list,
+        read(4),
+        row(4),
+      ],
+      tools: fakeTools({ tools: FILES_TOOLS }),
+      settings: { autonomy: "all", autonomyAllAcknowledged: true },
+    });
+    await h.runner.start("add a row for each receipt to the expenses file", {
+      origin: "bench",
+      taskSource: "user_words",
+    });
+    expect(h.runner.snapshot.run).toMatchObject({
+      status: "completed",
+      tools: { calls: 12, writes: 4 },
+    });
+    expect(h.m.of("ActionLoopDetected")).toHaveLength(0);
+    expect(h.m.of("ActionLoopBroken")).toHaveLength(0);
+    // The tool's tier comes from the run's frozen list; a write with the
+    // same arguments from the same (screenless) step is the revisit it was.
+    const again = harness({
+      replies: [row(1), list, row(1), read(1), row(1)],
+      tools: fakeTools({ tools: FILES_TOOLS }),
+      settings: { autonomy: "all", autonomyAllAcknowledged: true },
+    });
+    await again.runner.start("add the row", {
+      origin: "bench",
+      taskSource: "user_words",
+    });
+    expect(again.m.of("ActionLoopDetected").map((e) => e.data)).toEqual([
+      { actionType: "tool_call", period: 0, revisits: 3 },
+    ]);
   });
   it("never lets a hostile result change the next decision", async () => {
     const tools = fakeTools();

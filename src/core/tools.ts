@@ -90,7 +90,10 @@ export type ToolQuestion =
   | { kind: "send_to"; server: string; tool: string }
   /** The files tool (src/tools/providers/files.ts): the file's own name, and for a write the text as a preview. */
   | { kind: "file_read" | "file_list"; name: string }
-  | { kind: "file_append" | "file_write"; name: string; text: string };
+  | { kind: "file_append" | "file_write"; name: string; text: string }
+  /** A rename says the new name; a move the folder's own name. */
+  | { kind: "file_rename"; name: string; newName: string }
+  | { kind: "file_move"; name: string; folder: string };
 /**
  * The user's own words at prepare: the run's objective when it is theirs
  * (Runner.userWords), undefined for a rewrite, an accepted offer or a watch
@@ -106,7 +109,7 @@ export type ToolProblem =
   | "too_large"
   | "unavailable"
   | "denylisted"
-  /** A path the files tool may not touch: outside the home folder, under ~/Library, hidden, credential-like or executable. */
+  /** A path (or a rename's new name, or a move's folder) the files tool may not touch: outside the home folder, under ~/Library, hidden, credential-like or executable. */
   | "bad_path"
   /** A whole-file replace of a file that holds text, when the user's words did not say to replace, overwrite or clear it (the files tool): append_text_file is the route. */
   | "would_erase";
@@ -141,12 +144,19 @@ export type ToolFacts =
   | { kind: "note"; title: string; folder: string }
   | { kind: "draft"; subject: string; recipients: number }
   | { kind: "agent"; folder: string; summary: string }
-  /** The files tool read the file back after writing it: its name, what changed and how many lines the text had. */
+  /**
+   * The files tool read the file back after writing it (its name, what
+   * changed and how many lines the text had), or found it by stat after a
+   * rename (name is the new one, from the old) or a move (folder is where it
+   * went, by its own name).
+   */
   | {
       kind: "file";
       name: string;
-      change: "appended" | "created" | "replaced";
-      lines: number;
+      change: "appended" | "created" | "replaced" | "renamed" | "moved";
+      lines?: number;
+      from?: string;
+      folder?: string;
     };
 export interface ToolOutcome {
   code: ToolCode;
@@ -330,7 +340,7 @@ export interface ToolsStatus {
 }
 
 export const TOOL_LIMITS = {
-  /** Tools the model sees per run: the nine Apple tools and the four files tools fit, with room for a server's. */
+  /** Tools the model sees per run: the nine Apple tools and the six files tools (15) fit, with one seat left for a server's. */
   list: 16,
   unavailable: 4,
   argsBytes: 8192,

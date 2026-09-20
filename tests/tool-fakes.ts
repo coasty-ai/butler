@@ -144,7 +144,35 @@ export const FILES_REPLACE = files(
   "Replaces everything a plain-text file holds with the text, erasing what it held.",
   "path (text, a ~/ path), text (text)",
 );
-export const FILES_TOOLS = [FILES_READ, FILES_APPEND, FILES_REPLACE];
+export const FILES_LIST = files(
+  "list_directory",
+  "read",
+  false,
+  "Lists the visible files and folders inside a folder in your home folder.",
+  "path (text, a ~/ path)",
+);
+export const FILES_RENAME = files(
+  "rename_file",
+  "write",
+  true,
+  "Renames a file in your home folder in place; never over an existing file.",
+  "path (text, a ~/ path), newName (text, a file name with no slash)",
+);
+export const FILES_MOVE = files(
+  "move_file",
+  "write",
+  true,
+  "Moves a file in your home folder into another folder there, keeping its name.",
+  "path (text, a ~/ path), toFolder (text, a ~/ folder path)",
+);
+export const FILES_TOOLS = [
+  FILES_READ,
+  FILES_APPEND,
+  FILES_REPLACE,
+  FILES_LIST,
+  FILES_RENAME,
+  FILES_MOVE,
+];
 /** The home folder the fakes stand in for: an absolute path under it grounds as its ~/ form. */
 export const FAKE_HOME = "/Users/me";
 /** The one file the fake home holds with text in it (what FILES_READ reads); every other path is absent or empty. */
@@ -216,6 +244,9 @@ const REQUIRED: Record<string, string[]> = {
   files__read_text_file: ["path"],
   files__append_text_file: ["path", "text"],
   files__replace_file_text: ["path", "text"],
+  files__list_directory: ["path"],
+  files__rename_file: ["path", "newName"],
+  files__move_file: ["path", "toFolder"],
   filesystem__list_directory: ["path"],
   filesystem__write_file: ["path", "content"],
   github__search_repositories: ["query"],
@@ -271,6 +302,20 @@ const questionOf = (
         name: baseName(args.path),
         text: s(args.text),
       };
+    case FILES_LIST.id:
+      return { kind: "file_list", name: baseName(args.path) };
+    case FILES_RENAME.id:
+      return {
+        kind: "file_rename",
+        name: baseName(args.path),
+        newName: s(args.newName),
+      };
+    case FILES_MOVE.id:
+      return {
+        kind: "file_move",
+        name: baseName(args.path),
+        folder: baseName(args.toFolder),
+      };
     default:
       return {
         kind:
@@ -310,10 +355,15 @@ export function prepare(
     )
       return { ok: false, problem: "would_erase" };
 
+    // A move grounds on the file and the folder it goes to; a rename's new
+    // name is content, like a write's text.
     return {
       ok: true,
       question: questionOf(spec, args),
-      groundText: [homeRelative(path)],
+      groundText: [
+        homeRelative(path),
+        ...(spec.id === FILES_MOVE.id ? [homeRelative(args.toFolder)] : []),
+      ],
       argsBytes: JSON.stringify(args).length,
     };
   }
@@ -420,6 +470,41 @@ const defaultOutcome = (
         },
         undoToken: "u-4",
       });
+    case FILES_LIST.id:
+      return ok(spec, "receipt-1.txt (48 bytes)\nreceipt-2.txt (50 bytes)", {
+        lines: ["receipt-1.txt (48 bytes)", "receipt-2.txt (50 bytes)"],
+        resultItems: 2,
+      });
+    case FILES_RENAME.id:
+      return ok(
+        spec,
+        `Renamed ${homeRelative(args.path)} to ${String(args.newName ?? "")}.`,
+        {
+          verified: true,
+          facts: {
+            kind: "file",
+            name: String(args.newName ?? ""),
+            change: "renamed",
+            from: baseName(args.path),
+          },
+          undoToken: "u-5",
+        },
+      );
+    case FILES_MOVE.id:
+      return ok(
+        spec,
+        `Moved ${homeRelative(args.path)} to ${homeRelative(args.toFolder)}/.`,
+        {
+          verified: true,
+          facts: {
+            kind: "file",
+            name: baseName(args.path),
+            change: "moved",
+            folder: baseName(args.toFolder),
+          },
+          undoToken: "u-6",
+        },
+      );
     default:
       return ok(spec, "done");
   }

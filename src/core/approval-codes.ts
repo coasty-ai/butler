@@ -70,6 +70,8 @@ export const APPROVAL_CODES = [
   "TOOL_FILE_READ",
   "TOOL_FILE_APPEND",
   "TOOL_FILE_WRITE",
+  "TOOL_FILE_RENAME",
+  "TOOL_FILE_MOVE",
   "OTHER",
 ] as const;
 export type ApprovalCode = (typeof APPROVAL_CODES)[number];
@@ -150,6 +152,8 @@ const SHAPES: readonly (readonly [RegExp, ApprovalCode])[] = [
   [/^Use Files to (?:read|list) .*\?$/su, "TOOL_FILE_READ"],
   [/^Add to .*: .*\?$/su, "TOOL_FILE_APPEND"],
   [/^Change .*, replacing what it holds with: .*\?$/su, "TOOL_FILE_WRITE"],
+  [/^Rename .* to .*\?$/su, "TOOL_FILE_RENAME"],
+  [/^Move .* to .*\?$/su, "TOOL_FILE_MOVE"],
 ];
 
 /**

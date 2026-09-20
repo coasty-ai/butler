@@ -4,10 +4,11 @@
  * verified builtin write ends a run with, the undo and fallback lines, and
  * the date words all of them share. Pure: dates resolve against the clock
  * the tool layer hands in, never Date.now(). Questions open with a verb from
- * a closed set (Add, Change, Delete, Use, Send, Run) so neither the follow-up
- * window (src/voice/turns.ts followUpApprovalAllowed) nor the phone
- * (src/remote/auth.ts remoteApprovalTier) can ever approve one; the tests in
- * tests/tools-core.test.ts render each kind with hostile titles to keep it so.
+ * a closed set (Add, Change, Delete, Use, Send, Run, Rename, Move) so neither
+ * the follow-up window (src/voice/turns.ts followUpApprovalAllowed) nor the
+ * phone (src/remote/auth.ts remoteApprovalTier) can ever approve one; the
+ * tests in tests/tools-core.test.ts render each kind with hostile titles to
+ * keep it so.
  */
 import { redactSecrets } from "./sanitize";
 import type { ToolClock, ToolFacts, ToolQuestion } from "./tools";
@@ -290,6 +291,12 @@ export function toolQuestion(
     case "file_write":
       text = `Change ${questionText(q.name, 60) || "the file"}, replacing what it holds with: ${questionText(q.text, 60) || "the text"}?`;
       break;
+    case "file_rename":
+      text = `Rename ${questionText(q.name, 60) || "the file"} to ${questionText(q.newName, 60) || "the new name"}?`;
+      break;
+    case "file_move":
+      text = `Move ${questionText(q.name, 60) || "the file"} to ${questionText(q.folder, 60) || "that folder"}?`;
+      break;
   }
   const line = redactSecrets(text.replace(/\s+/g, " ").trim());
   return line.length > QUESTION_MAX
@@ -382,7 +389,11 @@ export function toolDoneLine(
       const name = spokenTitle(facts.name, "the file", userWords);
       if (facts.change === "created") return `Created ${name}.`;
       if (facts.change === "replaced") return `Replaced what ${name} held.`;
-      return `Added ${facts.lines === 1 ? "a line" : `${facts.lines} lines`} to ${name}.`;
+      if (facts.change === "renamed")
+        return `Renamed ${spokenTitle(facts.from ?? "", "the file", userWords)} to ${spokenTitle(facts.name, "its new name", userWords)}.`;
+      if (facts.change === "moved")
+        return `Moved ${name} to ${spokenTitle(facts.folder ?? "", "the folder", userWords)}.`;
+      return `Added ${facts.lines === 1 ? "a line" : `${facts.lines ?? 0} lines`} to ${name}.`;
     }
   }
 }
@@ -398,7 +409,9 @@ export function toolUndoLine(facts: ToolFacts | undefined): string {
     case "draft":
       return "the draft was removed from Mail.";
     case "file":
-      return "the file was put back as it was.";
+      return facts.change === "renamed" || facts.change === "moved"
+        ? "the file was put back where it was."
+        : "the file was put back as it was.";
     default:
       return "the last tool step was taken back.";
   }

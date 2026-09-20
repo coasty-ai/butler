@@ -511,9 +511,14 @@ describe("what one step costs", () => {
     // append_text_file and that replace_file_text erases the file and needs
     // the objective's words (probe cycle 20260919-1952: the tool then named
     // write_text_file matched "write <fact> into <path>" and lost the header
-    // in 2 of 3 tool-route notes), 113 characters the pin moved for.
+    // in 2 of 3 tool-route notes), 113 characters the pin moved for;
+    // 17,177 with the sentence that renaming or moving a named file is
+    // rename_file or move_file, one call per file, never the Finder (cycle
+    // 20260919-2044: files-rename-receipts #2 listed and read through the
+    // tool, found nothing that renames, and fell back to Finder clicks and
+    // keys until the loop rule ended it), 112 characters the pin moved for.
 
-    expect(instruction.length).toBeLessThan(17100);
+    expect(instruction.length).toBeLessThan(17200);
 
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
@@ -543,7 +548,8 @@ describe("what one step costs", () => {
     expect(paragraph).toMatch(/^The target window is in the background/);
     expect(paragraph.length).toBeLessThan(1900);
     // 18,738 with the three sentences the instruction gained on 2026-09-19.
-    expect(instruction.length + paragraph.length).toBeLessThan(18900);
+    // 18,964 with the rename/move sentence above (the pin moved with it).
+    expect(instruction.length + paragraph.length).toBeLessThan(19000);
     expect(instruction.indexOf(" Return exactly one action")).toBeGreaterThan(
       15000,
     );
