@@ -282,7 +282,11 @@ describe("a tool step the model proposes", () => {
     });
     expect(h.m.of("PolicyConfirmationRequested")).toHaveLength(0);
     expect(h.m.of("PolicyAllowed").map((e) => e.data)).toEqual([
-      { reason: TOOL_ALLOWED.read, actionType: "tool_call" },
+      {
+        reason: TOOL_ALLOWED.read,
+        reasonCode: "TOOL_READ",
+        actionType: "tool_call",
+      },
     ]);
     expect(h.tools!.calls).toEqual([{ id: CALENDAR_LIST.id, args: LIST_ARGS }]);
     expect(h.c.execute).not.toHaveBeenCalled();
@@ -376,6 +380,7 @@ describe("a tool step the model proposes", () => {
     expect(h.m.of("PolicyConfirmationRequested")).toHaveLength(0);
     expect(h.m.of("PolicyAllowed")[0].data).toEqual({
       reason: TOOL_ALLOWED.grounded,
+      reasonCode: "TOOL_GROUNDED",
       actionType: "tool_call",
     });
     expect(h.runner.snapshot.run?.summary).toBe(
