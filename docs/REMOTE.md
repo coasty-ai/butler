@@ -21,14 +21,14 @@ Identity comes from `electron/remote/tailscale.ts`: the Standalone build's Local
 
 `src/remote/auth.ts#access`, checked before any route:
 
-| Peer | Result |
-|---|---|
-| No whois answer, or an address outside the Tailscale ranges | 403 |
-| This Mac's own node (a browser on the Mac) | 403 |
-| A tagged node (a server, no person) or a node shared in from another tailnet | 403 |
-| A different Tailscale login than `remoteUser` (pinned to this Mac's login on first start) | 403 |
-| The right login on a phone not yet allowed | "Not allowed yet" page; the phone appears in Settings with every switch off |
-| A phone with "Allow control" on | The page, a session and the event stream |
+| Peer                                                                                      | Result                                                                      |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| No whois answer, or an address outside the Tailscale ranges                               | 403                                                                         |
+| This Mac's own node (a browser on the Mac)                                                | 403                                                                         |
+| A tagged node (a server, no person) or a node shared in from another tailnet              | 403                                                                         |
+| A different Tailscale login than `remoteUser` (pinned to this Mac's login on first start) | 403                                                                         |
+| The right login on a phone not yet allowed                                                | "Not allowed yet" page; the phone appears in Settings with every switch off |
+| A phone with "Allow control" on                                                           | The page, a session and the event stream                                    |
 
 Pairing is Mac-only: the phone is already authenticated by Tailscale, and the switch in Settings is the consent. There is no code, QR or pairing route on the phone side. At most 12 phones are remembered; unallowed ones are pruned least-recently-seen first.
 
@@ -43,18 +43,18 @@ Instructions from a phone become a run with `origin: "remote"` and `taskSource: 
 
 ## Protocol
 
-| Route | Needs | Body / result |
-|---|---|---|
-| `GET /` | control | The page, with `Content-Security-Policy: default-src 'none'; script-src 'nonce-…'; style-src 'nonce-…'; connect-src 'self'; img-src 'self' data:; …`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` |
-| `GET /manifest.webmanifest` | control | Home Screen manifest with an inline icon |
-| `GET /api/session` | control | `{ token, device: { name, control, approve }, mac: { name }, screenshots, mic: false }` and the `oa_remote` cookie (`HttpOnly; SameSite=Strict; Path=/api`, `Secure` over HTTPS) |
-| `GET /api/events` | cookie | Server-sent events: `status` (the view), `progress`, `reply`, `notice`, `ping` every 20 s; at most 2 streams per phone, 6 in all |
-| `POST /api/say` | cookie + header | `{ text ≤ 2000 }` → `{ plan, reply }` |
-| `POST /api/control` | cookie + header | `{ kind: stop \| pause \| continue }` → `{ ok, reply }` |
-| `POST /api/approve` | cookie + header | `{ gate, nonce, answer: approve \| skip }` → `{ verdict, reply }` |
-| `POST /api/ask` | cookie + header | `{ kind: "status" }` → `{ reply }` |
-| `GET /api/frame/<id>.jpg` | cookie | The thumbnail for the frame the last `status` named, or 404 |
-| `POST /api/audio` | cookie + header | Phase 2 stub: 501 |
+| Route                       | Needs           | Body / result                                                                                                                                                                                                                                      |
+| --------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /`                     | control         | The page, with `Content-Security-Policy: default-src 'none'; script-src 'nonce-…'; style-src 'nonce-…'; connect-src 'self'; img-src 'self' data:; …`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` |
+| `GET /manifest.webmanifest` | control         | Home Screen manifest with an inline icon                                                                                                                                                                                                           |
+| `GET /api/session`          | control         | `{ token, device: { name, control, approve }, mac: { name }, screenshots, mic: false }` and the `oa_remote` cookie (`HttpOnly; SameSite=Strict; Path=/api`, `Secure` over HTTPS)                                                                   |
+| `GET /api/events`           | cookie          | Server-sent events: `status` (the view), `progress`, `reply`, `notice`, `ping` every 20 s; at most 2 streams per phone, 6 in all                                                                                                                   |
+| `POST /api/say`             | cookie + header | `{ text ≤ 2000 }` → `{ plan, reply }`                                                                                                                                                                                                              |
+| `POST /api/control`         | cookie + header | `{ kind: stop \| pause \| continue }` → `{ ok, reply }`                                                                                                                                                                                            |
+| `POST /api/approve`         | cookie + header | `{ gate, nonce, answer: approve \| skip }` → `{ verdict, reply }`                                                                                                                                                                                  |
+| `POST /api/ask`             | cookie + header | `{ kind: "status" }` → `{ reply }`                                                                                                                                                                                                                 |
+| `GET /api/frame/<id>.jpg`   | cookie          | The thumbnail for the frame the last `status` named, or 404                                                                                                                                                                                        |
+| `POST /api/audio`           | cookie + header | Phase 2 stub: 501                                                                                                                                                                                                                                  |
 
 Every request must carry a `Host` naming this Mac (its MagicDNS name or one of its tailnet addresses, with the remote's port or none); anything else is answered 421 before any route, so a site whose DNS is pointed at this Mac (rebinding) can never become same-origin with the page in the phone's browser. Every POST must also carry `Origin` equal to one of those names on this port (never the request's own Host reflected back), `Content-Type: application/json`, `Sec-Fetch-Site: same-origin` when present, and `X-Remote-Token` equal to the cookie; no CORS headers are ever sent, so a page elsewhere cannot make the call. Bodies over 4 KB are refused before parsing; per-phone limits are 10 lines a minute (60 an hour), 20 controls and 6 approvals a minute, 30 thumbnails a minute; 16 sockets in all; unauthenticated peers get 10 tries a minute per address.
 

@@ -26,7 +26,6 @@ import {
   type JevChoiceQuestion,
 } from "../src/providers/jev";
 
-
 /**
  * The act question, built once from the dialog prompt's own lines when this
  * module loads, so a prompt that no longer has them fails here and in every

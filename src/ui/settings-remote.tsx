@@ -100,11 +100,11 @@ export function SettingsRemote({
       </summary>
       <div className="setting-fields">
         <p>
-          Butler can serve a small page to your phone over your own
-          Tailscale network: what it is doing, plain-language instructions,
-          stop, pause and continue, and, only for phones you allow, approving
-          routine steps. Nothing is published to the internet, and Butler
-          never turns on Tailscale Funnel.
+          Butler can serve a small page to your phone over your own Tailscale
+          network: what it is doing, plain-language instructions, stop, pause
+          and continue, and, only for phones you allow, approving routine steps.
+          Nothing is published to the internet, and Butler never turns on
+          Tailscale Funnel.
         </p>
         <label className="consent">
           <input

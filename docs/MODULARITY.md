@@ -12,12 +12,12 @@ easy to install and to embed, and which single change to make first.
 
 ## 0. What is there today, measured
 
-| Area | Lines | Note |
-|---|---|---|
-| `src/` (TypeScript/TSX) | 15,476 | no file imports `electron` |
-| `electron/` | 7,751 | only 4 of 14 files import `electron` |
-| `native/macos/` (Swift) | 4,986 | two helper binaries plus pure rule files |
-| `tests/` | 19,895 | 25 vitest files, 1 Playwright spec |
+| Area                    | Lines  | Note                                     |
+| ----------------------- | ------ | ---------------------------------------- |
+| `src/` (TypeScript/TSX) | 15,476 | no file imports `electron`               |
+| `electron/`             | 7,751  | only 4 of 14 files import `electron`     |
+| `native/macos/` (Swift) | 4,986  | two helper binaries plus pure rule files |
+| `tests/`                | 19,895 | 25 vitest files, 1 Playwright spec       |
 
 Largest files: `electron/main.ts` 2,276 · `src/ui/main.tsx` 2,257 ·
 `src/core/runner.ts` 1,835 · `electron/conversation.ts` 1,153 ·
@@ -46,16 +46,16 @@ misfiled, and it is the cheapest modularity win in the repository.
 
 These need no work. They are the seams the rest of the plan builds on.
 
-| Seam | Where | Implementations |
-|---|---|---|
-| `Controller` | `src/core/schema.ts:408` — `surface`, `capture`, `execute`, `stop`, `resume`, optional `restore`/`revalidate` | `NativeController` (`electron/controller.ts:366`), `TutorialController` (`src/core/tutorial.ts:14`) |
-| `Provider` | `src/core/schema.ts:392` — one method, `next(observation, signal)` | `HttpProvider` (`src/providers/http.ts:764`), `TutorialProvider` (`src/core/tutorial.ts:82`), the trace-wrapping proxy in `scripts/live-task.mjs:230` |
-| `Recorder` | `src/core/schema.ts:467` — `begin`, `append`, `frame`, `save` | `Vault` (`src/storage/vault.ts:37`), plus `nullRecorder()` (`src/core/recorder.ts`, PR-1; see §2h) |
-| Helper protocol | newline-delimited JSON on private stdin/stdout, request id + allow-listed method; `HelperProcess` (`electron/controller.ts:73`) with restart backoff and a SIGUSR1 stop latch | `coarena-controller`, `coarena-voice`, `coarena-messages` |
-| `MemoryAccess` | `src/core/memory.ts` (PR-1; was `src/memory/types.ts`), built by `createMemoryAccess(store, index, options)` (`src/memory/access.ts:70`) — `recall(task)`, `learn(input)`, never throws into a run | `MemoryStore` + the native `index` method |
-| Messages channel | `MessagesChannel` (`electron/messages.ts`) with `onSnapshot(s)` and its own helper | one |
-| Pure voice policy | `planVoiceTurn` (`src/voice/turns.ts:749`), `utteranceCompleteness`, `speakableText`/`speakableApproval`, `idlePill`/`PillState` | consumed by `electron/main.ts` and `electron/conversation.ts` |
-| Transport injection | `HttpProvider(settings, key, fetch, diagnostics)` takes `fetch`; `desktopTransport()` (`electron/provider.ts:8`) supplies the Chromium one | Node `fetch` in the harnesses, Chromium session in the app |
+| Seam                | Where                                                                                                                                                                                              | Implementations                                                                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Controller`        | `src/core/schema.ts:408` — `surface`, `capture`, `execute`, `stop`, `resume`, optional `restore`/`revalidate`                                                                                      | `NativeController` (`electron/controller.ts:366`), `TutorialController` (`src/core/tutorial.ts:14`)                                                   |
+| `Provider`          | `src/core/schema.ts:392` — one method, `next(observation, signal)`                                                                                                                                 | `HttpProvider` (`src/providers/http.ts:764`), `TutorialProvider` (`src/core/tutorial.ts:82`), the trace-wrapping proxy in `scripts/live-task.mjs:230` |
+| `Recorder`          | `src/core/schema.ts:467` — `begin`, `append`, `frame`, `save`                                                                                                                                      | `Vault` (`src/storage/vault.ts:37`), plus `nullRecorder()` (`src/core/recorder.ts`, PR-1; see §2h)                                                    |
+| Helper protocol     | newline-delimited JSON on private stdin/stdout, request id + allow-listed method; `HelperProcess` (`electron/controller.ts:73`) with restart backoff and a SIGUSR1 stop latch                      | `coarena-controller`, `coarena-voice`, `coarena-messages`                                                                                             |
+| `MemoryAccess`      | `src/core/memory.ts` (PR-1; was `src/memory/types.ts`), built by `createMemoryAccess(store, index, options)` (`src/memory/access.ts:70`) — `recall(task)`, `learn(input)`, never throws into a run | `MemoryStore` + the native `index` method                                                                                                             |
+| Messages channel    | `MessagesChannel` (`electron/messages.ts`) with `onSnapshot(s)` and its own helper                                                                                                                 | one                                                                                                                                                   |
+| Pure voice policy   | `planVoiceTurn` (`src/voice/turns.ts:749`), `utteranceCompleteness`, `speakableText`/`speakableApproval`, `idlePill`/`PillState`                                                                   | consumed by `electron/main.ts` and `electron/conversation.ts`                                                                                         |
+| Transport injection | `HttpProvider(settings, key, fetch, diagnostics)` takes `fetch`; `desktopTransport()` (`electron/provider.ts:8`) supplies the Chromium one                                                         | Node `fetch` in the harnesses, Chromium session in the app                                                                                            |
 
 `docs/DEVELOPMENT.md` already documents two of these as extension points
 ("Add a provider", "Add an OS backend"). The interfaces are real; what is missing
@@ -65,21 +65,21 @@ is a place to import them from and a build that keeps them honest.
 
 **a. `electron/main.ts` owns eleven things.** By line range:
 
-| Lines | Responsibility |
-|---|---|
-| 106–113 | single-instance lock (a module side effect, executed on import) and the userData override |
-| 114–158 | 24 module-level mutable variables: `window`, `tray`, `voice`, `pill`, `runner`, `native`, `vault`, `memory`, `master`, `settings`, `credentials`, `uploads`, `snapshot`, … |
-| 161–257 | natural-voice (Kokoro) lifecycle, download, status projection |
-| 258–333 | construction of speech output, messages channel and conversation |
-| 334–346 | `saveConfig()` — AES-GCM seal of `{settings, credentials, uploads}` into `config.enc` |
-| 347–450 | native helper ownership, restart handling, auto-resume after manual input |
-| 451–528 | memory access, debounced flush, Spotlight index prewarm |
-| 529–600, 1289–1369 | the pill state machine (`setPill`, `renderPill`, `pillSummary`, `approvalPill`) |
-| 601–683 | tray menu and settings window |
-| 684–1081 | voice helper ownership and event routing (`receiveVoice` alone is 168 lines) |
-| 1082–1288 | turn planning and execution (`command`, `planRun`, `executePlan`) |
-| 1397–1899 | `dispatch()`: one `switch` with 34 cases, ~500 lines, the entire IPC surface |
-| 1900–2276 | renderer reload budget, page loading, launch-argument parsing, app bootstrap |
+| Lines              | Responsibility                                                                                                                                                             |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 106–113            | single-instance lock (a module side effect, executed on import) and the userData override                                                                                  |
+| 114–158            | 24 module-level mutable variables: `window`, `tray`, `voice`, `pill`, `runner`, `native`, `vault`, `memory`, `master`, `settings`, `credentials`, `uploads`, `snapshot`, … |
+| 161–257            | natural-voice (Kokoro) lifecycle, download, status projection                                                                                                              |
+| 258–333            | construction of speech output, messages channel and conversation                                                                                                           |
+| 334–346            | `saveConfig()` — AES-GCM seal of `{settings, credentials, uploads}` into `config.enc`                                                                                      |
+| 347–450            | native helper ownership, restart handling, auto-resume after manual input                                                                                                  |
+| 451–528            | memory access, debounced flush, Spotlight index prewarm                                                                                                                    |
+| 529–600, 1289–1369 | the pill state machine (`setPill`, `renderPill`, `pillSummary`, `approvalPill`)                                                                                            |
+| 601–683            | tray menu and settings window                                                                                                                                              |
+| 684–1081           | voice helper ownership and event routing (`receiveVoice` alone is 168 lines)                                                                                               |
+| 1082–1288          | turn planning and execution (`command`, `planRun`, `executePlan`)                                                                                                          |
+| 1397–1899          | `dispatch()`: one `switch` with 34 cases, ~500 lines, the entire IPC surface                                                                                               |
+| 1900–2276          | renderer reload budget, page loading, launch-argument parsing, app bootstrap                                                                                               |
 
 The cost is visible in the test suite: `tests/desktop-provider.test.ts` mocks
 `electron`'s `app` with `requestSingleInstanceLock: () => false` purely so that
@@ -92,10 +92,10 @@ it to `ipcRenderer.invoke("coarena", method, args)` and `dispatch` re-expands it
 with a `switch` and ad-hoc `zod` parsing per case. Adding a method means editing
 three files with no compiler link between them.
 
-**c. `src/core` depends on `src/memory`.** *Fixed by PR-1: the labels now live at
+**c. `src/core` depends on `src/memory`.** _Fixed by PR-1: the labels now live at
 `src/core/labels.ts` and the contract types at `src/core/memory.ts`, so nothing
 under `src/core` imports outside it. The paragraph below describes the state
-before that.* `src/core/runner.ts:23` imports
+before that._ `src/core/runner.ts:23` imports
 `../memory/types` (types only) and `src/core/runner.ts:34` imports
 `../memory/labels` (values: `labelMatches`, `normalizeLabel`, `normalizeRole`,
 `utf16Prefix`). `src/memory/types.ts:1` imports back from `../core/schema`, and
@@ -103,8 +103,8 @@ before that.* `src/core/runner.ts:23` imports
 That is a directory-level cycle: core → memory → core. It is the single thing that
 makes `@butler-agent/core` impossible as written.
 
-**d. `src/providers` depends on `src/memory`.** *Fixed by PR-1: the table is now
-`src/providers/playbooks.ts`.* `src/providers/http.ts:10` imports
+**d. `src/providers` depends on `src/memory`.** _Fixed by PR-1: the table is now
+`src/providers/playbooks.ts`._ `src/providers/http.ts:10` imports
 `playbookLines` from `../memory/playbooks`. `playbooks.ts` has no imports at all —
 it is a static table the provider serializes as `context.playbook`. It is filed
 under memory because the design note lives in `docs/MEMORY.md`, not because of a
@@ -125,9 +125,9 @@ Dock redirection, Calculator keypad rules, the protected floor, document-app tex
 areas). The `Controller` interface is portable; `evaluate` and `surfacePolicy` are
 not. A second OS backend needs a seam here, and that seam is safety code.
 
-**h. `Recorder` is hand-rolled three times.** *Fixed by PR-1: `nullRecorder()`
+**h. `Recorder` is hand-rolled three times.** _Fixed by PR-1: `nullRecorder()`
 (`src/core/recorder.ts`) is the single copy; the three call sites keep only the
-run/frame bookkeeping that is theirs.* `scripts/live-task.mjs:77–99`,
+run/frame bookkeeping that is theirs._ `scripts/live-task.mjs:77–99`,
 `scripts/bench.mjs` and `tests/core.test.ts:534` each define the same
 begin/save/frame/append stub. Any embedder writes a fourth.
 
@@ -145,18 +145,19 @@ the `Controller`, `Provider`, `Recorder` interfaces; `Run`, `JournalEvent`, `Fra
 `shouldAutoResume`; the tutorial fixtures; the `DiagnosticSink` type.
 
 **Moved in (PR-1, done)**
+
 - `src/memory/labels.ts` → `src/core/labels.ts` (70 lines, zero imports). Fixes (c).
   The single-source-of-truth rule in `docs/DEVELOPMENT.md` ("change matching rules
   only there") survives the move; update the path in that sentence.
-- the *contract* half of `src/memory/types.ts` → `src/core/memory.ts`:
+- the _contract_ half of `src/memory/types.ts` → `src/core/memory.ts`:
   `SystemIndex`, `PlanStep`, `ReplayPlan`, `Recall`, `TrajectoryStep`, `LearnInput`,
-  `MemoryAccess`. The *storage* half (`Episode`, `Preference`, `Skill`, `SkillStep`,
+  `MemoryAccess`. The _storage_ half (`Episode`, `Preference`, `Skill`, `SkillStep`,
   `AppUsage`, `MemoryData`) stays in `src/memory/types.ts`. `MemoryContext` is
   already in `src/core/schema.ts`, so this follows the existing precedent.
 
 **Moves out (later, PR-8)** `src/core/runner.ts`, at 1,835 lines and still growing
-(automatic re-aim landed while this was being written), is the state machine *and*
-the replay executor *and* the re-aim recovery path *and* the stall/loop detectors.
+(automatic re-aim landed while this was being written), is the state machine _and_
+the replay executor _and_ the re-aim recovery path _and_ the stall/loop detectors.
 Split into
 `src/core/runner.ts` (state machine), `src/core/replay.ts` (plan step → proposal,
 control resolution by role/label, `completeWhen` checks) and `src/core/progress.ts`
@@ -201,7 +202,7 @@ Fixes (d). `docs/MEMORY.md` and `docs/DEVELOPMENT.md` name the new path.
 **Owns** `buildRequest`, `parseResponse`, `parseUsage`, `memoryForModel`,
 `singleJsonObject`, the retry/`retryAfter` rules, `providerDefaults`,
 `selectProvider`, `credentialScope`, and the static playbook table.
-**Stays in the app** `electron/provider.ts` — `desktopTransport()` is a *transport*
+**Stays in the app** `electron/provider.ts` — `desktopTransport()` is a _transport_
 (Chromium in-memory session, DIRECT-route fallback to Node TLS), not a provider.
 `createDesktopProvider` is a two-line composition. Keep it in `electron/`.
 **Depends on** `core`. After the playbooks move, nothing else.
@@ -217,7 +218,7 @@ tokenizer, normalizer and audio helpers (pure DSP, 1,657 lines, tested by
 `tests/kokoro-g2p.test.ts` without a model).
 
 **Moves in** `electron/conversation.ts` (1,153 lines) → `src/voice/conversation.ts`.
-It imports `electron` not at all; its only non-`src` imports are *types* from
+It imports `electron` not at all; its only non-`src` imports are _types_ from
 `./speech-output` and `./voice`. It decides what to say and when — `momentKey`,
 `gateOf`, the answer/approval/continuation windows, deduplication — which is voice
 policy, not shell code. `electron/messages.ts` imports `momentKey` from it so that
@@ -246,12 +247,12 @@ an embedder can pass `undefined` or their own `MemoryAccess`.
 
 Four exist; only one is a module today.
 
-| Channel | Today | Target |
-|---|---|---|
-| Pill overlay | `src/ui/main.tsx` (`Pill`) + `renderPill`/`setPill` in `electron/main.ts:529–600,1289–1369` | `src/ui/pill/` for the view; the pill *projection* (`Snapshot` → `PillState`) moves to `src/channels/pill.ts`, pure and testable |
-| Voice | `receiveVoice`/`command`/`executePlan` in `electron/main.ts:684–1288` | `src/channels/voice.ts` driving the `Session` façade; the decision half is already pure in `planVoiceTurn` |
-| iMessage | `electron/messages.ts` — already a channel object | `src/channels/messages/` unchanged in behaviour |
-| CLI | `scripts/live-task.mjs`, `scripts/bench.mjs`, `scripts/debug-local.mjs` | `src/channels/cli/` or left as scripts; they only need `core` + `os` barrels |
+| Channel      | Today                                                                                       | Target                                                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Pill overlay | `src/ui/main.tsx` (`Pill`) + `renderPill`/`setPill` in `electron/main.ts:529–600,1289–1369` | `src/ui/pill/` for the view; the pill _projection_ (`Snapshot` → `PillState`) moves to `src/channels/pill.ts`, pure and testable |
+| Voice        | `receiveVoice`/`command`/`executePlan` in `electron/main.ts:684–1288`                       | `src/channels/voice.ts` driving the `Session` façade; the decision half is already pure in `planVoiceTurn`                       |
+| iMessage     | `electron/messages.ts` — already a channel object                                           | `src/channels/messages/` unchanged in behaviour                                                                                  |
+| CLI          | `scripts/live-task.mjs`, `scripts/bench.mjs`, `scripts/debug-local.mjs`                     | `src/channels/cli/` or left as scripts; they only need `core` + `os` barrels                                                     |
 
 **The missing piece is a façade.** Every channel needs the same five verbs —
 `submit(text, source)`, `stop()`, `pause()/resume()`, `confirm(yes)`,
@@ -398,7 +399,7 @@ A six-package workspace adds, concretely:
   that currently ships by running `npm run package:mac:release`.
 - **A new failure mode with teeth.** `@butler-agent/providers` at a version different
   from `@butler-agent/core` can silently change the cached system instruction in
-  `buildRequest`. Prompt-cache stability is a *cost* property here (Anthropic cache
+  `buildRequest`. Prompt-cache stability is a _cost_ property here (Anthropic cache
   writes bill at 1.25×, reads at 0.1×); a version skew between the schema and the
   request builder is a real bill, not a style problem.
 - **Test topology.** `tests/` currently imports across every boundary freely
@@ -413,14 +414,14 @@ adapter physically cannot import Electron. Contributors see the boundary in
 
 ### Verdict
 
-| Candidate | Recommendation |
-|---|---|
-| `@butler-agent/core` | **Publish, eventually.** Only after §3.1 removes the cycle. It is the one piece with a plausible external consumer (someone running the loop against their own controller). zod is its only dependency. |
-| `@butler-agent/macos` | **Publish with core, or not at all.** Useless without core; versions must move together. Ships a Swift build step, so an external consumer needs Xcode CLT — say so in its README or ship prebuilt binaries. |
-| `@butler-agent/providers` | **Keep in-app.** Must not version-skew from `core` (prompt cache). If ever split, pin an exact peer dependency. |
-| `@butler-agent/voice` | **Keep in-app.** No independent consumer. Its pure half is already importable as `src/voice`. |
-| `@butler-agent/memory` | **Keep in-app.** Consumed through `MemoryAccess`, which lives in core; an embedder can supply their own. |
-| `@butler-agent/channels` | **Keep in-app.** Channels are product decisions, not a library. |
+| Candidate                 | Recommendation                                                                                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@butler-agent/core`      | **Publish, eventually.** Only after §3.1 removes the cycle. It is the one piece with a plausible external consumer (someone running the loop against their own controller). zod is its only dependency.      |
+| `@butler-agent/macos`     | **Publish with core, or not at all.** Useless without core; versions must move together. Ships a Swift build step, so an external consumer needs Xcode CLT — say so in its README or ship prebuilt binaries. |
+| `@butler-agent/providers` | **Keep in-app.** Must not version-skew from `core` (prompt cache). If ever split, pin an exact peer dependency.                                                                                              |
+| `@butler-agent/voice`     | **Keep in-app.** No independent consumer. Its pure half is already importable as `src/voice`.                                                                                                                |
+| `@butler-agent/memory`    | **Keep in-app.** Consumed through `MemoryAccess`, which lives in core; an embedder can supply their own.                                                                                                     |
+| `@butler-agent/channels`  | **Keep in-app.** Channels are product decisions, not a library.                                                                                                                                              |
 
 **Do the directory and dependency split now; do the package split when a second
 consumer exists.** The discipline a workspace buys can be had for one test file:
@@ -446,8 +447,8 @@ the moment someone re-introduces the cycle. It landed with PR-1.
 >   resumable: quitting to apply a Screen Recording grant comes back to it. A
 >   stored config written before the flag existed is treated as already set up,
 >   so an update never pushes an existing install back through setup.
-> - **`screenNeedsRelaunch`** is detected as *"the OS preflight says granted,
->   but this process was launched under the old decision"*. `capture` cannot be
+> - **`screenNeedsRelaunch`** is detected as _"the OS preflight says granted,
+>   but this process was launched under the old decision"_. `capture` cannot be
 >   the probe: the native helper starts latched (`stopped = true` in
 >   `Controller.swift`) and a setup screen must not install the event tap.
 >   Instead main records `systemPreferences.getMediaAccessStatus("screen")` at
@@ -492,19 +493,24 @@ checkProviderKey(settings: Settings, key?: string): Promise<{ ok: boolean; messa
 
 ```ts
 export type PrivacyPane =
-  | "screen" | "accessibility" | "microphone" | "speech"
-  | "input" | "automation" | "fullDisk";
+  | "screen"
+  | "accessibility"
+  | "microphone"
+  | "speech"
+  | "input"
+  | "automation"
+  | "fullDisk";
 
 export interface SetupStatus {
-  supported: boolean;                    // macOS 14+
-  screen: boolean;                       // CGPreflightScreenCaptureAccess
-  screenNeedsRelaunch: boolean;          // granted this session, capture still failing
-  accessibility: boolean;                // AXIsProcessTrusted
+  supported: boolean; // macOS 14+
+  screen: boolean; // CGPreflightScreenCaptureAccess
+  screenNeedsRelaunch: boolean; // granted this session, capture still failing
+  accessibility: boolean; // AXIsProcessTrusted
   microphone: boolean;
   speech: boolean;
-  onDevice: boolean;                     // an on-device model exists for `locale`
+  onDevice: boolean; // an on-device model exists for `locale`
   locale: string;
-  shortcut: boolean;                     // the voice helper owns Option-Space
+  shortcut: boolean; // the voice helper owns Option-Space
   model: { kind: "none" | "ollama" | "cloud"; ready: boolean; detail: string };
   kokoro: KokoroUiStatus;
 }
@@ -557,7 +563,7 @@ what to do", the ⌥Space demo, the sample command). Add one button below it.
 
 > **Set up Butler** — About two minutes. You can stop after any step.
 >
-> *or* **Try the safe tutorial first** — Simulated workspace. No permissions, no
+> _or_ **Try the safe tutorial first** — Simulated workspace. No permissions, no
 > model, no microphone.
 
 ### Step 2 — Permissions
@@ -588,20 +594,20 @@ the exact pane.
 
 Conditional lines:
 
-> *(when `onDevice` is false)* This Mac has no on-device speech model for
+> _(when `onDevice` is false)_ This Mac has no on-device speech model for
 > **{locale}**. Butler will not transcribe. Typed commands still work: tap
 > ⌥Space instead of holding it.
 >
-> *(when `supported` is false)* Desktop control needs macOS 14 or later. The safe
+> _(when `supported` is false)_ Desktop control needs macOS 14 or later. The safe
 > tutorial still runs.
 >
-> *(footer)* Rechecked every couple of seconds and whenever this window comes
+> _(footer)_ Rechecked every couple of seconds and whenever this window comes
 > forward. **Skip for now** — you can grant these later in Settings.
 
 `screenNeedsRelaunch` is the detail worth getting right: macOS grants Screen
 Recording but the running process keeps the old decision, so a checklist that says
-"Allowed" is lying. Detect it as *granted in the OS preflight but capture still
-failing*, and show the **Quit and reopen** button that calls
+"Allowed" is lying. Detect it as _granted in the OS preflight but capture still
+failing_, and show the **Quit and reopen** button that calls
 `app.relaunch(); app.quit()`.
 
 ### Step 3 — Model
@@ -615,9 +621,9 @@ Two cards, the local one first.
 
 > ### On this Mac — free, nothing leaves the Mac
 >
-> *(Ollama not reachable)* Ollama is not running. Download it from **ollama.com**,
+> _(Ollama not reachable)_ Ollama is not running. Download it from **ollama.com**,
 > open it once, then come back to this screen.
-> *(reachable, model missing)* Ollama is running at `127.0.0.1:11434`.
+> _(reachable, model missing)_ Ollama is running at `127.0.0.1:11434`.
 > `qwen3-vl:8b` is not installed yet. Run this in Terminal:
 >
 > ```
@@ -627,7 +633,7 @@ Two cards, the local one first.
 > **Copy** — about 6 GB to download; it stays on this Mac.
 > On a Mac with 16 GB of memory, `ollama pull qwen3-vl:2b` (about 2 GB) is faster
 > and less accurate.
-> *(installed)* ✓ `qwen3-vl:8b` is installed. **Use it**
+> _(installed)_ ✓ `qwen3-vl:8b` is installed. **Use it**
 >
 > ### Your own API key
 >
@@ -636,12 +642,12 @@ Two cards, the local one first.
 >
 > [provider ▾] [model id] [API key] **Check key**
 >
-> *(ok)* ✓ The key works. The prices below are used only for the local cost
+> _(ok)_ ✓ The key works. The prices below are used only for the local cost
 > estimate — edit them if the provider changes them.
-> *(401/403)* The provider rejected this key.
-> *(Gemini `API_KEY_SERVICE_BLOCKED`)* This Google key is restricted. Allow
+> _(401/403)_ The provider rejected this key.
+> _(Gemini `API_KEY_SERVICE_BLOCKED`)_ This Google key is restricted. Allow
 > `generativelanguage.googleapis.com` in the key's API restrictions, then check again.
-> *(network)* Could not reach {host}. Check your connection or proxy.
+> _(network)_ Could not reach {host}. Check your connection or proxy.
 
 Implementation notes for this step:
 
@@ -673,12 +679,12 @@ Implementation notes for this step:
 >
 > **Natural voice — 332 MB.** Apple Silicon only. No account, no network use after
 > the download. **Download**
-> *(downloading)* 142 MB of 332 MB · **Cancel**
-> *(done)* ✓ Installed. **Hear it**
-> *(`checksum_mismatch` / `size_mismatch`)* The download did not match its
+> _(downloading)_ 142 MB of 332 MB · **Cancel**
+> _(done)_ ✓ Installed. **Hear it**
+> _(`checksum_mismatch` / `size_mismatch`)_ The download did not match its
 > checksum. Try again; nothing was installed.
-> *(`disk_full`)* Not enough free space for 332 MB.
-> *(`supported: false`)* This Mac keeps the built-in voice; the natural voice needs
+> _(`disk_full`)_ Not enough free space for 332 MB.
+> _(`supported: false`)_ This Mac keeps the built-in voice; the natural voice needs
 > Apple Silicon.
 >
 > **Skip** — you can turn this on later in Settings → Voice replies.
@@ -706,13 +712,13 @@ exercised by `npm run bench`.
 > Release when you finish talking. Watch the pill: **Listening → Working →
 > Done**. Press **Escape** to stop at any time, or move the mouse to pause.
 >
-> **Run it for me** *(starts the same task typed, for anyone who would rather not
-> talk yet)*
+> **Run it for me** _(starts the same task typed, for anyone who would rather not
+> talk yet)_
 >
-> *(after it settles)* Done. That run is in your history — open it to see every
+> _(after it settles)_ Done. That run is in your history — open it to see every
 > step it took.
 >
-> *(if permissions are incomplete)* Permissions are still missing, so this would
+> _(if permissions are incomplete)_ Permissions are still missing, so this would
 > not work yet. **Try the safe tutorial** instead — a simulated board, no
 > permissions and no model.
 
@@ -743,13 +749,13 @@ Five things, all of which exist:
 
 ### What is missing today
 
-- **No entry point.** *Fixed by PR-1: `src/core/index.ts`.* An embedder imports `../src/core/runner`,
+- **No entry point.** _Fixed by PR-1: `src/core/index.ts`._ An embedder imports `../src/core/runner`,
   `../electron/controller`, `../src/providers/http` — three deep paths, one of them
   through a directory named `electron` that contains no Electron.
 - **`emit` is a constructor argument, not a subscription.** One consumer only; a
   second listener means wrapping the callback by hand.
-- **`Recorder` has no null implementation.** *Fixed by PR-1: `nullRecorder()` in
-  `src/core/recorder.ts`.* `scripts/live-task.mjs:77`,
+- **`Recorder` has no null implementation.** _Fixed by PR-1: `nullRecorder()` in
+  `src/core/recorder.ts`._ `scripts/live-task.mjs:77`,
   `scripts/bench.mjs` and `tests/core.test.ts:534` each write the same stub.
 - **No `AsyncIterable` or typed event names.** `emit` fires on every state change
   with the whole snapshot; that is workable but undocumented.
@@ -771,25 +777,44 @@ import { NativeController } from "./electron/controller";
 import { Runner, terminal } from "./src/core/runner";
 import { selectProvider } from "./src/providers/catalog";
 import { HttpProvider } from "./src/providers/http";
-import { defaultSettings, settingsSchema,
-         type JournalEvent, type Recorder, type Snapshot } from "./src/core/schema";
+import {
+  defaultSettings,
+  settingsSchema,
+  type JournalEvent,
+  type Recorder,
+  type Snapshot,
+} from "./src/core/schema";
 
-const settings = settingsSchema.parse(selectProvider(defaultSettings, "openai"));
-const provider = new HttpProvider(settings, process.env.OPENAI_API_KEY ?? "", fetch);
+const settings = settingsSchema.parse(
+  selectProvider(defaultSettings, "openai"),
+);
+const provider = new HttpProvider(
+  settings,
+  process.env.OPENAI_API_KEY ?? "",
+  fetch,
+);
 let runner: Runner;
-const controller = new NativeController("native/bin/coarena-controller",
-  () => runner.stop("Emergency stop."));
+const controller = new NativeController("native/bin/coarena-controller", () =>
+  runner.stop("Emergency stop."),
+);
 const recorder: Recorder = {
-  begin: () => {}, save: () => {}, frame: () => {},
+  begin: () => {},
+  save: () => {},
+  frame: () => {},
   append: (run_id, type, data = {}): JournalEvent => ({
-    event_id: randomUUID(), run_id, sequence_number: 0,
+    event_id: randomUUID(),
+    run_id,
+    sequence_number: 0,
     monotonic_timestamp: performance.now(),
     wall_clock_timestamp: new Date().toISOString(),
-    schema_version: 1, type, data }),
+    schema_version: 1,
+    type,
+    data,
+  }),
 };
 runner = new Runner(controller, provider, recorder, settings, (s: Snapshot) => {
   console.log(s.run?.status, s.message, s.pending?.reason ?? "");
-  if (s.pending) runner.confirm(false);                       // decline every approval
+  if (s.pending) runner.confirm(false); // decline every approval
   if (s.run && terminal(s.run.status)) controller.close();
 });
 await controller.configure(settings);
@@ -803,21 +828,40 @@ writes. This drives the real desktop and costs real money; it is the same wiring
 ### The same example after PR-1 and PR-3
 
 ```ts
-import { Runner, nullRecorder, defaultSettings, settingsSchema,
-         terminal, type Snapshot } from "@butler-agent/core";        // or "./src/core"
+import {
+  Runner,
+  nullRecorder,
+  defaultSettings,
+  settingsSchema,
+  terminal,
+  type Snapshot,
+} from "@butler-agent/core"; // or "./src/core"
 import { HttpProvider, selectProvider } from "@butler-agent/core/providers";
-import { NativeController } from "@butler-agent/macos";               // or "./src/os/macos"
+import { NativeController } from "@butler-agent/macos"; // or "./src/os/macos"
 
-const settings = settingsSchema.parse(selectProvider(defaultSettings, "openai"));
-const provider = new HttpProvider(settings, process.env.OPENAI_API_KEY ?? "", fetch);
+const settings = settingsSchema.parse(
+  selectProvider(defaultSettings, "openai"),
+);
+const provider = new HttpProvider(
+  settings,
+  process.env.OPENAI_API_KEY ?? "",
+  fetch,
+);
 let runner: Runner;
-const controller = new NativeController("native/bin/coarena-controller",
-  () => runner.stop("Emergency stop."));
-runner = new Runner(controller, provider, nullRecorder(), settings, (s: Snapshot) => {
-  console.log(s.run?.status, s.message);
-  if (s.pending) runner.confirm(false);
-  if (s.run && terminal(s.run.status)) controller.close();
-});
+const controller = new NativeController("native/bin/coarena-controller", () =>
+  runner.stop("Emergency stop."),
+);
+runner = new Runner(
+  controller,
+  provider,
+  nullRecorder(),
+  settings,
+  (s: Snapshot) => {
+    console.log(s.run?.status, s.message);
+    if (s.pending) runner.confirm(false);
+    if (s.run && terminal(s.run.status)) controller.close();
+  },
+);
 await controller.configure(settings);
 await runner.start("Open Calculator and multiply 128 by 46");
 ```
@@ -832,18 +876,18 @@ Those are product surfaces, and keeping them out of the embedder API is correct.
 Ranked by value per unit of risk. Effort is one engineer, including tests and
 review, on a repository they already know.
 
-| # | Change | Effort | Risk | What it buys |
-|---|---|---|---|---|
-| 1 | **Acyclic core + entry points + `nullRecorder`** (§3.1, §3.3) — **done** | 1 d | very low — imports only | Removes the one structural defect; makes every later step legal; halves the embedder example |
-| 2 | **First-run setup view** (§6) | 3 d | low–medium — new view, 5 IPC methods, e2e copy | The user-visible half of the request |
-| 3 | **Move the ten non-Electron files out of `electron/`** (§3.2, §3.4) | 2 d | low, large diff | `electron/` becomes only Electron; harnesses stop importing through it; a second OS adapter has somewhere to live |
-| 4 | **`tests/boundaries.test.ts`** import-direction guard — **done** (landed with 1) | 0.5 d | none | Keeps 1 and 3 from decaying; cheapest possible substitute for a workspace |
-| 5 | **`Session` façade** (§3.6), `electron/main.ts` → ~800 lines | 4 d | medium–high — voice hold/resume, auto-resume and the messages channel share mutable state | The change that actually makes `main.ts` reviewable |
-| 6 | **Split `dispatch()` into typed handler modules** | 2 d | medium — 34 cases, each with its own validation | Adding an IPC method stops being a three-file edit |
-| 7 | **Split `src/ui/main.tsx`** into settings / pill / review / setup | 3 d | medium — e2e asserts DOM and copy | Two people can work on the UI |
-| 8 | **Split `runner.ts`** into runner / replay / progress | 3 d | high — 48 replay tests, and it is being edited now | Reviewability of the loop; do it *after* the in-flight work lands |
-| 9 | **Platform profile seam in `policy.ts`** (§2g) | 5 d | high — safety code, 29 bundle ids, 43 AX roles | Prerequisite for any non-macOS backend. Do not start it before a second backend is actually being written |
-| 10 | **npm workspace packages** | 5 d + ongoing | medium, permanent tax | Only when an external consumer exists (§5) |
+| #   | Change                                                                           | Effort        | Risk                                                                                      | What it buys                                                                                                      |
+| --- | -------------------------------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 1   | **Acyclic core + entry points + `nullRecorder`** (§3.1, §3.3) — **done**         | 1 d           | very low — imports only                                                                   | Removes the one structural defect; makes every later step legal; halves the embedder example                      |
+| 2   | **First-run setup view** (§6)                                                    | 3 d           | low–medium — new view, 5 IPC methods, e2e copy                                            | The user-visible half of the request                                                                              |
+| 3   | **Move the ten non-Electron files out of `electron/`** (§3.2, §3.4)              | 2 d           | low, large diff                                                                           | `electron/` becomes only Electron; harnesses stop importing through it; a second OS adapter has somewhere to live |
+| 4   | **`tests/boundaries.test.ts`** import-direction guard — **done** (landed with 1) | 0.5 d         | none                                                                                      | Keeps 1 and 3 from decaying; cheapest possible substitute for a workspace                                         |
+| 5   | **`Session` façade** (§3.6), `electron/main.ts` → ~800 lines                     | 4 d           | medium–high — voice hold/resume, auto-resume and the messages channel share mutable state | The change that actually makes `main.ts` reviewable                                                               |
+| 6   | **Split `dispatch()` into typed handler modules**                                | 2 d           | medium — 34 cases, each with its own validation                                           | Adding an IPC method stops being a three-file edit                                                                |
+| 7   | **Split `src/ui/main.tsx`** into settings / pill / review / setup                | 3 d           | medium — e2e asserts DOM and copy                                                         | Two people can work on the UI                                                                                     |
+| 8   | **Split `runner.ts`** into runner / replay / progress                            | 3 d           | high — 48 replay tests, and it is being edited now                                        | Reviewability of the loop; do it _after_ the in-flight work lands                                                 |
+| 9   | **Platform profile seam in `policy.ts`** (§2g)                                   | 5 d           | high — safety code, 29 bundle ids, 43 AX roles                                            | Prerequisite for any non-macOS backend. Do not start it before a second backend is actually being written         |
+| 10  | **npm workspace packages**                                                       | 5 d + ongoing | medium, permanent tax                                                                     | Only when an external consumer exists (§5)                                                                        |
 
 ### The first change, specified
 
@@ -942,11 +986,11 @@ regression.
   `info.voice.kokoro`. Add new first-run state as a separate method, not as fields
   on that object.
 - **`npm run test:e2e`** (`tests/e2e/app.spec.ts`) — asserts the landing heading
-  *"Press a key. Tell your computer what to do."*, `nav` count 0, that the
+  _"Press a key. Tell your computer what to do."_, `nav` count 0, that the
   Space Grotesk font loaded, the tutorial pill text ("Working", then "Done."), the
   review/cancel/delete flow, and that **no request leaves `127.0.0.1:5173`**. A
   setup view that becomes the default first screen breaks the first assertion, and
-  a live Ollama probe from the *preview* build would break the last one — the
+  a live Ollama probe from the _preview_ build would break the last one — the
   browser preview must keep returning `desktop: false` and must not detect anything.
 - **Native safety checks** — `npm run test:native-safety` and
   `npm run test:native-input` (Swift: `FrameSafetyTests`, `LaunchSafetyTests`,

@@ -304,9 +304,12 @@ describe("decision codes", () => {
     expect(
       runnerSource.match(/reasonCode: allowedCode\((?:decision|p)\.reason\)/g),
     ).toHaveLength(3);
-    expect(
-      runnerSource.match(/reasonCode: retryCode\(decision\.reason\)/g),
-    ).toHaveLength(2);
+    // Both retarget events carry the code: one stamps it inline, the other
+    // computes it first (72ef8e4: the menu-dismissal path amends the sentence
+    // but keeps the code of the original reason).
+    expect(runnerSource.match(/retryCode\(decision\.reason\)/g)).toHaveLength(
+      2,
+    );
     expect(
       runnerSource.match(/reasonCode: deniedCode\(decision\.reason\)/g),
     ).toHaveLength(1);

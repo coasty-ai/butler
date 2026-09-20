@@ -479,7 +479,10 @@ describe("main.ts wiring, pinned by source", () => {
     ])
       expect(d).toContain(key);
     expect(d).not.toContain('"windowTitle"');
-    expect(d).not.toContain('"host"');
+    // WebPageRead's host is a fixed word (loopback | public | private) read
+    // through hostCode, never the address: the key may appear, its reader
+    // must be the code function.
+    expect(d).toContain('if (field === "host") return hostCode(value);');
     expect(d).not.toContain('"textDigest"');
   });
 });

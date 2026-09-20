@@ -808,9 +808,7 @@ describe("texted commands", () => {
       await poll();
     }
     expect(startTask).not.toHaveBeenCalled();
-    expect(helper.sent).toEqual(
-      Array(5).fill("What would you like me to do?"),
-    );
+    expect(helper.sent).toEqual(Array(5).fill("What would you like me to do?"));
     helper.sent.length = 0;
     text("do call Dana back");
     await poll();

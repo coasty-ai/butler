@@ -2,18 +2,18 @@
 
 ## To use this build now
 
-| Resource | Needed for | Requirement / planning allowance |
-|---|---|---|
-| macOS computer | Native capture and input | macOS 14+, Apple Silicon tested for compilation. Start with 16 GB RAM and 5 GB free disk for development; local models need additional memory/storage. |
-| Node and build tools | Build from source | Node 22.12+; Node 24 recommended. npm and Xcode Command Line Tools. Not needed to launch the packaged `.app`. |
-| OS permissions | Live desktop use | Screen Recording and Accessibility; Microphone and Speech Recognition for push-to-talk; Input Monitoring if macOS requests it. The tutorial needs none of these. |
-| On-device speech | Voice commands | macOS Speech support for the selected system language, an available local recognition model, and a working microphone. No transcription API key or cloud STT subscription. Text input remains available if local speech is unsupported. |
-| Vision model | Real agent decisions | Either a locally downloaded Ollama vision model, or your own provider API key. No model training or GPU server is needed for the tutorial or BYOM. |
-| Local model capacity | Private-local mode | Budget 16–32 GB unified memory for experimenting with a quantized 7–8B vision model, and 10–20 GB additional disk. These are planning allowances, not measured performance guarantees. Larger models require more. |
-| Provider key + model ID | Cloud inference | OpenAI, Anthropic, Gemini or an OpenAI-compatible provider. Confirm image/function-call support and account access. Configure token prices and a provider-side spend cap. |
-| Local disk | Encrypted run history | User controlled, per-run deletion. At 30 compressed frames × 250 KB, plan around 7.5 MB/run before metadata and encoding overhead. Actual PNGs can be larger. |
-| Additional backend | Core private assistant | None. No CoArena login, cloud database or ingest service is required. |
-| Interface assets | Monochrome UI and motion | Space Grotesk is bundled locally under SIL OFL 1.1. The icon and animations are native/vector/CSS assets; no paid font, image service or animation service is required. |
+| Resource                | Needed for               | Requirement / planning allowance                                                                                                                                                                                                        |
+| ----------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS computer          | Native capture and input | macOS 14+, Apple Silicon tested for compilation. Start with 16 GB RAM and 5 GB free disk for development; local models need additional memory/storage.                                                                                  |
+| Node and build tools    | Build from source        | Node 22.12+; Node 24 recommended. npm and Xcode Command Line Tools. Not needed to launch the packaged `.app`.                                                                                                                           |
+| OS permissions          | Live desktop use         | Screen Recording and Accessibility; Microphone and Speech Recognition for push-to-talk; Input Monitoring if macOS requests it. The tutorial needs none of these.                                                                        |
+| On-device speech        | Voice commands           | macOS Speech support for the selected system language, an available local recognition model, and a working microphone. No transcription API key or cloud STT subscription. Text input remains available if local speech is unsupported. |
+| Vision model            | Real agent decisions     | Either a locally downloaded Ollama vision model, or your own provider API key. No model training or GPU server is needed for the tutorial or BYOM.                                                                                      |
+| Local model capacity    | Private-local mode       | Budget 16–32 GB unified memory for experimenting with a quantized 7–8B vision model, and 10–20 GB additional disk. These are planning allowances, not measured performance guarantees. Larger models require more.                      |
+| Provider key + model ID | Cloud inference          | OpenAI, Anthropic, Gemini or an OpenAI-compatible provider. Confirm image/function-call support and account access. Configure token prices and a provider-side spend cap.                                                               |
+| Local disk              | Encrypted run history    | User controlled, per-run deletion. At 30 compressed frames × 250 KB, plan around 7.5 MB/run before metadata and encoding overhead. Actual PNGs can be larger.                                                                           |
+| Additional backend      | Core private assistant   | None. No CoArena login, cloud database or ingest service is required.                                                                                                                                                                   |
+| Interface assets        | Monochrome UI and motion | Space Grotesk is bundled locally under SIL OFL 1.1. The icon and animations are native/vector/CSS assets; no paid font, image service or animation service is required.                                                                 |
 
 Ollama documents base64 image input and supported vision models in its [vision guide](https://docs.ollama.com/capabilities/vision). Hardware capacity depends on model, quantization and context length; benchmark the selected model before committing to devices.
 
@@ -57,14 +57,14 @@ For the focused **voice MVP**, start with **two engineers** (macOS/audio/input a
 
 The report's full 12-week beta needs sustained product engineering and data operations. A reasonable planning team is:
 
-| Role | Allocation | Main work |
-|---|---|---|
-| Desktop/native engineer | 1 full-time | Audio/STT, push-to-talk latency, permissions, capture, input, interruption, multi-monitor QA, signed packaging. |
-| Agent/product engineer | 1 full-time | Provider-native computer-use adapters, run reliability, safety UX, live-provider evaluation. |
-| Backend/data engineer | 1 full-time | Production ingest, key management, OCR/quarantine, consent/deletion/retention. |
-| Gym/environment engineer | 0.5–1 full-time | Synthetic workflows, runnable environments, hidden-state graders and held-out variants. |
-| Design/QA | 0.5 shared | Usability, accessibility, 100-run reliability matrix and beta feedback. |
-| Security and privacy specialists | Milestone reviews | Threat-model review, dependency/release review, data governance and launch review. |
+| Role                             | Allocation        | Main work                                                                                                       |
+| -------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| Desktop/native engineer          | 1 full-time       | Audio/STT, push-to-talk latency, permissions, capture, input, interruption, multi-monitor QA, signed packaging. |
+| Agent/product engineer           | 1 full-time       | Provider-native computer-use adapters, run reliability, safety UX, live-provider evaluation.                    |
+| Backend/data engineer            | 1 full-time       | Production ingest, key management, OCR/quarantine, consent/deletion/retention.                                  |
+| Gym/environment engineer         | 0.5–1 full-time   | Synthetic workflows, runnable environments, hidden-state graders and held-out variants.                         |
+| Design/QA                        | 0.5 shared        | Usability, accessibility, 100-run reliability matrix and beta feedback.                                         |
+| Security and privacy specialists | Milestone reviews | Threat-model review, dependency/release review, data governance and launch review.                              |
 
 Treat **3–4 engineers for roughly 8–12 weeks**, plus shared design/QA and specialist reviews, as a planning range to reach the PDF's beta criteria from this alpha. It is not an estimate that the entire strategy is already complete. Existing Open Cowork code and reusable CoArena Gym infrastructure could reduce this effort after integration review.
 

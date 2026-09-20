@@ -217,7 +217,9 @@ describe("settings.modules", () => {
   it("shares the task model's privacy rule: nothing leaves this Mac in Private local, and a tool choice names a connected server", () => {
     const servers = [
       server(),
-      server({ id: "web", network: "internet" }),
+      // "search" stands for a user server that reaches the internet; "web" is
+      // the built-in web tool's reserved id since a897a04.
+      server({ id: "search", network: "internet" }),
       server({
         id: "remote",
         transport: "http",
@@ -259,7 +261,7 @@ describe("settings.modules", () => {
     ).toBe(false);
     expect(
       moduleReachesInternet(
-        { kind: "mcp", server: "web", tool: "t", fallback: true },
+        { kind: "mcp", server: "search", tool: "t", fallback: true },
         servers,
       ),
     ).toBe(true);
@@ -313,7 +315,7 @@ describe("settings.modules", () => {
         local({
           fastDecider: {
             kind: "mcp",
-            server: "web",
+            server: "search",
             tool: "t",
             fallback: true,
           },

@@ -1,0 +1,2 @@
+# Vendored model data: formatting it would only churn megabytes of tokens.
+tests/fixtures/kokoro/

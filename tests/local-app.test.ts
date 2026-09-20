@@ -35,7 +35,10 @@ describe("the locally packaged app follows build.productName", () => {
 
   it("refuses a release folder that holds only the build from before the rename", () => {
     const local = localApp("/p", "Butler");
-    const only = (...paths: string[]) => (p: string) => paths.includes(p);
+    const only =
+      (...paths: string[]) =>
+      (p: string) =>
+        paths.includes(p);
     expect(staleBuild(local, only(local.legacy))).toMatch(
       /only "Open Assist\.app".*npm run package:mac to build "Butler\.app"/,
     );

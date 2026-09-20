@@ -296,9 +296,7 @@ try {
   assert.equal(info.voice.handsFree, false);
   assert.equal(info.voice.wakeListening, false);
   assert.equal(
-    await page
-      .getByRole("combobox", { name: "Talk to Butler" })
-      .inputValue(),
+    await page.getByRole("combobox", { name: "Talk to Butler" }).inputValue(),
     "shortcut",
   );
   // Spoken replies: defaults, status fields and the settings controls.
