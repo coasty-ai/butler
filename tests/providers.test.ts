@@ -471,6 +471,25 @@ describe("provider-neutral adapters", () => {
       "A sign-in, password or one-time-code wall is the user's: never type a guessed name or code into it and never press Sign in; request_user at once, saying what the site asks for.",
     );
   });
+  it("teaches the data-entry recipe: every value into the note first, the destination opened once, each field click_control by name and type_text from the note, then the submit button, never back to the source one value at a time", () => {
+    // Market cycles 20260920-0327-abc24ae, -0415-c8c9e10, -0514-55e4e83 and
+    // -0553-f926928 (gpt-5.4-mini, autonomy all): ops-crm-data-entry failed
+    // every attempt, bouncing between the leads list, the lead's page and
+    // the form (STUCK_LOOP at 24-26 actions or the 52-action budget) and
+    // typing at action ~40 or never, with the form's three fields listed and
+    // named; the page-switch warning fired twice at f926928 and changed
+    // nothing. ops-support-ticket-draft and research-compare-to-csv have the
+    // same shape: values on one page, a form or file on another.
+    const text = buildRequest(s("anthropic"), "K", o).body.system[0].text;
+    expect(text).toContain(
+      "To copy values into a form or file, read them all into your note first, then open the destination once, click_control each field by name, type_text its value from the note, and click_control the submit button; never return to the source one value at a time.",
+    );
+    // It follows the sentence that a value read on one page is typed into a
+    // form from the note, in the working-method paragraph.
+    expect(text.indexOf("To copy values into a form or file")).toBeGreaterThan(
+      text.indexOf("A value read on one page goes into a form on another"),
+    );
+  });
   it("explains the playbook and the no-progress note in the instruction", () => {
     const instruction = buildRequest(s("openai"), "K", o).body.instructions;
     for (const phrase of [
