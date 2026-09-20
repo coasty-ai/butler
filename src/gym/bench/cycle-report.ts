@@ -6,6 +6,7 @@ import {
   type AnalysisReport,
 } from "./analyze";
 import {
+  PROBE_INFORMATIONAL,
   compareModels,
   type ProbeReason,
   type ProbeVerdict,
@@ -682,6 +683,39 @@ const pValue = (p: number) =>
   Number.isNaN(p) ? "" : p < 0.001 ? "<0.001" : p.toFixed(3);
 
 /**
+ * The probe's verdict on one line, for the report's header and the
+ * terminal: the verdict, the probed class before and now, each compared
+ * model's success before and now, then the reasons that failed it and last
+ * the informational ones (PROBE_INFORMATIONAL), each with its key and, for
+ * NOW_GRADED, the task ids the class rose on.
+ */
+export function probeLine(
+  probe: Pick<
+    ProbeVerdict,
+    "code" | "pass" | "reasons" | "before" | "after" | "p"
+  >,
+  regressions: Regression[],
+  baseline?: string,
+): string {
+  const reason = (r: ProbeReason) =>
+    `${r.code}${r.key ? ` ${r.key}` : ""}${r.tasks?.length ? ` (${r.tasks.join(", ")})` : ""}`;
+  const failing = probe.reasons.filter((r) => !PROBE_INFORMATIONAL.has(r.code));
+  const noted = probe.reasons.filter((r) => PROBE_INFORMATIONAL.has(r.code));
+  return [
+    `probe ${probe.code} against ${baseline ?? "its baseline"}: ${probe.pass ? "pass" : "FAIL"}`,
+    `class ${probe.before.k}/${probe.before.n} before, ${probe.after.k}/${probe.after.n} now (one-sided p ${pValue(probe.p)})`,
+    ...regressions
+      .filter((row) => row.scope === "model")
+      .map(
+        (row) =>
+          `success ${row.key} ${row.before.k}/${row.before.n} before, ${row.after.k}/${row.after.n} now (${points(row.delta)} pts, p ${pValue(row.p)}, ${row.verdict})`,
+      ),
+    ...(failing.length ? [failing.map(reason).join(", ")] : []),
+    ...(noted.length ? [`informational: ${noted.map(reason).join(", ")}`] : []),
+  ].join(" · ");
+}
+
+/**
  * The regime a cycle's numbers were measured under, for its header, the dry
  * run and the start banner: the autonomy mode and what became of the
  * policy's questions. Under "task" (the default), "ask" and "flow" the
@@ -857,13 +891,7 @@ export function renderCycleReport(cycle: CycleResults): string {
         : ""),
   );
   if (cycle.probe)
-    out.push(
-      `probe ${cycle.probe.code} against ${info.probe?.baseline ?? "its baseline"}: ` +
-        `${cycle.probe.pass ? "pass" : "FAIL"} · class ${cycle.probe.before.k}/${cycle.probe.before.n} before, ${cycle.probe.after.k}/${cycle.probe.after.n} now (one-sided p ${pValue(cycle.probe.p)})` +
-        (cycle.probe.reasons.length
-          ? ` · ${cycle.probe.reasons.map((r) => (r.key ? `${r.code} ${r.key}` : r.code)).join(", ")}`
-          : ""),
-    );
+    out.push(probeLine(cycle.probe, cycle.regressions, info.probe?.baseline));
   out.push("");
 
   // 2. Matrix

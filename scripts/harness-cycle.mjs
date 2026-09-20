@@ -148,6 +148,7 @@ const {
   comparable,
   graderFiles,
   probeClassRates,
+  probeLine,
   renderCycleReport,
   sameTemplates,
 } = await import("../src/gym/bench/cycle-report.ts");
@@ -1824,12 +1825,11 @@ if (regressions.length)
   console.log(
     `\nRegressions: ${regressions.map((row) => `${row.scope} ${row.key}`).join(", ")}`,
   );
+// The same line as the report's header: the class first, the success rate,
+// then the reasons that failed the probe and last the informational ones.
 if (verdict)
   console.log(
-    `\nProbe ${verdict.code}: ${verdict.pass ? "pass" : "FAIL"} (class ${verdict.before.k}/${verdict.before.n} before, ${verdict.after.k}/${verdict.after.n} now)` +
-      (verdict.reasons.length
-        ? `: ${verdict.reasons.map((r) => (r.key ? `${r.code} ${r.key}` : r.code)).join(", ")}`
-        : ""),
+    `\n${probeLine(verdict, verdict.comparison.regressions, probe.baseline)}`,
   );
 // What is still on this Mac after the final sweep: what no sweep can clear
 // (a file of the person's, a refused folder, a document saved outside the

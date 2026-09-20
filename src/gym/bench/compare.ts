@@ -48,7 +48,18 @@ export interface Rate {
 }
 
 export type Verdict =
-  "regression" | "improvement" | "inconclusive" | "unchanged" | "new" | "gone";
+  | "regression"
+  | "improvement"
+  | "inconclusive"
+  | "unchanged"
+  | "new"
+  | "gone"
+  /**
+   * A probe only (compareProbe): a grade class that rose only on tasks the
+   * baseline never graded, so there is no earlier grade to have regressed
+   * from. Informational; never a regression for the exit code.
+   */
+  | "now_graded";
 
 export interface Regression {
   scope: "model" | "model:category" | "class";
@@ -302,6 +313,22 @@ function compareClass(
   };
 }
 
+/** Worst first, then by key: the order the report's table and the verdict read. */
+function sortRegressions(rows: Regression[]): Regression[] {
+  const order: Record<Verdict, number> = {
+    regression: 0,
+    new: 1,
+    now_graded: 2,
+    inconclusive: 3,
+    improvement: 4,
+    gone: 5,
+    unchanged: 6,
+  };
+  return rows.sort(
+    (x, y) => order[x.verdict] - order[y.verdict] || (x.key < y.key ? -1 : 1),
+  );
+}
+
 /** The drop a one-sided z test flags at p < 0.05 with these arms at rate p. */
 export function detectableDrop(n1: number, n2: number, p = 0.5): number {
   if (!n1 || !n2) return 1;
@@ -404,17 +431,7 @@ export function compareCycles(
     const row = compareClass(code, b, a, ranBefore, ranAfter);
     if (row) regressions.push(row);
   }
-  const order: Record<Verdict, number> = {
-    regression: 0,
-    new: 1,
-    inconclusive: 2,
-    improvement: 3,
-    gone: 4,
-    unchanged: 5,
-  };
-  regressions.sort(
-    (x, y) => order[x.verdict] - order[y.verdict] || (x.key < y.key ? -1 : 1),
-  );
+  sortRegressions(regressions);
   const baselineRate = passRate(
     before.filter((r) => shared.includes(r.cell)),
   ).rate;
@@ -498,6 +515,39 @@ export function compareModels(results: AttemptResult[]): ModelPair[] {
 
 /* ----------------------------------------------------------------- probe */
 
+/**
+ * Endings that replaced another by design: at the fix's revision a run
+ * that used to end one way ends another, with the same behaviour behind
+ * it. Counted alone across the two revisions, the successor reads as a rise
+ * from zero (the baseline's code could not produce it) while its
+ * predecessors fall by as much; the probe judges the family instead, so an
+ * honest-fail ending replacing another is neutral and only more failures
+ * of the family in all is a regression. Every name is a class the bench
+ * derives (report.ts endingCode, cycle-report.ts attemptCodes) with an
+ * authored note in analyze.ts; the test pins both.
+ */
+export const SUPERSEDES: Readonly<Record<string, readonly string[]>> = {
+  // cc1c637: unattended, a loop that forms again after the reflection step
+  // fails the run as STUCK_LOOP where it paused on "Say continue with a
+  // hint" and was stopped (STOPPED_WHILE_PAUSED) or ran its actions out
+  // (ACTION_BUDGET).
+  STUCK_LOOP: ["STOPPED_WHILE_PAUSED", "ACTION_BUDGET"],
+  // 0fb99c8: a second done with the task's named file unchanged fails the
+  // run as DELIVERABLE_MISSING; the same run was COMPLETED and graded wrong
+  // (FALSE_DONE) before.
+  DELIVERABLE_MISSING: ["FALSE_DONE"],
+  // 5b453c7: the model's honest fail ends as MODEL_FAILED, which landed in
+  // RUN_ERROR beside real crashes; 0fb99c8: a done sent back with the file
+  // unchanged and withdrawn is MODEL_FAILED where it was a FALSE_DONE.
+  MODEL_FAILED: ["RUN_ERROR", "FALSE_DONE"],
+};
+
+/** The regression table's key for a successor judged with its predecessors. */
+export const familyKey = (
+  successor: string,
+  predecessors: readonly string[],
+): string => `${successor} (+${predecessors.join(", ")})`;
+
 /** Why a probe did not pass, as a fixed code and the row it is about. */
 export interface ProbeReason {
   code:
@@ -505,9 +555,17 @@ export interface ProbeReason {
     | "OTHER_CLASS_REGRESSED"
     | "MODEL_REGRESSED"
     | "TASKS_CHANGED"
-    | "NO_SHARED_CELLS";
+    | "NO_SHARED_CELLS"
+    | "NOW_GRADED";
   key?: string;
+  /** NOW_GRADED: the tasks the class rose on, which the baseline never graded. */
+  tasks?: string[];
 }
+
+/** Reasons that are said and never fail the verdict. */
+export const PROBE_INFORMATIONAL: ReadonlySet<ProbeReason["code"]> = new Set([
+  "NOW_GRADED",
+]);
 
 export interface ProbeVerdict {
   code: string;
@@ -529,7 +587,14 @@ export interface ProbeVerdict {
  * regression, and no affected model's success rate is. A probe runs a
  * different revision by design (that is the fix), so the revision, tree and
  * catalogue-hash checks of compareCycles are replaced by one on the task
- * templates the two ran (`templatesMatch`). Evidence for a merge, never for
+ * templates the two ran (`templatesMatch`), and two rules read the class
+ * table across the revisions: an ending that replaced another by design
+ * (SUPERSEDES) is judged as a family with its predecessors, its bare row
+ * replaced by the family's; and a grade class that rose only on tasks the
+ * baseline never graded (no attempt of the task ran to a pass or a fail in
+ * the probe's scope) is NOW_GRADED, informational, its row "now_graded",
+ * while a rise on tasks the baseline did grade stays a regression. Reasons
+ * come failing first, informational last. Evidence for a merge, never for
  * "fixed": its tasks are the ones the fix was tuned on.
  */
 export function compareProbe(
@@ -580,21 +645,96 @@ export function compareProbe(
   const improved = after.rate < before.rate && test.pDrop < ALPHA;
   const cleared = after.k === 0 && after.n >= 36;
   if (!improved && !cleared) reasons.push({ code: "CLASS_NOT_IMPROVED" });
+  const rated = (cycle: ComparableCycle) =>
+    new Map(options.classes(cycle, cells).map((row) => [row.code, row]));
+  const beforeRates = rated(scoped);
+  const afterRates = rated(now);
+  const attempts = (rates: Map<string, ClassRate>, codes: readonly string[]) =>
+    codes.reduce((sum, name) => sum + (rates.get(name)?.attempts ?? 0), 0);
+  // Successor families: the bare row of an ending that replaced another by
+  // design gives way to the family's, summed with its predecessors on both
+  // sides; the predecessors keep their own rows.
+  const successorOf = new Map<string, string>();
+  for (const [successor, predecessors] of Object.entries(SUPERSEDES)) {
+    const index = comparison.regressions.findIndex(
+      (row) => row.scope === "class" && row.key === successor,
+    );
+    if (index < 0) continue;
+    const key = familyKey(successor, predecessors);
+    const family = [successor, ...predecessors];
+    const row = compareClass(
+      key,
+      { code: key, attempts: attempts(beforeRates, family), ran: before.n },
+      { code: key, attempts: attempts(afterRates, family), ran: after.n },
+      before.n,
+      after.n,
+    );
+    if (!row) continue;
+    comparison.regressions[index] = row;
+    successorOf.set(key, successor);
+  }
+  // Tasks the baseline graded in the probe's scope: an attempt ran and the
+  // grader said pass or fail. Every attempt that runs is graded whatever its
+  // ending, so a task is ungraded only when none ran (a time box, a skip) or
+  // none could be read (unknown).
+  const inScope = (row: AttemptResult) => cells.includes(row.cell) && ran(row);
+  const graded = new Set(
+    scoped.results
+      .filter(
+        (row) =>
+          inScope(row) && (row.status === "passed" || row.status === "failed"),
+      )
+      .map((row) => row.taskId),
+  );
+  const notes: ProbeReason[] = [];
   for (const row of comparison.regressions) {
     if (row.verdict !== "regression") continue;
-    if (
-      row.scope === "class" &&
-      row.key !== code &&
-      options.owner(row.key) === "agent"
-    )
-      reasons.push({ code: "OTHER_CLASS_REGRESSED", key: row.key });
-    if (row.scope === "model")
+    if (row.scope === "model") {
       reasons.push({ code: "MODEL_REGRESSED", key: row.key });
+      continue;
+    }
+    if (
+      row.scope !== "class" ||
+      row.key === code ||
+      options.owner(successorOf.get(row.key) ?? row.key) !== "agent"
+    )
+      continue;
+    // A grade class (the rows carry it as the grader's reason) whose rise is
+    // on tasks the baseline never graded: no earlier grade to regress from.
+    // The rise on the graded tasks alone is tested; only when that is no
+    // regression is the class NOW_GRADED.
+    const fresh = now.results.filter(
+      (result) =>
+        inScope(result) &&
+        result.status !== "passed" &&
+        result.reason === row.key &&
+        !graded.has(result.taskId),
+    );
+    if (fresh.length) {
+      const kept = compareClass(
+        row.key,
+        beforeRates.get(row.key),
+        { code: row.key, attempts: row.after.k - fresh.length, ran: after.n },
+        before.n,
+        after.n,
+      );
+      if (kept?.verdict !== "regression") {
+        row.verdict = "now_graded";
+        notes.push({
+          code: "NOW_GRADED",
+          key: row.key,
+          tasks: [...new Set(fresh.map((result) => result.taskId))].sort(),
+        });
+        continue;
+      }
+    }
+    reasons.push({ code: "OTHER_CLASS_REGRESSED", key: row.key });
   }
+  sortRegressions(comparison.regressions);
   return {
     code,
     pass: !reasons.length,
-    reasons,
+    reasons: [...reasons, ...notes],
     before,
     after,
     p: test.pDrop,

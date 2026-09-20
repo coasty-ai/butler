@@ -28,6 +28,7 @@ import { withoutAsking, type PolicyContext } from "../src/core/policy";
 import { autonomyChange } from "../src/ui/settings-voice";
 import { FILES_APPEND, fakeTools } from "./tool-fakes";
 import { BENCH_TOOL_SETTINGS, createBenchTools } from "../src/gym/bench/tools";
+import { LOOP_STUCK_MESSAGE } from "../src/core/runner";
 import {
   createHarnessState,
   needsBenchDir,
@@ -108,8 +109,11 @@ import {
   wilson,
 } from "../src/gym/bench/stats";
 import {
+  PROBE_INFORMATIONAL,
+  SUPERSEDES,
   compareCycles,
   compareModels,
+  familyKey,
   selectBaseline,
   timingCycles,
   type ComparableCycle,
@@ -124,18 +128,22 @@ import {
   comparable,
   contentFree,
   failureClasses,
+  probeLine,
   renderCycleReport,
   type CycleInfo,
 } from "../src/gym/bench/cycle-report";
 import {
   analyze,
+  budgetCode,
   frictionCodes,
+  noteFor,
   ownerOf,
   parseDiagnostics,
 } from "../src/gym/bench/analyze";
 import {
   TASK_SKIPS,
   aggregate,
+  endingCode,
   leftoversLine,
   ran,
   renderSummary,
@@ -5640,6 +5648,791 @@ describe("probe verdicts", () => {
       ...many(36, (i) => row({ planIndex: 100 + i, taskId: "browser-open" })),
     ];
     expect(judge(before, rows(36, 3)).before).toMatchObject({ k: 20, n: 36 });
+  });
+
+  /* The two cross-revision rules: successor families and NOW_GRADED. */
+
+  const CELL = "openai:gpt-5.4-mini";
+  // A failed row as results.json stores one: no false done unless said.
+  const ended = (over: Partial<AttemptResult>) =>
+    failedRow({ falseDone: false, checks: {}, ...over });
+  // A baseline of 19 attempts on one graded task, `hits` carrying the
+  // probed class; the after arm of 14, the shape of the real probe.
+  const arm = (
+    n: number,
+    hits: number,
+    extra: (i: number) => AttemptResult | undefined,
+  ) =>
+    many(n, (i) => {
+      const own = extra(i);
+      if (own) return own;
+      return i < hits
+        ? ended({ planIndex: i, attempt: i + 1, reason: "NOT_ENTERED" })
+        : row({ planIndex: i, attempt: i + 1 });
+    });
+  const judgeTasks = (
+    before: AttemptResult[],
+    after: AttemptResult[],
+    taskIds: string[],
+  ) =>
+    compareProbe(
+      cycleOf({
+        id: "probe",
+        gitRev: "fix1234",
+        catalogueHash: "h-fix",
+        taskIds,
+        results: after,
+      }),
+      cycleOf({
+        id: "base",
+        gitRev: "old1234",
+        catalogueHash: "h-old",
+        taskIds,
+        results: before,
+      }),
+      "NOT_ENTERED",
+      {
+        templatesMatch: true,
+        classes: probeClassRates("NOT_ENTERED"),
+        owner: ownerOf,
+      },
+    );
+  const STUCK_FAMILY = familyKey("STUCK_LOOP", SUPERSEDES.STUCK_LOOP);
+
+  it("judges a successor ending with its predecessors: rising while they fall is neutral", () => {
+    // Before: twelve runs out of budget. After: the same twelve loops now
+    // fail as STUCK_LOOP (cc1c637) and no run reaches the budget.
+    const before = arm(36, 20, (i) =>
+      i < 12
+        ? ended({
+            planIndex: i,
+            attempt: i + 1,
+            reason: "NOT_ENTERED",
+            runStatus: "failed",
+            endingCode: "ACTION_BUDGET",
+          })
+        : undefined,
+    );
+    const after = arm(36, 3, (i) =>
+      i >= 3 && i < 15
+        ? ended({
+            planIndex: i,
+            attempt: i + 1,
+            reason: "WRONG_ITEM",
+            runStatus: "failed",
+            endingCode: "STUCK_LOOP",
+          })
+        : undefined,
+    );
+    const verdict = judge(before, after);
+    const rows = verdict.comparison.regressions;
+    const family = rows.find((r) => r.key === STUCK_FAMILY);
+    expect(family).toMatchObject({
+      scope: "class",
+      before: { k: 12, n: 36 },
+      after: { k: 12, n: 36 },
+      verdict: "unchanged",
+    });
+    expect(rows.find((r) => r.key === "STUCK_LOOP")).toBeUndefined();
+    // The predecessors keep their own rows (none in 36 attempts: gone).
+    expect(rows.find((r) => r.key === "ACTION_BUDGET")).toMatchObject({
+      before: { k: 12 },
+      after: { k: 0 },
+      verdict: "gone",
+    });
+    expect(
+      verdict.reasons.filter((r) => r.code === "OTHER_CLASS_REGRESSED"),
+    ).toEqual([]);
+  });
+
+  it("still fails a successor rising with its predecessors flat", () => {
+    const before = arm(36, 20, (i) =>
+      i < 12
+        ? ended({
+            planIndex: i,
+            attempt: i + 1,
+            reason: "NOT_ENTERED",
+            runStatus: "failed",
+            endingCode: "ACTION_BUDGET",
+          })
+        : undefined,
+    );
+    // Twelve out of budget as before, and twelve more stuck.
+    const after = arm(36, 3, (i) =>
+      i < 3
+        ? ended({
+            planIndex: i,
+            attempt: i + 1,
+            reason: "NOT_ENTERED",
+            runStatus: "failed",
+            endingCode: "ACTION_BUDGET",
+          })
+        : i < 12
+          ? ended({
+              planIndex: i,
+              attempt: i + 1,
+              reason: "WRONG_ITEM",
+              runStatus: "failed",
+              endingCode: "ACTION_BUDGET",
+            })
+          : i < 24
+            ? ended({
+                planIndex: i,
+                attempt: i + 1,
+                reason: "WRONG_ITEM",
+                runStatus: "failed",
+                endingCode: "STUCK_LOOP",
+              })
+            : undefined,
+    );
+    const verdict = judge(before, after);
+    const family = verdict.comparison.regressions.find(
+      (r) => r.key === STUCK_FAMILY,
+    );
+    expect(family).toMatchObject({
+      before: { k: 12, n: 36 },
+      after: { k: 24, n: 36 },
+      verdict: "regression",
+    });
+    // On its own, twelve from none would read "new", which never failed a
+    // probe: the family is what catches it.
+    expect(verdict.reasons).toContainEqual({
+      code: "OTHER_CLASS_REGRESSED",
+      key: STUCK_FAMILY,
+    });
+    expect(verdict.pass).toBe(false);
+  });
+
+  it("reports a grade class risen only on tasks the baseline never graded as NOW_GRADED, and passes", () => {
+    const tasks = ["calculator-open", "crm-entry"];
+    const before = arm(19, 8, () => undefined);
+    // Two of fourteen now fail RECORD_WRONG, both on a task the baseline
+    // never reached: 0/19 to 2/14 is a regression by the z rule alone.
+    const after = arm(14, 2, (i) =>
+      i >= 2 && i < 4
+        ? ended({
+            planIndex: i,
+            attempt: i + 1,
+            taskId: "crm-entry",
+            reason: "RECORD_WRONG",
+          })
+        : undefined,
+    );
+    const verdict = judgeTasks(before, after, tasks);
+    expect(verdict.before).toMatchObject({ k: 8, n: 19 });
+    expect(verdict.after).toMatchObject({ k: 2, n: 14 });
+    expect(verdict.reasons).toEqual([
+      { code: "NOW_GRADED", key: "RECORD_WRONG", tasks: ["crm-entry"] },
+    ]);
+    expect(verdict.pass).toBe(true);
+    const wrong = verdict.comparison.regressions.find(
+      (r) => r.key === "RECORD_WRONG",
+    );
+    expect(wrong).toMatchObject({
+      before: { k: 0, n: 19 },
+      after: { k: 2, n: 14 },
+      verdict: "now_graded",
+    });
+    expect(wrong!.p).toBeLessThan(0.05);
+    // Nothing in the table is a regression for the exit code.
+    expect(
+      verdict.comparison.regressions.filter((r) => r.verdict === "regression"),
+    ).toEqual([]);
+    expect(PROBE_INFORMATIONAL.has("NOW_GRADED")).toBe(true);
+    expect(PROBE_INFORMATIONAL.has("OTHER_CLASS_REGRESSED")).toBe(false);
+  });
+
+  it("keeps a grade class rising on graded tasks a regression, with or without new tasks beside", () => {
+    const tasks = ["calculator-open", "crm-entry"];
+    // The baseline graded calculator-open (one RECORD_WRONG among its 19).
+    const before = arm(19, 8, (i) =>
+      i === 8
+        ? ended({ planIndex: i, attempt: i + 1, reason: "RECORD_WRONG" })
+        : undefined,
+    );
+    // Six more on the graded task, two on the never-graded one.
+    const mixed = arm(14, 2, (i) =>
+      i >= 2 && i < 8
+        ? ended({ planIndex: i, attempt: i + 1, reason: "RECORD_WRONG" })
+        : i >= 8 && i < 10
+          ? ended({
+              planIndex: i,
+              attempt: i + 1,
+              taskId: "crm-entry",
+              reason: "RECORD_WRONG",
+            })
+          : undefined,
+    );
+    const verdict = judgeTasks(before, mixed, tasks);
+    expect(verdict.reasons).toEqual([
+      { code: "OTHER_CLASS_REGRESSED", key: "RECORD_WRONG" },
+    ]);
+    expect(verdict.pass).toBe(false);
+    expect(
+      verdict.comparison.regressions.find((r) => r.key === "RECORD_WRONG")
+        ?.verdict,
+    ).toBe("regression");
+    // The graded task alone, no new task in sight: the old rule unchanged.
+    const graded = arm(14, 2, (i) =>
+      i >= 2 && i < 8
+        ? ended({ planIndex: i, attempt: i + 1, reason: "RECORD_WRONG" })
+        : undefined,
+    );
+    expect(judgeTasks(before, graded, tasks).reasons).toEqual([
+      { code: "OTHER_CLASS_REGRESSED", key: "RECORD_WRONG" },
+    ]);
+    // A baseline attempt of the task that ran but could not be graded
+    // (unknown) grades nothing: the class on it now is NOW_GRADED.
+    const unread = arm(19, 8, (i) =>
+      i === 18
+        ? row({
+            planIndex: i,
+            attempt: i + 1,
+            taskId: "crm-entry",
+            status: "unknown",
+            reason: "NO_END_STATE",
+          })
+        : undefined,
+    );
+    const fresh = arm(14, 2, (i) =>
+      i >= 2 && i < 4
+        ? ended({
+            planIndex: i,
+            attempt: i + 1,
+            taskId: "crm-entry",
+            reason: "RECORD_WRONG",
+          })
+        : undefined,
+    );
+    expect(judgeTasks(unread, fresh, tasks).reasons).toEqual([
+      { code: "NOW_GRADED", key: "RECORD_WRONG", tasks: ["crm-entry"] },
+    ]);
+  });
+
+  it("declares successors and predecessors the bench derives, each with an authored note", () => {
+    const ending = (over: Partial<Parameters<typeof endingCode>[0]>) =>
+      endingCode({
+        runStatus: "failed",
+        manualTakeover: false,
+        agentHandoffs: 0,
+        paused: false,
+        emergencyStop: false,
+        interrupted: false,
+        modelFailed: false,
+        ...over,
+      });
+    expect(Object.keys(SUPERSEDES).sort()).toEqual([
+      "DELIVERABLE_MISSING",
+      "MODEL_FAILED",
+      "STUCK_LOOP",
+    ]);
+    for (const [successor, predecessors] of Object.entries(SUPERSEDES)) {
+      expect(predecessors.length).toBeGreaterThan(0);
+      expect(predecessors).not.toContain(successor);
+      for (const code of [successor, ...predecessors]) {
+        expect(code).toMatch(/^[A-Z][A-Z0-9_]*$/);
+        expect(noteFor(code), code).not.toBe(noteFor("UNCLASSIFIED"));
+        expect(ownerOf(code), code).toBe("agent");
+      }
+    }
+    // The successors are endings report.ts derives from the harness's counters.
+    expect(ending({ message: LOOP_STUCK_MESSAGE })).toBe("STUCK_LOOP");
+    expect(budgetCode(LOOP_STUCK_MESSAGE)).toBe("STUCK_LOOP");
+    expect(ending({ deliverableMissing: true })).toBe("DELIVERABLE_MISSING");
+    expect(ending({ modelFailed: true })).toBe("MODEL_FAILED");
+    // And the predecessors: two endings, RUN_ERROR, and the grader's word.
+    expect(ending({ message: "Action budget reached." })).toBe("ACTION_BUDGET");
+    expect(ending({ runStatus: "cancelled", paused: true })).toBe(
+      "STOPPED_WHILE_PAUSED",
+    );
+    expect(ending({})).toBe("RUN_ERROR");
+    expect(
+      failureClasses([failedRow({ falseDone: true })]).map((c) => c.code),
+    ).toContain("FALSE_DONE");
+    expect(SUPERSEDES.STUCK_LOOP).toEqual([
+      "STOPPED_WHILE_PAUSED",
+      "ACTION_BUDGET",
+    ]);
+    expect(SUPERSEDES.DELIVERABLE_MISSING).toEqual(["FALSE_DONE"]);
+    expect(SUPERSEDES.MODEL_FAILED).toEqual(["RUN_ERROR", "FALSE_DONE"]);
+    expect(STUCK_FAMILY).toBe(
+      "STUCK_LOOP (+STOPPED_WHILE_PAUSED, ACTION_BUDGET)",
+    );
+  });
+
+  /**
+   * Probe 20260919-1952-0fb99c8 (FACT_NOT_NOTED against 20260919-1646-09c5412,
+   * --autonomy all), row for row with synthetic task ids and no content: the
+   * baseline's 19 attempts in the probe's scope and the probe's 14. The
+   * report read FAIL with OTHER_CLASS_REGRESSED RECORD_WRONG and STUCK_LOOP
+   * while the class fell 8/19 to 2/14 and success rose 1/19 to 4/14.
+   */
+  const realCase = () => {
+    const TASKS = [
+      "kpi",
+      "ci",
+      "booking",
+      "reply",
+      "mfa",
+      "fold",
+      "hotel",
+      "shop",
+      "find",
+      "digest",
+      "listing",
+      "checkin",
+      "ticket",
+      "triage",
+      "crm",
+      "attachment",
+      "chain",
+      "csv",
+    ];
+    type Line = [
+      taskId: string,
+      attempt: number,
+      status: AttemptResult["status"],
+      runStatus: string,
+      endingCode: string,
+      reason: string | undefined,
+      falseDone: boolean,
+      loops: number,
+    ];
+    const lines = (arm: Line[]) =>
+      arm.map(
+        (
+          [
+            taskId,
+            attempt,
+            status,
+            runStatus,
+            endingCode,
+            reason,
+            falseDone,
+            loops,
+          ],
+          i,
+        ) =>
+          row({
+            planIndex: i,
+            taskId,
+            attempt,
+            status,
+            runStatus,
+            endingCode,
+            ...(reason ? { reason } : {}),
+            checks: {},
+            claimed: runStatus === "completed",
+            falseDone,
+            honestFailure: status === "failed" && !falseDone,
+            loops,
+          }),
+      );
+    const before = lines([
+      [
+        "kpi",
+        1,
+        "failed",
+        "completed",
+        "COMPLETED",
+        "NOTE_HEADER_LOST",
+        true,
+        2,
+      ],
+      [
+        "ci",
+        1,
+        "failed",
+        "cancelled",
+        "STOPPED_WHILE_PAUSED",
+        "FACT_NOT_NOTED",
+        false,
+        2,
+      ],
+      [
+        "booking",
+        1,
+        "failed",
+        "cancelled",
+        "STOPPED_AFTER_HANDOFF",
+        "NOT_REVIEWED",
+        false,
+        0,
+      ],
+      [
+        "reply",
+        1,
+        "failed",
+        "cancelled",
+        "STOPPED_AFTER_HANDOFF",
+        "HANDOFF_TARGET",
+        false,
+        0,
+      ],
+      ["mfa", 1, "failed", "failed", "ACTION_BUDGET", "NO_HANDOFF", false, 2],
+      ["fold", 1, "passed", "completed", "COMPLETED", undefined, false, 0],
+      [
+        "hotel",
+        1,
+        "failed",
+        "cancelled",
+        "STOPPED_AFTER_HANDOFF",
+        "HANDOFF_SURFACE",
+        false,
+        0,
+      ],
+      ["shop", 1, "failed", "failed", "ACTION_BUDGET", "OVER_BUDGET", false, 1],
+      ["shop", 2, "failed", "failed", "ACTION_BUDGET", "OVER_BUDGET", false, 1],
+      [
+        "find",
+        2,
+        "failed",
+        "completed",
+        "COMPLETED",
+        "FACT_NOT_NOTED",
+        true,
+        0,
+      ],
+      [
+        "ci",
+        2,
+        "failed",
+        "failed",
+        "ACTION_BUDGET",
+        "FACT_NOT_NOTED",
+        false,
+        4,
+      ],
+      [
+        "digest",
+        2,
+        "failed",
+        "completed",
+        "COMPLETED",
+        "FACT_NOT_NOTED",
+        true,
+        3,
+      ],
+      [
+        "hotel",
+        3,
+        "failed",
+        "cancelled",
+        "STOPPED_WHILE_PAUSED",
+        "FACT_NOT_NOTED",
+        false,
+        2,
+      ],
+      [
+        "ci",
+        3,
+        "failed",
+        "failed",
+        "ACTION_BUDGET",
+        "FACT_NOT_NOTED",
+        false,
+        4,
+      ],
+      [
+        "listing",
+        3,
+        "failed",
+        "cancelled",
+        "STOPPED_WHILE_PAUSED",
+        "FACT_NOT_NOTED",
+        false,
+        1,
+      ],
+      [
+        "checkin",
+        3,
+        "failed",
+        "completed",
+        "COMPLETED",
+        "PASSENGER_NOT_ENTERED",
+        true,
+        0,
+      ],
+      [
+        "ticket",
+        3,
+        "failed",
+        "cancelled",
+        "STOPPED_WHILE_PAUSED",
+        "DRAFT_WRONG",
+        false,
+        1,
+      ],
+      [
+        "triage",
+        3,
+        "failed",
+        "cancelled",
+        "STOPPED_AFTER_HANDOFF",
+        "HANDOFF_TARGET",
+        false,
+        0,
+      ],
+      [
+        "kpi",
+        3,
+        "failed",
+        "failed",
+        "ACTION_BUDGET",
+        "FACT_NOT_NOTED",
+        false,
+        3,
+      ],
+      // Skipped, and out of the probe's tasks: neither ran nor counted.
+      [
+        "chain",
+        3,
+        "unknown",
+        "skipped",
+        "SKIPPED",
+        "NO_AGENDA_ACCESS",
+        false,
+        0,
+      ],
+      [
+        "lights",
+        1,
+        "failed",
+        "failed",
+        "ACTION_BUDGET",
+        "KITCHEN_STILL_ON",
+        false,
+        0,
+      ],
+    ]);
+    const after = lines([
+      ["shop", 1, "failed", "failed", "STUCK_LOOP", "OVER_BUDGET", false, 2],
+      [
+        "hotel",
+        1,
+        "failed",
+        "completed",
+        "COMPLETED",
+        "DATES_NOT_SEARCHED",
+        true,
+        0,
+      ],
+      ["checkin", 1, "passed", "completed", "COMPLETED", undefined, false, 0],
+      [
+        "digest",
+        1,
+        "failed",
+        "completed",
+        "COMPLETED",
+        "FACT_NOT_NOTED",
+        true,
+        0,
+      ],
+      [
+        "ci",
+        1,
+        "failed",
+        "completed",
+        "COMPLETED",
+        "NOTE_HEADER_LOST",
+        true,
+        0,
+      ],
+      ["crm", 2, "failed", "failed", "ACTION_BUDGET", "RECORD_WRONG", false, 0],
+      [
+        "booking",
+        2,
+        "passed",
+        "cancelled",
+        "STOPPED_AFTER_HANDOFF",
+        undefined,
+        false,
+        0,
+      ],
+      [
+        "reply",
+        2,
+        "failed",
+        "cancelled",
+        "STOPPED_AFTER_HANDOFF",
+        "HANDOFF_TARGET",
+        false,
+        0,
+      ],
+      ["fold", 2, "passed", "completed", "COMPLETED", undefined, false, 0],
+      [
+        "triage",
+        3,
+        "failed",
+        "cancelled",
+        "STOPPED_AFTER_HANDOFF",
+        "HANDOFF_TARGET",
+        false,
+        1,
+      ],
+      [
+        "digest",
+        3,
+        "failed",
+        "completed",
+        "COMPLETED",
+        "FACT_NOT_NOTED",
+        true,
+        0,
+      ],
+      ["checkin", 3, "passed", "completed", "COMPLETED", undefined, false, 0],
+      [
+        "attachment",
+        3,
+        "failed",
+        "failed",
+        "ACTION_BUDGET",
+        "ATTACHMENT_NOT_SAVED",
+        false,
+        5,
+      ],
+      ["crm", 3, "failed", "failed", "STUCK_LOOP", "RECORD_WRONG", false, 4],
+    ]);
+    const stored = (code: string, attempts: number) => [
+      { code, byModel: { [CELL]: { attempts } } },
+    ];
+    const baseline = cycleOf({
+      id: "20260919-1646-09c5412",
+      gitRev: "09c5412",
+      catalogueHash: "h-market-old",
+      taskIds: [...TASKS, "lights"],
+      results: before,
+      failureClasses: stored("FACT_NOT_NOTED", 8),
+    });
+    const probe = cycleOf({
+      id: "20260919-1952-0fb99c8",
+      gitRev: "0fb99c8",
+      catalogueHash: "h-market-fix",
+      taskIds: TASKS,
+      results: after,
+      failureClasses: stored("FACT_NOT_NOTED", 2),
+    });
+    return {
+      baseline,
+      probe,
+      verdict: compareProbe(probe, baseline, "FACT_NOT_NOTED", {
+        templatesMatch: true,
+        classes: probeClassRates("FACT_NOT_NOTED"),
+        owner: ownerOf,
+      }),
+    };
+  };
+
+  it("passes probe 20260919-1952-0fb99c8 under the two rules, its two regressions read as a family and as now graded", () => {
+    const { verdict } = realCase();
+    expect(verdict.before).toMatchObject({ k: 8, n: 19 });
+    expect(verdict.after).toMatchObject({ k: 2, n: 14 });
+    expect(verdict.p).toBeCloseTo(0.0428, 3);
+    expect(verdict.reasons).toEqual([
+      { code: "NOW_GRADED", key: "RECORD_WRONG", tasks: ["crm"] },
+    ]);
+    expect(verdict.pass).toBe(true);
+    const rows = verdict.comparison.regressions;
+    const by = (key: string) => rows.find((r) => r.key === key);
+    // STUCK_LOOP 0/19 to 2/14 was the regression; the family is 10/19 to 4/14.
+    expect(by("STUCK_LOOP")).toBeUndefined();
+    expect(by(STUCK_FAMILY)).toMatchObject({
+      before: { k: 10, n: 19 },
+      after: { k: 4, n: 14 },
+      verdict: "inconclusive",
+    });
+    expect(by("ACTION_BUDGET")).toMatchObject({
+      before: { k: 6 },
+      after: { k: 2 },
+    });
+    expect(by("STOPPED_WHILE_PAUSED")).toMatchObject({
+      before: { k: 4 },
+      after: { k: 0 },
+    });
+    // RECORD_WRONG 0/19 to 2/14 on a task the baseline never ran.
+    expect(by("RECORD_WRONG")).toMatchObject({
+      before: { k: 0, n: 19 },
+      after: { k: 2, n: 14 },
+      verdict: "now_graded",
+    });
+    expect(by(CELL)).toMatchObject({
+      scope: "model",
+      before: { k: 1, n: 19 },
+      after: { k: 4, n: 14 },
+      verdict: "improvement",
+    });
+    expect(by("ACTION_LOOP")).toMatchObject({
+      before: { k: 12 },
+      after: { k: 4 },
+      verdict: "improvement",
+    });
+    expect(by("FALSE_DONE")).toMatchObject({
+      before: { k: 4 },
+      after: { k: 4 },
+    });
+    expect(rows.filter((r) => r.verdict === "regression")).toEqual([]);
+    // Worst first: a now_graded row sorts after new and before inconclusive.
+    const order = rows.map((r) => r.verdict);
+    expect(order.indexOf("now_graded")).toBeLessThan(
+      order.indexOf("inconclusive"),
+    );
+    expect(order.indexOf("inconclusive")).toBeLessThan(
+      order.indexOf("improvement"),
+    );
+  });
+
+  it("prints the verdict line in a fixed order: the class, the success rate, failing reasons, then informational ones", () => {
+    const { verdict, probe, baseline } = realCase();
+    const line = probeLine(
+      verdict,
+      verdict.comparison.regressions,
+      "20260919-1646-09c5412",
+    );
+    expect(line).toBe(
+      "probe FACT_NOT_NOTED against 20260919-1646-09c5412: pass · class 8/19 before, 2/14 now (one-sided p 0.043) · success openai:gpt-5.4-mini 1/19 before, 4/14 now (+23 pts, p 0.032, improvement) · informational: NOW_GRADED RECORD_WRONG (crm)",
+    );
+    // A failed probe: the failing reasons before the informational ones,
+    // whatever order they were pushed in.
+    const failed = probeLine(
+      {
+        ...verdict,
+        pass: false,
+        reasons: [
+          { code: "NOW_GRADED", key: "RECORD_WRONG", tasks: ["crm", "kpi"] },
+          { code: "OTHER_CLASS_REGRESSED", key: STUCK_FAMILY },
+          { code: "MODEL_REGRESSED", key: CELL },
+        ],
+      },
+      verdict.comparison.regressions,
+    );
+    expect(failed).toBe(
+      "probe FACT_NOT_NOTED against its baseline: FAIL · class 8/19 before, 2/14 now (one-sided p 0.043) · success openai:gpt-5.4-mini 1/19 before, 4/14 now (+23 pts, p 0.032, improvement) · OTHER_CLASS_REGRESSED STUCK_LOOP (+STOPPED_WHILE_PAUSED, ACTION_BUDGET), MODEL_REGRESSED openai:gpt-5.4-mini · informational: NOW_GRADED RECORD_WRONG (crm, kpi)",
+    );
+    // The report's header carries the same line, and its table the family
+    // row and the now_graded verdict.
+    const cycle = buildCycleResults({
+      cycle: info({
+        id: probe.id,
+        gitRev: probe.gitRev,
+        matrix: [info().matrix[0]],
+        probe: { code: "FACT_NOT_NOTED", baseline: baseline.id },
+      }),
+      results: probe.results,
+      baseline: { cycles: [baseline], comparison: verdict.comparison },
+      probe: verdict,
+    });
+    const md = renderCycleReport(cycle);
+    expect(md).toContain(`\n${line}\n`);
+    expect(md).toContain(
+      "| class | STUCK_LOOP (+STOPPED_WHILE_PAUSED, ACTION_BUDGET) | 10/19 | 4/14 | -24 | 0.083 | inconclusive |",
+    );
+    expect(md).toContain(
+      "| class | RECORD_WRONG | 0/19 | 2/14 | +14 | 0.045 | now_graded |",
+    );
+    expect(md).not.toMatch(/\| class \| STUCK_LOOP \|/);
+    expect(cycle.probe?.reasons).toEqual([
+      { code: "NOW_GRADED", key: "RECORD_WRONG", tasks: ["crm"] },
+    ]);
   });
 
   it("rates the class under test from its stored count, frictions included", () => {
