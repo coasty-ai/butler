@@ -153,7 +153,7 @@ struct TrackedControl { let element: AXUIElement; let bounds: CGRect; let signat
 // Names shown to the model for grounding. Editable fields expose their title,
 // description or placeholder, never their contents.
 func modelControlName(_ element:AXUIElement, role:String) -> String {
-    let editable = ["AXTextField","AXTextArea","AXComboBox"].contains(role)
+    let editable = editableControlRoles.contains(role)
     // Title, description, value or placeholder, then the element that titles
     // it (Reveal.swift controlNameOrder): the last is what names a control
     // under a <label> in WebKit.
@@ -176,7 +176,10 @@ func webControls(_ window: AXUIElement, display: CGRect, limit: Int = 45) -> [[S
 }
 func webControlEntries(_ window: AXUIElement, display: CGRect, limit: Int = 45) -> [ControlEntry] {
     let started = ProcessInfo.processInfo.systemUptime
-    let interactive: Set<String> = ["AXLink","AXButton","AXTextField","AXTextArea","AXComboBox","AXCheckBox","AXRadioButton","AXPopUpButton","AXMenuButton","AXTab"]
+    let interactive: Set<String> = ["AXLink","AXButton","AXTextField","AXTextArea","AXComboBox","AXCheckBox","AXRadioButton","AXPopUpButton","AXMenuButton","AXTab","AXIncrementor","AXSlider"]
+    // Listed even without a name, since typed text lands in them: the text
+    // fields and a number input (AXIncrementor). A nameless slider is not.
+    let namelessListed: Set<String> = ["AXTextField","AXTextArea","AXComboBox","AXIncrementor"]
     let visible = (elementRect(window) ?? display).intersection(display)
     var queue: [(AXUIElement, Int)] = [(window, 0)], index = 0, result = [ControlEntry]()
     while index < queue.count && index < 2500 && result.count < limit {
@@ -187,10 +190,14 @@ func webControlEntries(_ window: AXUIElement, display: CGRect, limit: Int = 45) 
         let rect = elementRect(node)
         // Skip subtrees that are scrolled out of view.
         if let rect = rect, depth > 2, rect.width > 0, rect.height > 0, !rect.intersects(visible) { continue }
+        // WebKit wraps a number input's own text field inside the
+        // AXIncrementor; the parent is the listed control, so it appears once.
+        if role == "AXTextField", let parent = attribute(node, kAXParentAttribute), CFGetTypeID(parent) == AXUIElementGetTypeID(),
+           attribute(parent as! AXUIElement, kAXRoleAttribute) as? String == "AXIncrementor" { continue }
         if interactive.contains(role), let rect = rect, rect.width >= 2, rect.height >= 2, visible.contains(CGPoint(x: rect.midX, y: rect.midY)) {
             let name = modelControlName(node, role: role)
-            if !name.isEmpty || ["AXTextField","AXTextArea","AXComboBox"].contains(role) {
-                var item: [String:Any] = ["role": String(role.dropFirst(2)).lowercased(),
+            if !name.isEmpty || namelessListed.contains(role) {
+                var item: [String:Any] = ["role": controlRoleWord(role: role),
                     "x": (Double(rect.midX - display.minX) / Double(display.width) * 1000).rounded() / 1000,
                     "y": (Double(rect.midY - display.minY) / Double(display.height) * 1000).rounded() / 1000]
                 if !name.isEmpty { item["label"] = name }

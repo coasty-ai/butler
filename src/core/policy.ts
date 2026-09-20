@@ -106,11 +106,13 @@ const selectionPointerRoles = [
 const contentPointerRoles = ["AXGroup", "AXImage", "AXStaticText", "AXHeading"];
 // Activating these can commit anything, in any language. Only an anchored
 // allow-list of benign labels runs without approval.
+// A slider sets a value the way a check box sets a state: a setting change.
 const activatableRoles = [
   "AXButton",
   "AXMenuItem",
   "AXCheckBox",
   "AXRadioButton",
+  "AXSlider",
 ];
 const benignControlLabels = new Set([
   "ok",
@@ -263,8 +265,17 @@ function blindSurface(surface: Surface): boolean {
     !surface.unknown && !surface.secureInput && surface.accessibility === "none"
   );
 }
-/** Focused roles text is typed into; a secure field is refused before them. */
-const editableRoles = ["AXTextField", "AXTextArea", "AXComboBox"];
+/**
+ * Focused roles text is typed into; a secure field is refused before them.
+ * AXIncrementor is a number input in Chrome and Safari (the value is typed;
+ * its arrows only step it), so it takes text like a field.
+ */
+const editableRoles = [
+  "AXTextField",
+  "AXTextArea",
+  "AXComboBox",
+  "AXIncrementor",
+];
 /**
  * Whether a known, non-secure text field has the focus: what a dictation
  * ("type hello world") is typed into without a model call (src/core/runner.ts).
@@ -1801,14 +1812,19 @@ function decideAction(
   }
   // Focusing a text field does not submit it. Its label or existing contents
   // can mention sending/deleting without making the focus click consequential.
+  // A number input (AXIncrementor) is one: the click puts the caret in it.
   // A double-click is not a focus click (Finder names are AXTextFields).
   if (
     !surface.unknown &&
     ((action.type === "click" && action.button === "left") ||
       action.type === "click_control") &&
-    ["AXTextField", "AXTextArea", "AXComboBox", "AXScrollBar"].includes(
-      surface.targetRole ?? "",
-    )
+    [
+      "AXTextField",
+      "AXTextArea",
+      "AXComboBox",
+      "AXIncrementor",
+      "AXScrollBar",
+    ].includes(surface.targetRole ?? "")
   )
     return { kind: "ALLOW", reason: "Focus a known input control." };
   const label = (surface.targetLabel ?? "").trim().toLowerCase();
@@ -2144,7 +2160,7 @@ function decideAction(
         };
       return {
         kind: "CONFIRM",
-        reason: ["AXCheckBox", "AXRadioButton"].includes(role)
+        reason: ["AXCheckBox", "AXRadioButton", "AXSlider"].includes(role)
           ? "Change this setting?"
           : `Click “${quote(shown)}”?`,
       };

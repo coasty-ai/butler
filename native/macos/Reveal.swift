@@ -58,6 +58,18 @@ let groupedControlRoles: Set<String> = ["AXRadioButton", "AXCheckBox"]
 /// The walk up from a grouped control stops here: nothing above names a group.
 let controlGroupStopRoles: Set<String> = ["AXWebArea", "AXWindow", "AXScrollArea", "AXApplication"]
 
+/// Roles whose value is what the user entered or set (a field's text, a
+/// number input's value, a slider's position): never read as the control's
+/// name. modelControlName reads a field's placeholder in its place.
+let editableControlRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXIncrementor", "AXSlider"]
+/// The role word the model reads in context.controls: "number" for an
+/// AXIncrementor (Chrome and Safari both expose <input type=number> as one,
+/// and the model reads role words; "incrementor" names nothing it knows),
+/// else the role without its AX prefix, lowercased ("AXSlider" -> "slider").
+func controlRoleWord(role: String) -> String {
+    role == "AXIncrementor" ? "number" : String(role.dropFirst(2)).lowercased()
+}
+
 // MARK: Geometry
 
 /// An AppKit screen rectangle (origin at the bottom left of the primary

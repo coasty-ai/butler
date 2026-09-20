@@ -35,6 +35,7 @@ import CoreGraphics
         backgroundInputChecks(check)
         clickEffectChecks(check)
         revealChecks(check)
+        controlRoleChecks(check)
         observerChecks(check)
         webTextChecks(check)
         screenChangeChecks(check)

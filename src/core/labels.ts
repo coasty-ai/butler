@@ -23,6 +23,8 @@ export const REPLAYABLE_ROLES: ReadonlySet<string> = new Set([
   "popupbutton",
   "menubutton",
   "tab",
+  "number",
+  "slider",
 ]);
 
 /** Trim, lowercase, collapse whitespace and strip a trailing ellipsis. */
@@ -35,9 +37,19 @@ export function normalizeLabel(label: string): string {
     .trim();
 }
 
-/** Accessibility role without the AX prefix, lowercase ("AXButton" → "button"). */
+/**
+ * Role words that stand for another: the native walk lists an AXIncrementor
+ * (a number input in Chrome and Safari alike) as "number", the word the model
+ * reads, so a surface's AXIncrementor and the listed control agree here.
+ */
+const ROLE_WORDS: Readonly<Record<string, string>> = { incrementor: "number" };
+/**
+ * Accessibility role without the AX prefix, lowercase ("AXButton" → "button";
+ * "AXIncrementor" → "number").
+ */
 export function normalizeRole(role: string): string {
-  return role.trim().replace(/^AX/, "").toLowerCase();
+  const word = role.trim().replace(/^AX/, "").toLowerCase();
+  return ROLE_WORDS[word] ?? word;
 }
 
 /** First `limit` UTF-16 code units, never splitting a surrogate pair (like native utf16Prefix). */

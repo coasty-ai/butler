@@ -10,11 +10,13 @@ import {
   documentExtensions,
   documentURL,
   evaluate,
+  focusedTextField,
   launcherMatches,
   isInstallerName,
   PASTE_ALLOWED,
   type Decision,
 } from "../src/core/policy";
+import { allowedCode, retryCode } from "../src/core/decision-codes";
 import { pasteRequested } from "../src/core/runner";
 import { redactSecrets, sanitizeText, scanText } from "../src/core/sanitize";
 import { describeAction } from "../src/voice/router";
@@ -2484,6 +2486,12 @@ describe("click_control roles the model spells its own way", () => {
     expect(controlRole("AXButton")).toBe("button");
     expect(controlRole("text field")).toBe("textfield");
     expect(controlRole("Link")).toBe("link");
+    // A number input is listed as "number"; the accessibility role's own
+    // word reaches the same control.
+    expect(controlRole("number")).toBe("number");
+    expect(controlRole("AXIncrementor")).toBe("number");
+    expect(controlRole("incrementor")).toBe("number");
+    expect(controlRole("AXSlider")).toBe("slider");
     expect(controlRole("calendar thing")).toBeUndefined();
     expect(controlRole(3)).toBeUndefined();
   });
@@ -2726,5 +2734,118 @@ describe("Finder double-click on a document by its own URL", () => {
         targetURL: "file:///Users/x/notes.txt",
       }),
     ).toEqual(asked);
+  });
+});
+
+// Market shard 3/3 at c8c9e10 (cycle 20260920-0415), home-dashboard-lights #1:
+// the smart-home fixture's thermostat is an <input type=number>, an
+// AXIncrementor in Chrome and Safari, which the web walk never listed and the
+// click policy had no branch for, so four coordinate clicks on it ended
+// TARGET_UNIDENTIFIED and the run handed off after 5 actions. A number input
+// is focused and typed into like a text field; a slider is a setting change.
+describe("number inputs and sliders", () => {
+  const all = {
+    ...structuredClone(defaultSettings),
+    autonomy: "all" as const,
+    autonomyAllAcknowledged: true,
+  };
+  const thermostat = {
+    ...chrome,
+    targetRole: "AXIncrementor",
+    targetLabel: "Thermostat (°F)",
+  };
+  const focused = { ...chrome, focusedRole: "AXIncrementor" };
+  it("focuses a number input like a text field, by position or by name, named or not", () => {
+    const focus = { kind: "ALLOW", reason: "Focus a known input control." };
+    expect(decide(click(), thermostat)).toEqual(focus);
+    expect(allowedCode(decide(click(), thermostat).reason)).toBe("FOCUS_INPUT");
+    expect(
+      decide(named("Thermostat (°F)"), {
+        ...thermostat,
+        controlStatus: "resolved",
+        controlLabel: "Thermostat (°F)",
+      }),
+    ).toEqual(focus);
+    // Listed without a name, as a text field is: the click still only focuses.
+    expect(decide(click(), { ...chrome, targetRole: "AXIncrementor" })).toEqual(
+      focus,
+    );
+    // A double-click is not a focus click, here as for a text field.
+    expect(decide(doubleClick, thermostat)).not.toEqual(focus);
+  });
+  it("types a value into a focused number input as into a text field", () => {
+    const typed = decide(type("72"), focused);
+    expect(typed).toEqual({
+      kind: "ALLOW",
+      reason: "Type in a known non-secure text field.",
+    });
+    expect(allowedCode(typed.reason)).toBe("TYPE_TEXT_FIELD");
+    expect(decide(key("BACKSPACE"), focused)).toEqual({
+      kind: "ALLOW",
+      reason: "Edit text.",
+    });
+    // A line break may submit the form: the same question a text field gets.
+    expect(decide(type("72\n"), focused).kind).toBe("CONFIRM");
+    expect(focusedTextField({ ...base, ...focused })).toBe(true);
+  });
+  it("keeps the floors: secure input, a secure field and a protected app refuse it", () => {
+    expect(decide(click(), { ...thermostat, secureInput: true }).kind).toBe(
+      "USER_TAKEOVER",
+    );
+    expect(decide(type("72"), { ...focused, secureInput: true }).kind).toBe(
+      "USER_TAKEOVER",
+    );
+    expect(
+      decide(type("72"), {
+        ...focused,
+        appId: "com.1password.1password",
+      }).kind,
+    ).not.toBe("ALLOW");
+    expect(
+      focusedTextField({
+        ...base,
+        ...focused,
+        focusedSubrole: "AXSecureTextField",
+      }),
+    ).toBe(false);
+    expect(focusedTextField({ ...base, ...focused, secureInput: true })).toBe(
+      false,
+    );
+  });
+  it("asks about a labelled slider as a setting change, and does it under autonomy all", () => {
+    const slider = {
+      ...chrome,
+      targetRole: "AXSlider",
+      targetLabel: "Brightness",
+    };
+    expect(decide(click(), slider)).toEqual({
+      kind: "CONFIRM",
+      reason: "Change this setting?",
+    });
+    expect(
+      decide(named("Brightness"), {
+        ...slider,
+        controlStatus: "resolved",
+        controlLabel: "Brightness",
+      }),
+    ).toEqual({ kind: "CONFIRM", reason: "Change this setting?" });
+    const under = evaluate(click(), { ...base, ...slider }, all, false);
+    expect(under.kind).toBe("ALLOW");
+    expect(allowedCode(under.reason)).toBe("ALLOWED_AUTONOMY_ALL");
+    // A nameless slider's effect cannot be verified: the unlabelled retry.
+    const unnamed = decide(click(), { ...chrome, targetRole: "AXSlider" });
+    expect(unnamed.kind).toBe("RETRY");
+    expect(retryCode(unnamed.reason)).toBe("CONTROL_UNLABELLED");
+    expect(
+      evaluate(
+        click(),
+        { ...base, ...chrome, targetRole: "AXSlider" },
+        all,
+        false,
+      ).kind,
+    ).toBe("RETRY");
+    expect(decide(click(), { ...slider, secureInput: true }).kind).toBe(
+      "USER_TAKEOVER",
+    );
   });
 });

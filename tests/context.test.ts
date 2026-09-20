@@ -299,3 +299,35 @@ describe("screen text", () => {
     ).toHaveLength(3200);
   });
 });
+
+// The web walk lists a number input (native AXIncrementor) as "number", even
+// nameless, and a labelled slider as "slider" (cycle 20260920-0415-c8c9e10:
+// a thermostat never listed was clicked by coordinates into a hand-off).
+describe("number inputs and sliders in context.controls", () => {
+  const number = { role: "number", label: "Thermostat (°F)", x: 0.5, y: 0.4 };
+  const slider = { role: "slider", label: "Brightness", x: 0.5, y: 0.5 };
+  it("admits both roles", () => {
+    expect(
+      cleanScreenContext({
+        appName: "Safari",
+        windowTitle: "Home",
+        controls: [number, slider],
+      })?.controls,
+    ).toEqual([number, slider]);
+  });
+  it("keeps an unnamed number input the way it keeps a text field, and drops an unnamed slider", () => {
+    const unnamed = { role: "number", x: 0.5, y: 0.4 };
+    expect(
+      trimScreenContext({
+        appName: "Safari",
+        windowTitle: "Home",
+        controls: [
+          unnamed,
+          { role: "slider", x: 0.5, y: 0.5 },
+          { role: "button", x: 0.1, y: 0.1 },
+          number,
+        ],
+      })?.controls,
+    ).toEqual([unnamed, number]);
+  });
+});

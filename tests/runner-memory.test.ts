@@ -23,6 +23,7 @@ import {
   planSummary,
   surfaceTarget,
 } from "../src/core/runner";
+import { REPLAYABLE_ROLES } from "../src/core/labels";
 import { TutorialController, TutorialProvider } from "../src/core/tutorial";
 import {
   NativeActionError,
@@ -230,6 +231,15 @@ describe("memory normalization helpers", () => {
     expect(normalizeRole("AXButton")).toBe("button");
     expect(normalizeRole("button")).toBe("button");
     expect(normalizeRole("AXMenuItem")).toBe("menuitem");
+    // The web walk lists an AXIncrementor (a number input) as "number", the
+    // word the model reads, so the surface's role and the control agree.
+    expect(normalizeRole("AXIncrementor")).toBe("number");
+    expect(normalizeRole("incrementor")).toBe("number");
+    expect(normalizeRole("number")).toBe("number");
+    expect(normalizeRole("AXSlider")).toBe("slider");
+    expect(REPLAYABLE_ROLES.has("number")).toBe(true);
+    expect(REPLAYABLE_ROLES.has("slider")).toBe(true);
+    expect(REPLAYABLE_ROLES.has("incrementor")).toBe(false);
   });
   it("matches a committed page host or its subdomains only", () => {
     expect(pageHostMatches("youtube.com", "youtube.com")).toBe(true);

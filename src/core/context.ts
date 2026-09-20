@@ -195,6 +195,8 @@ const textEntryRoles = new Set([
   "textarea",
   "searchfield",
   "combobox",
+  // A number input (native AXIncrementor, listed as "number"): typed too.
+  "number",
 ]);
 /**
  * The model's copy of a cleaned context, without what it already has under

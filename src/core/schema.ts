@@ -7,6 +7,7 @@ import {
   type ToolSummary,
   type ToolUnavailable,
 } from "./tools";
+import { normalizeRole } from "./labels";
 const unit = z.number().finite().min(0).max(1);
 export const supportedKeys = [
   "ENTER",
@@ -92,7 +93,7 @@ export const CONTROL_ROLES: ReadonlySet<string> = new Set([
   "statictext",
   "heading",
   "slider",
-  "incrementor",
+  "number",
   "disclosuretriangle",
   "toolbar",
   "tabgroup",
@@ -106,9 +107,9 @@ export function controlRole(value: unknown): string | undefined {
     .replace(/^ax/, "")
     .split(/[^a-z]+/)
     .filter(Boolean);
-  const joined = words.join("");
+  const joined = normalizeRole(words.join(""));
   if (CONTROL_ROLES.has(joined)) return joined;
-  const last = words[words.length - 1];
+  const last = normalizeRole(words[words.length - 1] ?? "");
   return last && CONTROL_ROLES.has(last) ? last : undefined;
 }
 export const actionSchema = z.discriminatedUnion("type", [
