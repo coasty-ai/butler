@@ -817,7 +817,10 @@ const journalEvents = new Map<string, Set<string>>([
     new Set(["code", "change", "actionType", "reason", "problem", "unmet"]),
   ],
   // The done audit's outcome: counts, its duration and ok or unavailable.
-  ["DoneAudited", new Set(["requirements", "unmet", "durationMs", "code"])],
+  [
+    "DoneAudited",
+    new Set(["requirements", "unmet", "durationMs", "code", "attempts"]),
+  ],
   ["ActionInterrupted", new Set(["actionType"])],
   ["ActionReaimed", new Set(["actionType"])],
   [

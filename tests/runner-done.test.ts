@@ -31,6 +31,7 @@ import {
   DONE_AUDIT_MAX_REQUIREMENTS,
   DONE_AUDIT_MIN_ACTIONS,
   DONE_AUDIT_PROMPT,
+  DONE_AUDIT_REMINDER,
   doneAuditInput,
   multiClause,
   parseDoneAudit,
@@ -919,6 +920,7 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
       unmet: 2,
       durationMs: expect.any(Number),
       code: "ok",
+      attempts: 1,
     });
     expect(m.of("UsageAdded")).toHaveLength(1);
     expect(m.of("UsageAdded")[0].data).toEqual({ usage: AUDIT_USAGE });
@@ -1060,7 +1062,11 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
       const p = auditing(scripted(threeThenDone()), item.replies, item.code);
       const runner = new Runner(c, p, m.recorder, settings, () => {});
       await runner.start(TWO_CLAUSES);
-      expect(p.text).toHaveBeenCalledTimes(1);
+      // An unusable reply is asked once more with the reminder line; still
+      // unusable, the done stands.
+      expect(p.text).toHaveBeenCalledTimes(2);
+      expect(p.calls[1].input).toContain(DONE_AUDIT_REMINDER);
+      expect(p.calls[0].input).not.toContain(DONE_AUDIT_REMINDER);
       expect(challenges(m)).toHaveLength(0);
       expect(m.of("RunCompleted")).toHaveLength(1);
       expect(runner.snapshot.run?.status).toBe("completed");
@@ -1071,10 +1077,28 @@ describe("a done audited against the objective's clauses (cycle 20260919-2144-97
         unmet: 0,
         durationMs: expect.any(Number),
         code: "unavailable",
+        attempts: 2,
       });
-      // A reply that arrived still cost tokens; a thrown call cost none.
-      expect(m.getRun().usage).toEqual(item.usage);
+      // Each reply that arrived cost tokens; a thrown call cost none.
+      const arrived = item.replies[0] instanceof Error ? 0 : 2;
+      expect(m.getRun().usage.inputTokens).toBe(
+        item.usage.inputTokens * (item.usage === AUDIT_USAGE ? arrived : 1),
+      );
     }
+    // The retry can rescue the audit: prose first, the object second.
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const c = controller();
+    const p = auditing(scripted(threeThenDone()), [
+      "Sure! Everything looks done to me.",
+      ALL_MET,
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start(TWO_CLAUSES);
+    expect(p.text).toHaveBeenCalledTimes(2);
+    expect(audits(m)[0].data).toMatchObject({ code: "ok", attempts: 2 });
+    expect(challenges(m)).toHaveLength(0);
+    expect(m.of("RunCompleted")).toHaveLength(1);
   });
   it("audits no done on a one-clause objective, an approved routine's replay, fewer than three actions, or a provider with no text path", async () => {
     const cases: {

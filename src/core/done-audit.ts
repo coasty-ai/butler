@@ -294,14 +294,25 @@ export function doneAuditInput(
 }
 
 /** The text call the runner makes, ready for Provider.text. */
+/**
+ * The line appended to the input on the one retry after an unusable reply
+ * (prose, a fence with no object, a wrong shape): market 1/3 at 5e7d433,
+ * travel-hotel-shortlist #1 — the first audit answered nothing usable and
+ * the done stood with the dates never searched.
+ */
+export const DONE_AUDIT_REMINDER =
+  'Reply with the JSON object only, nothing before or after it: {"requirements":[{"text":"…","met":true,"evidence":"…"}]}.';
 export function doneAuditCall(
   objective: string,
   history: History,
   summary: string,
+  retry = false,
 ): ProviderTextCall {
   return {
     system: DONE_AUDIT_PROMPT,
-    input: doneAuditInput(objective, history, summary),
+    input:
+      doneAuditInput(objective, history, summary) +
+      (retry ? `\n\n${DONE_AUDIT_REMINDER}` : ""),
     maxOutputTokens: DONE_AUDIT_MAX_OUTPUT_TOKENS,
     effort: "low",
     deadlineMs: DONE_AUDIT_DEADLINE_MS,

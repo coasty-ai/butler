@@ -1652,16 +1652,22 @@ export class Runner {
           run.corrections.map((c) => c.text).join("\n")
         : "");
     let audit: DoneAudit | undefined;
-    try {
-      const reply = await this.provider.text!(
-        doneAuditCall(objective, modelHistory(history), summary),
-        this.abort.signal,
-      );
-      this.addUsage(reply.usage);
-      audit = parseDoneAudit(reply);
-    } catch {
-      // The audit's own error never fails a run.
-      audit = undefined;
+    let attempts = 0;
+    // One retry with the reminder line when the reply was unusable; the
+    // audit's own error never fails a run.
+    for (const retry of [false, true]) {
+      attempts += 1;
+      try {
+        const reply = await this.provider.text!(
+          doneAuditCall(objective, modelHistory(history), summary, retry),
+          this.abort.signal,
+        );
+        this.addUsage(reply.usage);
+        audit = parseDoneAudit(reply);
+      } catch {
+        audit = undefined;
+      }
+      if (audit || this.abort.signal.aborted) break;
     }
     if (this.abort.signal.aborted) return undefined;
     if (!this.snapshot.run || this.snapshot.run.id !== run.id) return audit;
@@ -1670,6 +1676,7 @@ export class Runner {
       unmet: audit?.unmet.length ?? 0,
       durationMs: Math.round(performance.now() - started),
       code: audit ? "ok" : "unavailable",
+      attempts,
     });
     return audit;
   }
