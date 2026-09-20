@@ -191,9 +191,13 @@ const HOME_PAGE = new Set([
   "the front page",
   "the main page",
 ]);
-const STOPWORDS = wordSet(
-  "a an the some any that this it me my of for to on in at and or up down",
-);
+/**
+ * An object of these alone names nothing to look up: articles, pronouns,
+ * particles, and the words that point at something on the screen ("play
+ * that one", "open the first one"), which are the run's to resolve.
+ */
+const STOPWORDS = wordSet(`a an the some any that this it me my of for to on in
+  at and or up down one ones first last next other same`);
 
 interface VerbRule {
   phrase: readonly string[];

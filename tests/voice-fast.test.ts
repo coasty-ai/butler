@@ -94,6 +94,39 @@ describe("decideFast: the owner's sentence", () => {
   });
 });
 
+describe("decideFast: fragments after a site clause", () => {
+  it("reads 'and <verb> …' after a site clause as that site's query, and a bare verb or a verb with a pronoun as no search at all", () => {
+    // The stream hands the clause after "and" without the connector; the
+    // executor's context carries the host the site clause sent for.
+    const onYouTube = ctx({ frontHost: "www.youtube.com" });
+    expect(decide("play a quiet river sound", onYouTube)).toEqual(
+      url(
+        "youtube",
+        "https://www.youtube.com/results?search_query=quiet%20river%20sound",
+      ),
+    );
+    expect(decide("find a quiet river sound", onYouTube)).toEqual(
+      url(
+        "youtube",
+        "https://www.youtube.com/results?search_query=quiet%20river%20sound",
+      ),
+    );
+    // A verb alone, a verb with a pronoun or a determiner, a generic noun:
+    // nothing to look up, so nothing loads (the run's to do).
+    for (const fragment of [
+      "play",
+      "play it",
+      "play the video",
+      "play that one",
+      "find",
+      "watch a video",
+    ])
+      expect(decide(fragment, onYouTube), fragment).toEqual(
+        none("needs_final"),
+      );
+  });
+});
+
 describe("decideFast: never a fast action", () => {
   it("refuses any clause with a consequential or irreversible word, connector or not", () => {
     for (const text of [

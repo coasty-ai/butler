@@ -23,8 +23,34 @@
  * (verifyOpening) and runs on its native chain, so the helper's stop latch
  * is never lifted by one while the other's step is in flight.
  *
- * A clause the recognizer rewrites after its action ran (superseded), or one
- * the final no longer says (dropped), is navigation only: nothing to undo,
+ * One navigation per thing asked (live findings 2026-09-19 19:41–19:43: a
+ * clause growing word by word re-committed by stability up to seven times
+ * at the same index, and each commit that decided to a recipe URL was
+ * issued, three YouTube search pages in 1.2 s and four in 7 s, the run's
+ * first click then failing on a page still loading). The rules:
+ *
+ * - The stream's `superseded` event (the recognizer grew or rewrote a
+ *   committed clause) decides nothing by itself: it lets go of a query held
+ *   for that index and skips the old words' queued work; the clause is
+ *   decided again only when it commits again (by boundary or 350 ms
+ *   stability), and that commit is traced with `superseded: true`.
+ * - A site open (a recipe's front page) issues at the first commit that
+ *   names the site, never twice in one sentence for the same site.
+ * - A query (a search or directions URL) issues once per clause index: at
+ *   once when the clause committed by boundary (the next clause has begun,
+ *   so its words are whole), else held STREAMING_LIMITS.queryHoldMs after
+ *   the stable commit, so the words have stood 700 ms in all, and issued
+ *   then, or by the final that still says them. Growth before the issue
+ *   replaces the held query with the new words; a re-commit after the issue
+ *   never navigates again: the run is told which query is on screen and
+ *   continues from it. An equal action already issued this sentence, from
+ *   whatever clause, stands.
+ * - A re-commit that decides to another destination (a correction to
+ *   another site or application) drops the earlier step as done by mistake
+ *   and issues the new one, traced `reissue: true`.
+ *
+ * A clause the final no longer says (dropped), or a step whose words no
+ * longer stand whole in the final, is navigation only: nothing to undo,
  * and the run is told it was done by mistake. A final the router does not
  * start (a question, a fragment) leaves what was opened as it is, and the
  * pill says so. Diagnostics carry codes and numbers, never a word or a URL.
@@ -61,6 +87,7 @@ import {
   type StreamedStep,
 } from "../src/core/streamed";
 import { EARLY_LIMITS } from "../src/voice/early";
+import { homeUrl, siteByKey } from "../src/voice/recipes";
 import {
   STREAM_LIMITS,
   clausesOf,
@@ -147,8 +174,23 @@ interface Committed {
   by: "boundary" | "stable";
   /** When the commit was heard (the stream's own time when it says). */
   at: number;
-  /** The committed clause this one replaces (the recognizer rewrote or grew it). */
-  replaces?: Clause;
+  /** A re-commit: this index was committed before, and grew or was rewritten since. */
+  again: boolean;
+}
+type OpenUrl = Extract<FastAction, { kind: "open_url" }>;
+/** An open_url decided and checked, ready to issue; a query may be held first. */
+interface Navigation {
+  clause: Clause;
+  committed: Committed;
+  action: OpenUrl;
+  built: Extract<Action, { type: "open_url" }>;
+  decideMs: number;
+  ctx: FastContext;
+  /** It replaces an earlier step of the same index (a rewrite to another destination). */
+  reissue: boolean;
+}
+interface Held extends Navigation {
+  timer?: unknown;
 }
 interface StreamTurn {
   invocation: number;
@@ -162,6 +204,10 @@ interface StreamTurn {
   committed: Committed[];
   /** Clauses rewritten or dropped: their queued work is skipped. */
   superseded: Set<string>;
+  /** Indexes committed at least once: a later commit of one is a re-commit. */
+  committedIndexes: Set<number>;
+  /** A query per clause index waiting for its words to stop growing. */
+  held: Map<number, Held>;
   /** The front surface last read, for the next clause's context. */
   front?: Surface;
   /** Where the last open_url sent the browser: the next clause's front host and app. */
@@ -176,8 +222,44 @@ interface StreamTurn {
   ended?: boolean;
   finishedAt?: number;
 }
+export const STREAMING_LIMITS = {
+  /**
+   * How long a query decided from a clause committed by stability is held
+   * for the words to stop growing: with STREAM_LIMITS.stableMs before it,
+   * the words have stood 700 ms unchanged when the query issues.
+   */
+  queryHoldMs: 350,
+} as const;
 /** The frame id a fast action carries: it has no frame of its own. */
 const STREAM_FRAME = "streamed";
+/**
+ * A site open (the recipe's front page, or a dictated domain's) or a query
+ * (a URL with an object in it). Read from the recipe table when the site is
+ * known; else a bare origin is a site open and anything more a query.
+ */
+export function navigationKind(action: OpenUrl): "home" | "query" {
+  const site = siteByKey(action.siteKey);
+  if (site) return homeUrl(site) === action.url ? "home" : "query";
+  const parsed = webAddress(action.url);
+  if (!parsed) return "query";
+  return parsed.search || parsed.hash || parsed.pathname !== "/"
+    ? "query"
+    : "home";
+}
+/** The words of a text, lowercased, punctuation dropped. */
+const wordsOfText = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+/** Whether `needle` stands whole and in order inside `hay`. */
+function inside(needle: readonly string[], hay: readonly string[]): boolean {
+  if (!needle.length) return false;
+  for (let i = 0; i + needle.length <= hay.length; i++)
+    if (needle.every((w, k) => hay[i + k] === w)) return true;
+  return false;
+}
 const clauseKey = (c: Clause) => `${c.index}:${c.text}`;
 const wordCount = (text: string) => text.split(/\s+/).filter(Boolean).length;
 const none = (reason: "unsure"): FastAction => ({ kind: "none", reason });
@@ -235,6 +317,8 @@ export class StreamingTurn {
       steps: [],
       committed: [],
       superseded: new Set(),
+      committedIndexes: new Set(),
+      held: new Map(),
     };
     // A segmenter adapter: the port is asked per partial and its events
     // arrive later, in order; the built-in stream answers at the push.
@@ -287,11 +371,29 @@ export class StreamingTurn {
   finish(invocation: number, finalText: string): StreamClaim | undefined {
     const turn = this.turn;
     if (!turn || turn.invocation !== invocation || turn.ended) return undefined;
-    turn.ended = true;
-    turn.finishedAt = this.now();
     this.disarm(turn);
-    for (const event of turn.stream.final(finalText, turn.finishedAt))
+    const finishedAt = this.now();
+    const events = turn.stream.final(finalText, finishedAt);
+    // A held query the final still says is issued now, the final being the
+    // commit that makes its words whole; one the final no longer says is
+    // let go, nothing having been issued for it.
+    const finalWords = wordsOfText(finalText);
+    for (const [index, held] of [...turn.held]) {
+      this.release(turn, index);
+      if (!inside(wordsOfText(held.clause.text), finalWords)) continue;
+      if (this.deps.blocked()) continue;
+      this.enqueue(turn, async () => {
+        if (this.turn !== turn || turn.abort.signal.aborted) return;
+        const c = this.deps.controller();
+        if (!c) return;
+        await this.navigate(turn, held, c, this.deps.settings());
+      });
+    }
+    turn.ended = true;
+    turn.finishedAt = finishedAt;
+    for (const event of events)
       if (event.kind === "final") this.drop(turn, event.dropped);
+    this.judge(turn, finalWords);
     this.report(turn);
     if (!turn.steps.length && !turn.inFlight) return undefined;
     let taken: Promise<StreamedStep[]> | undefined;
@@ -340,26 +442,23 @@ export class StreamingTurn {
     for (const event of events) {
       if (turn.ended) return;
       if (event.kind === "committed") {
+        const again = turn.committedIndexes.has(event.clause.index);
+        turn.committedIndexes.add(event.clause.index);
         const committed: Committed = {
           clause: event.clause,
           by: event.by,
           at: event.clause.committedAtMs ?? this.now(),
+          again,
         };
         turn.committed.push(committed);
         this.enqueue(turn, () => this.act(turn, committed));
       } else if (event.kind === "superseded") {
         // The recognizer rewrote or grew a committed clause: its queued work
-        // is skipped and the replacement decided afresh (act), where an equal
-        // action stands and a different one drops the old step.
+        // is skipped and a query held for it is let go (the words changed
+        // before it was issued). Nothing is decided until the clause commits
+        // again, by boundary or by standing still.
         turn.superseded.add(clauseKey(event.clause));
-        const replacement: Committed = {
-          clause: event.replacement,
-          by: "stable",
-          at: event.replacement.committedAtMs ?? this.now(),
-          replaces: event.clause,
-        };
-        turn.committed.push(replacement);
-        this.enqueue(turn, () => this.act(turn, replacement));
+        this.release(turn, event.clause.index);
       } else this.drop(turn, event.dropped);
     }
   }
@@ -381,13 +480,40 @@ export class StreamingTurn {
         }
     }
   }
+  /** A step whose words the final no longer says whole was done by mistake. */
+  private judge(turn: StreamTurn, finalWords: readonly string[]) {
+    for (const step of turn.steps)
+      if (
+        step.outcome === "done" &&
+        !inside(wordsOfText(step.clauseText), finalWords)
+      ) {
+        step.outcome = "dropped";
+        trace(this.deps.trace, "StreamedActionDropped", {
+          kind: step.action.kind,
+          clauseIndex: step.clauseIndex,
+        });
+      }
+  }
+  /** Lets go of the query held for an index, if any: nothing was issued for it. */
+  private release(turn: StreamTurn, index: number) {
+    const held = turn.held.get(index);
+    if (!held) return;
+    turn.held.delete(index);
+    if (held.timer !== undefined) this.clearTimer(held.timer);
+    held.timer = undefined;
+  }
   private end(turn: StreamTurn, _code: StreamCode) {
     turn.ended = true;
     this.disarm(turn);
+    for (const index of [...turn.held.keys()]) this.release(turn, index);
     turn.abort.abort();
     this.report(turn);
   }
-  /** One StreamClauseCommitted per committed clause, with its lead on the final when one came. */
+  /**
+   * One StreamClauseCommitted per commit, with its lead on the final when
+   * one came; a re-commit of an index (the clause grew or was rewritten and
+   * committed again) is flagged superseded.
+   */
   private report(turn: StreamTurn) {
     for (const c of turn.committed)
       trace(this.deps.trace, "StreamClauseCommitted", {
@@ -397,6 +523,7 @@ export class StreamingTurn {
         ...(turn.finishedAt !== undefined
           ? { leadMs: Math.max(0, turn.finishedAt - c.at) }
           : {}),
+        ...(c.again ? { superseded: true } : {}),
       });
   }
   private enqueue(turn: StreamTurn, fn: () => Promise<void>) {
@@ -487,55 +614,65 @@ export class StreamingTurn {
     }
     const decideMs = this.now() - decideStart;
     if (turn.ended || this.turn !== turn) return;
-    // A rewritten clause: the action already issued for it stands when the
-    // new words decide to the same one; otherwise it was done by mistake.
-    if (committed.replaces) {
-      const previous = turn.steps.filter(
-        (s) => s.clauseIndex === clause.index && s.outcome === "done",
-      );
-      const same = previous.find((s) => sameAction(s.action, action));
-      if (same) {
-        same.clauseText = clause.text;
-        return;
-      }
-      for (const step of previous) {
-        step.outcome = "dropped";
-        trace(this.deps.trace, "StreamedActionDropped", {
-          kind: step.action.kind,
-          clauseIndex: step.clauseIndex,
-        });
-      }
+    if (action.kind === "none") return;
+    // What this sentence already did stands: an equal navigation (the same
+    // address, application or direction), whichever clause decided to it,
+    // is never issued again; a re-commit that decides to it keeps its step
+    // under the words as they now are, for the final to judge.
+    const equal = turn.steps.find(
+      (s) => s.outcome === "done" && sameAction(s.action, action),
+    );
+    if (equal) {
+      if (equal.clauseIndex === clause.index) equal.clauseText = clause.text;
+      return;
     }
-    if (action.kind === "none" || skip() || this.gate(turn)) return;
+    const prior = turn.steps.filter(
+      (s) => s.clauseIndex === clause.index && s.outcome === "done",
+    );
+    let nav: "home" | "query" | undefined;
+    if (action.kind === "open_url") {
+      nav = navigationKind(action);
+      // One site open per sentence for a site, from whichever clause named
+      // it first; one query per clause index, so a clause that grew after
+      // its query issued is the run's to refine, told which query is on
+      // screen by the prelude.
+      if (
+        nav === "home" &&
+        turn.steps.some(
+          (s) =>
+            s.outcome === "done" &&
+            s.action.kind === "open_url" &&
+            s.action.siteKey === action.siteKey &&
+            navigationKind(s.action) === "home",
+        )
+      )
+        return;
+      if (
+        nav === "query" &&
+        prior.some(
+          (s) =>
+            s.action.kind === "open_url" &&
+            navigationKind(s.action) === "query",
+        )
+      )
+        return;
+    }
+    if (skip() || this.gate(turn)) return;
     // The leading clause's app is the early start's step and the run's
     // prelude (electron/early-start.ts): never the same launch twice.
     if (action.kind === "open_app" && clause.index === 0) return;
-    const issue = (a: Exclude<FastAction, { kind: "none" }>): Recorded => {
-      const at = this.now();
-      turn.acted = true;
-      trace(this.deps.trace, "StreamedAction", {
-        kind: a.kind,
-        ...(a.kind === "open_url" ? { siteKey: a.siteKey } : {}),
-        clauseIndex: clause.index,
-        decideMs,
-        issueMs: Math.max(0, at - committed.at),
-      });
-      const step: Recorded = {
-        clauseIndex: clause.index,
-        clauseText: clause.text,
-        action: a,
-        atMs: at,
-        outcome: "done",
-      };
-      turn.steps.push(step);
-      this.deps.onAction(streamedPillLabel(a));
-      return step;
-    };
+    // A re-commit to another destination (a correction to another site or
+    // application) drops the earlier step as done by mistake when the new
+    // one issues. A query after the site's own open at the same index is no
+    // correction ("go to youtube" grown into "go to youtube midwest
+    // safety"): the open stands and the results load over it.
+    const reissue = nav === "query" ? false : prior.length > 0;
     const speaking = { speaking: true } as const;
     if (action.kind === "open_url") {
       // The core's own check of any open_url, an adapter's included: a full
-      // http(s) address without credentials (the schema), then the policy
-      // while speaking, which refuses a protected host outright.
+      // http(s) address without credentials (the schema); the policy while
+      // speaking, which refuses a protected host outright, judges it at the
+      // issue (navigate).
       const parsed = actionSchema.safeParse({
         type: "open_url",
         url: action.url,
@@ -543,37 +680,26 @@ export class StreamingTurn {
         frame_id: STREAM_FRAME,
       });
       if (!parsed.success || parsed.data.type !== "open_url") return;
-      const built = parsed.data;
-      const decision = evaluate(built, turn.front!, settings, false, speaking);
-      if (decision.kind !== "ALLOW") return;
-      const step = issue(action);
-      try {
-        if (modules) {
-          const out = await modules.port("urlOpener").call(
-            {
-              url: built.url,
-              ...(ctx.browser ? { browser: ctx.browser } : {}),
-            },
-            turn.abort.signal,
-          );
-          if (!out.navigated) step.outcome = "failed";
-          const host = webAddress(action.url)?.hostname ?? "";
-          if (host && out.navigated) turn.sent = { host };
-        } else {
-          const result = await c.openUrl(built);
-          const host =
-            result?.navigated?.host ?? webAddress(action.url)?.hostname ?? "";
-          if (host)
-            turn.sent = {
-              host,
-              ...(result?.navigated?.appId
-                ? { appId: result.navigated.appId }
-                : {}),
-            };
-        }
-      } catch {
-        step.outcome = "failed";
+      const navigation: Navigation = {
+        clause,
+        committed,
+        action,
+        built: parsed.data,
+        decideMs,
+        ctx,
+        reissue,
+      };
+      // A query from a clause that stood still STREAM_LIMITS.stableMs may
+      // still be growing ("play a midwest" → "… safety"): it is held
+      // queryHoldMs more and issued when the words have not changed, let go
+      // when they have, or issued at once by a final that keeps them. A site
+      // open, or a query the next clause's first word made whole (boundary),
+      // issues now.
+      if (nav === "query" && by === "stable") {
+        this.hold(turn, navigation);
+        return;
       }
+      await this.navigate(turn, navigation, c, settings);
       return;
     }
     if (action.kind === "scroll") {
@@ -585,7 +711,7 @@ export class StreamingTurn {
       });
       const decision = evaluate(built, turn.front!, settings, false, speaking);
       if (decision.kind !== "ALLOW") return;
-      const step = issue(action);
+      const step = this.issue(turn, committed, action, decideMs, reissue);
       try {
         await this.deps.scroll(action.direction);
       } catch {
@@ -615,7 +741,7 @@ export class StreamingTurn {
         speaking,
       ).catch(() => undefined);
       if (!verified?.ok || skip() || this.gate(turn)) return;
-      const step = issue(opening);
+      const step = this.issue(turn, committed, opening, decideMs, reissue);
       try {
         await c.resume();
         await c.execute(
@@ -633,6 +759,121 @@ export class StreamingTurn {
         c.stop();
       }
     });
+  }
+  /**
+   * Holds a query for its clause's words to stop growing: issued after
+   * STREAMING_LIMITS.queryHoldMs unless the clause is superseded first
+   * (release) or the final comes (finish issues or lets it go).
+   */
+  private hold(turn: StreamTurn, navigation: Navigation) {
+    const { index } = navigation.clause;
+    this.release(turn, index);
+    const held: Held = { ...navigation };
+    held.timer = this.setTimer(() => {
+      held.timer = undefined;
+      if (turn.held.get(index) !== held) return;
+      turn.held.delete(index);
+      this.enqueue(turn, async () => {
+        if (
+          turn.ended ||
+          this.turn !== turn ||
+          turn.superseded.has(clauseKey(held.clause)) ||
+          this.gate(turn)
+        )
+          return;
+        const c = this.deps.controller();
+        if (!c) return;
+        await this.navigate(turn, held, c, this.deps.settings());
+      });
+    }, STREAMING_LIMITS.queryHoldMs);
+    turn.held.set(index, held);
+  }
+  /** Issues an open_url: the policy while speaking, the step, the route. */
+  private async navigate(
+    turn: StreamTurn,
+    n: Navigation,
+    c: StreamController,
+    settings: Settings,
+  ) {
+    const decision = evaluate(n.built, turn.front!, settings, false, {
+      speaking: true,
+    });
+    if (decision.kind !== "ALLOW") return;
+    const step = this.issue(turn, n.committed, n.action, n.decideMs, n.reissue);
+    const modules = this.deps.modules?.();
+    try {
+      if (modules) {
+        const out = await modules.port("urlOpener").call(
+          {
+            url: n.built.url,
+            ...(n.ctx.browser ? { browser: n.ctx.browser } : {}),
+          },
+          turn.abort.signal,
+        );
+        if (!out.navigated) step.outcome = "failed";
+        const host = webAddress(n.action.url)?.hostname ?? "";
+        if (host && out.navigated) turn.sent = { host };
+      } else {
+        const result = await c.openUrl(n.built);
+        const host =
+          result?.navigated?.host ?? webAddress(n.action.url)?.hostname ?? "";
+        if (host)
+          turn.sent = {
+            host,
+            ...(result?.navigated?.appId
+              ? { appId: result.navigated.appId }
+              : {}),
+          };
+      }
+    } catch {
+      step.outcome = "failed";
+    }
+  }
+  /**
+   * Records an issued fast action: the trace (kind, site code, whether a
+   * site open or a query, clause, timings, and reissue when it replaces an
+   * earlier step of the index, which is dropped here), the step and the
+   * pill's line.
+   */
+  private issue(
+    turn: StreamTurn,
+    committed: Committed,
+    a: Exclude<FastAction, { kind: "none" }>,
+    decideMs: number,
+    reissue: boolean,
+  ): Recorded {
+    const { clause } = committed;
+    const at = this.now();
+    turn.acted = true;
+    if (reissue)
+      for (const step of turn.steps)
+        if (step.clauseIndex === clause.index && step.outcome === "done") {
+          step.outcome = "dropped";
+          trace(this.deps.trace, "StreamedActionDropped", {
+            kind: step.action.kind,
+            clauseIndex: step.clauseIndex,
+          });
+        }
+    trace(this.deps.trace, "StreamedAction", {
+      kind: a.kind,
+      ...(a.kind === "open_url"
+        ? { siteKey: a.siteKey, nav: navigationKind(a) }
+        : {}),
+      clauseIndex: clause.index,
+      decideMs,
+      issueMs: Math.max(0, at - committed.at),
+      ...(reissue ? { reissue: true } : {}),
+    });
+    const step: Recorded = {
+      clauseIndex: clause.index,
+      clauseText: clause.text,
+      action: a,
+      atMs: at,
+      outcome: "done",
+    };
+    turn.steps.push(step);
+    this.deps.onAction(streamedPillLabel(a));
+    return step;
   }
   /**
    * The frame an open_app is verified against: read-only, under the latch
@@ -702,22 +943,10 @@ export class PortClauseStream implements ClauseStream {
   final(text: string, atMs: number): ClauseEvent[] {
     this.ended = true;
     const clauses = clausesOf(text, atMs);
-    const words = (t: string) =>
-      t
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N}\s]/gu, " ")
-        .split(/\s+/)
-        .filter(Boolean);
-    const inside = (needle: string[], hay: string[]) => {
-      if (!needle.length) return false;
-      for (let i = 0; i + needle.length <= hay.length; i++)
-        if (needle.every((w, k) => hay[i + k] === w)) return true;
-      return false;
-    };
     const dropped = this.kept.filter(
       (c) =>
         c.state === "committed" &&
-        !clauses.some((f) => inside(words(c.text), words(f.text))),
+        !clauses.some((f) => inside(wordsOfText(c.text), wordsOfText(f.text))),
     );
     return [{ kind: "final", clauses, dropped }];
   }

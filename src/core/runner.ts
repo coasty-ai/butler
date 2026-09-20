@@ -111,6 +111,7 @@ export type { StreamedStep } from "./streamed";
 import {
   HelperSlowError,
   HelperUnavailableError,
+  ModelFailedError,
   NativeActionError,
   NativeStoppedError,
   ProviderTransientError,
@@ -546,6 +547,28 @@ const transitionTypes = new Set([
 function hostOf(frame: Frame): string | undefined {
   const address = frame.context?.browserAddress;
   return address ? webAddress(address)?.hostname : undefined;
+}
+/** Whether a frame shows the page a streamed open_url sent the browser to: its host, with controls on it. */
+function showsPage(frame: Frame, host: string): boolean {
+  const shown = hostOf(frame)
+    ?.toLowerCase()
+    .replace(/^www\./, "");
+  const sent = host.toLowerCase().replace(/^www\./, "");
+  if (!shown || !sent) return false;
+  if (shown !== sent && !shown.endsWith("." + sent)) return false;
+  return (frame.context?.controls?.length ?? 0) > 0;
+}
+/**
+ * The code a failed run is journaled under (RunFailed): an error that names
+ * itself by a code keeps it (the model's fail is MODEL_FAILED, the runner's
+ * deliverable verdict DELIVERABLE_MISSING, a helper error its own); a plain
+ * error, or a code not shaped like one, is RUN_ERROR.
+ */
+export function failureCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{1,39}$/.test(code)
+    ? code
+    : "RUN_ERROR";
 }
 /**
  * From this share of maxActions spent, the model sees how many actions are
@@ -1257,6 +1280,8 @@ export class Runner {
   private loopEpisodes = 0;
   /** The transition the last executed step began; the capture after it waits. */
   private settleBefore?: "launched" | "navigated";
+  /** The host the streamed prelude's last open_url sent the browser to, for the first capture to wait on. */
+  private streamedPage?: string;
   /** The application and page the last click or key ran on; a frame showing another waits and looks again. */
   private moved?: { appId?: string; host?: string };
   /** The screen the last executed action ran on, with that action's type. */
@@ -2823,6 +2848,16 @@ export class Runner {
     this.settleBefore = undefined;
     if (pending && !(await this.settle(pending, epoch))) return null;
     let frame = await this.capture();
+    // The page the streamed prelude's last open_url sent for (applyStreamed):
+    // when the first frame does not show it yet (another host, or a page with
+    // no controls while it loads), the run waits once more and looks again,
+    // so two reads at most TRANSITION_SETTLE_MS apart stand before the model.
+    const page = this.streamedPage;
+    this.streamedPage = undefined;
+    if (page && frame && !showsPage(frame, page)) {
+      if (!(await this.settle("navigated", epoch))) return null;
+      frame = await this.capture();
+    }
     const moved = this.moved;
     this.moved = undefined;
     if (
@@ -3319,6 +3354,21 @@ export class Runner {
     const prelude = streamedPrelude(steps);
     if (prelude)
       this.history.push({ type: "streamed", result: redactSecrets(prelude) });
+    // The last address the prelude sent the browser to is a navigation the
+    // run's first capture waits for (captureSettled, TransitionSettled
+    // {kind: navigated}): the browser answered the route at once while the
+    // page was still on its way, and the live run's first click failed on
+    // the page still loading (CONTROLS_CHANGED, 2026-09-19 02:42:36).
+    const last = [...steps]
+      .reverse()
+      .find((s) => s.outcome !== "failed" && s.action.kind === "open_url");
+    if (last && last.action.kind === "open_url") {
+      const host = webAddress(last.action.url)?.hostname;
+      if (host) {
+        this.settleBefore = "navigated";
+        this.streamedPage = host;
+      }
+    }
   }
   /**
    * The bookkeeping after an executed step, shared by the loop and by a step
@@ -3525,6 +3575,7 @@ export class Runner {
     this.reflected = new Set();
     this.loopEpisodes = 0;
     this.settleBefore = undefined;
+    this.streamedPage = undefined;
     this.resetMemory();
   }
   private newRun(task: string, options: StartOptions): Run {
@@ -4680,7 +4731,7 @@ export class Runner {
           this.status("completed", action.summary);
           break;
         }
-        if (action.type === "fail") throw new Error(action.reason);
+        if (action.type === "fail") throw new ModelFailedError(action.reason);
         if (action.type === "monitor") {
           // Runner-side, never sent to controller.execute: the watch takes
           // the window and this run is over.
@@ -4824,11 +4875,11 @@ export class Runner {
       if (this.active()) {
         const message = e instanceof Error ? e.message : "Run failed.";
         run.summary = message;
-        // The runner's own verdict on a done said twice with the named file
-        // unchanged carries its code; everything else is RUN_ERROR.
-        this.event("RunFailed", {
-          code: e instanceof DeliverableMissingError ? e.code : "RUN_ERROR",
-        });
+        // An error that names itself by a code carries it: the model's own
+        // fail (MODEL_FAILED), the runner's verdict on a done said twice with
+        // the named file unchanged (DELIVERABLE_MISSING), a helper error that
+        // reached here. A plain error is RUN_ERROR.
+        this.event("RunFailed", { code: failureCode(e) });
         this.status("failed", message);
       }
     } finally {

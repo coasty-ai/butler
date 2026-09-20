@@ -107,7 +107,19 @@ const frameOf = (id: string, appId: string): Frame => ({
   context: { appName: "Safari", windowTitle: "YouTube" },
 });
 /** The desktop the run sees after the fast actions: the browser in front. */
-function desktop(front = SAFARI) {
+function desktop(
+  front = SAFARI,
+  // The page the prelude sent for is up at the first look unless a case
+  // says otherwise: its address and a control on it.
+  screen: (capture: number) => Partial<Frame> = () => ({
+    context: {
+      appName: "Safari",
+      windowTitle: "YouTube",
+      browserAddress: "https://www.youtube.com/results?search_query=q",
+      controls: [{ role: "AXLink", label: "First", x: 0.5, y: 0.5 }],
+    },
+  }),
+) {
   const calls: string[] = [];
   const executed: Action[] = [];
   let captures = 0;
@@ -125,7 +137,8 @@ function desktop(front = SAFARI) {
     }),
     capture: vi.fn(async () => {
       calls.push("capture");
-      return frameOf(`run-frame-${++captures}`, front);
+      const n = ++captures;
+      return { ...frameOf(`run-frame-${n}`, front), ...screen(n) };
     }),
     execute: vi.fn(async (a: Action): Promise<void | ExecutionResult> => {
       calls.push(`execute(${a.type})`);
@@ -193,14 +206,15 @@ const SLACK: StreamedStep = {
   outcome: "done",
 };
 const OWNER = "go to youtube and play a midwest safety video";
-function build(
-  o: {
-    front?: string;
-    replies?: ((o: Observation) => Partial<ProviderResult>)[];
-  } = {},
-) {
+type BuildOptions = {
+  front?: string;
+  replies?: ((o: Observation) => Partial<ProviderResult>)[];
+  /** What each capture shows beyond the bare frame (the page's address, its controls). */
+  screen?: (capture: number) => Partial<Frame>;
+};
+function build(o: BuildOptions = {}) {
   const j = journal();
-  const desk = desktop(o.front);
+  const desk = desktop(o.front, o.screen);
   const provider = scripted(o.replies);
   const runner = new Runner(
     desk.controller,
@@ -209,16 +223,17 @@ function build(
     { ...settings, memory: false },
     () => {},
     [],
+    undefined,
+    // The prelude's last page is waited for before the first capture; the
+    // wait is shortened here and measured in its own case below.
+    { transitionSettleMs: 10 },
   );
   return { ...j, ...desk, provider, runner };
 }
 async function run(
   task: string,
   streamed: StreamedStep[] | undefined,
-  o: {
-    front?: string;
-    replies?: ((o: Observation) => Partial<ProviderResult>)[];
-  } = {},
+  o: BuildOptions = {},
 ) {
   const r = build(o);
   await r.runner.start(task, {
@@ -290,6 +305,70 @@ describe("a run started with streamed steps", () => {
     expect(r.runner.actionsAttempted).toBe(0);
     expect(r.executed).toEqual([]);
     expect(r.getRun().status).toBe("completed");
+  });
+  it("waits for the prelude's last page before the first frame: one settle when the page is up, a second look when it is not yet, none without an open_url", async () => {
+    // The browser answered the route at once while the page was still on
+    // its way (live: the run's first click failed CONTROLS_CHANGED on a page
+    // still loading). The page up at the first look: one wait, one capture.
+    const loaded = (n: number): Partial<Frame> => ({
+      context: {
+        appName: "Safari",
+        windowTitle: "YouTube",
+        browserAddress: `https://www.youtube.com/results?search_query=q&n=${n}`,
+        controls: [{ role: "AXLink", label: "First", x: 0.5, y: 0.5 }],
+      },
+    });
+    const up = await run(OWNER, [HOME, RESULTS], { screen: loaded });
+    expect(up.of("TransitionSettled").map((e) => e.data)).toEqual([
+      { kind: "navigated" },
+    ]);
+    expect(up.provider.observations[0].frame.id).toBe("run-frame-1");
+    expect(up.calls.filter((c) => c === "capture")).toHaveLength(1);
+    // Not yet (no controls on the first look, or another host): one more
+    // wait and one more look; the model's first frame is the second.
+    const late = await run(OWNER, [HOME, RESULTS], {
+      screen: (n) =>
+        n === 1
+          ? {
+              context: {
+                appName: "Safari",
+                windowTitle: "",
+                browserAddress: "https://www.youtube.com/",
+                controls: [],
+              },
+            }
+          : loaded(n),
+    });
+    expect(late.of("TransitionSettled").map((e) => e.data)).toEqual([
+      { kind: "navigated" },
+      { kind: "navigated" },
+    ]);
+    expect(late.provider.observations[0].frame.id).toBe("run-frame-2");
+    expect(late.provider.observations[0].history[0]).toMatchObject({
+      type: "streamed",
+    });
+    // Two looks at most: a page that never shows goes to the model as it is.
+    const never = await run(OWNER, [HOME], {
+      screen: () => ({ context: { appName: "Finder", windowTitle: "" } }),
+    });
+    expect(never.of("TransitionSettled")).toHaveLength(2);
+    expect(never.provider.observations[0].frame.id).toBe("run-frame-2");
+    // An open_app alone, or a failed open_url, sent for no page.
+    const app = await run("open slack and scroll", [SLACK]);
+    expect(app.of("TransitionSettled")).toEqual([]);
+    const failed = await run(OWNER, [{ ...HOME, outcome: "failed" }]);
+    expect(failed.of("TransitionSettled")).toEqual([]);
+    // The wait is the runner's settle: measured against a short one.
+    const t0 = performance.now();
+    const timed = build({ screen: loaded });
+    await timed.runner.start(OWNER, {
+      origin: "voice",
+      taskSource: "user_words",
+      streamed: [HOME],
+    });
+    await until(() => timed.runner.settled);
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(10);
+    expect(timed.of("TransitionSettled")).toHaveLength(1);
   });
   it("names a dropped clause as done by mistake and leaves a failed step unnamed and without a row", async () => {
     const r = await run("play a midwest safety video", [

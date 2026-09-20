@@ -39,6 +39,14 @@
  *   Growth counts as change ("play a midwest" paused on, then "play a
  *   midwest safety"): the action taken for the shorter words may be stale,
  *   and the executor drops a replacement's action equal to the one issued.
+ * - A fragment the recognizer's punctuation cut off the clause before it,
+ *   with no verb of its own and no noun phrase beyond a determiner and one
+ *   or two words ("play a midwest safety. Video", "…, the video"), is that
+ *   clause's trailing words, not a clause: it is merged back, so the query
+ *   grows instead of a lone noun standing as a search of its own. A
+ *   verb-led clause after punctuation ("open Slack, message Dana"), a
+ *   question or a pointer ("what time is it", "the one on the right") and
+ *   anything after a hard connector ("then video") stay clauses.
  * - The final is segmented the same way; a committed clause is kept when
  *   its whole words stand, in order, inside one of the final's clauses, and
  *   dropped otherwise (the final never said them, or a correction removed
@@ -159,6 +167,11 @@ const NO_SPLIT_BEFORE = wordSet(`to the a an this that these those my your his
   could would will should shall dont not never please you i we they me let lets
   just only really always`);
 const DETERMINERS = wordSet("a an the my your this that these those some it");
+/** A fragment beginning with one of these is a question or a pointer, never the previous clause's trailing words. */
+const NOT_A_TRAILER = wordSet(`what who where when why how which i you we they
+  he she there here yes no not`);
+/** A trailing fragment carries at most this many words after leads and a determiner. */
+const TRAILER_WORDS = 2;
 
 interface Tok {
   raw: string;
@@ -213,6 +226,8 @@ interface Segment {
   toks: Tok[];
   startWord: number;
   endWord: number;
+  /** What cut this segment off the one before it; undefined for the first. */
+  cut?: "punct" | "hard" | "soft" | "correction" | "verb";
 }
 type Cut =
   | { kind: "hard"; len: number }
@@ -273,18 +288,22 @@ function segment(text: string, final = false): Segment[] {
   const words = toks.filter((t) => !t.punct).map((t) => t.word);
   const out: Segment[] = [];
   let cur: Segment = { toks: [], startWord: 0, endWord: 0 };
-  const close = () => {
+  /** What cut the segment now open off the one before it. */
+  let opened: Segment["cut"];
+  const close = (by: NonNullable<Segment["cut"]>) => {
     if (cur.toks.length) out.push(cur);
     cur = { toks: [], startWord: 0, endWord: 0 };
+    opened = by;
   };
   const discard = () => {
     cur = { toks: [], startWord: 0, endWord: 0 };
+    opened = "correction";
   };
   let i = 0;
   while (i < toks.length) {
     const t = toks[i];
     if (t.punct) {
-      close();
+      close("punct");
       i++;
       continue;
     }
@@ -296,12 +315,16 @@ function segment(text: string, final = false): Segment[] {
     const cut = cutAt(words, k);
     if (cut) {
       if (!cur.toks.length) {
-        // A connector before any words is a lead ("and open slack").
+        // A connector before any words is a lead ("and open slack"); a hard
+        // one or a correction still opens what follows as a clause of its
+        // own ("open slack. then the video").
+        if (cut.kind === "hard") opened = "hard";
+        else if (cut.kind === "correction") opened = "correction";
         i += cut.len;
         continue;
       }
       if (cut.kind === "hard") {
-        close();
+        close("hard");
         i += cut.len;
         continue;
       }
@@ -313,18 +336,48 @@ function segment(text: string, final = false): Segment[] {
       }
       if (follows) {
         if (cut.kind === "correction") discard();
-        else close();
+        else close("soft");
         i += cut.len;
         continue;
       }
       // "salt and pepper", "dr no": the word belongs to the object.
-    } else if (secondVerbSplits(words, k, cur)) close();
-    if (!cur.toks.length) cur.startWord = k;
+    } else if (secondVerbSplits(words, k, cur)) close("verb");
+    if (!cur.toks.length) {
+      cur.startWord = k;
+      cur.cut = opened;
+    }
     cur.toks.push(t);
     cur.endWord = k + 1;
     i++;
   }
-  close();
+  close("punct");
+  return mergeTrailers(out);
+}
+
+/**
+ * Whether a segment is the previous clause's trailing words cut off by
+ * punctuation: no verb of its own, at most TRAILER_WORDS words after leads
+ * and a determiner, none of them a question word or a pointer.
+ */
+function trailerOf(words: readonly string[]): boolean {
+  let i = 0;
+  while (i < words.length && LEADS.has(words[i])) i++;
+  if (i < words.length && DETERMINERS.has(words[i])) i++;
+  const rest = words.slice(i);
+  if (!rest.length || rest.length > TRAILER_WORDS) return false;
+  if (verbPhraseAt(words, i) > 0) return false;
+  return !rest.some((w) => NOT_A_TRAILER.has(w) || VERBS.has(w));
+}
+/** Folds each punctuation-cut trailer into the segment before it. */
+function mergeTrailers(segs: Segment[]): Segment[] {
+  const out: Segment[] = [];
+  for (const seg of segs) {
+    const prev = out[out.length - 1];
+    if (prev && seg.cut === "punct" && trailerOf(wordsOf(seg))) {
+      prev.toks.push(...seg.toks);
+      prev.endWord = seg.endWord;
+    } else out.push(seg);
+  }
   return out;
 }
 

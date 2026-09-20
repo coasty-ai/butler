@@ -284,6 +284,22 @@ function setup(
       await turn.idle();
       await ticks();
     },
+    /** Advances the clock, firing due timers in order (the held query's among them). */
+    to: async (ms: number) => {
+      for (;;) {
+        const due = [...timers.entries()]
+          .filter(([, v]) => v.at <= ms)
+          .sort((a, b) => a[1].at - b[1].at)[0];
+        if (!due) break;
+        timers.delete(due[0]);
+        t = Math.max(t, due[1].at);
+        due[1].fn();
+        await ticks();
+        await turn.idle();
+        await ticks();
+      }
+      t = Math.max(t, ms);
+    },
     finish: (text: string, ms: number) => {
       t = ms;
       return turn.finish(invocation, text);
@@ -329,6 +345,10 @@ describe("streaming through the module registry", () => {
     expect(
       (t.of("fastDecider")[1] as PortInput<"fastDecider">).context.frontHost,
     ).toBe("www.youtube.com");
+    // A query from a clause committed by stability is held for its words to
+    // stop growing (STREAMING_LIMITS.queryHoldMs), then issued.
+    expect(t.of("urlOpener")).toHaveLength(1);
+    await t.to(2300);
     expect(
       t.of("urlOpener").map((i) => (i as PortInput<"urlOpener">).url),
     ).toEqual([
@@ -340,6 +360,7 @@ describe("streaming through the module registry", () => {
       {
         kind: "open_url",
         siteKey: "youtube",
+        nav: "home",
         clauseIndex: 0,
         decideMs: 0,
         issueMs: 20,
@@ -347,15 +368,16 @@ describe("streaming through the module registry", () => {
       {
         kind: "open_url",
         siteKey: "youtube",
+        nav: "query",
         clauseIndex: 1,
         decideMs: 0,
-        issueMs: 50,
+        issueMs: 400,
       },
     ]);
     const steps = await t.finish(OWNER, 2600)!.take();
     expect(steps).toEqual([
       { clauseIndex: 0, action: YOUTUBE, atMs: 620, outcome: "done" },
-      { clauseIndex: 1, action: RESULTS, atMs: 1950, outcome: "done" },
+      { clauseIndex: 1, action: RESULTS, atMs: 2300, outcome: "done" },
     ]);
     expect(JSON.stringify(t.traces)).not.toMatch(/midwest|https|safari/i);
   });
@@ -392,10 +414,12 @@ describe("streaming through the module registry", () => {
         browser: "Safari",
       },
     ]);
+    // Its site code is not a recipe's, so the address itself says it is a query.
     expect(t.events("StreamedAction")).toEqual([
       {
         kind: "open_url",
         siteKey: "youtube-com",
+        nav: "query",
         clauseIndex: 0,
         decideMs: 0,
         issueMs: 20,
@@ -440,6 +464,7 @@ describe("streaming through the module registry", () => {
     expect(t.of("urlOpener")).toEqual([]);
     t.next(committed(c1, "stable"));
     await t.say(OWNER, 1950);
+    await t.to(2300);
     expect(
       t.of("urlOpener").map((i) => (i as PortInput<"urlOpener">).url),
     ).toEqual([RESULTS.url]);

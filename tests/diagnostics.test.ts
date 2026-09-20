@@ -1899,6 +1899,40 @@ describe("acting while the user speaks", () => {
         decideMs: 3,
         issueMs: 48,
       });
+      // A re-commit of an index, a fast action replacing an earlier one, and
+      // whether an address is a site's front page or a query: flags and a
+      // code, kept as such and dropped as anything else.
+      log.write("StreamClauseCommitted", {
+        index: 1,
+        by: "stable",
+        words: 6,
+        leadMs: 400,
+        superseded: true,
+      });
+      log.write("StreamedAction", {
+        kind: "open_url",
+        siteKey: "gmail",
+        nav: "home",
+        clauseIndex: 0,
+        decideMs: 2,
+        issueMs: 30,
+        reissue: true,
+      });
+      log.write("StreamClauseCommitted", {
+        index: 1,
+        by: "stable",
+        words: 6,
+        superseded: "yes, the words changed",
+      });
+      log.write("StreamedAction", {
+        kind: "open_url",
+        siteKey: "youtube",
+        nav: "a query for midwest safety",
+        clauseIndex: 1,
+        decideMs: 2,
+        issueMs: 30,
+        reissue: "true",
+      });
       const lines = readFileSync(log.file, "utf8")
         .trim()
         .split("\n")
@@ -1915,9 +1949,27 @@ describe("acting while the user speaks", () => {
         { kind: "open_url", clauseIndex: 0 },
         { streamedSteps: 2, dropped: 1 },
         { kind: "open_url", decideMs: 3, issueMs: 48 },
+        { index: 1, by: "stable", words: 6, leadMs: 400, superseded: true },
+        {
+          kind: "open_url",
+          siteKey: "gmail",
+          nav: "home",
+          clauseIndex: 0,
+          decideMs: 2,
+          issueMs: 30,
+          reissue: true,
+        },
+        { index: 1, by: "stable", words: 6 },
+        {
+          kind: "open_url",
+          siteKey: "youtube",
+          clauseIndex: 1,
+          decideMs: 2,
+          issueMs: 30,
+        },
       ]);
       expect(readFileSync(log.file, "utf8")).not.toMatch(
-        /midwest|youtube\.com|https/,
+        /midwest|youtube\.com|https|changed/,
       );
     }));
   it("writes a run's streamed steps by kind, site code, clause and outcome, and their executed rows flagged streamed and early with the site code", () =>

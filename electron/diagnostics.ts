@@ -282,6 +282,13 @@ const fields = new Set([
   "decideMs",
   "issueMs",
   "streamedSteps",
+  // A commit of an index committed before (the clause grew or was rewritten
+  // and committed again); a fast action replacing an earlier one of its
+  // index; whether an open_url is a site's front page or a query. Flags and
+  // a code.
+  "superseded",
+  "reissue",
+  "nav",
   // Modules (src/modules, electron/modules.ts): which port an adapter stood
   // behind and how it fared (ModuleFallback, ModuleSlow, RecognizerStarted),
   // and the user's recipes file as counts and codes (RecipesFileLoaded,
@@ -436,6 +443,10 @@ const flagFields = new Set([
   "longRunning",
   // An executed row for a fast action taken while the user spoke (beside early).
   "streamed",
+  // StreamClauseCommitted: a re-commit of an index; StreamedAction: it
+  // replaces an earlier issue of the index.
+  "superseded",
+  "reissue",
   // Unparseable arguments: how they begin and end; a reply's action repaired.
   "startsWithBrace",
   "endsWithBrace",
@@ -479,6 +490,8 @@ const codeFields = new Set([
   "jevAct",
   "jevCode",
   "settle",
+  // StreamedAction: home (a site's front page) or query.
+  "nav",
   "direction",
   "server",
   "tool",
@@ -550,10 +563,21 @@ const speculationFields = new Set([
  * only its own keys, whatever else a caller passes. Codes and numbers only.
  */
 const streamEvents = new Map<string, Set<string>>([
-  ["StreamClauseCommitted", new Set(["index", "by", "words", "leadMs"])],
+  [
+    "StreamClauseCommitted",
+    new Set(["index", "by", "words", "leadMs", "superseded"]),
+  ],
   [
     "StreamedAction",
-    new Set(["kind", "siteKey", "clauseIndex", "decideMs", "issueMs"]),
+    new Set([
+      "kind",
+      "siteKey",
+      "nav",
+      "clauseIndex",
+      "decideMs",
+      "issueMs",
+      "reissue",
+    ]),
   ],
   ["StreamedActionDropped", new Set(["kind", "clauseIndex"])],
   ["StreamedRunStarted", new Set(["streamedSteps", "dropped"])],

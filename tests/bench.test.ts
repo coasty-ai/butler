@@ -2474,6 +2474,13 @@ describe("done checks in the bench's books", () => {
     expect(
       frictionCodes({ event: "RunFailed", data: { code: "RUN_ERROR" } }),
     ).toEqual([]);
+    // The model's own fail, journaled under its code since 2026-09-19.
+    expect(
+      frictionCodes({ event: "RunFailed", data: { code: "MODEL_FAILED" } }),
+    ).toEqual(["MODEL_FAILED"]);
+    expect(
+      frictionCodes({ event: "RunFailed", data: { code: "STOPPED" } }),
+    ).toEqual([]);
     for (const code of ["DONE_CHALLENGED_DELIVERABLE", "DELIVERABLE_MISSING"]) {
       expect(ownerOf(code)).toBe("agent");
       expect(noteFor(code)).not.toBe(noteFor("UNCLASSIFIED"));
@@ -2523,6 +2530,48 @@ describe("done checks in the bench's books", () => {
       DONE_CHALLENGED_DELIVERABLE: 1,
       DELIVERABLE_MISSING: 1,
     });
+    // The model's own fail is read from RunFailed's code too: the ending is
+    // MODEL_FAILED, not RUN_ERROR, and a plain RUN_ERROR stays what it was.
+    const gaveUp = "7a2e4d10-3b5c-4f6a-9d8e-1c2b3a4f5e6d";
+    const crashed = "9b1d2c3e-4f5a-4b6c-8d7e-2a3b4c5d6e7f";
+    const more = analyze([
+      {
+        event: "RunState",
+        timestamp: at(4),
+        data: { runId: gaveUp, status: "executing", actions: 0 },
+      },
+      {
+        event: "RunFailed",
+        timestamp: at(5),
+        data: { runId: gaveUp, code: "MODEL_FAILED" },
+      },
+      {
+        event: "RunState",
+        timestamp: at(6),
+        data: { runId: gaveUp, status: "failed", actions: 0 },
+      },
+      {
+        event: "RunState",
+        timestamp: at(7),
+        data: { runId: crashed, status: "executing", actions: 0 },
+      },
+      {
+        event: "RunFailed",
+        timestamp: at(8),
+        data: { runId: crashed, code: "RUN_ERROR" },
+      },
+      {
+        event: "RunState",
+        timestamp: at(9),
+        data: { runId: crashed, status: "failed", actions: 0 },
+      },
+    ]);
+    expect(more.perRun.find((r) => r.runId === gaveUp)!.ending).toBe(
+      "MODEL_FAILED",
+    );
+    expect(more.perRun.find((r) => r.runId === crashed)!.ending).toBe(
+      "RUN_ERROR",
+    );
   });
 });
 

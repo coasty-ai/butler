@@ -365,6 +365,11 @@ describe("streaming execution: the owner's sentence", () => {
     expect(t.labels).toEqual(["Opening YouTube…"]);
     t.next(committed(c1, "stable"));
     await t.say(OWNER, 1950);
+    // A query from a clause that committed by standing still is held
+    // STREAMING_LIMITS.queryHoldMs for the words to stop growing (700 ms in
+    // all with the stream's stableMs), then issued; a site open is not.
+    expect(t.opened).toEqual(["https://www.youtube.com/"]);
+    await t.to(2300);
     expect(t.opened).toEqual([
       "https://www.youtube.com/",
       "https://www.youtube.com/results?search_query=midwest+safety",
@@ -386,10 +391,13 @@ describe("streaming execution: the owner's sentence", () => {
       browser: "Safari",
       protectedHosts: defaultSettings.protectedDomains,
     });
+    // The trace says which was a site open and which a query; the query's
+    // issue time counts the hold from its commit.
     expect(t.of("StreamedAction")).toEqual([
       {
         kind: "open_url",
         siteKey: "youtube",
+        nav: "home",
         clauseIndex: 0,
         decideMs: 0,
         issueMs: 20,
@@ -397,9 +405,10 @@ describe("streaming execution: the owner's sentence", () => {
       {
         kind: "open_url",
         siteKey: "youtube",
+        nav: "query",
         clauseIndex: 1,
         decideMs: 0,
-        issueMs: 50,
+        issueMs: 400,
       },
     ]);
     const claim = t.finish(OWNER, 2600)!;
@@ -407,7 +416,7 @@ describe("streaming execution: the owner's sentence", () => {
     const steps = await claim.take();
     expect(steps).toEqual([
       { clauseIndex: 0, action: YOUTUBE, atMs: 620, outcome: "done" },
-      { clauseIndex: 1, action: RESULTS, atMs: 1950, outcome: "done" },
+      { clauseIndex: 1, action: RESULTS, atMs: 2300, outcome: "done" },
     ]);
     expect(t.finals).toEqual([{ text: OWNER, atMs: 2600 }]);
     expect(t.of("StreamedRunStarted")).toEqual([
@@ -492,39 +501,61 @@ describe("streaming execution: the owner's sentence", () => {
       { text: OWNER, atMs: 1500 },
       { text: OWNER, atMs: 1860 },
     ]);
+    // The query is held queryHoldMs more (the words have then stood 700 ms
+    // unchanged) and issued once.
+    expect(t.opened).toEqual([]);
+    expect(t.timers.size).toBe(1);
+    await t.to(2210);
     expect(t.opened).toEqual([RESULTS.url]);
     // Once only, and a newer partial disarms the pending one.
     await t.to(5000);
     expect(t.pushed).toHaveLength(3);
+    expect(t.opened).toEqual([RESULTS.url]);
     await t.say(OWNER + " please", 5100);
     expect(t.timers.size).toBe(1);
     t.finish(OWNER + " please", 5200);
     expect(t.timers.size).toBe(0);
   });
-  it("decides a superseded clause's replacement afresh: a different action navigates again and drops the old step, an equal one stands", async () => {
+  it("acts on a re-commit, never on the superseded event alone: a rewrite to another site issues it and drops the old step, growth to the same address stands, and words that only grew keep their step for the final to judge", async () => {
     const gmail = clause(0, "go to gmail", 800);
-    const t = setup({
-      decide: {
-        [c0.text]: YOUTUBE,
-        [gmail.text]: {
-          kind: "open_url",
-          url: "https://mail.google.com/",
-          siteKey: "gmail",
-          label: "Gmail",
-        },
-      },
-    });
+    const GMAIL: FastAction = {
+      kind: "open_url",
+      url: "https://mail.google.com/",
+      siteKey: "gmail",
+      label: "Gmail",
+    };
+    const t = setup({ decide: { [c0.text]: YOUTUBE, [gmail.text]: GMAIL } });
     t.begin();
     t.next(committed(c0));
     await t.say("go to youtube and", 620);
-    // The recognizer rewrote the committed words: the stream says so once,
-    // with the clause now in their place, and no second commit follows.
+    // The recognizer rewrote the committed words: the stream says so, with
+    // the clause now in their place and still growing. Nothing is decided
+    // on that alone.
     t.next({ kind: "superseded", clause: c0, replacement: gmail });
     await t.say("go to gmail and", 850);
+    expect(t.opened).toEqual(["https://www.youtube.com/"]);
+    expect(t.fast).toHaveBeenCalledTimes(1);
+    // The rewritten clause commits again (here by the next clause's first
+    // word): decided afresh, another destination, so the earlier step was
+    // done by mistake and the new one issues in its place.
+    t.next(committed(gmail, "boundary"));
+    await t.say("go to gmail and read", 900);
     expect(t.opened).toEqual([
       "https://www.youtube.com/",
       "https://mail.google.com/",
     ]);
+    expect(t.of("StreamedActionDropped")).toEqual([
+      { kind: "open_url", clauseIndex: 0 },
+    ]);
+    expect(t.of("StreamedAction")[1]).toEqual({
+      kind: "open_url",
+      siteKey: "gmail",
+      nav: "home",
+      clauseIndex: 0,
+      decideMs: 0,
+      issueMs: 100,
+      reissue: true,
+    });
     const steps = await t
       .finish("go to gmail and read the first mail", 1500)!
       .take();
@@ -532,11 +563,14 @@ describe("streaming execution: the owner's sentence", () => {
       ["open_url", "dropped"],
       ["open_url", "done"],
     ]);
-    expect(t.of("StreamedActionDropped")).toEqual([
-      { kind: "open_url", clauseIndex: 0 },
+    // Both commits of the index are traced, the second flagged as a re-commit.
+    expect(t.of("StreamClauseCommitted")).toEqual([
+      { index: 0, by: "boundary", words: 3, leadMs: 900 },
+      { index: 0, by: "boundary", words: 3, leadMs: 700, superseded: true },
     ]);
     // A clause that only grew ("play a midwest safety" → "… video") decides
-    // to the same URL: nothing is issued again and the step stands.
+    // to the same address: one issue, and the step stands under the new
+    // words.
     const short = clause(1, "play a midwest safety", 1700);
     const grown = clause(1, "play a midwest safety video", 1900);
     const g = setup({
@@ -545,8 +579,14 @@ describe("streaming execution: the owner's sentence", () => {
     g.begin();
     g.next(committed(short, "stable"));
     await g.say("go to youtube and play a midwest safety", 1720);
+    // Held for the words to settle; they grew first, so the hold is let go.
+    expect(g.opened).toEqual([]);
     g.next({ kind: "superseded", clause: short, replacement: grown });
+    await g.say(OWNER, 1800);
+    expect(g.timers.size).toBe(1);
+    g.next(committed(grown, "stable"));
     await g.say(OWNER, 1950);
+    await g.to(2300);
     expect(g.opened).toEqual([RESULTS.url]);
     expect(g.of("StreamedAction")).toHaveLength(1);
     expect(g.of("StreamedActionDropped")).toEqual([]);
@@ -554,7 +594,9 @@ describe("streaming execution: the owner's sentence", () => {
     g.dropAtFinal(short);
     const kept = await g.finish(OWNER, 2600)!.take();
     expect(kept.map((s) => s.outcome)).toEqual(["done"]);
-    // A replacement that decides to nothing leaves the old step done by mistake.
+    // Words that grew after the issue and decide to nothing leave the step
+    // as it is: the final still says the words that issued it, so the page
+    // opened is on the way to what the sentence asks.
     const nothing = clause(0, "go to youtube settings", 900);
     const n = setup({ decide: { [c0.text]: YOUTUBE } });
     n.begin();
@@ -562,10 +604,24 @@ describe("streaming execution: the owner's sentence", () => {
     await n.say("go to youtube and", 620);
     n.next({ kind: "superseded", clause: c0, replacement: nothing });
     await n.say("go to youtube settings", 950);
+    n.next(committed(nothing, "stable"));
+    await n.say("go to youtube settings", 1300);
     expect(n.opened).toEqual([YOUTUBE.url]);
     expect(
       (await n.finish("go to youtube settings", 1500)!.take())[0].outcome,
+    ).toBe("done");
+    // A step whose words the final no longer says whole was done by mistake,
+    // whatever the stream reported.
+    const r = setup({ decide: { [c0.text]: YOUTUBE } });
+    r.begin();
+    r.next(committed(c0));
+    await r.say("go to youtube and", 620);
+    expect(
+      (await r.finish("go to the gym and then home", 1500)!.take())[0].outcome,
     ).toBe("dropped");
+    expect(r.of("StreamedActionDropped")).toEqual([
+      { kind: "open_url", clauseIndex: 0 },
+    ]);
   });
   it("leaves the steps where they are when the final is a question, and the pill says what was opened", async () => {
     const t = setup({ decide: { [c0.text]: YOUTUBE } });
@@ -594,6 +650,272 @@ describe("streaming execution: the owner's sentence", () => {
   });
 });
 
+/**
+ * One navigation per thing asked (live findings 2026-09-19 19:41–19:43: a
+ * growing clause re-committed at the same index up to seven times and each
+ * commit that decided to a recipe URL was issued). The phrases here are
+ * invented; the shapes are the stream's own event sequences.
+ */
+describe("streaming execution: one navigation per thing asked", () => {
+  type OpenUrl = Extract<FastAction, { kind: "open_url" }>;
+  const SITE: OpenUrl = {
+    kind: "open_url",
+    url: "https://www.youtube.com/",
+    siteKey: "youtube",
+    label: "YouTube",
+  };
+  const query = (q: string): OpenUrl => ({
+    kind: "open_url",
+    url: `https://www.youtube.com/results?search_query=${encodeURIComponent(q).replace(/%20/g, "+")}`,
+    siteKey: "youtube",
+    label: `YouTube search for ${q}`,
+  });
+  const site = clause(0, "go to youtube", 500);
+  const grow = (text: string, at: number) => clause(1, text, at);
+  it("a clause growing word by word over seven commits yields one site open and one query", async () => {
+    // The live shape: index 1 committed with 4, 5, 5, 5, 6, 8, 8 words as
+    // the recognizer grew and rewrote it, pauses between; every commit
+    // decides, one query issues.
+    const w4 = grow("play a quiet river", 1000);
+    const w5 = grow("play a quiet river sound", 1560);
+    const w5b = grow("play a quiet river sounds", 2060);
+    const w8 = grow("play a quiet river sound for the evening", 3060);
+    const t = setup({
+      decide: {
+        [site.text]: SITE,
+        [w4.text]: query("quiet river"),
+        [w5.text]: query("quiet river sound"),
+        [w5b.text]: query("quiet river sounds"),
+        [w8.text]: query("quiet river sound for the evening"),
+      },
+    });
+    t.begin();
+    // The site opens at its first commit, at once; the query is held.
+    t.next(committed(site), committed(w4, "stable"));
+    await t.say("go to youtube and play a quiet river", 1000);
+    expect(t.opened).toEqual([SITE.url]);
+    // Growth before the hold fires lets the held query go: nothing issued.
+    t.next({
+      kind: "superseded",
+      clause: w4,
+      replacement: grow(w5.text, 1200),
+    });
+    await t.say("go to youtube and play a quiet river sound", 1200);
+    await t.to(1400);
+    expect(t.opened).toEqual([SITE.url]);
+    // The grown words commit and stand still for the hold: the query issues.
+    t.next(committed(w5, "stable"));
+    await t.say("go to youtube and play a quiet river sound", 1560);
+    await t.to(1910);
+    expect(t.opened).toEqual([SITE.url, query("quiet river sound").url]);
+    // A word re-heard (five words still), then growth to eight: the
+    // re-commits decide and issue nothing more, the index having its query.
+    t.next({
+      kind: "superseded",
+      clause: w5,
+      replacement: grow(w5b.text, 1700),
+    });
+    await t.say("go to youtube and play a quiet river sounds", 1700);
+    t.next(committed(w5b, "stable"));
+    await t.say("go to youtube and play a quiet river sounds", 2060);
+    t.next({
+      kind: "superseded",
+      clause: w5b,
+      replacement: grow(w8.text, 2400),
+    });
+    await t.say(
+      "go to youtube and play a quiet river sound for the evening",
+      2400,
+    );
+    t.next(committed(w8, "stable"));
+    await t.say(
+      "go to youtube and play a quiet river sound for the evening",
+      3060,
+    );
+    await t.to(4000);
+    expect(t.opened).toEqual([SITE.url, query("quiet river sound").url]);
+    expect(t.of("StreamedAction").map((a) => [a.clauseIndex, a.nav])).toEqual([
+      [0, "home"],
+      [1, "query"],
+    ]);
+    // Every decision ran (one per commit), one issue came of them.
+    expect(t.fast).toHaveBeenCalledTimes(5);
+    const steps = await t
+      .finish(
+        "go to youtube and play a quiet river sound for the evening",
+        4200,
+      )!
+      .take();
+    // The issued words stand whole in the final: the step is kept, and the
+    // run is told which query is on screen.
+    expect(steps.map((s) => [s.clauseIndex, s.outcome])).toEqual([
+      [0, "done"],
+      [1, "done"],
+    ]);
+    expect(streamedPrelude(steps)).toBe(
+      "Already done while you spoke: YouTube is loading; YouTube search for quiet river sound is loading. Continue from this screen; do not repeat these.",
+    );
+    // Commits: the first of each index plain, every later one a re-commit.
+    expect(
+      t
+        .of("StreamClauseCommitted")
+        .map((c) => [c.index, c.superseded ?? false]),
+    ).toEqual([
+      [0, false],
+      [1, false],
+      [1, true],
+      [1, true],
+      [1, true],
+    ]);
+    expect(t.of("StreamedActionDropped")).toEqual([]);
+  });
+  it("re-issues a query only when its words changed before the first issue; after it, a rewrite is the run's and the final judges the step", async () => {
+    const a = grow("play a quiet river", 1000);
+    const b = grow("play a quiet lake", 1460);
+    const c = grow("play a quiet lake shore", 2260);
+    const t = setup({
+      decide: {
+        [a.text]: query("quiet river"),
+        [b.text]: query("quiet lake"),
+        [c.text]: query("quiet lake shore"),
+      },
+      front: { appId: SAFARI, domain: "www.youtube.com" },
+    });
+    t.begin();
+    t.next(committed(a, "stable"));
+    await t.say("play a quiet river", 1000);
+    // Changed before the issue: the first words never load.
+    t.next({ kind: "superseded", clause: a, replacement: grow(b.text, 1100) });
+    await t.say("play a quiet lake", 1100);
+    t.next(committed(b, "stable"));
+    await t.say("play a quiet lake", 1460);
+    await t.to(1810);
+    expect(t.opened).toEqual([query("quiet lake").url]);
+    // Changed after the issue: no second navigation for the index.
+    t.next({ kind: "superseded", clause: b, replacement: grow(c.text, 1900) });
+    await t.say("play a quiet lake shore", 1900);
+    t.next(committed(c, "stable"));
+    await t.say("play a quiet lake shore", 2260);
+    await t.to(3000);
+    expect(t.opened).toEqual([query("quiet lake").url]);
+    expect(t.of("StreamedAction")).toHaveLength(1);
+    expect(t.of("StreamedAction")[0]).not.toHaveProperty("reissue");
+    // The issued words stand inside the final: kept.
+    const kept = await t.finish("play a quiet lake shore", 3200)!.take();
+    expect(kept.map((s) => s.outcome)).toEqual(["done"]);
+    // The same, with a final that rewrote the issued words: done by mistake.
+    const u = setup({
+      decide: {
+        [b.text]: query("quiet lake"),
+        [c.text]: query("quiet lake shore"),
+      },
+      front: { appId: SAFARI, domain: "www.youtube.com" },
+    });
+    u.begin();
+    u.next(committed(b, "stable"));
+    await u.say("play a quiet lake", 1460);
+    await u.to(1810);
+    expect(u.opened).toEqual([query("quiet lake").url]);
+    const judged = await u.finish("play a quiet lakeshore", 2200)!.take();
+    expect(judged.map((s) => s.outcome)).toEqual(["dropped"]);
+    expect(streamedPrelude(judged)).toContain("Done by mistake");
+  });
+  it("a query committed by boundary issues at once, and a longer sentence issues at most one navigation per distinct address", async () => {
+    // Five clauses: the site, a query, a step for the run, the same query
+    // said again, another query. Three navigations, the repeat deduped.
+    const q1 = clause(1, "play a quiet river", 900);
+    const step = clause(2, "pick the first one", 1300);
+    const again = clause(3, "play a quiet river", 1700);
+    const q2 = clause(4, "play an evening mix", 2100);
+    const t = setup({
+      decide: {
+        [site.text]: SITE,
+        [q1.text]: query("quiet river"),
+        [q2.text]: query("evening mix"),
+      },
+    });
+    t.begin();
+    t.next(committed(site), committed(q1, "boundary"));
+    await t.say("go to youtube and play a quiet river and pick", 920);
+    // No hold for a query the next clause's first word made whole.
+    expect(t.opened).toEqual([SITE.url, query("quiet river").url]);
+    expect(t.timers.size).toBe(1);
+    t.next(committed(step, "boundary"), committed(again, "boundary"));
+    await t.say(
+      "go to youtube and play a quiet river and pick the first one and play a quiet river and play",
+      1720,
+    );
+    t.next(committed(q2, "stable"));
+    await t.say(
+      "go to youtube and play a quiet river and pick the first one and play a quiet river and play an evening mix",
+      2100,
+    );
+    await t.to(2450);
+    expect(t.opened).toEqual([
+      SITE.url,
+      query("quiet river").url,
+      query("evening mix").url,
+    ]);
+    expect(t.of("StreamedAction").map((a) => a.clauseIndex)).toEqual([0, 1, 4]);
+    expect(t.fast).toHaveBeenCalledTimes(5);
+    // A second clause naming the site again does not open it again either.
+    t.next(committed(clause(5, "go to youtube", 2600), "boundary"));
+    await t.say("… and go to youtube and", 2620);
+    expect(t.opened).toHaveLength(3);
+  });
+  it("the final issues a held query it still says, and lets go of one it does not", async () => {
+    const q = grow("play a quiet river", 1000);
+    const t = setup({
+      decide: { [site.text]: SITE, [q.text]: query("quiet river") },
+    });
+    t.begin();
+    t.next(committed(site), committed(q, "stable"));
+    await t.say("go to youtube and play a quiet river", 1000);
+    expect(t.opened).toEqual([SITE.url]);
+    // The final comes before the hold ends: it is the commit that makes the
+    // words whole, and the run takes the step once the route has answered.
+    const claim = t.finish("go to youtube and play a quiet river video", 1200)!;
+    expect(t.timers.size).toBe(0);
+    const steps = await claim.take();
+    expect(t.opened).toEqual([SITE.url, query("quiet river").url]);
+    expect(steps.map((s) => [s.clauseIndex, s.outcome, s.atMs])).toEqual([
+      [0, "done", 1000],
+      [1, "done", 1200],
+    ]);
+    expect(t.of("StreamedAction")[1]).toMatchObject({
+      clauseIndex: 1,
+      nav: "query",
+      issueMs: 200,
+    });
+    expect(t.of("StreamedRunStarted")).toEqual([
+      { streamedSteps: 2, dropped: 0 },
+    ]);
+    // A final that no longer says the held words: nothing issued, nothing
+    // dropped (there was no step), and the site open alone is handed on.
+    const u = setup({
+      decide: { [site.text]: SITE, [q.text]: query("quiet river") },
+    });
+    u.begin();
+    u.next(committed(site), committed(q, "stable"));
+    await u.say("go to youtube and play a quiet river", 1000);
+    const left = await u
+      .finish("go to youtube and play a loud brass band", 1200)!
+      .take();
+    expect(u.opened).toEqual([SITE.url]);
+    expect(left.map((s) => s.clauseIndex)).toEqual([0]);
+    expect(u.of("StreamedActionDropped")).toEqual([]);
+    // A cancelled turn lets a held query go too.
+    const v = setup({ decide: { [q.text]: query("quiet river") } });
+    v.begin();
+    v.next(committed(q, "stable"));
+    await v.say("play a quiet river", 1000);
+    expect(v.timers.size).toBe(2);
+    v.turn.cancel("cancelled");
+    expect(v.timers.size).toBe(0);
+    await v.to(5000);
+    expect(v.opened).toEqual([]);
+  });
+});
 describe("streaming execution: the other fast actions", () => {
   it("leaves the leading clause's app to the early start and opens a later clause's app with the early step's checks on its chain", async () => {
     const slackFirst = clause(0, "open slack", 300);

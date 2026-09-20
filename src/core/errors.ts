@@ -160,3 +160,18 @@ export class SurfaceBlockedError extends Error {
     this.name = "SurfaceBlockedError";
   }
 }
+
+/**
+ * The model proposed `fail`: an honest give-up with its own reason, not a
+ * crash of the runner or the helper. The runner journals it as RunFailed
+ * {code: MODEL_FAILED} with the reason as the run's summary, so a run the
+ * model declined (a request it would not carry out, a page it could not
+ * read) is never counted beside a real error (RUN_ERROR).
+ */
+export class ModelFailedError extends Error {
+  readonly code = "MODEL_FAILED";
+  constructor(reason: string) {
+    super(reason);
+    this.name = "ModelFailedError";
+  }
+}

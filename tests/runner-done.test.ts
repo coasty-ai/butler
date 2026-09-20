@@ -16,8 +16,10 @@ import {
   Runner,
   declinedResult,
   doneChallenge,
+  failureCode,
   MODEL_RESULT_CHARS,
 } from "../src/core/runner";
+import { ModelFailedError } from "../src/core/errors";
 import { approvalCode } from "../src/core/approval-codes";
 import {
   deliverableChallenge,
@@ -592,8 +594,8 @@ describe("a done with the task's file unchanged (cycle 20260919-1646-09c5412)", 
     expect(m.getRun().summary).toBe(
       "The ledger could not be saved; TextEdit refused the format.",
     );
-    // The model's own fail, not the runner's verdict.
-    expect(m.of("RunFailed")[0].data).toEqual({ code: "RUN_ERROR" });
+    // The model's own fail, not the runner's verdict and not a crash.
+    expect(m.of("RunFailed")[0].data).toEqual({ code: "MODEL_FAILED" });
     expect(deliverable(m)).toHaveLength(1);
   });
   it("checks a refused step first and the file second, each once, in one run", async () => {
@@ -726,5 +728,39 @@ describe("what the file check leaves alone", () => {
     expect(deliverableChallenge([{ path: LEDGER, before: SAME }])).toContain(
       "names what in the file or on screen shows the objective met",
     );
+  });
+});
+
+describe("the code a failed run is journaled under", () => {
+  it("is the model's own MODEL_FAILED for a fail action, with the reason as the summary", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const c = controller();
+    const p = scripted([fail("The page asks for a sign-in I cannot do.")]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("read the balance");
+    expect(runner.snapshot.run?.status).toBe("failed");
+    expect(m.getRun().summary).toBe("The page asks for a sign-in I cannot do.");
+    // Live 2026-09-19 02:41:08: a declined request was journaled RUN_ERROR,
+    // beside real crashes. The model's fail is its own code.
+    expect(m.of("RunFailed").map((e) => e.data)).toEqual([
+      { code: "MODEL_FAILED" },
+    ]);
+    expect(c.execute).not.toHaveBeenCalled();
+  });
+  it("keeps RUN_ERROR for a plain error and maps an error that names itself by a code", () => {
+    expect(failureCode(new Error("boom"))).toBe("RUN_ERROR");
+    expect(failureCode("not even an error")).toBe("RUN_ERROR");
+    expect(failureCode(undefined)).toBe("RUN_ERROR");
+    expect(failureCode(new ModelFailedError("no"))).toBe("MODEL_FAILED");
+    expect(failureCode({ code: "HELPER_UNAVAILABLE" })).toBe(
+      "HELPER_UNAVAILABLE",
+    );
+    // A code is a fixed upper-case word, never a sentence or a number.
+    expect(failureCode({ code: "the file was not there" })).toBe("RUN_ERROR");
+    expect(failureCode({ code: 18 })).toBe("RUN_ERROR");
+    expect(failureCode({ code: "x" })).toBe("RUN_ERROR");
+    expect(new ModelFailedError("why").message).toBe("why");
+    expect(new ModelFailedError("why").name).toBe("ModelFailedError");
   });
 });

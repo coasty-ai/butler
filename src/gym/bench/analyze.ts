@@ -206,11 +206,15 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       return [failure ?? "ACTION_FAILED"];
     }
     // The runner's own verdict on a run: a second done with the named file
-    // still unchanged. Any other RunFailed is read from the status.
-    case "RunFailed":
-      return code(d.code) === "DELIVERABLE_MISSING"
-        ? ["DELIVERABLE_MISSING"]
+    // still unchanged (DELIVERABLE_MISSING), or the model's own fail, an
+    // honest give-up the runner journals under MODEL_FAILED. Any other
+    // RunFailed is read from the status.
+    case "RunFailed": {
+      const failed = code(d.code);
+      return failed === "DELIVERABLE_MISSING" || failed === "MODEL_FAILED"
+        ? [failed]
         : [];
+    }
     case "ActionLoopDetected":
       // The app-switch rule's event carries period 0 and no revisit count; a
       // revisit detection carries its count beside period 0.
@@ -638,6 +642,7 @@ export function endingCode(run: RunState): string {
     if (run.budget) return run.budget;
     if (has("EMERGENCY_STOP")) return "EMERGENCY_STOP";
     if (has("DELIVERABLE_MISSING")) return "DELIVERABLE_MISSING";
+    if (has("MODEL_FAILED")) return "MODEL_FAILED";
     const tail = run.tail.map((entry) => entry.code);
     for (const entry of tail.slice(-6).reverse()) {
       if (entry === "HELPER_UNAVAILABLE") return "HELPER_UNAVAILABLE";

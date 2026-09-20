@@ -168,6 +168,83 @@ describe("segmentation", () => {
   });
 });
 
+describe("trailing fragments", () => {
+  it("folds a punctuation-cut fragment with no verb and no noun phrase of its own into the clause before it", () => {
+    // The recognizer's period or comma cut the object's last word off.
+    expect(cut("play a quiet river. sound")).toEqual([
+      ["play a quiet river sound", 0, 5],
+    ]);
+    expect(cut("go to youtube, the video")).toEqual([
+      ["go to youtube the video", 0, 5],
+    ]);
+    expect(cut("play a quiet river, sound mix")).toEqual([
+      ["play a quiet river sound mix", 0, 6],
+    ]);
+    // Leads before the fragment are skipped as anywhere.
+    expect(cut("play a quiet river. please the mix")).toEqual([
+      ["play a quiet river please the mix", 0, 7],
+    ]);
+    // A verb-led clause after punctuation is a clause.
+    expect(cut("open slack, message dana")).toEqual([
+      ["open slack", 0, 2],
+      ["message dana", 2, 4],
+    ]);
+    expect(cut("play a quiet river. scroll down")).toEqual([
+      ["play a quiet river", 0, 4],
+      ["scroll down", 4, 6],
+    ]);
+    // A question, a pointer or a longer phrase is not the object's tail.
+    expect(cut("open slack. what time is it")).toEqual([
+      ["open slack", 0, 2],
+      ["what time is it", 2, 6],
+    ]);
+    expect(cut("play a quiet river. the one on the right")).toEqual([
+      ["play a quiet river", 0, 4],
+      ["the one on the right", 4, 9],
+    ]);
+    expect(cut("play a quiet river. yes")).toEqual([
+      ["play a quiet river", 0, 4],
+      ["yes", 4, 5],
+    ]);
+    // After a hard connector the words are a clause of their own.
+    expect(cut("open slack then video")).toEqual([
+      ["open slack", 0, 2],
+      ["video", 3, 4],
+    ]);
+    expect(cut("open slack. then the video")).toEqual([
+      ["open slack", 0, 2],
+      ["the video", 3, 5],
+    ]);
+  });
+  it("grows the clause instead of committing it by boundary when the fragment arrives", () => {
+    const { events, stream } = speak(
+      ["play", "a", "quiet", "river.", "sound"],
+      150,
+    );
+    expect(committed(events)).toEqual([]);
+    expect(stream.clauses()).toEqual([
+      expect.objectContaining({
+        index: 0,
+        text: "play a quiet river sound",
+        state: "growing",
+        startWord: 0,
+        endWord: 5,
+      }),
+    ]);
+    // And commits by stability as one clause, verb + object.
+    const late = stream.push({
+      text: "play a quiet river. sound",
+      atMs: 600 + STREAM_LIMITS.stableMs,
+    });
+    expect(late.map((e) => e.kind)).toEqual(["committed"]);
+    // A verb after the punctuation still commits the clause before it.
+    const two = speak(["play", "a", "quiet", "river.", "scroll"], 150);
+    expect(
+      committed(two.events).map((e) => [e.word, e.event.clause.text]),
+    ).toEqual([[4, "play a quiet river"]]);
+  });
+});
+
 describe("commits", () => {
   it("commits by boundary the moment the next clause's first content word arrives", () => {
     const { events } = speak(

@@ -29,13 +29,28 @@
 // between the commit and the row plus a small slack, each request claimed
 // once, and commit -> issue is measured from the commit's row to that
 // request's (issuedFrom "request") or, with none found, to the action's own
-// row (issuedFrom "event"). A clause is kept unless a StreamedActionDropped
-// names its index. A run repeated a streamed step when, after its
+// row (issuedFrom "event"). A StreamedActionDropped names the latest earlier
+// action of its index (and kind, when both say one) not yet dropped, so a
+// reissue (a rewrite that dropped the earlier step and issued another) reads
+// as one dropped and one kept. A run repeated a streamed step when, after its
 // StreamedRunStarted, the run journals an ActionExecuted (not an early one)
 // or the controller a NativeRequest of kind open_app or open_url matching a
 // streamed action of the turn: the same kind and, when both rows carry a
 // siteKey, the same key. The controller sends an open_app as `execute`, so a
 // request row alone never names the kind; the journal's actionType does.
+//
+// Since 2026-09-19 (live: a growing clause re-committed and re-issued up to
+// seven times an index) the rows also say: StreamClauseCommitted.superseded
+// (a re-commit of an index), StreamedAction.nav (home: a site's front page;
+// query: an address with an object in it) and StreamedAction.reissue (it
+// replaced an earlier issue of the index), and the run's TransitionSettled
+// {kind: navigated} after RunStarted is the first capture waiting for the
+// prelude's last page. From these: commits per clause (p50 and max over
+// every clause of every turn), issues per clause, navigations per sentence
+// (open_url actions per turn), reissues, and the settle wait (RunStarted to
+// that TransitionSettled). The commit -> issue target applies to site opens
+// and to actions without a nav (older logs); a query is held for the words
+// to stop growing and is read apart.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,12 +75,15 @@ if (values.help) {
   Defaults to the last 20 turns in .data/diagnostics/current.jsonl. Rotated logs
   (current.jsonl.1 and so on) and a voice cycle's diagnostics/current.jsonl can
   be passed as extra files, oldest first. Per turn: the committed clauses
-  (index, by, words, lead), the fast actions (kind, site key, decide, issue,
-  commit -> request), whether the final kept each clause, and whether the run
-  repeated a streamed step. Summary: p50/p95 of decideMs, issueMs and
-  commit -> issue against the design's targets (250 ms p50, 600 ms p95), the
-  fast-action, dropped and repeat rates, and the model requests before the
-  final. Never the words.`,
+  (index, by, words, lead, re-commits), the fast actions (kind, site key,
+  home or query, decide, issue, commit -> request, reissue), whether the
+  final kept each clause, whether the run repeated a streamed step, and how
+  long its first capture waited for the prelude's last page. Summary: p50/p95
+  of decideMs, issueMs and commit -> issue against the design's targets
+  (250 ms p50, 600 ms p95, for site opens), queries apart, commits and issues
+  per clause (p50, max), navigations per sentence, reissues, the settle
+  wait, the fast-action, dropped and repeat rates, and the model requests
+  before the final. Never the words.`,
   );
   process.exit(0);
 }
@@ -109,6 +127,7 @@ const code = (value) =>
   typeof value === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(value)
     ? value
     : undefined;
+const flag = (value) => value === true;
 
 const rows = [];
 for (const file of files) {
@@ -148,6 +167,7 @@ const newTurn = (row, phase, d) => ({
   dropped: [],
   requests: [],
   executed: [],
+  settles: [],
   modelRequestsBeforeFinal: 0,
   speculations: 0,
 });
@@ -194,6 +214,7 @@ for (const row of rows) {
         by: code(d.by),
         words: count(d.words),
         leadMs: count(d.leadMs),
+        superseded: flag(d.superseded),
       });
       break;
     case "StreamedAction":
@@ -201,10 +222,15 @@ for (const row of rows) {
         at: row.at,
         kind: code(d.kind),
         siteKey: code(d.siteKey),
+        nav: code(d.nav),
         clauseIndex: count(d.clauseIndex),
         decideMs: count(d.decideMs),
         issueMs: count(d.issueMs),
+        reissue: flag(d.reissue),
       });
+      break;
+    case "TransitionSettled":
+      if (code(d.kind) === "navigated") turn.settles.push(row.at);
       break;
     case "StreamedActionDropped":
       turn.dropped.push({
@@ -257,6 +283,21 @@ if (open) turns.push(open);
  */
 function resolveTurn(turn) {
   const claimed = new Set();
+  // Each drop names the latest earlier action of its index (and kind) not
+  // yet dropped: a reissue leaves the earlier step dropped and the new one kept.
+  const droppedActions = new Set();
+  for (const x of turn.dropped) {
+    const target = turn.actions
+      .filter(
+        (a) =>
+          !droppedActions.has(a) &&
+          a.clauseIndex === x.clauseIndex &&
+          a.at <= x.at &&
+          (x.kind === undefined || a.kind === undefined || x.kind === a.kind),
+      )
+      .at(-1);
+    if (target) droppedActions.add(target);
+  }
   const actions = turn.actions.map((a) => {
     const commit = turn.clauses
       .filter((c) => c.index === a.clauseIndex && c.at <= a.at)
@@ -275,34 +316,73 @@ function resolveTurn(turn) {
       )[0];
       if (request) claimed.add(request);
     }
-    const dropped = turn.dropped.some(
-      (x) =>
-        x.clauseIndex === a.clauseIndex &&
-        (x.kind === undefined || a.kind === undefined || x.kind === a.kind),
-    );
     return {
       clauseIndex: a.clauseIndex,
       kind: a.kind,
       siteKey: a.siteKey,
+      ...(a.nav ? { nav: a.nav } : {}),
       decideMs: a.decideMs,
       issueMs: a.issueMs,
       commitToIssueMs: commit ? (request ?? a).at - commit.at : undefined,
       issuedFrom: commit ? (request ? "request" : "event") : undefined,
-      kept: !dropped,
+      kept: !droppedActions.has(a),
+      ...(a.reissue ? { reissue: true } : {}),
+      // The commit the action was measured from (not in the output).
+      commitAt: commit?.at,
     };
   });
-  const clauses = turn.clauses.map((c) => ({
-    index: c.index,
-    by: c.by,
-    words: c.words,
-    leadMs: c.leadMs,
-    toFinalMs: turn.outcome ? turn.outcome.at - c.at : undefined,
-    action: actions.find((a) => a.clauseIndex === c.index),
-    dropped: turn.dropped.some((x) => x.clauseIndex === c.index),
-  }));
+  // Each commit row carries the action issued off it, if one was; a clause
+  // row is dropped when that action was, else when a drop names its index.
+  const clauses = turn.clauses.map((c) => {
+    const action = actions.find(
+      (a) => a.clauseIndex === c.index && a.commitAt === c.at,
+    );
+    return {
+      index: c.index,
+      by: c.by,
+      words: c.words,
+      leadMs: c.leadMs,
+      toFinalMs: turn.outcome ? turn.outcome.at - c.at : undefined,
+      action,
+      dropped: action
+        ? !action.kept
+        : turn.dropped.some((x) => x.clauseIndex === c.index),
+      ...(c.superseded ? { superseded: true } : {}),
+    };
+  });
+  for (const a of actions) delete a.commitAt;
+  // Commits and issues per clause of the utterance (by index), and the
+  // navigations of the sentence: what "once per thing asked" looks like.
+  const perIndex = (list, key) => {
+    const out = new Map();
+    for (const item of list)
+      if (item[key] !== undefined)
+        out.set(item[key], (out.get(item[key]) ?? 0) + 1);
+    return [...out.values()];
+  };
+  const commitsPerClause = perIndex(turn.clauses, "index");
+  const issuesPerClause = perIndex(turn.actions, "clauseIndex");
+  const navigations = actions.filter((a) => a.kind === "open_url");
+  const shape = {
+    clauses: commitsPerClause.length,
+    commits: turn.clauses.length,
+    supersededCommits: turn.clauses.filter((c) => c.superseded).length,
+    commitsPerClause,
+    issuesPerClause,
+    navigations: navigations.length,
+    siteOpens: navigations.filter((a) => a.nav === "home").length,
+    queries: navigations.filter((a) => a.nav === "query").length,
+    reissues: actions.filter((a) => a.reissue).length,
+  };
   let run;
   if (turn.run) {
     const after = turn.run.at;
+    // The first capture's wait for the prelude's last page: RunStarted to
+    // the first TransitionSettled {kind: navigated} after it.
+    const settledAt =
+      turn.runStarted !== undefined
+        ? turn.settles.find((t) => t >= turn.runStarted)
+        : undefined;
     const matches = (candidate) =>
       turn.actions.some(
         (a) =>
@@ -328,9 +408,13 @@ function resolveTurn(turn) {
         siteKey: c.siteKey,
         afterMs: c.at - after,
       })),
+      settled: settledAt !== undefined,
+      ...(settledAt !== undefined
+        ? { settleWaitMs: settledAt - turn.runStarted }
+        : {}),
     };
   }
-  return { clauses, actions, run };
+  return { clauses, actions, shape, run };
 }
 
 const percentile = (list, p) => {
@@ -346,6 +430,11 @@ const stats = (list) =>
         p90: percentile(list, 0.9),
         p95: percentile(list, 0.95),
       }
+    : { n: 0 };
+/** p50 and the largest value: for counts that should be one. */
+const spread = (list) =>
+  list.length
+    ? { n: list.length, p50: percentile(list, 0.5), max: Math.max(...list) }
     : { n: 0 };
 const defined = (list) => list.filter((v) => v !== undefined);
 const tally = (list, key) => {
@@ -365,6 +454,15 @@ const allActions = streamed.flatMap((s) => s.actions);
 const withRun = streamed.filter((s) => s.run);
 const repeated = withRun.filter((s) => s.run.repeats.length > 0);
 const commitToIssue = stats(defined(allActions.map((a) => a.commitToIssueMs)));
+// The target is for a site open; a query is held for the words to stop
+// growing. An action without a nav (an older log) counts with the site opens.
+const siteOpenActions = allActions.filter((a) => a.nav !== "query");
+const queryActions = allActions.filter((a) => a.nav === "query");
+const commitToIssueSiteOpens = stats(
+  defined(siteOpenActions.map((a) => a.commitToIssueMs)),
+);
+const shapes = streamed.map((s) => s.shape);
+const settledRuns = withRun.filter((s) => s.run.settled);
 const summary = {
   files,
   turns: turns.length,
@@ -372,6 +470,12 @@ const summary = {
   streamedTurns: streamed.length,
   clauses: {
     committed: streamed.reduce((n, s) => n + s.clauses.length, 0),
+    // Distinct clauses (by index) against commits: a re-commit is the same
+    // clause grown or rewritten and committed again.
+    distinct: shapes.reduce((n, s) => n + s.clauses, 0),
+    superseded: shapes.reduce((n, s) => n + s.supersededCommits, 0),
+    commitsPerClause: spread(shapes.flatMap((s) => s.commitsPerClause)),
+    issuesPerClause: spread(shapes.flatMap((s) => s.issuesPerClause)),
     by: tally(
       streamed.flatMap((s) => s.clauses),
       (c) => c.by,
@@ -399,11 +503,22 @@ const summary = {
     decideMs: stats(defined(allActions.map((a) => a.decideMs))),
     issueMs: stats(defined(allActions.map((a) => a.issueMs))),
     commitToIssueMs: commitToIssue,
+    commitToIssueSiteOpensMs: commitToIssueSiteOpens,
+    commitToIssueQueriesMs: stats(
+      defined(queryActions.map((a) => a.commitToIssueMs)),
+    ),
     targets: TARGETS,
-    withinTargets: commitToIssue.n
-      ? commitToIssue.p50 <= TARGETS.commitToIssueP50Ms &&
-        commitToIssue.p95 <= TARGETS.commitToIssueP95Ms
+    withinTargets: commitToIssueSiteOpens.n
+      ? commitToIssueSiteOpens.p50 <= TARGETS.commitToIssueP50Ms &&
+        commitToIssueSiteOpens.p95 <= TARGETS.commitToIssueP95Ms
       : undefined,
+  },
+  navigations: {
+    total: shapes.reduce((n, s) => n + s.navigations, 0),
+    siteOpens: shapes.reduce((n, s) => n + s.siteOpens, 0),
+    queries: shapes.reduce((n, s) => n + s.queries, 0),
+    reissues: shapes.reduce((n, s) => n + s.reissues, 0),
+    perTurn: spread(shapes.map((s) => s.navigations)),
   },
   dropped: {
     actions: allActions.filter((a) => !a.kept).length,
@@ -417,6 +532,8 @@ const summary = {
     repeatedActions: repeated.reduce((n, s) => n + s.run.repeats.length, 0),
     repeatRate: rate(repeated.length, withRun.length),
     afterFinalMs: stats(defined(withRun.map((s) => s.run.afterFinalMs))),
+    settled: settledRuns.length,
+    settleWaitMs: stats(defined(settledRuns.map((s) => s.run.settleWaitMs))),
   },
   modelRequestsBeforeFinal: streamed.reduce(
     (n, s) => n + s.turn.modelRequestsBeforeFinal,
@@ -429,7 +546,7 @@ const summary = {
 };
 
 if (values.json) {
-  const turnsOut = shown.map(({ turn: t, clauses, actions, run }) => ({
+  const turnsOut = shown.map(({ turn: t, clauses, actions, shape, run }) => ({
     at: new Date(t.at).toISOString(),
     activation: t.activation,
     kind: t.kind,
@@ -441,6 +558,7 @@ if (values.json) {
       kind: x.kind,
       clauseIndex: x.clauseIndex,
     })),
+    shape,
     run,
     modelRequestsBeforeFinal: t.modelRequestsBeforeFinal,
     speculations: t.speculations,
@@ -474,11 +592,18 @@ console.log(
 console.log(
   `Clauses: ${summary.clauses.committed} committed (${list(summary.clauses.by)}); words per clause p50 ${summary.clauses.wordsPerClause.p50 ?? "—"}; commit -> final ${range(summary.clauses.commitToFinalMs)}.`,
 );
+const perClause = (s) => (s.n ? `p50 ${s.p50} max ${s.max}` : "n=0");
+console.log(
+  `Once per thing asked: ${summary.clauses.distinct} clauses in ${summary.clauses.committed} commits (${summary.clauses.superseded} re-commits); commits per clause ${perClause(summary.clauses.commitsPerClause)}; issues per clause ${perClause(summary.clauses.issuesPerClause)}; navigations per sentence ${perClause(summary.navigations.perTurn)} (${summary.navigations.siteOpens} site opens, ${summary.navigations.queries} queries, ${summary.navigations.reissues} reissues); first capture settled in ${summary.runs.settled} of ${withRun.length} runs (${range(summary.runs.settleWaitMs)}).`,
+);
 console.log(
   `Fast actions: ${allActions.length} (${list(summary.fastActions.byKind)}); ${summary.dropped.actions} dropped by the final (${pct(summary.dropped.rate)}); ${repeated.length} of ${withRun.length} runs repeated a streamed step (${pct(summary.runs.repeatRate)}); ${summary.modelRequestsBeforeFinal} model requests before the final (${summary.speculationsBeforeFinal} speculative).`,
 );
 console.log();
-for (const [index, { turn: t, clauses, run }] of shown.entries()) {
+for (const [
+  index,
+  { turn: t, clauses, actions, shape, run },
+] of shown.entries()) {
   const head = `#${index + 1} ${new Date(t.at).toISOString().slice(11, 19)} ${t.activation}${t.kind ? `:${t.kind}` : ""}`;
   if (!clauses.length) {
     console.log(
@@ -487,14 +612,14 @@ for (const [index, { turn: t, clauses, run }] of shown.entries()) {
     continue;
   }
   console.log(
-    `${head}  ${t.outcome?.phase ?? "no outcome"}; clauses ${clauses.length}, fast actions ${clauses.filter((c) => c.action).length}, dropped ${clauses.filter((c) => c.dropped).length}${run ? `, prelude ${run.streamedSteps ?? "?"} steps, repeats ${run.repeats.length}` : ", no prelude"}`,
+    `${head}  ${t.outcome?.phase ?? "no outcome"}; clauses ${shape.clauses}${shape.commits !== shape.clauses ? ` (${shape.commits} commits, ${shape.supersededCommits} re-commits)` : ""}, fast actions ${actions.length}, navigations ${shape.navigations}${shape.reissues ? ` (${shape.reissues} reissued)` : ""}, dropped ${clauses.filter((c) => c.dropped).length}${run ? `, prelude ${run.streamedSteps ?? "?"} steps, repeats ${run.repeats.length}` : ", no prelude"}`,
   );
   for (const c of clauses) {
-    let line = `   clause ${c.index ?? "?"} by ${c.by ?? "?"}, ${c.words ?? "?"} words, lead ${ms(c.leadMs)}, -> final ${ms(c.toFinalMs)}: `;
+    let line = `   clause ${c.index ?? "?"} by ${c.by ?? "?"}${c.superseded ? " (re-commit)" : ""}, ${c.words ?? "?"} words, lead ${ms(c.leadMs)}, -> final ${ms(c.toFinalMs)}: `;
     const a = c.action;
     if (!a) line += "no fast action";
     else
-      line += `${a.kind ?? "?"}${site(a)} decide ${ms(a.decideMs)}, issue ${ms(a.issueMs)}, commit -> ${a.issuedFrom === "request" ? "request" : "issued"} ${ms(a.commitToIssueMs)}`;
+      line += `${a.kind ?? "?"}${site(a)}${a.nav ? ` ${a.nav}` : ""} decide ${ms(a.decideMs)}, issue ${ms(a.issueMs)}, commit -> ${a.issuedFrom === "request" ? "request" : "issued"} ${ms(a.commitToIssueMs)}${a.reissue ? ", reissued" : ""}`;
     line += c.dropped ? "; dropped by the final" : "; kept";
     console.log(line);
   }
@@ -504,7 +629,7 @@ for (const [index, { turn: t, clauses, run }] of shown.entries()) {
         run.repeats.length
           ? `repeated ${run.repeats.map((r) => `${r.kind}${site(r)} ${ms(r.afterMs)} in`).join(", ")}`
           : "no repeat"
-      }`,
+      }; first capture ${run.settled ? `settled ${ms(run.settleWaitMs)} in` : "not settled"}`,
     );
   if (t.modelRequestsBeforeFinal)
     console.log(
@@ -517,7 +642,7 @@ const f = summary.fastActions;
 console.log(`  ${"decideMs".padEnd(22)} ${range(f.decideMs)}`);
 console.log(`  ${"issueMs".padEnd(22)} ${range(f.issueMs)}`);
 console.log(
-  `  ${"commit -> issue".padEnd(22)} ${range(f.commitToIssueMs)}  (target p50 <= ${TARGETS.commitToIssueP50Ms} ms, p95 <= ${TARGETS.commitToIssueP95Ms} ms: ${f.withinTargets === undefined ? "no data" : f.withinTargets ? "met" : "missed"}; from a request ${f.issuedFrom.request ?? 0}, from the event ${f.issuedFrom.event ?? 0})`,
+  `  ${"commit -> issue".padEnd(22)} ${range(f.commitToIssueMs)}  (target p50 <= ${TARGETS.commitToIssueP50Ms} ms, p95 <= ${TARGETS.commitToIssueP95Ms} ms for site opens: ${f.withinTargets === undefined ? "no data" : f.withinTargets ? "met" : "missed"}; site opens ${range(f.commitToIssueSiteOpensMs)}; queries, held for the words ${range(f.commitToIssueQueriesMs)}; from a request ${f.issuedFrom.request ?? 0}, from the event ${f.issuedFrom.event ?? 0})`,
 );
 console.log(
   `  ${"fast actions per turn".padEnd(22)} ${f.perTurn.n ? `p50 ${f.perTurn.p50} p95 ${f.perTurn.p95}` : "n=0"}; turns with one ${f.turnsWithOne} of ${streamed.length} (${pct(f.turnRate)})`,
