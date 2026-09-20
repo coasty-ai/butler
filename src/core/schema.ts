@@ -1025,6 +1025,13 @@ export interface ScreenContext {
    * the provider's (src/providers/http.ts).
    */
   background?: BackgroundContext;
+  /**
+   * How many actions the run has left before its budget ends it, shown once
+   * half of it is spent (Runner.modelFrame, BUDGET_CONTEXT_FROM): one integer,
+   * on the model's copy only. The instruction that says what to do with it
+   * is the provider's (src/providers/http.ts).
+   */
+  budget?: { actionsLeft: number };
 }
 export interface BackgroundContext {
   appName: string;

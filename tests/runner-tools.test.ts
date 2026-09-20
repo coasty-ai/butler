@@ -507,11 +507,15 @@ describe("a tool step the model proposes", () => {
     const same = call(CALENDAR_LIST.id, LIST_ARGS);
     const h = harness({ replies: [same, same, same, same] });
     await h.runner.start("check my calendar", voice);
+    // The third identical call is the revisit rule's loop (a tool call has no
+    // screen, so the same arguments are the same step); the fourth is the
+    // period rule's, and the warning is given once.
     expect(h.m.of("ActionLoopDetected").map((e) => e.data)).toEqual([
-      { actionType: "tool_call", period: 1 },
+      { actionType: "tool_call", period: 0, revisits: 3 },
     ]);
     const entries = h.provider.observations.at(-1)!.history;
-    expect(entries.at(-1)!.result).toContain(loopWarning.trim());
+    expect(entries[2].result).toContain(loopWarning.trim());
+    expect(entries[3].result).not.toContain(loopWarning.trim());
     expect(h.m.of("NoProgressDetected")).toHaveLength(0);
     const other = harness({
       replies: [

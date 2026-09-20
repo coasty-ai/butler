@@ -420,13 +420,17 @@ export function actionSignature(
     parts.push("tool", action.tool, argsHash(action.args));
   return JSON.stringify(parts);
 }
-/** Returns the cycle period (1 or 2) formed by the last four signatures. */
+/**
+ * Returns the cycle period (1 or 2) formed by the last four signatures. The
+ * runner passes each signature with its screen (screenKey) behind a NUL, so
+ * a step repeated from a screen that changed each time is no cycle.
+ */
 export function repetitionPeriod(signatures: string[]): 0 | 1 | 2 {
   if (signatures.length < 4) return 0;
   const [a, b, c, d] = signatures.slice(-4);
   if (a !== c || b !== d) return 0;
   if (a !== b) return 2;
-  const parts = JSON.parse(a) as unknown[];
+  const parts = JSON.parse(a.split("\u0000")[0]) as unknown[];
   if (parts[0] === "scroll" || parts[0] === "wait") return 0;
   if (
     parts[0] === "key" &&
@@ -440,6 +444,107 @@ export const loopWarning =
   " Warning: you have repeated the same actions several times without finishing. The last steps did not make progress; re-read the screenshot and context.controls and choose a different approach.";
 export const appSwitchWarning =
   " Warning: you keep switching between applications. Switching again will not show new information. Read the values you need from the current screenshot and context now and carry them in your next action's note (history keeps it for later steps), then finish the step in this application.";
+/**
+ * The revisit rule beside repetitionPeriod: the same step (its signature)
+ * from the same screen (screenKey) executed LOOP_REVISITS times within the
+ * last LOOP_WINDOW executed steps is a loop, however many other steps come
+ * between. Cycle 20260919-1646 (13 of 28 attempts ended on the action budget)
+ * showed the period rule blind to what looped: open_file of one document
+ * twenty times with a capture between every third, a click on the browser's
+ * window then open_app TextEdit eight times over (one open_app a turn, so the
+ * app-switch rule saw one application), and the same web control clicked from
+ * an unchanged page with one other click between; every warning the period
+ * rule gave was reset by the next unlike step, and the runs went on to their
+ * last action. A screen that reads differently (its title, address, controls
+ * or text) is progress, and the same step from it is no revisit: paging
+ * through results with "Next" is not a loop.
+ */
+export const LOOP_WINDOW = 12;
+export const LOOP_REVISITS = 3;
+/**
+ * What the revisit rule reads of a screen: an identity hashed in memory,
+ * never journaled. The screenshot's hash is left out (the menu bar clock
+ * alone changes it every minute); what is on the window is what counts.
+ */
+export function screenKey(frame: Frame, surface?: Surface): string {
+  const c = frame.context;
+  return argsHash({
+    app: frame.appId ?? "",
+    title: c?.windowTitle ?? "",
+    address: c?.browserAddress ?? "",
+    document: c?.documentName ?? "",
+    controls: (c?.controls ?? []).map((x) => `${x.role}|${x.label ?? ""}`),
+    text: c?.visibleText ?? "",
+    focused: surface
+      ? [surface.focusedRole ?? "", surface.focusedLabel ?? ""].join("|")
+      : "",
+  });
+}
+/** Steps whose repetition is work, not a loop, as repetitionPeriod's period-1 rule has them. */
+function revisitable(signature: string): boolean {
+  const parts = JSON.parse(signature) as unknown[];
+  if (parts[0] === "scroll" || parts[0] === "wait") return false;
+  return !(
+    parts[0] === "key" &&
+    parts[1] === "key" &&
+    repeatable.has(String(parts[2]))
+  );
+}
+/** The pause a loop ends in while someone at the Mac can answer it. */
+export const STUCK_PAUSE_MESSAGE =
+  "I seem to be stuck repeating the same steps. Say continue with a hint.";
+/**
+ * The run's end when nobody can answer and its reflection step did not break
+ * the loop: an honest fail, never a claim. The benchmark's analyzer compares
+ * it whole (STUCK_LOOP), as it does the budget messages.
+ */
+export const LOOP_STUCK_MESSAGE =
+  "Stuck: the same steps kept repeating without progress, so the run stopped before the objective was done.";
+/**
+ * The one reflection step an unattended run gets when a loop continued past
+ * its warning. The benchmark, a routine's replay and autonomy "all" have
+ * nobody to say "continue with a hint", so the pause the loop used to end in
+ * was the run's end (five runs of cycle 20260919-1646 ended
+ * STOPPED_WHILE_PAUSED that way). Added to the last history line; the next
+ * frame is the step. A loop that forms again on a signature this note was
+ * given for ends the run with LOOP_STUCK_MESSAGE.
+ */
+export const reflectionNote =
+  " Stop and change course: the last steps repeated the same actions from the same screen without progress, and nobody is here to give a hint. This step is the one chance to change: read the fresh screenshot for what has changed since the repeats began, then take a route not tried yet (a tool from context.tools, a menu item from context.menus, a keyboard path from context.playbook, a control by name from context.controls), or fail with what blocks; request_user only for a step only the user can do. Repeating the same steps ends the run as stuck.";
+/**
+ * How long the capture after a transition waits for the screen it moved to:
+ * a page sent for with open_url (the browser is told and answers at once), a
+ * cold launch whose window is on its way, or an application or page a click
+ * or key brought up, seen only once the next frame shows it. The helper's own
+ * settle is 250 ms after input and two window samples agreeing 100 ms apart,
+ * which a browser's chrome standing still over a page still loading passes.
+ * A transition is the staleness the runner can know ahead; the ten
+ * STATE_CHANGED refusals of cycle 20260919-1646 were pointer clicks on a page
+ * that changed seconds after its screenshot, which screenChangedResult's hint
+ * and the single re-aim answer.
+ */
+export const TRANSITION_SETTLE_MS = 750;
+/** Steps that can bring another application or page up without saying so. */
+const transitionTypes = new Set([
+  "click",
+  "double_click",
+  "click_control",
+  "key",
+  "hotkey",
+  "menu_item",
+  "open_file",
+]);
+function hostOf(frame: Frame): string | undefined {
+  const address = frame.context?.browserAddress;
+  return address ? webAddress(address)?.hostname : undefined;
+}
+/**
+ * From this share of maxActions spent, the model sees how many actions are
+ * left (context.budget.actionsLeft, on its copy of the frame alone). Cycle
+ * 20260919-1646: the runs that spent their budget kept exploring to the last
+ * action (median 27 actions), with no word that the end was near.
+ */
+export const BUDGET_CONTEXT_FROM = 0.5;
 /**
  * The history line for an approval the user declined: the question they said
  * no to, so the model knows which kind of step asks, and the two routes left
@@ -573,10 +678,18 @@ export function screenChangedResult(
   // item, so one refused here went as keys: a text or clipboard chord, an
   // unpublished one, or an approved one. Sending the model to menu_item would
   // skip the focus check (and, for a paste, the paste rule) those keep.
+  // Cycle 20260919-1646: every CONTROLS_CHANGED refusal was a pointer click
+  // proposed three to five seconds after a control on the same page changed
+  // it, while sixty click_control steps on those pages went through, since a
+  // named control is resolved at the moment of the click.
   const hint =
     change === "FOCUS_CHANGED" && action?.type === "hotkey"
       ? " A shortcut goes to whichever element has focus: wait for the screen to settle and check where focus is in the new screenshot before pressing it again."
-      : "";
+      : change === "CONTROLS_CHANGED" &&
+          action &&
+          ["click", "double_click", "right_click"].includes(action.type)
+        ? " Aim by name: click_control(label) with the label from context.controls is matched at the moment of the click, so a page that updates after the screenshot cannot move it."
+        : "";
   return `No input was sent. ${detail}; choose an action from the new screenshot. Any earlier approval has expired.${hint}`;
 }
 /**
@@ -1056,6 +1169,8 @@ export interface RunnerExtras {
   onMonitor?(binding: WatchBinding, spec: WatchSpec, run: MonitorHandoff): void;
   /** The tool layer (src/tools registry). Without it a tool_call is refused with TOOL_UNAVAILABLE. */
   tools?: ToolAccess;
+  /** The wait after a transition before the next capture; TRANSITION_SETTLE_MS unless a test shortens it. */
+  transitionSettleMs?: number;
 }
 export class Runner {
   settled = true;
@@ -1107,6 +1222,17 @@ export class Runner {
   private switchWarned = false;
   private loopWarned = false;
   private sinceLoopWarning = 0;
+  /** The last LOOP_WINDOW executed steps as signature and screen (screenKey), for the revisit rule. */
+  private steps: string[] = [];
+  /** The signatures of the loop the current warning is for (the breaker's second-loop rule). */
+  private cycle: string[] = [];
+  /** Signatures an unattended run was already given its reflection step for. */
+  private reflected = new Set<string>();
+  private loopEpisodes = 0;
+  /** The transition the last executed step began; the capture after it waits. */
+  private settleBefore?: "launched" | "navigated";
+  /** The application and page the last click or key ran on; a frame showing another waits and looks again. */
+  private moved?: { appId?: string; host?: string };
   /** The screen the last executed action ran on, with that action's type. */
   private progress?: { type: string; probe: ProgressProbe };
   /**
@@ -1227,7 +1353,9 @@ export class Runner {
   }
   private resetLoop() {
     this.signatures = [];
+    this.steps = [];
     this.switches = [];
+    this.moved = undefined;
     this.windowlessApp = undefined;
     this.switchWarned = false;
     this.loopWarned = false;
@@ -1275,28 +1403,66 @@ export class Runner {
     entry.result += noProgressWarning;
   }
   /**
-   * Track an executed action. Returns "warn" when the last executed actions
-   * form a short cycle for the first time and "stuck" when the cycle continued
-   * for four more actions after the warning.
+   * Track an executed action. Returns "warn" the first time the last executed
+   * steps form a short cycle (repetitionPeriod) or the same step comes round
+   * for the LOOP_REVISITS-th time (the revisit rule), each step taken with the
+   * screen it ran on, so paging through results with the same "Next" from a
+   * page that changes each time is neither; and "stuck" when the loop went on
+   * for four more cycling steps after the warning, or forms again on a
+   * signature the run's reflection step was already given for. The warning
+   * is forgotten once four fresh steps in a row (each seen once in the
+   * window) show the run has moved on; before, one unlike step forgot it, and
+   * a loop with a capture or a stray click in it was warned about again and
+   * again and never called stuck.
    */
   private trackLoop(
     action: Action,
     target?: { role?: string; label?: string },
+    screen?: { frame: Frame; surface?: Surface },
   ): "warn" | "stuck" | undefined {
-    this.signatures = [
-      ...this.signatures.slice(-3),
-      actionSignature(action, target),
-    ];
+    const signature = actionSignature(action, target);
+    const key = screen
+      ? `${signature}\u0000${screenKey(screen.frame, screen.surface)}`
+      : signature;
+    this.signatures = [...this.signatures.slice(-3), key];
+    this.steps = [...this.steps.slice(-(LOOP_WINDOW - 1)), key];
     const period = repetitionPeriod(this.signatures);
-    if (!period) {
-      this.loopWarned = false;
-      this.sinceLoopWarning = 0;
+    const revisits = revisitable(signature)
+      ? this.steps.filter((s) => s === key).length
+      : 0;
+    if (!period && revisits < LOOP_REVISITS) {
+      const fresh = this.steps
+        .slice(-4)
+        .every((s) => this.steps.filter((t) => t === s).length === 1);
+      if (!this.loopWarned || fresh) {
+        this.loopWarned = false;
+        this.sinceLoopWarning = 0;
+      }
       return undefined;
     }
+    // The loop's members: the cycle the period rule saw and every step the
+    // window holds more than once, as signatures.
+    const repeated = this.steps.filter((s, i, all) => all.indexOf(s) !== i);
+    this.cycle = [
+      ...new Set(
+        [...(period ? this.signatures.slice(-period) : []), ...repeated].map(
+          (s) => s.split("\u0000")[0],
+        ),
+      ),
+    ];
     if (!this.loopWarned) {
       this.loopWarned = true;
       this.sinceLoopWarning = 0;
-      this.event("ActionLoopDetected", { actionType: action.type, period });
+      this.event("ActionLoopDetected", {
+        actionType: action.type,
+        period,
+        ...(revisits >= LOOP_REVISITS ? { revisits } : {}),
+      });
+      // The reflection step was spent on this loop already: no second warning.
+      if (this.cycle.some((s) => this.reflected.has(s))) {
+        this.resetLoop();
+        return "stuck";
+      }
       return "warn";
     }
     if (++this.sinceLoopWarning >= 4) {
@@ -1304,6 +1470,44 @@ export class Runner {
       return "stuck";
     }
     return undefined;
+  }
+  /**
+   * The loop continued past its warning. While someone at the Mac can answer,
+   * the run pauses for their hint, as it always did. Unattended (the
+   * benchmark, a routine's replay, autonomy "all": nobody says "continue"),
+   * a pause is the run's end, so the run gets one reflection step per loop
+   * episode instead: reflectionNote on the last history line, and the next
+   * frame. A loop that forms again on a signature already reflected on ends
+   * the run with an honest fail. ActionLoopBroken {episode, outcome} journals
+   * the decision, codes only; the pause journals RunPaused as before.
+   */
+  private stuck(entry: History[number] | undefined) {
+    if (!this.nobodyToAnswer()) {
+      this.pause(STUCK_PAUSE_MESSAGE);
+      return;
+    }
+    const episode = ++this.loopEpisodes;
+    if (this.cycle.some((s) => this.reflected.has(s))) {
+      this.event("ActionLoopBroken", { episode, outcome: "fail" });
+      throw new Error(LOOP_STUCK_MESSAGE);
+    }
+    for (const s of this.cycle) this.reflected.add(s);
+    this.event("ActionLoopBroken", { episode, outcome: "reflect" });
+    if (entry) entry.result += reflectionNote;
+  }
+  /**
+   * Nobody at the Mac can say "continue with a hint": the benchmark and a
+   * routine's replay run unattended, and under autonomy "all" the owner asked
+   * never to be asked. A voice or typed run under any other setting has them.
+   */
+  private nobodyToAnswer(): boolean {
+    const origin = this.snapshot.run?.origin;
+    return (
+      origin === "bench" ||
+      origin === "routine" ||
+      (this.settings.autonomy === "all" &&
+        this.settings.autonomyAllAcknowledged)
+    );
   }
   /**
    * Live runs showed models bouncing between two apps (open_app A, B, A, B
@@ -2234,9 +2438,7 @@ export class Runner {
       result: outcome.text + (loop === "warn" ? loopWarning : ""),
     });
     if (loop === "stuck") {
-      this.pause(
-        "I seem to be stuck repeating the same steps. Say continue with a hint.",
-      );
+      this.stuck(this.history.at(-1));
       return "continue";
     }
     if (action.finish && ok && outcome.verified && outcome.facts) {
@@ -2533,6 +2735,41 @@ export class Runner {
     this.status("completed", run.summary);
     return "completed";
   }
+  /**
+   * The capture that follows an executed step. A transition the step began
+   * (settleBefore) is waited for first; then, when the step was one that can
+   * bring another application or page up and the frame shows one, the run
+   * waits once more and looks again, so the model never acts on a screen
+   * caught mid-transition. TransitionSettled {kind} journals each wait.
+   * Returns null when a pause or stop ended the wait.
+   */
+  private async captureSettled(epoch: number): Promise<Frame | null> {
+    const pending = this.settleBefore;
+    this.settleBefore = undefined;
+    if (pending && !(await this.settle(pending, epoch))) return null;
+    let frame = await this.capture();
+    const moved = this.moved;
+    this.moved = undefined;
+    if (
+      moved &&
+      frame &&
+      (frame.appId !== moved.appId || hostOf(frame) !== moved.host)
+    ) {
+      if (!(await this.settle("switched", epoch))) return null;
+      frame = await this.capture();
+    }
+    return frame;
+  }
+  private async settle(
+    kind: "launched" | "navigated" | "switched",
+    epoch: number,
+  ): Promise<boolean> {
+    this.status("capturing", "Letting the screen settle.");
+    await this.sleep(this.extras.transitionSettleMs ?? TRANSITION_SETTLE_MS);
+    if (!this.active() || this.held || epoch !== this.epoch) return false;
+    this.event("TransitionSettled", { kind });
+    return true;
+  }
   private async capture() {
     this.lastSurface = undefined;
     const surface = await this.surfaceNow();
@@ -2555,20 +2792,36 @@ export class Runner {
       ? this.controller.surfaceTarget!(target.token, action)
       : this.controller.surface(action);
   }
+  /** Actions left once BUDGET_CONTEXT_FROM of maxActions is spent; undefined before. */
+  private actionsLeft(): number | undefined {
+    const run = this.snapshot.run;
+    if (!run) return undefined;
+    const max = this.settings.maxActions;
+    return run.actions >= max * BUDGET_CONTEXT_FROM
+      ? Math.max(0, max - run.actions)
+      : undefined;
+  }
   /**
-   * The model's copy of a frame: the watch context of a wake-up run and, for
-   * a bound run, the window's background facts (the instruction that explains
-   * them is the provider's, src/providers/http.ts). Only this copy carries
-   * them; snapshots, traces and saved frames do not.
+   * The model's copy of a frame: the watch context of a wake-up run, the
+   * actions left once half the budget is spent and, for a bound run, the
+   * window's background facts (the instruction that explains them is the
+   * provider's, src/providers/http.ts). Only this copy carries them;
+   * snapshots, traces and saved frames do not.
    */
   private modelFrame(frame: Frame): Frame {
     const target = this.boundTarget();
-    if (!frame.context || (!this.watchContext && !target)) return frame;
+    const actionsLeft = this.actionsLeft();
+    if (
+      !frame.context ||
+      (!this.watchContext && !target && actionsLeft === undefined)
+    )
+      return frame;
     return {
       ...frame,
       context: {
         ...frame.context,
         ...(this.watchContext && { watch: this.watchContext }),
+        ...(actionsLeft !== undefined && { budget: { actionsLeft } }),
         ...(target && {
           background: {
             appName: target.appName,
@@ -3119,11 +3372,26 @@ export class Runner {
           }
         : {}),
     });
-    const loop = this.trackLoop(action, {
-      role: actionSurface.targetRole,
-      label: actionSurface.targetLabel,
-    });
+    const loop = this.trackLoop(
+      action,
+      { role: actionSurface.targetRole, label: actionSurface.targetLabel },
+      { frame: executionFrame, surface: actionSurface },
+    );
     const thrashing = this.trackAppSwitch(action, launched?.appId);
+    // The transition this step began, for the capture that follows it
+    // (captureSettled): a page sent for, a cold launch whose window is on
+    // its way, or a click or key that may bring another application or page
+    // up, known only once the next frame shows it.
+    this.settleBefore = navigated
+      ? "navigated"
+      : launched?.frontmost &&
+          !launched.wasRunning &&
+          launched.windows === undefined
+        ? "launched"
+        : undefined;
+    this.moved = transitionTypes.has(action.type)
+      ? { appId: executionFrame.appId, host: hostOf(executionFrame) }
+      : undefined;
     // Compared against the next capture; no extra native call is made.
     this.progress = {
       type: action.type,
@@ -3157,10 +3425,7 @@ export class Runner {
         (loop === "warn" ? loopWarning : "") +
         (thrashing ? appSwitchWarning : ""),
     });
-    if (loop === "stuck")
-      this.pause(
-        "I seem to be stuck repeating the same steps. Say continue with a hint.",
-      );
+    if (loop === "stuck") this.stuck(this.history.at(-1));
   }
   /** The state every run (and every preparation) begins from. */
   private resetState(undo?: boolean) {
@@ -3176,6 +3441,10 @@ export class Runner {
     this.refused = undefined;
     this.resetCounters();
     this.resetLoop();
+    this.cycle = [];
+    this.reflected = new Set();
+    this.loopEpisodes = 0;
+    this.settleBefore = undefined;
     this.resetMemory();
   }
   private newRun(task: string, options: StartOptions): Run {
@@ -3582,7 +3851,7 @@ export class Runner {
         if (first) frame = first.frame;
         else
           try {
-            frame = reaim ? reaim.frame : await this.capture();
+            frame = reaim ? reaim.frame : await this.captureSettled(epoch);
           } catch (error) {
             if (this.held || epoch !== this.epoch) continue;
             if (await this.recoverNative(error, epoch)) continue;

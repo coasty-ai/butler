@@ -497,8 +497,11 @@ describe("what one step costs", () => {
     // 15,981 with the kinds of step that ask, what to do once one is
     // declined, and the note that carries a value between steps;
     // 16,331 with open_url (one sentence beside the CMD+L route and its
-    // entry in the action list, .data/design/streaming-execution.md §3.3).
-    expect(instruction.length).toBeLessThan(16500);
+    // entry in the action list, .data/design/streaming-execution.md §3.3);
+    // 16,563 with the actions left (context.budget.actionsLeft: finish the
+    // last visible step or fail, never keep exploring; the ACTION_BUDGET
+    // lane of cycle 20260919-1646).
+    expect(instruction.length).toBeLessThan(16700);
     expect(instruction).toContain("menu_item(path[] of 2-3 menu titles)");
     expect(instruction).toContain('for example path ["Playback","Play"]');
     expect(instruction).not.toContain('{"type":"menu_item"');
@@ -526,7 +529,7 @@ describe("what one step costs", () => {
     const paragraph: string = boundSystem[1].text;
     expect(paragraph).toMatch(/^The target window is in the background/);
     expect(paragraph.length).toBeLessThan(1900);
-    expect(instruction.length + paragraph.length).toBeLessThan(18400);
+    expect(instruction.length + paragraph.length).toBeLessThan(18600);
     expect(instruction.indexOf(" Return exactly one action")).toBeGreaterThan(
       15000,
     );

@@ -1305,14 +1305,15 @@ describe("runner repetition loops", () => {
     const m = memory();
     const scroll = act({ type: "scroll", delta_x: 0, delta_y: 5 });
     const other = act({ type: "key", key: "ENTER" });
+    // Two of each with another step between: no four-step cycle, and no step
+    // comes round a third time (the revisit rule, tests/runner-loops.test.ts).
     const p = scripted([
       a,
       a,
-      a,
       other,
-      a,
-      a,
-      a,
+      b,
+      b,
+      other,
       scroll,
       scroll,
       scroll,

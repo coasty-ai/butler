@@ -360,6 +360,26 @@ describe("local diagnostic stream", () => {
         period: 2,
         summary: "private loop text",
       });
+      // The revisit rule's detection carries its count; the loop breaker's
+      // decision an episode number and an outcome code; a settle its kind.
+      // A note, a title or a sentence in any of them is dropped.
+      add("ActionLoopDetected", {
+        actionType: "open_app",
+        period: 0,
+        revisits: 3,
+        label: "private control label",
+      });
+      add("ActionLoopBroken", {
+        episode: 2,
+        outcome: "fail",
+        note: "private reflection text",
+        title: "private stuck sentence with spaces",
+      });
+      add("TransitionSettled", {
+        kind: "switched",
+        title: "private window title",
+        host: "private.example.com",
+      });
       log.snapshot(snapshot);
       const raw = readFileSync(log.file, "utf8");
       const events = raw
@@ -379,6 +399,29 @@ describe("local diagnostic stream", () => {
         synthetic: false,
         actionType: "click",
         period: 2,
+      });
+      expect(events[2].data).toEqual({
+        runId: id,
+        sequence: 3,
+        synthetic: false,
+        actionType: "open_app",
+        period: 0,
+        revisits: 3,
+      });
+      expect(events[3].event).toBe("ActionLoopBroken");
+      expect(events[3].data).toEqual({
+        runId: id,
+        sequence: 4,
+        synthetic: false,
+        episode: 2,
+        outcome: "fail",
+      });
+      expect(events[4].event).toBe("TransitionSettled");
+      expect(events[4].data).toEqual({
+        runId: id,
+        sequence: 5,
+        synthetic: false,
+        kind: "switched",
       });
     }));
   it("keeps the shape of unparseable model arguments as counts, flags and a code, never their text", () =>

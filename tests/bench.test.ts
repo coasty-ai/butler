@@ -96,7 +96,7 @@ import {
   type ScreenContext,
   type Snapshot,
 } from "../src/core/schema";
-import { Runner } from "../src/core/runner";
+import { LOOP_STUCK_MESSAGE, Runner } from "../src/core/runner";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1497,8 +1497,10 @@ describe("pause cause from a real run", () => {
   };
   it("classifies a loop pause as PAUSED_LOOP from the paused snapshot", async () => {
     const m = recorder();
-    // The same action every time: the runner warns at the fourth repeat and
-    // pauses four executed actions later.
+    // The same action every time from the same screen: the runner warns at
+    // the third repeat and pauses four cycling actions later. The pause is
+    // the attended run's (typed here); a bench run is broken out of the loop
+    // instead (the next test).
     const provider = {
       next: async (o: Observation): Promise<ProviderResult> => ({
         usage,
@@ -1534,13 +1536,92 @@ describe("pause cause from a real run", () => {
       structuredClone(defaultSettings),
       emit,
     );
-    await runner.start("keep looking at the screen", { origin: "bench" });
+    await runner.start("keep looking at the screen", { origin: "typed" });
     expect(paused).toBe(true);
     expect(m.events.some((e) => e.type === "ActionLoopDetected")).toBe(true);
     // The event before RunPaused is the executed action, never the warning.
     expect(beforePause).toBe("ActionExecuted");
     expect(pausedAfter).toBe("PAUSED_LOOP");
     expect(runner.snapshot.run?.status).toBe("cancelled");
+  });
+  it("breaks a bench run's loop instead of pausing and ends it as STUCK_LOOP when it loops again", async () => {
+    const m = recorder();
+    const provider = {
+      next: async (o: Observation): Promise<ProviderResult> => ({
+        usage,
+        action: { type: "capture", frame_id: o.frame.id },
+      }),
+    };
+    let paused = false;
+    const runner = new Runner(
+      controller,
+      provider,
+      m.recorder,
+      structuredClone(defaultSettings),
+      (snapshot: Snapshot) => {
+        if (snapshot.run?.status === "paused") paused = true;
+      },
+    );
+    await runner.start("keep looking at the screen", { origin: "bench" });
+    // Nobody at the bench says continue: the run got one reflection step at
+    // the seventh capture (the warning at the third, four cycling steps on),
+    // looped again at once and was failed as stuck three captures later.
+    expect(paused).toBe(false);
+    expect(m.events.some((e) => e.type === "RunPaused")).toBe(false);
+    expect(
+      m.events.filter((e) => e.type === "ActionLoopBroken").map((e) => e.data),
+    ).toEqual([
+      { episode: 1, outcome: "reflect" },
+      { episode: 2, outcome: "fail" },
+    ]);
+    expect(m.events.filter((e) => e.type === "ActionExecuted")).toHaveLength(
+      10,
+    );
+    expect(runner.snapshot.run?.status).toBe("failed");
+    expect(runner.snapshot.run?.summary).toBe(LOOP_STUCK_MESSAGE);
+    // The analyzer reads the fixed message as its own ending, apart from
+    // RUN_ERROR and the budgets, and the breaker's events as patterns.
+    expect(budgetCode(runner.snapshot.message)).toBe("STUCK_LOOP");
+    expect(
+      endingCode({
+        runStatus: "failed",
+        message: runner.snapshot.message,
+        manualTakeover: false,
+        agentHandoffs: 0,
+        paused: false,
+        emergencyStop: false,
+        interrupted: false,
+        modelFailed: false,
+      }),
+    ).toBe("STUCK_LOOP");
+    expect(
+      frictionCodes({
+        event: "ActionLoopBroken",
+        data: { episode: 1, outcome: "reflect" },
+      }),
+    ).toEqual(["LOOP_REFLECTED"]);
+    expect(
+      frictionCodes({
+        event: "ActionLoopBroken",
+        data: { episode: 2, outcome: "fail" },
+      }),
+    ).toEqual(["LOOP_STUCK"]);
+    // A revisit detection on open_app is a loop, not the app-switch rule's
+    // thrash, which alone carries period 0 without a count.
+    expect(
+      frictionCodes({
+        event: "ActionLoopDetected",
+        data: { actionType: "open_app", period: 0, revisits: 3 },
+      }),
+    ).toEqual(["ACTION_LOOP"]);
+    expect(
+      frictionCodes({
+        event: "ActionLoopDetected",
+        data: { actionType: "open_app", period: 0 },
+      }),
+    ).toEqual(["APP_SWITCH_THRASH"]);
+    expect(noteFor("STUCK_LOOP")).toMatch(/reflection step/);
+    expect(ownerOf("STUCK_LOOP")).toBe("agent");
   });
 });
 

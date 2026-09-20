@@ -69,6 +69,12 @@ export function budgetCode(message: unknown): string | undefined {
   if (typeof message !== "string") return undefined;
   const table: [string, string][] = [
     ["Action budget reached.", "ACTION_BUDGET"],
+    // The runner's loop breaker failed an unattended run whose reflection
+    // step did not break the loop (src/core/runner.ts LOOP_STUCK_MESSAGE).
+    [
+      "Stuck: the same steps kept repeating without progress, so the run stopped before the objective was done.",
+      "STUCK_LOOP",
+    ],
     ["Runtime budget reached.", "RUNTIME_BUDGET"],
     ["Estimated cost budget reached.", "COST_BUDGET"],
     ["Repeated policy violations.", "POLICY_VIOLATIONS"],
@@ -142,9 +148,16 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       return [failure ?? "ACTION_FAILED"];
     }
     case "ActionLoopDetected":
-      return count(d.period) === 0 && code(d.actionType) === "open_app"
+      // The app-switch rule's event carries period 0 and no revisit count; a
+      // revisit detection carries its count beside period 0.
+      return count(d.period) === 0 &&
+        count(d.revisits) === undefined &&
+        code(d.actionType) === "open_app"
         ? ["APP_SWITCH_THRASH"]
         : ["ACTION_LOOP"];
+    // The loop breaker: the reflection step given, or the run failed as stuck.
+    case "ActionLoopBroken":
+      return code(d.outcome) === "fail" ? ["LOOP_STUCK"] : ["LOOP_REFLECTED"];
     case "ActionInterrupted":
       return ["ACTION_INTERRUPTED"];
     // A recovery, not a failure: the runner re-aimed the same control itself.
@@ -409,6 +422,8 @@ export function ownerOf(code: string): string {
 /** Authored one-line explanations. None of this comes from the log. */
 const NOTE: Record<string, string> = {
   ACTION_BUDGET: "The run used its whole action budget without finishing.",
+  STUCK_LOOP:
+    "The run kept repeating the same steps after its one reflection step, and with nobody to give a hint it failed honestly instead of pausing.",
   RUNTIME_BUDGET: "The run used its whole time budget without finishing.",
   COST_BUDGET: "The run used its whole cost budget without finishing.",
   POLICY_VIOLATIONS: "Too many proposed steps the policy would not allow.",
@@ -479,6 +494,10 @@ const NOTE: Record<string, string> = {
   ACTION_FAILED: "A step failed with a code this analyzer does not name yet.",
   NO_PROGRESS:
     "Same-type actions changed nothing on screen; the run was told and kept going.",
+  LOOP_REFLECTED:
+    "A loop continued past its warning with nobody to give a hint; the run got one reflection step instead of a pause.",
+  LOOP_STUCK:
+    "A loop formed again after the reflection step; the run was failed as stuck.",
   DONE_CHALLENGED:
     "The model said done after a step of the run was declined or refused; the runner sent the claim back once with a fresh screenshot. The run's ending says what the model then did: COMPLETED is the claim repeated, MODEL_FAILED is the claim withdrawn.",
   MODEL_FAILED:

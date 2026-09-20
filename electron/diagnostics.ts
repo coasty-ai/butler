@@ -137,6 +137,10 @@ const fields = new Set([
   "stopReason",
   "outputTypes",
   "period",
+  // The revisit rule's count on ActionLoopDetected, and the loop breaker's
+  // episode number on ActionLoopBroken (its outcome is a code).
+  "revisits",
+  "episode",
   // Memory and replay plans: content-free counts and fixed codes only.
   "preferences",
   "episodes",
@@ -301,6 +305,8 @@ const fields = new Set([
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
   "loaded",
+  "revisits",
+  "episode",
   "rejected",
   "tokens",
   "routines",
@@ -828,6 +834,14 @@ export class LocalDiagnostics {
         // The cycle length of a repeated action; ActionLoopDetected carries no
         // content, and a REFUSED failure is logged by its code alone.
         period: e.data.period,
+        revisits: e.data.revisits,
+        // The loop breaker's decision (ActionLoopBroken): which episode and
+        // whether the run got its reflection step or was failed as stuck.
+        ...(e.type === "ActionLoopBroken"
+          ? { episode: count(e.data.episode), outcome: code(e.data.outcome) }
+          : {}),
+        // The wait before a capture after a transition (TransitionSettled).
+        ...(e.type === "TransitionSettled" ? { kind: code(e.data.kind) } : {}),
         // TaskAmended records only the new task's length, never its text.
         taskLength: count(e.data.taskLength),
         // Only the fixed, content-free problem description of a malformed reply.
