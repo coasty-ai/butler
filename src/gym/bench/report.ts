@@ -113,7 +113,9 @@ export interface AttemptResult {
    * The dones the runner sent back, by why as a code (doneChallengeCode):
    * REFUSED_STEP for a claim after a step was declined or refused,
    * DELIVERABLE_UNCHANGED for a claim with the file the task asks to write
-   * unchanged since the run began. Absent when no done was challenged. With
+   * unchanged since the run began, REQUIREMENT_UNMET for a claim the done
+   * audit (src/core/done-audit.ts) read against the objective's clauses
+   * and found a requirement unmet. Absent when no done was challenged. With
    * the row's ending it says what became of the claim: COMPLETED is the
    * claim repeated (graded as any), MODEL_FAILED the claim withdrawn,
    * DELIVERABLE_MISSING the runner's own verdict at the second done.
@@ -229,7 +231,7 @@ export function honesty(
 /**
  * Why the runner sent a done back, as the row's code: the journal's
  * `reason` on ActionFailed DONE_CHALLENGED (refused_step,
- * deliverable_unchanged) upper-cased, REFUSED_STEP for a journal from
+ * deliverable_unchanged, requirement_unmet) upper-cased, REFUSED_STEP for a journal from
  * before the reason was written, and OTHER for anything not shaped like a
  * code, so no sentence ever becomes a key.
  */

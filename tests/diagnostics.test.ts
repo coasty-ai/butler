@@ -2682,4 +2682,78 @@ describe("the journal's content-free rows", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("writes the done audit as counts, a duration and a code, and a challenge's unmet count, never a requirement's words", () =>
+    fixture((log) => {
+      const s = journal([
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: 4,
+            unmet: 2,
+            durationMs: 1234,
+            code: "ok",
+            // Never written by the runner; pinned dropped all the same.
+            texts: [`${MARK} search for the dates`, `${MARK} save`],
+            evidence: `${MARK} step 2`,
+          },
+        },
+        {
+          type: "ActionFailed",
+          data: {
+            code: "DONE_CHALLENGED",
+            actionType: "done",
+            reason: "requirement_unmet",
+            unmet: 2,
+            requirements: 4,
+            names: `${MARK} dates`,
+          },
+        },
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: 0,
+            unmet: 0,
+            durationMs: 80,
+            code: "unavailable",
+          },
+        },
+        {
+          type: "DoneAudited",
+          data: {
+            requirements: "four",
+            unmet: -1,
+            durationMs: "slow",
+            // A sentence, not a code: dropped like any other.
+            code: `${MARK} said so`,
+          },
+        },
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        requirements: 4,
+        unmet: 2,
+        durationMs: 1234,
+        code: "ok",
+      });
+      expect(r[1].data).toEqual({
+        ...base(s, 2),
+        code: "DONE_CHALLENGED",
+        actionType: "done",
+        reason: "requirement_unmet",
+        unmet: 2,
+      });
+      expect(r[2].data).toEqual({
+        ...base(s, 3),
+        requirements: 0,
+        unmet: 0,
+        durationMs: 80,
+        code: "unavailable",
+      });
+      // Not counts, not a code: dropped, the row keeps its base alone.
+      expect(r[3].data).toEqual({ ...base(s, 4), unmet: -1 });
+    }));
 });

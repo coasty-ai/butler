@@ -26,6 +26,18 @@ import {
   deliverableMissing,
   type FileFacts,
 } from "../src/core/deliverables";
+import {
+  auditApplies,
+  DONE_AUDIT_MAX_REQUIREMENTS,
+  DONE_AUDIT_MIN_ACTIONS,
+  DONE_AUDIT_PROMPT,
+  doneAuditInput,
+  multiClause,
+  parseDoneAudit,
+  requirementChallenge,
+  REQUIREMENT_UNMET,
+} from "../src/core/done-audit";
+import type { ProviderTextCall, ProviderTextReply } from "../src/core/schema";
 
 type Decision = { kind: string; reason: string };
 // Pins the policy decision for the steps around the one under test, so the
@@ -762,5 +774,461 @@ describe("the code a failed run is journaled under", () => {
     expect(failureCode({ code: "x" })).toBe("RUN_ERROR");
     expect(new ModelFailedError("why").message).toBe("why");
     expect(new ModelFailedError("why").name).toBe("ModelFailedError");
+  });
+});
+
+/**
+ * Probe cycle 20260919-2144-9714f98 (FALSE_DONE re-run, autonomy all,
+ * gpt-5.4-mini): three of four dones false and none sent back. Two hotel
+ * runs said done after five actions (open_app, open_url, click_control, a
+ * tool append, done) with the search never filled (no type_text in the
+ * run) and both dates missing from the grade; a digest said done after
+ * fifteen actions with two of its three named facts absent from the note.
+ * The named file had changed in each, so the size-and-time check passed
+ * it; only the objective's words say which clause was skipped. The shapes
+ * below are that, content-free: three executed steps, then done on an
+ * objective of two clauses, with the audit's reply scripted.
+ */
+const AUDIT_USAGE = { inputTokens: 900, outputTokens: 80, cost: 0.0021 };
+/** Two sentences: the search, then the note. Synthetic words, no task's. */
+const TWO_CLAUSES =
+  "Open the listings page and search for the two dates I gave you. Then write the name and price of the best room into the notes and save.";
+const ONE_CLAUSE = "type the name into the field";
+const met = (text: string, evidence: string) => ({ text, met: true, evidence });
+const unmet = (text: string) => ({ text, met: false, evidence: null });
+const reply = (requirements: object[]) => JSON.stringify({ requirements });
+/** The hotel shape: the page opened and the note written; the search and the save never done. */
+const HOTEL_AUDIT = reply([
+  met("open the listings page", "1 click"),
+  unmet("search for the two dates"),
+  met("write the name and price into the notes", "2 type_text"),
+  unmet("save the notes"),
+]);
+const ALL_MET = reply([
+  met("open the listings page", "1 click"),
+  met("search for the two dates", "2 type_text"),
+]);
+/** The scripted provider given the text path: every audit reply scripted, the calls kept. */
+function auditing(
+  p: ReturnType<typeof scripted>,
+  replies: (string | Error)[],
+  code: ProviderTextReply["code"] = "ok",
+) {
+  const calls: ProviderTextCall[] = [];
+  const text = vi.fn(
+    async (
+      call: ProviderTextCall,
+      _signal: AbortSignal,
+    ): Promise<ProviderTextReply> => {
+      calls.push(structuredClone(call));
+      const next = replies[Math.min(calls.length - 1, replies.length - 1)];
+      if (next instanceof Error) throw next;
+      return { text: next, usage: AUDIT_USAGE, code };
+    },
+  );
+  return { next: p.next, observations: p.observations, text, calls };
+}
+const audits = (m: ReturnType<typeof memory>) => m.of("DoneAudited");
+const requirementChallenges = (m: ReturnType<typeof memory>) =>
+  challenges(m).filter((e) => e.data.reason === REQUIREMENT_UNMET);
+/** Three executed steps, then done (and a second done, in case of a challenge). */
+const threeThenDone = (first = "Found the room and noted it.") => [
+  click,
+  typed,
+  enter,
+  done(first),
+  done("Searched the dates, noted the room, saved."),
+];
+
+describe("a done audited against the objective's clauses (cycle 20260919-2144-9714f98)", () => {
+  it("makes one text call at the first done after three actions on a two-clause objective, sends the done back once with the unmet requirements, and accepts the second", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const c = controller();
+    const p = auditing(scripted(threeThenDone()), [HOTEL_AUDIT]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start(TWO_CLAUSES);
+    expect(c.execute).toHaveBeenCalledTimes(3);
+    // Exactly one audit call: the prompt, the objective, the compact
+    // history lines (no screenshot) and the claimed summary, as text.
+    expect(p.text).toHaveBeenCalledTimes(1);
+    const [call] = p.calls;
+    expect(call.system).toBe(DONE_AUDIT_PROMPT);
+    expect(call.input).toContain(TWO_CLAUSES);
+    expect(call.input).toContain("Steps (oldest first):");
+    expect(call.input).toContain("1. click ");
+    expect(call.input).toContain("2. type_text ");
+    expect(call.input).toContain("3. key ");
+    expect(call.input).toContain("Found the room and noted it.");
+    expect(call.input).not.toContain("frame_id");
+    expect(call.input).not.toContain("image");
+    expect(call.effort).toBe("low");
+    expect(call.deadlineMs).toBeGreaterThan(0);
+    expect(call.maxOutputTokens).toBeGreaterThan(0);
+    // The done was sent back once with its code, reason and the count.
+    const sent = requirementChallenges(m);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].data).toEqual({
+      code: "DONE_CHALLENGED",
+      actionType: "done",
+      reason: REQUIREMENT_UNMET,
+      unmet: 2,
+    });
+    expect(challenges(m)).toHaveLength(1);
+    // The model read the unmet requirements in the audit's own words on
+    // its next step, with both routes and the once-only rule.
+    expect(p.observations).toHaveLength(5);
+    const after = p.observations[4];
+    expect(after.history.at(-1)).toEqual({
+      type: "rejected",
+      action: { type: "done" },
+      result: requirementChallenge([
+        unmet("search for the two dates"),
+        unmet("save the notes"),
+      ]),
+    });
+    const line = after.history.at(-1)!.result;
+    expect(line).toContain("2 were not met");
+    expect(line).toContain("“search for the two dates”");
+    expect(line).toContain("“save the notes”");
+    expect(line).not.toContain("open the listings page");
+    expect(line).toContain("say fail");
+    expect(line).toContain("check is made once");
+    expect(line).not.toContain("request_user");
+    expect(line.length).toBeLessThan(MODEL_RESULT_CHARS);
+    // The second done stands on the model's word: no second audit, no
+    // second challenge, the run completed with the second summary.
+    expect(p.text).toHaveBeenCalledTimes(1);
+    expect(m.of("RunCompleted")).toHaveLength(1);
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(m.getRun().summary).toBe(
+      "Searched the dates, noted the room, saved.",
+    );
+    // One DoneAudited, counts and code only; the audit's tokens are the
+    // run's, added as any call.
+    expect(audits(m)).toHaveLength(1);
+    expect(audits(m)[0].data).toEqual({
+      requirements: 4,
+      unmet: 2,
+      durationMs: expect.any(Number),
+      code: "ok",
+    });
+    expect(m.of("UsageAdded")).toHaveLength(1);
+    expect(m.of("UsageAdded")[0].data).toEqual({ usage: AUDIT_USAGE });
+    expect(m.getRun().usage).toEqual(AUDIT_USAGE);
+    // The trace carries no requirement's words: they reach the model and
+    // the history line only.
+    const traced = JSON.stringify(
+      [...audits(m), ...challenges(m), ...m.of("UsageAdded")].map(
+        (e) => e.data,
+      ),
+    );
+    expect(traced).not.toContain("listings");
+    expect(traced).not.toContain("dates");
+    expect(traced).not.toContain("save");
+  });
+  it("accepts a done the audit finds complete, with one call and no challenge", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const c = controller();
+    const p = auditing(scripted(threeThenDone()), [ALL_MET]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start(TWO_CLAUSES);
+    expect(p.text).toHaveBeenCalledTimes(1);
+    expect(challenges(m)).toHaveLength(0);
+    expect(p.observations).toHaveLength(4);
+    expect(m.of("RunCompleted")).toHaveLength(1);
+    expect(m.getRun().summary).toBe("Found the room and noted it.");
+    expect(audits(m)[0].data).toMatchObject({
+      requirements: 2,
+      unmet: 0,
+      code: "ok",
+    });
+    expect(m.getRun().usage).toEqual(AUDIT_USAGE);
+  });
+  it("lets a done stand when the audit is unavailable: prose, a non-boolean, no requirement, a refusal, or a failed call", async () => {
+    const cases: {
+      replies: (string | Error)[];
+      code?: ProviderTextReply["code"];
+      usage: typeof AUDIT_USAGE | typeof usage;
+    }[] = [
+      { replies: ["Sure! Everything looks done to me."], usage: AUDIT_USAGE },
+      {
+        replies: [reply([{ text: "search", met: "yes", evidence: null }])],
+        usage: AUDIT_USAGE,
+      },
+      { replies: [reply([])], usage: AUDIT_USAGE },
+      { replies: ['{"requirements": "none"}'], usage: AUDIT_USAGE },
+      { replies: [ALL_MET], code: "refused", usage: AUDIT_USAGE },
+      { replies: [""], code: "empty", usage: AUDIT_USAGE },
+      { replies: [new Error("Provider did not respond.")], usage },
+    ];
+    for (const item of cases) {
+      policy.evaluate = () => ALLOW;
+      const m = memory();
+      const c = controller();
+      const p = auditing(scripted(threeThenDone()), item.replies, item.code);
+      const runner = new Runner(c, p, m.recorder, settings, () => {});
+      await runner.start(TWO_CLAUSES);
+      expect(p.text).toHaveBeenCalledTimes(1);
+      expect(challenges(m)).toHaveLength(0);
+      expect(m.of("RunCompleted")).toHaveLength(1);
+      expect(runner.snapshot.run?.status).toBe("completed");
+      expect(m.of("RunFailed")).toHaveLength(0);
+      expect(audits(m)).toHaveLength(1);
+      expect(audits(m)[0].data).toEqual({
+        requirements: 0,
+        unmet: 0,
+        durationMs: expect.any(Number),
+        code: "unavailable",
+      });
+      // A reply that arrived still cost tokens; a thrown call cost none.
+      expect(m.getRun().usage).toEqual(item.usage);
+    }
+  });
+  it("audits no done on a one-clause objective, an approved routine's replay, fewer than three actions, or a provider with no text path", async () => {
+    const cases: {
+      task: string;
+      steps: ReturnType<typeof act>[];
+      origin?: "routine" | "typed";
+      text?: boolean;
+    }[] = [
+      { task: ONE_CLAUSE, steps: threeThenDone() },
+      { task: TWO_CLAUSES, steps: threeThenDone(), origin: "routine" },
+      { task: TWO_CLAUSES, steps: [click, typed, done("Done.")] },
+      { task: TWO_CLAUSES, steps: threeThenDone(), text: false },
+    ];
+    for (const item of cases) {
+      policy.evaluate = () => ALLOW;
+      const m = memory();
+      const c = controller();
+      const base = scripted(item.steps);
+      const p = item.text === false ? base : auditing(base, [HOTEL_AUDIT]);
+      const runner = new Runner(c, p, m.recorder, settings, () => {});
+      await runner.start(item.task, item.origin ? { origin: item.origin } : {});
+      if ("text" in p) expect(p.text).not.toHaveBeenCalled();
+      expect(audits(m)).toHaveLength(0);
+      expect(challenges(m)).toHaveLength(0);
+      expect(m.of("RunCompleted")).toHaveLength(1);
+      expect(m.of("UsageAdded")).toHaveLength(0);
+    }
+  });
+  it("runs under every autonomy regime and for bench, voice and typed runs alike: a check, not a question", async () => {
+    const regimes: Settings[] = [
+      settings,
+      { ...settings, autonomy: "all", autonomyAllAcknowledged: true },
+      { ...settings, autonomy: "flow" },
+    ];
+    const origins = ["bench", "voice", "typed"] as const;
+    for (const regime of regimes) {
+      for (const origin of origins) {
+        policy.evaluate = () => ALLOW;
+        const m = memory();
+        const c = controller();
+        const p = auditing(scripted(threeThenDone()), [HOTEL_AUDIT]);
+        const runner = new Runner(c, p, m.recorder, regime, () => {});
+        await runner.start(TWO_CLAUSES, { origin });
+        expect(p.text).toHaveBeenCalledTimes(1);
+        expect(requirementChallenges(m)).toHaveLength(1);
+        expect(m.of("RunCompleted")).toHaveLength(1);
+        expect(m.of("PolicyConfirmationRequested")).toHaveLength(0);
+      }
+    }
+  });
+  it("comes after the refused-step check and the file check, once, and never audits twice in one run", async () => {
+    realReturn();
+    const m = memory();
+    const c = controller();
+    const p = auditing(
+      scripted([
+        enter, // declined
+        click,
+        typed,
+        click,
+        done("Done."), // the refusal check
+        done("Done."), // the audit
+        done("Done, and saved."), // stands
+      ]),
+      [HOTEL_AUDIT],
+    );
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start(TWO_CLAUSES);
+    await declineEach(runner, m, 1);
+    await running;
+    expect(challenges(m).map((e) => e.data.reason)).toEqual([
+      "refused_step",
+      REQUIREMENT_UNMET,
+    ]);
+    expect(p.text).toHaveBeenCalledTimes(1);
+    expect(audits(m)).toHaveLength(1);
+    expect(m.of("RunCompleted")).toHaveLength(1);
+    expect(m.getRun().summary).toBe("Done, and saved.");
+    // The audit read the run's own history, the refusal included.
+    expect(p.calls[0].input).toContain("rejected");
+  });
+  it("starts every run fresh: a run audited once audits its successor's first done again", async () => {
+    policy.evaluate = () => ALLOW;
+    const m = memory();
+    const c = controller();
+    const p = auditing(
+      scripted([
+        ...threeThenDone(),
+        click,
+        typed,
+        enter,
+        done("Second run done."),
+        done("Second run done, saved."),
+      ]),
+      [HOTEL_AUDIT],
+    );
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start(TWO_CLAUSES);
+    await runner.start(TWO_CLAUSES);
+    expect(p.text).toHaveBeenCalledTimes(2);
+    expect(m.of("RunCompleted")).toHaveLength(2);
+  });
+});
+
+describe("the done audit's pieces", () => {
+  it("reads more than one clause by structure alone: sentences, then, a verb after a join, a comma list", () => {
+    for (const one of [
+      "open Safari",
+      "Open the budget spreadsheet",
+      "type the name",
+      "rename the drafts",
+      "In the browser, open the listings page.",
+      "Write the name and price of the best room in the notes.",
+      "Tell me the total on the last line",
+      "",
+    ])
+      expect(multiClause(one), one).toBe(false);
+    for (const more of [
+      TWO_CLAUSES,
+      "Read the chat and write a summary in the notes",
+      "Open the page, then tell me the total.",
+      "Find the cheapest one or tell me none fits.",
+      "Note the time, the worker count, and the alert.",
+      "Check in and save the pass. Nothing else.",
+    ])
+      expect(multiClause(more), more).toBe(true);
+  });
+  it("applies to a real run of three or more actions with a text path, never to a synthetic run, a routine replay or a one-clause objective", () => {
+    const scope = {
+      objective: TWO_CLAUSES,
+      synthetic: false,
+      actions: DONE_AUDIT_MIN_ACTIONS,
+      hasText: true,
+    };
+    expect(auditApplies(scope)).toBe(true);
+    expect(auditApplies({ ...scope, origin: "bench" })).toBe(true);
+    expect(auditApplies({ ...scope, origin: "voice" })).toBe(true);
+    expect(auditApplies({ ...scope, origin: "typed" })).toBe(true);
+    expect(auditApplies({ ...scope, origin: "routine" })).toBe(false);
+    expect(auditApplies({ ...scope, synthetic: true })).toBe(false);
+    expect(
+      auditApplies({ ...scope, actions: DONE_AUDIT_MIN_ACTIONS - 1 }),
+    ).toBe(false);
+    expect(auditApplies({ ...scope, objective: ONE_CLAUSE })).toBe(false);
+    expect(auditApplies({ ...scope, hasText: false })).toBe(false);
+    expect(DONE_AUDIT_MIN_ACTIONS).toBe(3);
+  });
+  it("parses the reply strictly and reads anything else as unavailable", () => {
+    const ok = parseDoneAudit({ text: HOTEL_AUDIT, code: "ok" })!;
+    expect(ok.requirements).toHaveLength(4);
+    expect(ok.unmet.map((r) => r.text)).toEqual([
+      "search for the two dates",
+      "save the notes",
+    ]);
+    // A fence or prose around the object is tolerated; a missing evidence is null.
+    const fenced = parseDoneAudit({
+      text: `Here you go:\n\`\`\`json\n${reply([{ text: "open", met: true }])}\n\`\`\`\nDone.`,
+      code: "ok",
+    })!;
+    expect(fenced.requirements).toEqual([
+      { text: "open", met: true, evidence: null },
+    ]);
+    // Too many are cut to the first DONE_AUDIT_MAX_REQUIREMENTS.
+    const many = parseDoneAudit({
+      text: reply(
+        Array.from({ length: DONE_AUDIT_MAX_REQUIREMENTS + 5 }, (_, i) =>
+          unmet(`requirement ${i}`),
+        ),
+      ),
+      code: "ok",
+    })!;
+    expect(many.requirements).toHaveLength(DONE_AUDIT_MAX_REQUIREMENTS);
+    for (const bad of [
+      { text: "", code: "ok" as const },
+      { text: "not json", code: "ok" as const },
+      { text: "[]", code: "ok" as const },
+      { text: reply([]), code: "ok" as const },
+      { text: reply([{ text: "x", met: "true" }]), code: "ok" as const },
+      { text: reply([{ text: "", met: true }]), code: "ok" as const },
+      { text: reply([{ met: true }]), code: "ok" as const },
+      { text: '{"requirements":{}}', code: "ok" as const },
+      { text: HOTEL_AUDIT, code: "refused" as const },
+      { text: HOTEL_AUDIT, code: "empty" as const },
+    ])
+      expect(parseDoneAudit(bad), bad.text).toBeUndefined();
+    // A truncated reply that still closes its object is read.
+    expect(parseDoneAudit({ text: ALL_MET, code: "truncated" })).toBeDefined();
+  });
+  it("builds the input from the objective, the history lines without frame ids and the summary, oldest step first, and keeps it bounded", () => {
+    const input = doneAuditInput(
+      "Do this and that.",
+      [
+        {
+          type: "click",
+          action: { type: "click", x: 0.1, y: 0.2, frame_id: "f-1" },
+          result: "Clicked.",
+        },
+        {
+          type: "rejected",
+          action: { type: "done" },
+          result: "Not accepted yet.",
+        },
+        { type: "earlier_steps", result: "3 earlier steps." },
+      ],
+      "All done.",
+    );
+    expect(input).toContain("Objective:\nDo this and that.");
+    expect(input).toContain(
+      '1. click {"type":"click","x":0.1,"y":0.2} -> Clicked.',
+    );
+    expect(input).toContain('2. rejected {"type":"done"} -> Not accepted yet.');
+    expect(input).toContain("3. earlier_steps -> 3 earlier steps.");
+    expect(input).toContain("Summary at done:\nAll done.");
+    expect(input).not.toContain("f-1");
+    expect(input.indexOf("1. click")).toBeLessThan(
+      input.indexOf("2. rejected"),
+    );
+    const long = doneAuditInput(
+      "x".repeat(5_000),
+      Array.from({ length: 40 }, (_, i) => ({
+        type: "type_text",
+        action: { type: "type_text", text: `${i} ` + "y".repeat(700) },
+        result: "z".repeat(600),
+      })),
+      "s".repeat(2_000),
+    );
+    expect(long.length).toBeLessThan(12_000);
+    expect(long).toContain("earlier steps omitted");
+    // The newest steps are the ones kept.
+    expect(long).toContain("40. type_text");
+    expect(long).not.toContain("\n1. type_text");
+  });
+  it("names the unmet requirements in the audit's words, bounded under the history line's cap", () => {
+    const one = requirementChallenge([unmet("save the notes")]);
+    expect(one).toContain("1 was not met: “save the notes”");
+    expect(one).toContain("say fail");
+    expect(one).toContain("say done with a summary");
+    const many = requirementChallenge(
+      Array.from({ length: DONE_AUDIT_MAX_REQUIREMENTS }, (_, i) =>
+        unmet(`requirement ${i} ` + "w".repeat(150)),
+      ),
+    );
+    expect(many).toContain(`${DONE_AUDIT_MAX_REQUIREMENTS} were not met`);
+    expect(many.length).toBeLessThan(MODEL_RESULT_CHARS);
+    expect(REQUIREMENT_UNMET).toBe("requirement_unmet");
   });
 });

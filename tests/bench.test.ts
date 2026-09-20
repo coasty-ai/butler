@@ -2440,6 +2440,7 @@ describe("done checks in the bench's books", () => {
       "DELIVERABLE_UNCHANGED",
     );
     expect(doneChallengeCode("refused_step")).toBe("REFUSED_STEP");
+    expect(doneChallengeCode("requirement_unmet")).toBe("REQUIREMENT_UNMET");
     // A journal from before the reason was written: the refusal check.
     expect(doneChallengeCode(undefined)).toBe("REFUSED_STEP");
     expect(doneChallengeCode("The ledger has not changed.")).toBe("OTHER");
@@ -2538,6 +2539,81 @@ describe("done checks in the bench's books", () => {
       earned: 0,
       slipped: 0,
     });
+  });
+  it("counts the done audit's challenges beside the file's and the refusal's, and names them on the line", () => {
+    // Cycle 20260919-2144-9714f98's shapes with the audit in place: the
+    // hotel run sent back over the dates and the save, done again, still
+    // graded wrong (slipped); the digest sent back over two facts, done
+    // again with them written (earned); a third withdrawn with fail.
+    const rows = [
+      attempt({
+        taskId: "travel-hotel-shortlist",
+        status: "failed",
+        reason: "DATES_NOT_SEARCHED",
+        falseDone: true,
+        failures: { DONE_CHALLENGED: 1 },
+        doneChallenged: { REQUIREMENT_UNMET: 1 },
+      }),
+      attempt({
+        taskId: "msg-group-chat-digest",
+        failures: { DONE_CHALLENGED: 1 },
+        doneChallenged: { REQUIREMENT_UNMET: 1 },
+      }),
+      attempt({
+        taskId: "ops-kpi-snapshot-note",
+        status: "failed",
+        reason: "FACT_NOT_NOTED",
+        runStatus: "failed",
+        endingCode: "MODEL_FAILED",
+        claimed: false,
+        honestFailure: true,
+        modelFailed: true,
+        failures: { DONE_CHALLENGED: 2 },
+        doneChallenged: { DELIVERABLE_UNCHANGED: 1, REQUIREMENT_UNMET: 1 },
+      }),
+    ];
+    const totals = doneChallengeTotals(rows);
+    expect(totals).toEqual({
+      byReason: { REQUIREMENT_UNMET: 3, DELIVERABLE_UNCHANGED: 1 },
+      attempts: 3,
+      withdrawn: 1,
+      failed: 0,
+      earned: 1,
+      slipped: 1,
+    });
+    expect(doneChallengeLine(totals)).toBe(
+      "done challenged 3 (REQUIREMENT_UNMET 3, DELIVERABLE_UNCHANGED 1)  withdrawn 1  failed by runner 0  earned 1  slipped through 1",
+    );
+    expect(renderSummary(aggregate(rows))).toContain(
+      "REQUIREMENT_UNMET 3, DELIVERABLE_UNCHANGED 1",
+    );
+  });
+  it("classes the done audit's challenge in the analyzer's vocabulary, owned by the agent", () => {
+    expect(
+      frictionCodes({
+        event: "ActionFailed",
+        data: {
+          code: "DONE_CHALLENGED",
+          actionType: "done",
+          reason: "requirement_unmet",
+          unmet: 2,
+        },
+      }),
+    ).toEqual(["DONE_CHALLENGED", "DONE_CHALLENGED_REQUIREMENT"]);
+    expect(ownerOf("DONE_CHALLENGED_REQUIREMENT")).toBe("agent");
+    expect(noteFor("DONE_CHALLENGED_REQUIREMENT")).not.toBe(
+      noteFor("UNCLASSIFIED"),
+    );
+    expect(noteFor("DONE_CHALLENGED_REQUIREMENT")).toContain("done audit");
+    expect(noteFor("DONE_CHALLENGED_REQUIREMENT")).toContain("counts only");
+    expect(noteFor("DONE_CHALLENGED")).toContain("DONE_CHALLENGED_REQUIREMENT");
+    // The audit's own event is not a friction: it is the check working.
+    expect(
+      frictionCodes({
+        event: "DoneAudited",
+        data: { requirements: 4, unmet: 2, durationMs: 1200, code: "ok" },
+      }),
+    ).toEqual([]);
   });
   it("classes the file check and the runner's verdict in the analyzer's vocabulary", () => {
     expect(

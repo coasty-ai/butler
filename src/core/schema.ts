@@ -1350,8 +1350,37 @@ export interface ProviderResult {
    */
   repaired?: boolean;
 }
+/**
+ * A plain-text call to the run's own model, off the action loop: the done
+ * audit (src/core/done-audit.ts). The same fields as the text path's call
+ * (src/providers/text.ts TextCall) plus the caller's deadline.
+ */
+export interface ProviderTextCall {
+  system: string;
+  input: string;
+  maxOutputTokens: number;
+  /** How much a reasoning model may think; omitted keeps the provider default. */
+  effort?: "none" | "minimal" | "low";
+  /** The whole call, retries included, in ms; the text path's default when absent. */
+  deadlineMs?: number;
+}
+export interface ProviderTextReply {
+  text: string;
+  usage: Usage;
+  /** The text path's outcome: ok, or why the text is not to be trusted. */
+  code: "ok" | "truncated" | "refused" | "empty";
+}
 export interface Provider {
   next(observation: Observation, signal: AbortSignal): Promise<ProviderResult>;
+  /**
+   * One plain-text call on the same model, settings, key and transport as
+   * next(), for the runner's done audit. Optional: a provider without it
+   * (the tutorial, a test double) audits no done, and the done stands.
+   */
+  text?(
+    call: ProviderTextCall,
+    signal: AbortSignal,
+  ): Promise<ProviderTextReply>;
 }
 export interface ExecutionResult {
   /**

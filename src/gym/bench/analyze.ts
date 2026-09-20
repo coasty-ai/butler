@@ -204,12 +204,17 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       if (failure === "STATE_CHANGED") return ["SCREEN_CHANGED"];
       if (failure === "MALFORMED_RESPONSE") return ["MALFORMED_RESPONSE"];
       if (failure === "REFUSED") return ["MODEL_REFUSED"];
-      // A done sent back over the task's own file is its own class beside
-      // the check as a whole; the reason is the runner's fixed code.
-      if (failure === "DONE_CHALLENGED")
-        return code(d.reason) === "deliverable_unchanged"
+      // A done sent back over the task's own file, or over a requirement
+      // the audit found unmet, is its own class beside the check as a
+      // whole; the reason is the runner's fixed code.
+      if (failure === "DONE_CHALLENGED") {
+        const why = code(d.reason);
+        return why === "deliverable_unchanged"
           ? ["DONE_CHALLENGED", "DONE_CHALLENGED_DELIVERABLE"]
-          : ["DONE_CHALLENGED"];
+          : why === "requirement_unmet"
+            ? ["DONE_CHALLENGED", "DONE_CHALLENGED_REQUIREMENT"]
+            : ["DONE_CHALLENGED"];
+      }
       return [failure ?? "ACTION_FAILED"];
     }
     // The runner's own verdict on a run: a second done with the named file
@@ -606,9 +611,11 @@ const NOTE: Record<string, string> = {
   LOOP_STUCK:
     "A loop formed again after the reflection step; the run was failed as stuck.",
   DONE_CHALLENGED:
-    "The model said done and the runner sent the claim back once: after a step of the run was declined or refused (with a fresh screenshot), or with the file the task asks to write unchanged since the run began (DONE_CHALLENGED_DELIVERABLE). The run's ending says what followed: COMPLETED is the claim repeated, MODEL_FAILED the claim withdrawn, DELIVERABLE_MISSING the runner's own verdict at a second done with the file still unchanged.",
+    "The model said done and the runner sent the claim back once: after a step of the run was declined or refused (with a fresh screenshot), with the file the task asks to write unchanged since the run began (DONE_CHALLENGED_DELIVERABLE), or with a requirement of the objective the done audit found unmet in the run's steps (DONE_CHALLENGED_REQUIREMENT). The run's ending says what followed: COMPLETED is the claim repeated, MODEL_FAILED the claim withdrawn, DELIVERABLE_MISSING the runner's own verdict at a second done with the file still unchanged.",
   DONE_CHALLENGED_DELIVERABLE:
     "The model said done while the file the task asks to write (a ~/… path in the words) still had the size and modification time it had as the run began, or still did not exist; the runner sent the claim back once with that fact. Only existence, size and time were read, never the contents.",
+  DONE_CHALLENGED_REQUIREMENT:
+    "The model said done on an objective of more than one clause after three or more actions, and one text call to the same model (the done audit, src/core/done-audit.ts) read the objective's requirements against the run's steps and found at least one unmet: a value never entered, a form never submitted, a named fact absent from what was written. The claim was sent back once with the unmet requirements in the audit's words; the next done stands on the model's word and is graded as any. A malformed audit reply leaves the done standing (DoneAudited code unavailable). The trace carries counts only.",
   DELIVERABLE_MISSING:
     "The model said done a second time with the task's named file still unchanged since the run began, and the runner failed the run itself: a false done turned into an honest failure. The grader's own reason names what the file lacked.",
   MODEL_FAILED:

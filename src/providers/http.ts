@@ -3,10 +3,15 @@ import type {
   Observation,
   Provider,
   ProviderResult,
+  ProviderTextCall,
+  ProviderTextReply,
   Settings,
   Usage,
 } from "../core/schema";
 import { VISIBLE_TEXT_CUT_MARKER } from "../core/schema";
+// text.ts imports this module's response helpers and this module imports its
+// completeText; both are used inside functions only, so the cycle is inert.
+import { completeText } from "./text";
 import { validateProviderEndpoint } from "../core/privacy";
 import { cachedInputShare } from "./catalog";
 import { playbookLines } from "./playbooks";
@@ -979,6 +984,32 @@ export class HttpProvider implements Provider {
       throw new Error(
         "Enter provider input/output token rates to enable the estimated cost budget.",
       );
+  }
+  /**
+   * One plain-text call on the run's own model (src/providers/text.ts
+   * completeText) for the runner's done audit (src/core/done-audit.ts): the
+   * same settings, key and transport as next(), one retry, the caller's
+   * deadline. The trace carries the text path's timings, codes and usage,
+   * never the text.
+   */
+  async text(
+    call: ProviderTextCall,
+    signal: AbortSignal,
+  ): Promise<ProviderTextReply> {
+    const { deadlineMs, ...request } = call;
+    const result = await completeText(
+      this.settings,
+      this.key,
+      request,
+      this.request,
+      signal,
+      {
+        ...(deadlineMs ? { deadlineMs } : {}),
+        retry: true,
+        diagnostics: this.diagnostics,
+      },
+    );
+    return { text: result.text, usage: result.usage, code: result.code };
   }
   async next(o: Observation, signal: AbortSignal): Promise<ProviderResult> {
     const requestId = crypto.randomUUID();

@@ -75,6 +75,14 @@ import {
   type FileFactsReader,
 } from "./deliverables";
 import {
+  auditApplies,
+  doneAuditCall,
+  parseDoneAudit,
+  requirementChallenge,
+  REQUIREMENT_UNMET,
+  type DoneAudit,
+} from "./done-audit";
+import {
   evaluate,
   focusedTextField,
   normalizeAppName,
@@ -1318,6 +1326,12 @@ export class Runner {
    */
   private deliverables?: Promise<Deliverable[]>;
   private deliverableChecked = false;
+  /**
+   * Whether this run's first done was read against the objective's own
+   * requirements (src/core/done-audit.ts). Once per run: a done said after
+   * the challenge stands on the model's word, so no run loops on the audit.
+   */
+  private doneAudited = false;
   /** Applications whose search route the runner already took this run. */
   private searchRoutes = new Set<string>();
   private stateChanges = 0;
@@ -1511,6 +1525,48 @@ export class Runner {
       }
     }
     return unchanged;
+  }
+  /**
+   * One text call to the run's provider with the objective, the compact
+   * history the model already reads (modelHistory: no screenshot) and the
+   * claimed summary; the reply parsed as the audit, or undefined when the
+   * call failed, was refused, or was not the shape ("audit unavailable",
+   * the done standing). Its usage is the run's (UsageAdded). DoneAudited
+   * carries counts, the duration and the code only.
+   */
+  private async auditDone(
+    run: Run,
+    history: History,
+    summary: string,
+  ): Promise<DoneAudit | undefined> {
+    const started = performance.now();
+    const objective =
+      run.task +
+      (run.corrections?.length
+        ? "\nUser corrections, in order:\n" +
+          run.corrections.map((c) => c.text).join("\n")
+        : "");
+    let audit: DoneAudit | undefined;
+    try {
+      const reply = await this.provider.text!(
+        doneAuditCall(objective, modelHistory(history), summary),
+        this.abort.signal,
+      );
+      this.addUsage(reply.usage);
+      audit = parseDoneAudit(reply);
+    } catch {
+      // The audit's own error never fails a run.
+      audit = undefined;
+    }
+    if (this.abort.signal.aborted) return undefined;
+    if (!this.snapshot.run || this.snapshot.run.id !== run.id) return audit;
+    this.event("DoneAudited", {
+      requirements: audit?.requirements.length ?? 0,
+      unmet: audit?.unmet.length ?? 0,
+      durationMs: Math.round(performance.now() - started),
+      code: audit ? "ok" : "unavailable",
+    });
+    return audit;
   }
   private resetLoop() {
     this.signatures = [];
@@ -3722,6 +3778,7 @@ export class Runner {
     this.refused = undefined;
     this.deliverables = undefined;
     this.deliverableChecked = false;
+    this.doneAudited = false;
     this.resetCounters();
     this.resetLoop();
     this.cycle = [];
@@ -4036,6 +4093,7 @@ export class Runner {
     // never contents) so a done can be held to them. An adopted preparation
     // shares the run's task, so the read is the same; never for the tutorial.
     this.deliverableChecked = false;
+    this.doneAudited = false;
     this.deliverables = run.synthetic
       ? undefined
       : this.watchDeliverables(task);
@@ -4882,6 +4940,44 @@ export class Runner {
               continue;
             }
             throw new DeliverableMissingError(unchanged);
+          }
+          // The objective's own requirements, read once against the run's
+          // steps by the same model (src/core/done-audit.ts): the file check
+          // cannot see a clause skipped while the file still changed (cycle
+          // 20260919-2144-9714f98: two hotel runs said done after five
+          // actions with the search never filled, a digest with two of
+          // three named facts absent). Any unmet, the claim is sent back
+          // once with them in the audit's words; the next done stands.
+          if (
+            !this.doneAudited &&
+            auditApplies({
+              objective: run.task,
+              origin: run.origin,
+              synthetic: run.synthetic,
+              actions: run.actions,
+              hasText: typeof this.provider.text === "function",
+            })
+          ) {
+            this.doneAudited = true;
+            const audit = await this.auditDone(run, history, action.summary);
+            if (this.held || epoch !== this.epoch) {
+              planFail("interrupted");
+              continue;
+            }
+            if (audit?.unmet.length) {
+              this.event("ActionFailed", {
+                code: "DONE_CHALLENGED",
+                actionType: action.type,
+                reason: REQUIREMENT_UNMET,
+                unmet: audit.unmet.length,
+              });
+              history.push({
+                type: "rejected",
+                action: echoAction(action),
+                result: requirementChallenge(audit.unmet),
+              });
+              continue;
+            }
           }
           run.summary = action.summary;
           this.event("RunCompleted");

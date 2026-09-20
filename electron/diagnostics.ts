@@ -151,6 +151,10 @@ const fields = new Set([
   // episode number on ActionLoopBroken (its outcome is a code).
   "revisits",
   "episode",
+  // The done audit (DoneAudited): how many requirements the model listed
+  // and how many it found unmet; the unmet count on the challenge too.
+  "requirements",
+  "unmet",
   // Memory and replay plans: content-free counts and fixed codes only.
   "preferences",
   "episodes",
@@ -380,6 +384,8 @@ const countFields = new Set([
   "skippedRemote",
   "refused",
   "secretsMoved",
+  "requirements",
+  "unmet",
   // The shape of unparseable model arguments: every one a count.
   "length",
   "parseOffset",
@@ -739,8 +745,10 @@ const journalEvents = new Map<string, Set<string>>([
   ],
   [
     "ActionFailed",
-    new Set(["code", "change", "actionType", "reason", "problem"]),
+    new Set(["code", "change", "actionType", "reason", "problem", "unmet"]),
   ],
+  // The done audit's outcome: counts, its duration and ok or unavailable.
+  ["DoneAudited", new Set(["requirements", "unmet", "durationMs", "code"])],
   ["ActionInterrupted", new Set(["actionType"])],
   ["ActionReaimed", new Set(["actionType"])],
   [
@@ -1180,6 +1188,19 @@ export class LocalDiagnostics {
           ...(e.type === "ProviderUnavailable"
             ? { attempt: count(e.data.attempt) }
             : {}),
+          // The done audit (src/core/done-audit.ts): how many requirements
+          // the model listed and found unmet, the call's time and its code
+          // (ok, unavailable); on the challenge (ActionFailed DONE_CHALLENGED
+          // requirement_unmet) the unmet count. The requirements' words
+          // stay in the encrypted journal's history line.
+          ...(e.type === "DoneAudited"
+            ? {
+                requirements: count(e.data.requirements),
+                unmet: count(e.data.unmet),
+                durationMs: count(e.data.durationMs),
+              }
+            : {}),
+          ...(e.type === "ActionFailed" ? { unmet: count(e.data.unmet) } : {}),
           questionKind: code(e.data.questionKind),
           // The question asked as a code (src/core/approval-codes.ts): the
           // runner's stamp, else read off the question here.

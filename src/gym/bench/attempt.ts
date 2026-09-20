@@ -774,8 +774,9 @@ export async function runAttempt(
                 : {}),
             });
         }
-        // A done the runner sent back, by why: a step refused earlier, or
-        // the file the task asks to write unchanged since the run began.
+        // A done the runner sent back, by why: a step refused earlier, the
+        // file the task asks to write unchanged since the run began, or a
+        // requirement of the objective the done audit found unmet.
         if (event.type === "ActionFailed" && d.code === "DONE_CHALLENGED") {
           const why = doneChallengeCode(d.reason);
           counters.doneChallenged[why] =
