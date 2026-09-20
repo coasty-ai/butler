@@ -243,6 +243,9 @@ const fields = new Set([
   // ActionExecuted and ActionRetargetRequested for a click by name: the
   // control's point fell through to its own ancestor (a flag; native hitCover).
   "hitAncestor",
+  // ActionExecuted for a click on a link in a browser that read as no page
+  // change: its history line carries the download hint (a flag).
+  "downloadHint",
   // ActionFailed STATE_CHANGED and ActionRetargetRequested: the runner closed
   // the menu the last right_click left open for this refusal (a flag).
   "dismissed",
@@ -523,6 +526,9 @@ const flagFields = new Set([
   // ActionExecuted, ActionRetargetRequested: a click by name whose control's
   // point fell through to the control's own ancestor (native hitCover).
   "hitAncestor",
+  // ActionExecuted: a click on a link in a browser that read as no page
+  // change, its line carrying the download hint (once per control a run).
+  "downloadHint",
   // ActionFailed STATE_CHANGED, ActionRetargetRequested: the runner closed
   // the menu the last right_click left open for this refusal.
   "dismissed",
@@ -856,6 +862,9 @@ const journalEvents = new Map<string, Set<string>>([
       "effect",
       "rung",
       "hitAncestor",
+      // A link click in a browser that read as no page change: its line
+      // carried the download hint (a flag, once per control a run).
+      "downloadHint",
       "clauseIndex",
       "outcome",
       "launchedAppId",
@@ -1275,6 +1284,9 @@ export class LocalDiagnostics {
           // control's point fell through to its own ancestor (native hitCover),
           // a flag beside the route.
           hitAncestor: e.data.hitAncestor,
+          // ActionExecuted for a click on a link in a browser that read as no
+          // page change: the history line carried DOWNLOAD_HINT (a flag).
+          downloadHint: e.data.downloadHint,
           // ActionFailed STATE_CHANGED and ActionRetargetRequested: the runner
           // closed the menu the last right_click left open for this refusal.
           dismissed: e.data.dismissed,

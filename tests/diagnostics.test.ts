@@ -2629,6 +2629,47 @@ describe("the journal's content-free rows", () => {
       expect(r[5].data).toEqual({ ...base(s, 6), ...refused });
     }));
 
+  it("writes a link click that read as no page change with its download hint as a flag on the executed row, and drops anything else in the field", () =>
+    fixture((log) => {
+      // Cycle 20260920-0957-bceb9cd: mail-save-attachment clicked its
+      // attachment link again and again, each click reading focused while
+      // the file downloaded; the runner's line carries DOWNLOAD_HINT once per
+      // control and the row the flag beside the route and the effect.
+      const executed = (extra: Record<string, unknown>) => ({
+        type: "ActionExecuted",
+        data: {
+          action: { type: "click_control", label: MARK, frame_id: "f" },
+          frame_id: "f",
+          via: "pointer",
+          effect: "focused",
+          ...extra,
+        },
+      });
+      const s = journal([
+        executed({ downloadHint: true }),
+        executed({ downloadHint: `${MARK} yes` }),
+        executed({ downloadHint: 1 }),
+        executed({}),
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      const clicked = {
+        actionType: "click_control",
+        frameId: "f",
+        via: "pointer",
+        effect: "focused",
+      };
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        ...clicked,
+        downloadHint: true,
+      });
+      expect(r[1].data).toEqual({ ...base(s, 2), ...clicked });
+      expect(r[2].data).toEqual({ ...base(s, 3), ...clicked });
+      expect(r[3].data).toEqual({ ...base(s, 4), ...clicked });
+    }));
+
   it("writes a correction as its length and its place in the run, never its words or its clock", () =>
     fixture((log) => {
       const words = `${MARK} the other one, and stop after that please`;

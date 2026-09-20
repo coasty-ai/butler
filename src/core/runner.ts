@@ -87,6 +87,7 @@ import {
   type Requirement,
 } from "./done-audit";
 import {
+  browsers,
   evaluate,
   focusedTextField,
   normalizeAppName,
@@ -708,6 +709,45 @@ export function clickEffectNote(
   if (outcome.effect === "none") return CLICK_NO_EFFECT_NOTE;
   if (outcome.effect === "focused" && !outcome.rung) return CLICK_FOCUSED_NOTE;
   return "";
+}
+/**
+ * The sentence a click on a link in a browser gets, after the click-effect
+ * note, when the helper's reads found no page change (effect focused or
+ * none), once per control in a run: cycle 20260920-0957-bceb9cd
+ * (gpt-5.4-mini), mail-save-attachment ended STUCK_LOOP three times in 17–32
+ * actions, click_control on the attachment link reading `focused` by pointer
+ * and by press alike, again and again — the link is a file download, so the
+ * server logged the fetch each time (the grader's fetched true, single false)
+ * while the page stood still, the click-effect note read as nothing
+ * happened, and the model clicked once more, tried a right_click
+ * (MENU_ITEM_MISSING) and looped, the file in ~/Downloads and never moved.
+ * The files tool lists and moves within ~/Downloads (homePath: any folder
+ * under the home that is not hidden, excluded or ~/Library outside iCloud
+ * Drive), so the sentence names its tools. Under 200 characters: it rides
+ * the line with CLICK_NO_EFFECT_NOTE or CLICK_FOCUSED_NOTE and may share it
+ * with loopWarning under MODEL_RESULT_CHARS.
+ */
+export const DOWNLOAD_HINT =
+  " A link that changes nothing may have downloaded its file to the Downloads folder: list it with list_directory and move it with move_file to the destination instead of clicking again.";
+/**
+ * Whether an executed click was on a link (the surface's target role: AXLink,
+ * or a resolved control's "link") in a browser (the surface's application in
+ * the browsers list, or the frame showing a page) and read as no page change,
+ * effect focused or none. A button or a field is never one, whatever it
+ * read; a click that read changed opened its link; a click the helper did not
+ * read (no effect) is left as it was.
+ */
+export function downloadableClick(
+  action: Action,
+  surface: Surface,
+  frame: Frame,
+  outcome: void | ExecutionResult | undefined,
+): boolean {
+  if (action.type !== "click" && action.type !== "click_control") return false;
+  if (!outcome || (outcome.effect !== "focused" && outcome.effect !== "none"))
+    return false;
+  if (normalizeRole(surface.targetRole ?? "") !== "link") return false;
+  return browsers.includes(surface.appId) || !!hostOf(frame);
 }
 /**
  * The one reflection step an unattended run gets when a loop continued past
@@ -1642,6 +1682,8 @@ export class Runner {
   private loopEpisodes = 0;
   /** Clicks by name with no effect, counted by step and screen (signature and screenKey); the second is a loop at once. */
   private noEffectClicks = new Map<string, number>();
+  /** Link clicks in a browser that read as no page change and were given DOWNLOAD_HINT, by step signature (once per control a run). */
+  private downloadHinted = new Set<string>();
   /** The transition the last executed step began; the capture after it waits. */
   private settleBefore?: "launched" | "navigated";
   /** The host the streamed prelude's last open_url sent the browser to, for the first capture to wait on. */
@@ -4238,6 +4280,15 @@ export class Runner {
     // What a click by name changed, as the helper read it on either route.
     const clickEffect =
       action.type === "click_control" ? outcome?.effect : undefined;
+    // A click on a link in a browser that changed nothing on the page the
+    // helper could read: the first on that control in the run gets
+    // DOWNLOAD_HINT on its line and the flag on its row.
+    const downloadHint = this.downloadHint(
+      action,
+      actionSurface,
+      executionFrame,
+      outcome,
+    );
     // Read before planPending is cleared: this step came from the plan.
     const fromPlan =
       this.planPending !== undefined ? this.plan?.source : undefined;
@@ -4280,6 +4331,9 @@ export class Runner {
       ...((outcome?.rung || clickEffect) && outcome?.effect
         ? { effect: outcome.effect }
         : {}),
+      // A click on a link in a browser that read as no page change, its line
+      // carrying DOWNLOAD_HINT (a flag; once per control a run).
+      ...(downloadHint ? { downloadHint: true } : {}),
       ...(opened ? { opened: { kind: opened.kind } } : {}),
       // The browser an open_url's address went to (a bundle id, for the
       // diagnostics row's appId); never the address or its host.
@@ -4360,6 +4414,7 @@ export class Runner {
                     ? `Executed${executedTarget(action, actionSurface, via)}. Verify the next screenshot shows the intended result before done.`
                     : `Executed${executedTarget(action, actionSurface)}. Verify the next screenshot.`) +
         clickEffectNote(action, outcome) +
+        (downloadHint ? DOWNLOAD_HINT : "") +
         this.pageToolNote(action, executionFrame) +
         (o.reaimed ? reaimNote : "") +
         (loop === "warn" ? loopWarning : "") +
@@ -4369,6 +4424,28 @@ export class Runner {
         (thrashing ? appSwitchWarning : bouncing ? pageSwitchWarning : ""),
     });
     if (loop === "stuck") this.stuck(this.history.at(-1));
+  }
+  /**
+   * DOWNLOAD_HINT for the first click in the run on a given link that read as
+   * no page change (downloadableClick): keyed by the step's signature with
+   * its target — the no-effect counter's key without the screen, since the
+   * same link is the same download whatever the page shows around it — so a
+   * retry on the same link reads the click-effect note alone.
+   */
+  private downloadHint(
+    action: Action,
+    surface: Surface,
+    frame: Frame,
+    outcome: void | ExecutionResult | undefined,
+  ): boolean {
+    if (!downloadableClick(action, surface, frame, outcome)) return false;
+    const key = actionSignature(action, {
+      role: surface.targetRole,
+      label: surface.targetLabel,
+    });
+    if (this.downloadHinted.has(key)) return false;
+    this.downloadHinted.add(key);
+    return true;
   }
   /**
    * On the second consecutive capture: PAGE_TOOL_NOTE on a browser page
@@ -4406,6 +4483,7 @@ export class Runner {
     this.reflected = new Set();
     this.loopEpisodes = 0;
     this.noEffectClicks = new Map();
+    this.downloadHinted = new Set();
     this.readCalls = 0;
     this.wroteByTool = false;
     this.settleBefore = undefined;

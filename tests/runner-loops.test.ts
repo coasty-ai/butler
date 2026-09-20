@@ -18,6 +18,7 @@ import {
   BUDGET_CONTEXT_FROM,
   CLICK_FOCUSED_NOTE,
   CLICK_NO_EFFECT_NOTE,
+  DOWNLOAD_HINT,
   LOOP_REVISITS,
   LOOK_AGAIN_NOTE,
   LOOP_STUCK_MESSAGE,
@@ -31,6 +32,7 @@ import {
   type StartOptions,
   TRANSITION_SETTLE_MS,
   actionSignature,
+  downloadableClick,
   loopWarning,
   moveKey,
   pageKey,
@@ -1487,6 +1489,244 @@ describe("a click by name that changed nothing", () => {
     expect(m.of("ActionLoopDetected")).toHaveLength(0);
   });
   const runner_status = (m: ReturnType<typeof memory>) => m.getRun().status;
+});
+
+/**
+ * A click on a link in a browser that reads as no page change may be a file
+ * download: cycle 20260920-0957-bceb9cd (gpt-5.4-mini), mail-save-attachment
+ * ended STUCK_LOOP three times in 17–32 actions, click_control on the
+ * attachment link reading `focused` by pointer and by press alike, again and
+ * again, while the server logged a fetch each time and the file lay in
+ * ~/Downloads. The first such click on a control gets DOWNLOAD_HINT after the
+ * click-effect note, once a run, and its row the flag; a button, a link that
+ * changed the page, or a link outside a browser never does. Fixed labels only.
+ */
+describe("a link click in a browser that changed nothing on the page", () => {
+  const onLink = act({ type: "click_control", label: "Invoice" });
+  const onButton = act({ type: "click_control", label: "Send" });
+  const roles: Record<string, string> = { Invoice: "AXLink", Send: "AXButton" };
+  /** The surface names the control the way the helper does, in Safari. */
+  const inBrowser = async (action?: Action): Promise<Surface> => ({
+    ...surface,
+    appId: "com.apple.Safari",
+    ...(action?.type === "click_control"
+      ? {
+          controlStatus: "resolved" as const,
+          controlLabel: action.label,
+          targetRole: roles[action.label] ?? "AXButton",
+          targetLabel: action.label,
+        }
+      : {}),
+  });
+  /** The frame shows a page in Safari. */
+  const page = () => ({
+    appId: "com.apple.Safari",
+    context: {
+      appName: "Safari",
+      windowTitle: "Inbox",
+      browserAddress: "https://mail.example.test/inbox",
+    },
+  });
+  const linkLine =
+    "Executed click on link “Invoice”. Verify the next screenshot.";
+  const runnerFor = (
+    c: Controller,
+    p: ReturnType<typeof scripted>,
+    m: ReturnType<typeof memory>,
+  ) =>
+    new Runner(
+      c,
+      p,
+      m.recorder,
+      unattendedAll,
+      () => {},
+      [],
+      undefined,
+      settle,
+    );
+  const flags = (m: ReturnType<typeof memory>) =>
+    m.of("ActionExecuted").map((e) => e.data.downloadHint);
+  it("says so once for a link that only took focus, flags the row, and leaves the retry with the click-effect note alone", async () => {
+    allowAll();
+    const c = controller(
+      {
+        surface: inBrowser,
+        execute: vi.fn(
+          async () => ({ effect: "focused", via: "pointer" }) as const,
+        ),
+      },
+      page,
+    );
+    const m = memory();
+    const provider = scripted([onLink, onLink]);
+    await runnerFor(c, provider, m).start("task", bench);
+    const lines = provider.observations.map((o) => o.history.at(-1)?.result);
+    expect(lines[1]).toBe(`${linkLine}${CLICK_FOCUSED_NOTE}${DOWNLOAD_HINT}`);
+    expect(lines[2]).toBe(`${linkLine}${CLICK_FOCUSED_NOTE}`);
+    expect(flags(m)).toEqual([true, undefined]);
+    for (const data of m.of("ActionExecuted").map((e) => e.data))
+      expect(data).toMatchObject({ effect: "focused", via: "pointer" });
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+    expect(m.getRun().status).toBe("completed");
+  });
+  it("puts the hint after the no-effect sentence for a link read as none, gives a button beside it none, and keeps the line under the model's cap with the loop warning", async () => {
+    allowAll();
+    const c = controller(
+      {
+        surface: inBrowser,
+        execute: vi.fn(async (action: Action) =>
+          action.type === "click_control" && action.label === "Invoice"
+            ? ({ effect: "none", via: "press" } as const)
+            : ({ effect: "focused", via: "pointer" } as const),
+        ),
+      },
+      page,
+    );
+    const m = memory();
+    const provider = scripted([onLink, onButton]);
+    await runnerFor(c, provider, m).start("task", bench);
+    const lines = provider.observations.map((o) => o.history.at(-1)?.result);
+    expect(lines[1]).toBe(`${linkLine}${CLICK_NO_EFFECT_NOTE}${DOWNLOAD_HINT}`);
+    expect(lines[2]).toBe(
+      `Executed click on button “Send”. Verify the next screenshot.${CLICK_FOCUSED_NOTE}`,
+    );
+    expect(flags(m)).toEqual([true, undefined]);
+    // The sentence's bound, and the line's with every note that can share it
+    // on a first hint: the no-effect sentence (200) and the loop warning
+    // (192) beside the hint (183) leave the line at 635 of 640, so the model
+    // reads it whole; with the focus sentence in place of the no-effect one
+    // it is 453.
+    expect(DOWNLOAD_HINT.startsWith(" ")).toBe(true);
+    expect(DOWNLOAD_HINT.trim().length).toBeLessThanOrEqual(200);
+    expect(DOWNLOAD_HINT.length).toBe(183);
+    expect(
+      `${linkLine}${CLICK_NO_EFFECT_NOTE}${DOWNLOAD_HINT}${loopWarning}`.length,
+    ).toBeLessThanOrEqual(MODEL_RESULT_CHARS);
+    expect(
+      `${linkLine}${CLICK_FOCUSED_NOTE}${DOWNLOAD_HINT}${loopWarning}`.length,
+    ).toBeLessThanOrEqual(MODEL_RESULT_CHARS);
+    expect(lines[1]!.length).toBeLessThan(MODEL_RESULT_CHARS);
+  });
+  it("gives no hint to a link whose click changed the page", async () => {
+    allowAll();
+    const c = controller(
+      {
+        surface: inBrowser,
+        execute: vi.fn(
+          async () => ({ effect: "changed", via: "pointer" }) as const,
+        ),
+      },
+      page,
+    );
+    const m = memory();
+    const provider = scripted([onLink]);
+    await runnerFor(c, provider, m).start("task", bench);
+    expect(provider.observations[1].history.at(-1)?.result).toBe(linkLine);
+    expect(flags(m)).toEqual([undefined]);
+  });
+  it("gives no hint to a link outside a browser: the no-effect sentence alone", async () => {
+    allowAll();
+    const elsewhere = async (action?: Action): Promise<Surface> => ({
+      ...(await inBrowser(action)),
+      appId: surface.appId,
+    });
+    // The frame is the default application's, with no page address.
+    const c = controller({
+      surface: elsewhere,
+      execute: vi.fn(async () => ({ effect: "none", via: "pointer" }) as const),
+    });
+    const m = memory();
+    const provider = scripted([onLink]);
+    await runnerFor(c, provider, m).start("task", bench);
+    expect(provider.observations[1].history.at(-1)?.result).toBe(
+      `${linkLine}${CLICK_NO_EFFECT_NOTE}`,
+    );
+    expect(flags(m)).toEqual([undefined]);
+  });
+  it("downloadableClick: a link by AXLink or by its plain role, in a browser by application or by page, read focused or none; nothing else", () => {
+    const frame = {
+      id: "f",
+      sha256: "s",
+      image: "",
+      geometry,
+      capturedAt: 0,
+      synthetic: false,
+      appId: "com.example.app",
+      context: { appName: "App", windowTitle: "W" },
+    } as Frame;
+    const onPage = {
+      ...frame,
+      context: { ...frame.context, browserAddress: "https://example.test/a" },
+    } as Frame;
+    const byName = {
+      type: "click_control",
+      label: "L",
+      frame_id: "f",
+    } as Action;
+    const byPoint = { type: "click", x: 0.5, y: 0.5, frame_id: "f" } as Action;
+    const link = (role: string, appId = "com.apple.Safari"): Surface => ({
+      ...surface,
+      appId,
+      targetRole: role,
+      targetLabel: "L",
+    });
+    const focused = { effect: "focused" } as const;
+    const none = { effect: "none" } as const;
+    // The link, by either role spelling and either click, on either reading.
+    expect(downloadableClick(byName, link("AXLink"), frame, focused)).toBe(
+      true,
+    );
+    expect(downloadableClick(byName, link("link"), frame, none)).toBe(true);
+    expect(downloadableClick(byPoint, link("AXLink"), frame, none)).toBe(true);
+    // A browser by the frame's page when the surface's application is not one.
+    expect(
+      downloadableClick(
+        byName,
+        link("AXLink", "com.example.app"),
+        onPage,
+        focused,
+      ),
+    ).toBe(true);
+    expect(
+      downloadableClick(
+        byName,
+        link("AXLink", "com.example.app"),
+        frame,
+        focused,
+      ),
+    ).toBe(false);
+    // Not a link.
+    for (const role of [
+      "AXButton",
+      "AXTextField",
+      "AXRadioButton",
+      "AXImage",
+      "",
+    ])
+      expect(downloadableClick(byName, link(role), frame, none)).toBe(false);
+    // Read as a change, unverifiable, or not read.
+    expect(
+      downloadableClick(byName, link("AXLink"), frame, { effect: "changed" }),
+    ).toBe(false);
+    expect(
+      downloadableClick(byName, link("AXLink"), frame, {
+        effect: "unverifiable",
+      }),
+    ).toBe(false);
+    expect(downloadableClick(byName, link("AXLink"), frame, {})).toBe(false);
+    expect(downloadableClick(byName, link("AXLink"), frame, undefined)).toBe(
+      false,
+    );
+    // Not a click.
+    expect(
+      downloadableClick(
+        { type: "right_click", x: 0.5, y: 0.5, frame_id: "f" } as Action,
+        link("AXLink"),
+        frame,
+        none,
+      ),
+    ).toBe(false);
+  });
 });
 
 /**
