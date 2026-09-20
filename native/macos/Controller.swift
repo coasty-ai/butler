@@ -523,6 +523,37 @@ func onScreenWindowCount(_ pid: pid_t, list: [[String:Any]]? = nil) -> Int {
                               width: Double(rect.width), height: Double(rect.height))
     }, pid: Int(pid))
 }
+// The frontmost application's windows by number, for the typing probe
+// (scripts/probe-web-controls.mjs --type). The market sweeps of 2026-09-20
+// typed into a Safari field that read focused, type_text executed without an
+// error, and the page's text nodes stayed at 15 through four typings where a
+// passing run read 15 -> 19; the failing runs' first frame was a 1-node empty
+// Safari window (a fresh launch), so Safari may hold two windows and the key
+// window may not be the field's while the accessibility focus reads the
+// field. Reports how many windows the accessibility tree lists and how many
+// stand on screen (the frame's windowCount), how many are minimized, which
+// is main, which is focused (the key window the keys reach) and which holds
+// the focused element (windowIndex: front to back, -1 for none), and the
+// focused element's value length — never the value, and nothing for a secure
+// field. Reads only: no input, no resume, no title.
+func windowsReport() -> [String:Any] {
+    guard let app = inputApplication() else { return ["count": 0, "onScreen": 0, "minimized": 0, "mainIndex": -1, "focusedIndex": -1, "elementWindowIndex": -1, "frontmostPid": 0] }
+    let element = AXUIElementCreateApplication(app.processIdentifier)
+    let windows = attribute(element, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    let main = attribute(element, kAXMainWindowAttribute).map { $0 as! AXUIElement }
+    let focusedWindow = attribute(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
+    var focused: AXUIElement? = nil
+    if let value = attribute(element, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() { focused = (value as! AXUIElement) }
+    let elementWindow = focused.flatMap { attribute($0, kAXWindowAttribute) }.map { $0 as! AXUIElement }
+    func index(_ window: AXUIElement?) -> Int { windowIndex(window, in: windows, same: { CFEqual($0, $1) }) }
+    var result: [String:Any] = ["count": windows.count, "onScreen": onScreenWindowCount(app.processIdentifier),
+                                "minimized": windows.filter { attribute($0, kAXMinimizedAttribute) as? Bool == true }.count,
+                                "mainIndex": index(main), "focusedIndex": index(focusedWindow), "elementWindowIndex": index(elementWindow),
+                                "frontmostPid": Int(app.processIdentifier)]
+    if let focused = focused, attribute(focused, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole,
+       let value = attribute(focused, kAXValueAttribute) as? String { result["valueLength"] = (value as NSString).length }
+    return result
+}
 func windowState() -> WindowState {
     let running = inputApplication()
     let pid = running?.processIdentifier ?? 0
@@ -4557,6 +4588,8 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
         }
         return ["configured":true]
     case "surface":return surface(command["action"] as? [String:Any])
+    // Read-only window facts for the typing probe (windowsReport): no input, no resume.
+    case "windows":return windowsReport()
     // Read-only local system index: sends no input, so it needs no resume.
     case "index":return await systemIndex(query: command["query"] as? String ?? "", limit: indexLimit(command["limit"]))
     case "rememberForeground":

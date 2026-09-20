@@ -97,6 +97,17 @@ let standardWindowMinSide = 40.0
 func standardWindowCount(_ windows: [OnScreenWindow], pid: Int) -> Int {
     windows.filter { $0.pid == pid && $0.layer == 0 && $0.alpha > 0 && $0.width >= standardWindowMinSide && $0.height >= standardWindowMinSide }.count
 }
+// Where a window stands in an application's accessibility window list (front
+// to back): its index, or -1 for no window or one the list does not hold. The
+// helper's read-only windows query (windowsReport, Controller.swift; read by
+// scripts/probe-web-controls.mjs --type) compares the main window, the focused
+// window and the focused element's window by number, so a probe can say the
+// key window is not the field's without a title. Identity is the caller's
+// (CFEqual for elements).
+func windowIndex<T>(_ target: T?, in windows: [T], same: (T, T) -> Bool) -> Int {
+    guard let target = target else { return -1 }
+    return windows.firstIndex { same($0, target) } ?? -1
+}
 // A running application turns frontmost before an unhidden window or a Space
 // switch reaches the screen. Any window is a final count; none is final only
 // after this long, or open_app would call a hidden TextEdit windowless and

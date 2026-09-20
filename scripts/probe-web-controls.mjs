@@ -48,14 +48,45 @@
 // type_text). On the booking and CRM fixture pages expect via "pointer",
 // effect "focused", focusedAfter a text role and sameLabel true.
 //
+// Cycles 20260920-0631, -0731 and -0957 (market, autonomy all): the booking
+// runs that failed read the field clicked (by press, and by the pointer with
+// effect focused at bceb9cd), type_text executed with no error and the
+// per-character focus check silent, and the page's text nodes stayed at 15
+// through all four typings where the passing run at 0514 read 15 -> 16 -> 17
+// -> 18 -> 19 (checkin-flight-seat 8 -> 8 against 8 -> 9). One visible
+// difference: the passing run's first frame was a 99-node Safari page (an
+// existing window), the failing runs' a 1-node empty Safari window (a fresh
+// launch), so Safari may hold two windows and the key window may not be the
+// field's while the accessibility focus reads the field. With `--type` the
+// probe clicks the first listed text field as `--focus` does, then runs the
+// runner's own type_text of a fixed four-character synthetic string (the one
+// keystroke sequence it sends; the page is the bench's own fixture), waits
+// 400 ms and prints one JSON line, content-free: the application's windows
+// before, after the click and after the typing (the helper's read-only
+// `windows` query, native windowsReport: how many the accessibility tree
+// lists and how many stand on screen, which is main, which is focused, which
+// holds the focused element, and the focused element's value length), the
+// page's text nodes and visible-text length before and after, whether the
+// focus is still the field's, and a diagnosis naming the reading the numbers
+// support: `landed` (the value grew by the typed characters and the nodes
+// grew), `walk-blind` (the value grew, the nodes did not), `key-window` (the
+// value did not grow and the focused element's window is not the focused or
+// the main one), `dropped` (the focus intact, the value unchanged, one
+// window), `moved` (the focus left the field). Run it on the CRM fixture
+// page in Safari; the typed characters stay in the field until the page is
+// reloaded, and a helper built before the query reports the windows as
+// unavailable (REBUILD_HELPER).
+//
 // Run it with nobody at the desktop and the page to probe frontmost (Safari on
 // a fixture page, then Chrome on the same page for the comparison):
 //
 //   npm run build:native
 //   node --import tsx scripts/probe-web-controls.mjs
 //   node --import tsx scripts/probe-web-controls.mjs --focus
+//   node --import tsx scripts/probe-web-controls.mjs --type
 //
-// No network calls, nothing written, no input sent without `--focus`.
+// No network calls, nothing written, no input sent without `--focus` (one
+// click) or `--type` (one click and one four-character typing).
 import { resolve } from "node:path";
 import { NativeController } from "../electron/controller.ts";
 import { defaultSettings } from "../src/core/schema.ts";
@@ -74,6 +105,59 @@ const tally = (values) => {
       (a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1),
     ),
   );
+};
+// The characters `--type` types: synthetic, fixed, four of them; the probe
+// prints their count and never them.
+const TYPED = "ab12";
+// Which reading one typing's numbers support (the header names them). The
+// value length is the focused element's, read before and after through the
+// windows query; the nodes are the frame's visibleTextNodes; sameField says
+// the focus after the typing is still the field's; windows is the query's
+// reading after the typing. Without the query (an older helper) the nodes
+// alone decide between landed and the rest.
+const diagnose = ({
+  typed,
+  valueBefore,
+  valueAfter,
+  nodesBefore,
+  nodesAfter,
+  sameField,
+  windows,
+}) => {
+  if (!typed.executed)
+    return `not-typed: the helper refused before a keystroke (${typed.refused})`;
+  const grew =
+    typeof valueBefore === "number" && typeof valueAfter === "number"
+      ? valueAfter - valueBefore
+      : null;
+  const nodesGrew =
+    typeof nodesBefore === "number" &&
+    typeof nodesAfter === "number" &&
+    nodesAfter > nodesBefore;
+  if (grew === TYPED.length)
+    return nodesGrew
+      ? "landed: the value grew by the typed characters and the text nodes grew"
+      : "walk-blind: the value grew by the typed characters and the text nodes did not";
+  if (grew !== null && grew > 0)
+    return `partial: the value grew by ${grew} of ${TYPED.length}`;
+  if (grew === null && nodesGrew)
+    return "landed-by-nodes: the text nodes grew; the value length needs a rebuilt helper";
+  // Two or more windows, and either the focused element's window (when it
+  // names one) is not the focused or the main window, or the focused window
+  // is not the main one.
+  const twoWindows = typeof windows?.count === "number" && windows.count > 1;
+  const elementElsewhere =
+    windows?.elementWindowIndex >= 0 &&
+    (windows.elementWindowIndex !== windows.focusedIndex ||
+      windows.elementWindowIndex !== windows.mainIndex);
+  if (
+    twoWindows &&
+    (elementElsewhere || windows.focusedIndex !== windows.mainIndex)
+  )
+    return "key-window: the focused element's window is not the focused or the main window";
+  if (sameField)
+    return "dropped: the focus is still the field's and its value did not grow";
+  return "moved: the focus is not the field's after the typing";
 };
 try {
   await controller.configure(structuredClone(defaultSettings));
@@ -223,6 +307,74 @@ try {
       namedHitRoles: tally(named.map((n) => `${n.listed}→${n.hit}`)),
     }),
   );
+  // The first labelled text field a frame lists, the runner's own
+  // click_control on it, where the application's focus is after, and the
+  // helper's read-only windows query: the pieces `--focus` and `--type` share.
+  const fieldRoles = [
+    "textfield",
+    "textarea",
+    "number",
+    "combobox",
+    "searchfield",
+  ];
+  const firstField = (frame) =>
+    (frame.context?.controls ?? []).find(
+      (c) =>
+        fieldRoles.includes(c.role) && typeof c.label === "string" && c.label,
+    );
+  const clickField = async (frame, field) => {
+    try {
+      return await controller.execute(
+        {
+          type: "click_control",
+          frame_id: frame.id,
+          label: field.label,
+          role: field.role,
+          x: field.x,
+          y: field.y,
+        },
+        frame,
+        new AbortController().signal,
+      );
+    } catch (error) {
+      // The helper's refusal as its code or class, never its words.
+      return { refused: error?.code ?? error?.name ?? "error" };
+    }
+  };
+  const focusFacts = (after, field) => ({
+    focusedAfter: after.focusedRole ?? "(none)",
+    focusedSubrole: after.focusedSubrole ?? "(none)",
+    // The focused element's label is the clicked field's (compared, never
+    // printed).
+    sameLabel:
+      typeof after.focusedLabel === "string" &&
+      after.focusedLabel.trim().toLowerCase() ===
+        field.label.trim().toLowerCase(),
+  });
+  // Counts, indexes (-1 for none) and a value length, never a title or a
+  // value; a helper built before the query says so instead of failing the
+  // probe.
+  const windowsFacts = async () => {
+    try {
+      const w = await controller.request("windows");
+      return {
+        count: w.count,
+        onScreen: w.onScreen,
+        minimized: w.minimized,
+        mainIndex: w.mainIndex,
+        focusedIndex: w.focusedIndex,
+        elementWindowIndex: w.elementWindowIndex,
+        frontmostPid: w.frontmostPid,
+        valueLength: typeof w.valueLength === "number" ? w.valueLength : null,
+      };
+    } catch (error) {
+      return {
+        unavailable: /Unknown controller method/.test(error?.message ?? "")
+          ? "REBUILD_HELPER"
+          : (error?.code ?? error?.name ?? "error"),
+      };
+    }
+  };
   // --focus: the click path itself on the first listed text field, then
   // where the application's focus is. The helper is resumed for the one
   // click (execute needs a current frame and the latch open) and stopped
@@ -230,35 +382,11 @@ try {
   if (process.argv.includes("--focus")) {
     await controller.resume();
     const fresh = await controller.capture();
-    const field = (fresh.context?.controls ?? []).find(
-      (c) =>
-        ["textfield", "textarea", "number", "combobox", "searchfield"].includes(
-          c.role,
-        ) &&
-        typeof c.label === "string" &&
-        c.label,
-    );
+    const field = firstField(fresh);
     if (!field) {
       console.log(JSON.stringify({ focusProbe: "no labelled text field" }));
     } else {
-      let clicked;
-      try {
-        clicked = await controller.execute(
-          {
-            type: "click_control",
-            frame_id: fresh.id,
-            label: field.label,
-            role: field.role,
-            x: field.x,
-            y: field.y,
-          },
-          fresh,
-          new AbortController().signal,
-        );
-      } catch (error) {
-        // The helper's refusal as its code or class, never its words.
-        clicked = { refused: error?.code ?? error?.name ?? "error" };
-      }
+      const clicked = await clickField(fresh, field);
       const after = await controller.surface();
       console.log(
         JSON.stringify({
@@ -267,19 +395,109 @@ try {
             via: clicked?.via ?? "(none)",
             effect: clicked?.effect ?? "(none)",
             refused: clicked?.refused,
-            focusedAfter: after.focusedRole ?? "(none)",
-            focusedSubrole: after.focusedSubrole ?? "(none)",
-            // The focused element's label is the clicked field's (compared,
-            // never printed).
-            sameLabel:
-              typeof after.focusedLabel === "string" &&
-              after.focusedLabel.trim().toLowerCase() ===
-                field.label.trim().toLowerCase(),
+            ...focusFacts(after, field),
           },
         }),
       );
     }
     await controller.stop("probe clicked the field");
+  }
+  // --type: the same click, then the runner's own type_text of TYPED (the
+  // one keystroke sequence the probe sends) against a frame captured after
+  // the click, as the runner types against the frame it captured after its
+  // click; 400 ms later a capture, the surface and the windows again. The
+  // helper is resumed for the click and the typing and stopped again.
+  if (process.argv.includes("--type")) {
+    const windowsBefore = await windowsFacts();
+    await controller.resume();
+    const before = await controller.capture();
+    const field = firstField(before);
+    if (!field) {
+      console.log(JSON.stringify({ typeProbe: "no labelled text field" }));
+    } else {
+      const clicked = await clickField(before, field);
+      const afterClick = await controller.surface();
+      const windowsAfterClick = await windowsFacts();
+      const mid = await controller.capture();
+      let typed = { executed: false };
+      try {
+        await controller.execute(
+          { type: "type_text", frame_id: mid.id, text: TYPED },
+          mid,
+          new AbortController().signal,
+        );
+        typed = { executed: true };
+      } catch (error) {
+        typed = {
+          executed: false,
+          refused: error?.code ?? error?.name ?? "error",
+        };
+      }
+      await new Promise((settle) => setTimeout(settle, 400));
+      const after = await controller.capture();
+      const afterType = await controller.surface();
+      const windowsAfterType = await windowsFacts();
+      const nodes = (frame) => frame.context?.visibleTextNodes ?? null;
+      const chars = (frame) => (frame.context?.visibleText ?? "").length;
+      const typeFocus = focusFacts(afterType, field);
+      const textRoles = [
+        "AXTextField",
+        "AXTextArea",
+        "AXComboBox",
+        "AXIncrementor",
+        "AXSearchField",
+      ];
+      const sameField =
+        typeFocus.sameLabel && textRoles.includes(typeFocus.focusedAfter);
+      console.log(
+        JSON.stringify({
+          typeProbe: {
+            clicked: field.role,
+            via: clicked?.via ?? "(none)",
+            effect: clicked?.effect ?? "(none)",
+            refused: clicked?.refused,
+            // Before the click: the windows as the run found them.
+            windowsBefore,
+            // After the click: the focus, the field's value length (0
+            // expected) and the windows.
+            afterClick: {
+              ...focusFacts(afterClick, field),
+              valueLength: windowsAfterClick.valueLength ?? null,
+              windows: windowsAfterClick,
+            },
+            typedChars: TYPED.length,
+            typed,
+            // The page's text nodes (visibleTextNodes) at the first capture,
+            // after the click and after the typing, and the visible text's
+            // length after the click and after the typing.
+            textNodes: {
+              beforeClick: nodes(before),
+              before: nodes(mid),
+              after: nodes(after),
+            },
+            visibleTextChars: { before: chars(mid), after: chars(after) },
+            // After the typing: the focus (still the field's?), the focused
+            // element's value length (TYPED.length expected) and the windows.
+            afterType: {
+              ...typeFocus,
+              sameField,
+              valueLength: windowsAfterType.valueLength ?? null,
+              windows: windowsAfterType,
+            },
+            diagnosis: diagnose({
+              typed,
+              valueBefore: windowsAfterClick.valueLength ?? null,
+              valueAfter: windowsAfterType.valueLength ?? null,
+              nodesBefore: nodes(mid),
+              nodesAfter: nodes(after),
+              sameField,
+              windows: windowsAfterType,
+            }),
+          },
+        }),
+      );
+    }
+    await controller.stop("probe typed into the field");
   }
 } finally {
   try {

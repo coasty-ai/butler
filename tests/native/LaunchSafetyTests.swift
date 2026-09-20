@@ -93,4 +93,15 @@ func launchSafetyChecks(_ check: (Bool, String) -> Void) {
     else { check(false, "candidate names are bounded to five") }
     if case .unresolved(let names) = resolve("Tools", many) { check(names.count == 5 && names.allSatisfy { !$0.contains("/") }, "unresolved candidates are bounded display names") }
     else { check(false, "unresolved candidates are bounded display names") }
+
+    // The windows query's index (windowIndex): front to back, -1 for no
+    // window or one the list does not hold.
+    let listed = [11, 22, 33]
+    check(windowIndex(11, in: listed, same: { $0 == $1 }) == 0 && windowIndex(22, in: listed, same: { $0 == $1 }) == 1 && windowIndex(33, in: listed, same: { $0 == $1 }) == 2,
+          "a listed window is its position front to back")
+    check(windowIndex(nil, in: listed, same: { $0 == $1 }) == -1, "no window (no main, no focus, no focused element) is -1")
+    check(windowIndex(44, in: listed, same: { $0 == $1 }) == -1, "a window the list does not hold (a panel, another application's) is -1")
+    check(windowIndex(11, in: [Int](), same: { $0 == $1 }) == -1, "an application listing no windows is -1 for every window")
+    check(windowIndex("b", in: ["a", "b", "b"], same: { $0 == $1 }) == 1, "the first window taken as the same counts; AXWindows lists each once")
+    check(windowIndex(2, in: [10, 20, 30], same: { $0 / 10 == $1 }) == 1, "the caller's identity decides (CFEqual for elements)")
 }
