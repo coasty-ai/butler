@@ -2507,6 +2507,41 @@ describe("the journal's content-free rows", () => {
       expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
     }));
 
+  it("names which menu a menu_item opened, as a standard title or other, never its path", () =>
+    fixture((log) => {
+      const s = journal([
+        {
+          type: "ActionExecuted",
+          data: {
+            action: { type: "menu_item", path: ["History", "Back"] },
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0b1",
+          },
+        },
+        {
+          type: "ActionExecuted",
+          data: {
+            action: { type: "menu_item", path: [`${MARK} Widgets`, "Frob"] },
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0b2",
+          },
+        },
+        {
+          type: "ActionExecuted",
+          data: {
+            action: { type: "click_control", label: `${MARK} Save` },
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0b3",
+          },
+        },
+      ]);
+      log.snapshot(s);
+      const written = rows(log).filter((r) => r.event === "ActionExecuted");
+      expect(written.map((r) => r.data.menuTop)).toEqual([
+        "History",
+        "other",
+        undefined,
+      ]);
+      expect(JSON.stringify(written)).not.toContain("Back");
+      expect(JSON.stringify(written)).not.toContain(MARK);
+    }));
   it("keeps which walk read a frame's page text as a code and drops a sentence", () =>
     fixture((log) => {
       const s = journal([

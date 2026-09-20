@@ -303,6 +303,7 @@ const fields = new Set([
   "by",
   "words",
   "siteKey",
+  "menuTop",
   "clauseIndex",
   "decideMs",
   "issueMs",
@@ -545,9 +546,11 @@ const codeFields = new Set([
   "project",
   // The JSON parser's complaint about model arguments, as a fixed code.
   "parseError",
-  // A clause's commit ("boundary" or "stable") and a fast action's site code.
+  // A clause's commit ("boundary" or "stable"), a fast action's site code,
+  // and a menu_item's top-level menu title (a standard one, or other).
   "by",
   "siteKey",
+  "menuTop",
   // The observer: an exclusion code and a forget scope. A routine's id
   // ("routine-<hash>") is not a code by shape and is scrubbed as a string.
   "excluded",
@@ -714,7 +717,43 @@ const actionKeys = [
   "nameLength",
   "noteLength",
   "siteKey",
+  "menuTop",
 ];
+/**
+ * The menu bar's standard top-level titles: a menu_item row names which menu
+ * it opened as one of these, or "other", never the path (cycles
+ * 20260919-2339 and 20260920-0055: the CRM and ticket runs alternated
+ * menu_item with a link on three pages, and the trace could not say which
+ * menu; the path is the model's words and stays in the journal).
+ */
+const MENU_TOPS = new Set([
+  "File",
+  "Edit",
+  "View",
+  "History",
+  "Bookmarks",
+  "Window",
+  "Help",
+  "Format",
+  "Go",
+  "Tools",
+  "Develop",
+  "Tab",
+  "Insert",
+  "Table",
+  "Apple",
+]);
+function menuTop(action: {
+  type?: unknown;
+  path?: unknown;
+}): string | undefined {
+  if (action.type !== "menu_item" || !Array.isArray(action.path))
+    return undefined;
+  const first = action.path[0];
+  if (typeof first !== "string") return undefined;
+  const title = first.replace(/[.…]+$/, "").trim();
+  return MENU_TOPS.has(title) ? title : "other";
+}
 /** Every journal row carries these, whatever the event. */
 const journalBase = new Set(["runId", "sequence", "synthetic"]);
 /**
@@ -1358,6 +1397,8 @@ export class LocalDiagnostics {
                   typeof action.note === "string"
                     ? action.note.length
                     : undefined,
+                // Which menu a menu_item opened, as a standard title or other.
+                menuTop: menuTop(action),
               }
             : {}),
         }),
