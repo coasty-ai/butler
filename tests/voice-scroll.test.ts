@@ -533,8 +533,11 @@ describe("the spoken scroll: main.ts wiring", () => {
 
   it("starts the helper's scroll without a model call and shows the pill", () => {
     const scroll = block('case "scroll": {', 'case "acknowledge":');
-    // The user's own pause (the default message), which nothing narrates.
-    expect(scroll).toMatch(/if \(active && !runHeld\(\)\) runner!\.pause\(\);/);
+    // The user's own pause (the default message), which nothing narrates;
+    // its reason is "control" when spoken and "manual" otherwise.
+    expect(scroll).toMatch(
+      /if \(active && !runHeld\(\)\)\s*runner!\.pause\(undefined, ctx\.origin === "voice" \? "control" : "manual"\);/,
+    );
     expect(scroll).toContain('await native?.request("restoreRemembered");');
     expect(scroll).toMatch(
       /const pace = await getNative\(\)\.scroll\(direction, speed\);/,
