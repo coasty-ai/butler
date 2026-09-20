@@ -292,6 +292,8 @@ const fields = new Set([
   "pinned",
   "finish",
   "longRunning",
+  // ToolCallFinished: a read answered from the run's earlier result.
+  "repeat",
   // A coding delegation's folder as a hashed code, never its path.
   "project",
   // The first step prepared while the user spoke (Speculation* events): how
@@ -502,6 +504,8 @@ const flagFields = new Set([
   "final",
   // ActionLoopDetected: a click by name with no effect repeated from one screen.
   "noEffect",
+  // ToolCallFinished: a read answered from the run's earlier result, the tool not called.
+  "repeat",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -867,6 +871,9 @@ const journalEvents = new Map<string, Set<string>>([
       "launcherStatus",
       "reasonCode",
       "reasonLength",
+      // A refused tool_call: the tool's fixed trace name and server.
+      "tool",
+      "server",
     ]),
   ],
   [
@@ -952,6 +959,7 @@ const journalEvents = new Map<string, Set<string>>([
       "verified",
       "finish",
       "longRunning",
+      "repeat",
     ]),
   ],
   ["ToolUndo", new Set(["tool", "server", "outcome"])],
@@ -1405,7 +1413,17 @@ export class LocalDiagnostics {
                 verified: e.data.verified,
                 finish: e.data.finish,
                 longRunning: e.data.longRunning,
+                // A read answered from the run's earlier result, the tool
+                // not called (ToolCallFinished).
+                repeat: e.data.repeat,
               }
+            : {}),
+          // A refused tool_call names its tool by the frozen spec's trace
+          // name and server (the runner's stamp, never the model's string),
+          // so the trace pairs the refusal with the tool.
+          ...(e.type === "ActionRetargetRequested" &&
+          e.data.actionType === "tool_call"
+            ? { tool: code(e.data.tool), server: code(e.data.server) }
             : {}),
           // App names are user metadata; only the bundle id and flags are logged.
           ...(e.type === "ActionExecuted" && launched

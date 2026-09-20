@@ -166,16 +166,22 @@ describe("decision codes", () => {
     for (const reason of found)
       expect(retryCode(reason), reason).not.toBe("OTHER");
     expect(found).toContain(SPEAKING_RETRY);
-    for (const key of [
-      "practice",
-      "unknown_tool",
-      "invalid_args",
-      "too_large",
-      "bad_path",
-      "unavailable",
-      "no_hook",
-    ] as const)
-      expect(retryCode(TOOL_REFUSALS[key]), key).not.toBe("OTHER");
+    // Every refusal the tool policy can send back as a RETRY: the runner's
+    // (practice, no_hook) and every prepare-time problem's (tool-policy.ts
+    // retry(TOOL_REFUSALS[prepared.problem])). Cycle 20260920-0327-abc24ae
+    // traced ten tool_call retargets as OTHER: would_erase, bad_url,
+    // protected_site and no_page had no row.
+    const denies = new Set(["credential", "budget", "privacy"]);
+    for (const key of Object.keys(
+      TOOL_REFUSALS,
+    ) as (keyof typeof TOOL_REFUSALS)[])
+      if (!denies.has(key))
+        expect(retryCode(TOOL_REFUSALS[key]), key).not.toBe("OTHER");
+    expect(retryCode(TOOL_REFUSALS.would_erase)).toBe("TOOL_WOULD_ERASE");
+    expect(retryCode(TOOL_REFUSALS.bad_url)).toBe("TOOL_BAD_URL");
+    expect(retryCode(TOOL_REFUSALS.protected_site)).toBe("TOOL_PROTECTED_SITE");
+    expect(retryCode(TOOL_REFUSALS.no_page)).toBe("TOOL_NO_PAGE");
+    expect(retryCode(TOOL_REFUSALS.denylisted)).toBe("TOOL_DENYLISTED");
     expect(retryCode(windowlessRepeat("Calendar"))).toBe("WINDOWLESS_REPEAT");
   });
 

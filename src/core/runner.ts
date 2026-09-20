@@ -640,6 +640,36 @@ export const PAGE_TOOL_NOTE =
 export const LOOK_AGAIN_NOTE =
   " Looking again shows the same screen. The values you read are in your note: act on them now with a tool from context.tools (files: append_text_file, rename_file, move_file) or a control by name, or fail with what blocks.";
 /**
+ * The line a read-tier tool call repeated with the same arguments gets when
+ * nothing that could change what it reads was executed between (no write
+ * or other non-read tool call, no screen step beyond a look, a scroll, a
+ * wait or a pointer move): the earlier result is given again behind it and
+ * the tool is not called. Cycle 20260920-0327-abc24ae files-rename-receipts
+ * #3: read_text_file thirteen times over a handful of receipts, most of
+ * them re-reads of a file already read, and rename_file never called. The
+ * step number is a count; the result is the one the run already holds.
+ */
+export const READ_AGAIN_NOTE =
+  "Same as step {step} — nothing changed it since; the values are already in your history.";
+export function readAgainLine(step: number): string {
+  return READ_AGAIN_NOTE.replace("{step}", String(step)) + "\n";
+}
+/** Screen steps that change nothing a read-tier tool reads: the read cache survives them. */
+const READ_KEEPING_TYPES = new Set(["capture", "scroll", "wait", "move"]);
+/**
+ * The line every READS_BEFORE_NOTE-th read-tier tool call of a run gets
+ * while no other tool has been called and one is listed: the same cycle's
+ * files-rename-receipts #3 (45 actions, 13 reads, 0 writes) and probe
+ * 20260920-0158 #1 and #2 read, looked, and read the same thing again with
+ * rename_file listed; the count is the only number in the line.
+ */
+export const READS_BEFORE_NOTE = 3;
+export const READS_WITHOUT_WRITE_NOTE =
+  " You have read {n} files or pages and changed nothing. If the objective asks to rename, move, write or append, call that tool now with the values you read — they are in your history. If it asks only to read, answer with done and say the values.";
+export function readsWithoutWriteNote(n: number): string {
+  return READS_WITHOUT_WRITE_NOTE.replace("{n}", String(n));
+}
+/**
  * How long the capture after a transition waits for the screen it moved to:
  * a page sent for with open_url (the browser is told and answers at once), a
  * cold launch whose window is on its way, or an application or page a click
@@ -1522,6 +1552,20 @@ export class Runner {
   /** Consecutive capture steps executed; the second on a browser page gets PAGE_TOOL_NOTE. */
   private looksInARow = 0;
   /**
+   * The ok result of every read-tier tool call since the last step that
+   * could change what one reads, by the step's signature (and the page in
+   * front, for the read of the current page): the same read again is
+   * answered from here (READ_AGAIN_NOTE) and the tool is not called.
+   */
+  private readResults = new Map<
+    string,
+    { step: number; outcome: ToolOutcome }
+  >();
+  /** Read-tier tool calls this run made, repeats included (READS_WITHOUT_WRITE_NOTE). */
+  private readCalls = 0;
+  /** A tool call of another tier was executed this run, whatever it returned. */
+  private wroteByTool = false;
+  /**
    * The clock line the frozen list is shown with, taken when the list is:
    * context.tools rides in the request's cacheable workspace part, so it
    * must not change from step to step (policy grounds dates on the live
@@ -1713,6 +1757,7 @@ export class Runner {
     this.shown = undefined;
     this.lastStep = undefined;
     this.looksInARow = 0;
+    this.readResults.clear();
     this.resetProgress();
   }
   private resetProgress() {
@@ -1854,6 +1899,37 @@ export class Runner {
       action.type === "tool_call" &&
       this.toolList?.tools.find((t) => t.id === action.tool)?.tier === "read"
     );
+  }
+  /**
+   * The read cache's key for a read-tier tool step: the step's signature
+   * (the tool and a hash of its arguments) and, for the read of the page in
+   * front, the browser's address off the frame, so the same call on another
+   * page is another read. Never traced.
+   */
+  private readKey(
+    action: Extract<Action, { type: "tool_call" }>,
+    frame: Frame,
+  ): string {
+    const page =
+      action.tool === "web__read_current_page"
+        ? (frame.context?.browserAddress ?? "")
+        : "";
+    return `${actionSignature(action)}\u0000${page}`;
+  }
+  /**
+   * On every READS_BEFORE_NOTE-th read-tier tool call while no tool of
+   * another tier has been called and one is listed: the count of reads and
+   * the tools to act with (READS_WITHOUT_WRITE_NOTE). Nothing once a write
+   * has been tried, or when the run lists reads alone.
+   */
+  private readsWithoutWriteNote(readTool: boolean): string {
+    if (!readTool || this.wroteByTool) return "";
+    if (this.readCalls === 0 || this.readCalls % READS_BEFORE_NOTE !== 0)
+      return "";
+    const writeListed = (this.toolList?.tools ?? []).some(
+      (t) => t.tier !== "read",
+    );
+    return writeListed ? readsWithoutWriteNote(this.readCalls) : "";
   }
   /**
    * The loop continued past its warning. While someone at the Mac can answer,
@@ -2799,28 +2875,43 @@ export class Runner {
     // A long call holds the budget clock while it runs, as an approval does,
     // so the runtime timer cannot end the run under it; its first
     // LONG_CALL_FREE_MS are counted back once it returns.
-    if (spec.longRunning) this.markHeld();
+    // The same read with the same arguments, with nothing executed since
+    // that could change what it reads, is answered from the earlier result
+    // (READ_AGAIN_NOTE) and the tool is not called.
+    const readTool = spec.tier === "read";
+    const readKey = readTool ? this.readKey(action, frame) : undefined;
+    const earlier =
+      readKey !== undefined ? this.readResults.get(readKey) : undefined;
     let outcome: ToolOutcome;
-    try {
-      outcome = await tools.call(
-        spec,
-        action.args,
-        this.abort.signal,
-        this.toolWords(this.userWords(run), frame),
-      );
-    } catch {
-      // The tool layer promises not to throw; a broken one reads as away.
+    if (earlier) {
       outcome = {
-        code: "unavailable",
-        text: TOOL_RESULT_TEXT.unavailable.replace("{title}", spec.title),
-        resultBytes: 0,
-        resultItems: 0,
-        durationMs: Date.now() - started,
+        ...earlier.outcome,
+        text: readAgainLine(earlier.step) + earlier.outcome.text,
+        durationMs: 0,
       };
-    } finally {
-      if (spec.longRunning && !this.held && this.heldSince !== undefined) {
-        this.heldMs -= Math.min(Date.now() - started, LONG_CALL_FREE_MS);
-        this.markActive();
+    } else {
+      if (spec.longRunning) this.markHeld();
+      try {
+        outcome = await tools.call(
+          spec,
+          action.args,
+          this.abort.signal,
+          this.toolWords(this.userWords(run), frame),
+        );
+      } catch {
+        // The tool layer promises not to throw; a broken one reads as away.
+        outcome = {
+          code: "unavailable",
+          text: TOOL_RESULT_TEXT.unavailable.replace("{title}", spec.title),
+          resultBytes: 0,
+          resultItems: 0,
+          durationMs: Date.now() - started,
+        };
+      } finally {
+        if (spec.longRunning && !this.held && this.heldSince !== undefined) {
+          this.heldMs -= Math.min(Date.now() - started, LONG_CALL_FREE_MS);
+          this.markActive();
+        }
       }
     }
     if (!this.active()) return "stopped";
@@ -2841,6 +2932,17 @@ export class Runner {
       writes: (run.tools?.writes ?? 0) + (ok && spec.tier !== "read" ? 1 : 0),
     };
     if (ok) this.resetCounters();
+    // What the read cache knows after this step: an ok read is kept under
+    // its key by this step's number; any other tool call may have changed
+    // a file or a page, so the cache forgets everything.
+    if (readKey !== undefined) {
+      this.readCalls++;
+      if (ok && !earlier)
+        this.readResults.set(readKey, { step: run.actions, outcome });
+    } else {
+      this.wroteByTool = true;
+      this.readResults.clear();
+    }
     this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
     const fromPlan =
       this.planPending !== undefined ? this.plan?.source : undefined;
@@ -2874,6 +2976,8 @@ export class Runner {
       verified: outcome.verified === true,
       finish: action.finish,
       longRunning: spec.longRunning,
+      // Answered from the earlier result, the tool not called.
+      ...(earlier ? { repeat: true } : {}),
     });
     const loop = this.trackLoop(action);
     this.trackAppSwitch(action);
@@ -2884,7 +2988,10 @@ export class Runner {
     this.history.push({
       type: action.type,
       action: shown,
-      result: outcome.text + (loop === "warn" ? loopWarning : ""),
+      result:
+        outcome.text +
+        this.readsWithoutWriteNote(readTool) +
+        (loop === "warn" ? loopWarning : ""),
     });
     if (loop === "stuck") {
       this.stuck(this.history.at(-1));
@@ -3944,6 +4051,9 @@ export class Runner {
       probe: progressProbe(executionFrame, this.lastSurface),
     };
     this.looksInARow = action.type === "capture" ? this.looksInARow + 1 : 0;
+    // A step that can change a file or a page (a click, a key, an open, a
+    // menu item, typed text) ends what the read cache knows.
+    if (!READ_KEEPING_TYPES.has(action.type)) this.readResults.clear();
     this.history.push({
       type: action.type,
       action: executedAction,
@@ -4012,6 +4122,8 @@ export class Runner {
     this.reflected = new Set();
     this.loopEpisodes = 0;
     this.noEffectClicks = new Map();
+    this.readCalls = 0;
+    this.wroteByTool = false;
     this.settleBefore = undefined;
     this.streamedPage = undefined;
     this.resetMemory();
@@ -4881,9 +4993,15 @@ export class Runner {
         // A refused tool call has no target to hand over: it counts as an
         // invalid step, and four in a row pause the run as they do today.
         if (decision.kind === "RETRY" && action.type === "tool_call") {
+          // The tool by its fixed trace name off the frozen list (never
+          // the model's string), so the trace pairs a refusal with its tool;
+          // ToolCallProposed is not written before a refusal.
+          const refused =
+            "tool" in toolContext ? toolContext.tool?.spec.trace : undefined;
           this.event("ActionRetargetRequested", {
             actionType: action.type,
             reasonCode: retryCode(decision.reason),
+            ...(refused ? { tool: refused.tool, server: refused.server } : {}),
           });
           history.push({
             type: action.type,

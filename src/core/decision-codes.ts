@@ -23,7 +23,7 @@ import {
   SPEAKING_RETRY,
 } from "./policy";
 import { TOOL_ALLOWED } from "./tool-policy";
-import { TOOL_REFUSALS } from "./tools";
+import { TOOL_REFUSALS, type ToolProblem } from "./tools";
 
 export const ALLOWED_CODES = [
   // A step with no rule to state: capture, done, fail, wait.
@@ -141,17 +141,44 @@ export const RETRY_CODES = [
   "BACKGROUND_NO_SWITCH",
   "BACKGROUND_NO_DRAG",
   "BACKGROUND_NO_CHORD",
-  // Tool steps (TOOL_REFUSALS that retry).
+  // Tool steps (TOOL_REFUSALS that retry: the runner's, and every
+  // prepare-time problem a provider can name, TOOL_PROBLEM_CODES).
   "TOOL_PRACTICE",
   "TOOL_UNKNOWN",
   "TOOL_BAD_ARGS",
   "TOOL_TOO_LARGE",
   "TOOL_BAD_PATH",
+  "TOOL_WOULD_ERASE",
+  "TOOL_BAD_URL",
+  "TOOL_PROTECTED_SITE",
+  "TOOL_NO_PAGE",
   "TOOL_UNAVAILABLE",
+  "TOOL_DENYLISTED",
   "TOOL_NO_HOOK",
   "OTHER",
 ] as const;
 export type RetryCode = (typeof RETRY_CODES)[number];
+/**
+ * The code for each problem a tool's prepare can name (src/core/tools.ts
+ * ToolProblem), which the tool policy sends back as a RETRY carrying that
+ * problem's refusal (src/core/tool-policy.ts: retry(TOOL_REFUSALS[prepared.
+ * problem])). Typed over every problem, so a problem added without a code
+ * does not compile; cycle 20260920-0327-abc24ae wrote ten tool_call
+ * retargets as OTHER, the files tool's would_erase and the web tool's
+ * bad_url, protected_site and no_page having no row here.
+ */
+const TOOL_PROBLEM_CODES: Record<ToolProblem, RetryCode> = {
+  unknown_tool: "TOOL_UNKNOWN",
+  invalid_args: "TOOL_BAD_ARGS",
+  too_large: "TOOL_TOO_LARGE",
+  unavailable: "TOOL_UNAVAILABLE",
+  denylisted: "TOOL_DENYLISTED",
+  bad_path: "TOOL_BAD_PATH",
+  would_erase: "TOOL_WOULD_ERASE",
+  bad_url: "TOOL_BAD_URL",
+  protected_site: "TOOL_PROTECTED_SITE",
+  no_page: "TOOL_NO_PAGE",
+};
 
 export const DENY_CODES = [
   "PROTECTED_APP",
@@ -363,12 +390,10 @@ const RETRY: Table<RetryCode> = {
       "TARGET_UNIDENTIFIED",
     ],
     [TOOL_REFUSALS.practice, "TOOL_PRACTICE"],
-    [TOOL_REFUSALS.unknown_tool, "TOOL_UNKNOWN"],
-    [TOOL_REFUSALS.invalid_args, "TOOL_BAD_ARGS"],
-    [TOOL_REFUSALS.too_large, "TOOL_TOO_LARGE"],
-    [TOOL_REFUSALS.bad_path, "TOOL_BAD_PATH"],
-    [TOOL_REFUSALS.unavailable, "TOOL_UNAVAILABLE"],
     [TOOL_REFUSALS.no_hook, "TOOL_NO_HOOK"],
+    ...(Object.entries(TOOL_PROBLEM_CODES) as [ToolProblem, RetryCode][]).map(
+      ([problem, code]) => [TOOL_REFUSALS[problem], code] as const,
+    ),
   ]),
   shapes: [
     [

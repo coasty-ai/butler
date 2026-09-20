@@ -186,6 +186,10 @@ export function frictionCodes(line: DiagnosticLine): string[] {
           ? [named, ...beside]
           : [named];
       if (why?.startsWith("TOOL_")) return ["TOOL_REFUSED", ...beside];
+      // A tool_call carries no roles: sent back, it is a refused tool call
+      // whatever its code (cycle 20260920-0327-abc24ae: ten tool refusals
+      // coded OTHER were counted as blind surfaces), never a blind surface.
+      if (action === "tool_call") return ["TOOL_REFUSED", ...beside];
       if (launcher === "resolved" && action === "open_app")
         return ["APP_ALREADY_FRONTMOST"];
       if (launcher === "unresolved") return ["APP_UNRESOLVED"];
@@ -566,7 +570,7 @@ const NOTE: Record<string, string> = {
   RETRY_SPEAKING:
     "The step was proposed while the user was still speaking and held for the end of the sentence; it is not a grounding problem.",
   TOOL_REFUSED:
-    "A tool call the policy sent back (an unknown tool, bad arguments, a path the files tool may not touch); the RETRY_ pattern beside it says which.",
+    "A tool call the policy sent back (an unknown tool, bad arguments, a path the files tool may not touch, a replace that would erase, a refused or protected address, no page in front); the RETRY_ pattern beside it says which.",
   BLIND_SURFACE:
     "The frontmost application reported no accessibility information, so every pointer step was refused.",
   APP_ALREADY_FRONTMOST:

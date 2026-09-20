@@ -2197,6 +2197,24 @@ describe("run analyzer", () => {
       retarget({ actionType: "tool_call", reasonCode: "TOOL_BAD_PATH" }),
     ).toEqual(["TOOL_REFUSED", "RETRY_TOOL_BAD_PATH"]);
     expect(
+      retarget({ actionType: "tool_call", reasonCode: "TOOL_WOULD_ERASE" }),
+    ).toEqual(["TOOL_REFUSED", "RETRY_TOOL_WOULD_ERASE"]);
+    // A tool_call carries no roles: sent back with a code the table does not
+    // know, or none, it is a refused tool call, never a blind surface
+    // (cycle 20260920-0327-abc24ae: ten such rows counted as BLIND_SURFACE).
+    expect(retarget({ actionType: "tool_call", reasonCode: "OTHER" })).toEqual([
+      "TOOL_REFUSED",
+    ]);
+    expect(retarget({ actionType: "tool_call" })).toEqual(["TOOL_REFUSED"]);
+    expect(
+      retarget({
+        actionType: "tool_call",
+        reasonCode: "OTHER",
+        tool: "replace_file_text",
+        server: "files",
+      }),
+    ).toEqual(["TOOL_REFUSED"]);
+    expect(
       retarget({
         actionType: "click",
         focusedRole: "AXWebArea",

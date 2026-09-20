@@ -336,6 +336,35 @@ and the third `list_directory` of the same folder within twelve steps ended
 the run `STUCK_LOOP` at 20 actions with 7 tool calls and no write, while it
 was still making progress.
 
+A read repeated with the same arguments is answered from the run's own
+earlier result when nothing that could change what it reads was executed
+between (`Runner.readResults`, keyed by the step's signature and, for
+`read_current_page`, the page's address): no other tool call of any tier, no
+screen step beyond a capture, a scroll, a wait or a pointer move, and no
+takeover. The model reads the earlier result whole behind one line naming
+the step it came from (`READ_AGAIN_NOTE`: "Same as step N — nothing changed
+it since; the values are already in your history."), the tool is not called,
+`ToolCallFinished` carries `repeat: true` with `durationMs` 0, and the step
+still counts for the spin rule. Every third read-tier call of a run while no
+tool of another tier has been called and one is listed carries
+`READS_WITHOUT_WRITE_NOTE` (the count of reads, the verbs to act with;
+nothing once a write was tried, nothing when only reads are listed). Cycle
+20260920-0327-abc24ae `files-rename-receipts` #3 (45 actions, `STUCK_LOOP`,
+`NOT_RENAMED`): `read_text_file` ×13 over a handful of receipts with about 25
+captures between, most re-reads of a file already read, `rename_file`
+listed and never called; probe 20260920-0158 #1 (24 actions) and #2 (42) had
+the same shape.
+
+A refusal at `prepare` is a RETRY carrying the problem's fixed sentence
+(`TOOL_REFUSALS[prepared.problem]`), and every problem has a code in
+`src/core/decision-codes.ts` (`TOOL_PROBLEM_CODES`, typed over `ToolProblem`
+so a new problem without a code does not compile): `TOOL_BAD_ARGS`,
+`TOOL_TOO_LARGE`, `TOOL_BAD_PATH`, `TOOL_WOULD_ERASE`, `TOOL_BAD_URL`,
+`TOOL_PROTECTED_SITE`, `TOOL_NO_PAGE`, `TOOL_UNKNOWN`, `TOOL_UNAVAILABLE`,
+`TOOL_DENYLISTED`. The retarget row names the tool by its trace name and
+server off the frozen list (never the model's string), and the bench reads
+any `tool_call` retarget as `TOOL_REFUSED`, never `BLIND_SURFACE`.
+
 ### What only a live run can confirm
 
 - That gpt-5.4-mini and the other cell models call `files__append_text_file`

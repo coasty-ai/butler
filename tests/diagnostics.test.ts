@@ -2369,6 +2369,48 @@ describe("the journal's content-free rows", () => {
     synthetic: false,
   });
 
+  it("writes a read answered from the run's earlier result as a repeat flag, and drops anything else in the field", () =>
+    fixture((log) => {
+      const finished = (extra: Record<string, unknown>) => ({
+        type: "ToolCallFinished",
+        data: {
+          tool: "read_text_file",
+          server: "files",
+          outcome: "ok",
+          resultBytes: 40,
+          resultItems: 1,
+          durationMs: 0,
+          verified: false,
+          finish: false,
+          longRunning: false,
+          text: `Tool files__read_text_file: ok. ${MARK}`,
+          ...extra,
+        },
+      });
+      const s = journal([
+        finished({ repeat: true }),
+        finished({ repeat: `${MARK} yes` }),
+        finished({}),
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      const row = {
+        tool: "read_text_file",
+        server: "files",
+        outcome: "ok",
+        resultBytes: 40,
+        resultItems: 1,
+        durationMs: 0,
+        verified: false,
+        finish: false,
+        longRunning: false,
+      };
+      expect(r[0].data).toEqual({ ...base(s, 1), ...row, repeat: true });
+      expect(r[1].data).toEqual({ ...base(s, 2), ...row });
+      expect(r[2].data).toEqual({ ...base(s, 3), ...row });
+    }));
+
   it("writes a correction as its length and its place in the run, never its words or its clock", () =>
     fixture((log) => {
       const words = `${MARK} the other one, and stop after that please`;
@@ -2722,6 +2764,27 @@ describe("the journal's content-free rows", () => {
           type: "UserDenied",
           data: { source: "pill", approvalCode: "CLICK_CONTROL" },
         },
+        // A refused tool_call names its tool by the frozen spec's trace
+        // name and server; a sentence in the field is dropped.
+        {
+          type: "ActionRetargetRequested",
+          data: {
+            actionType: "tool_call",
+            reasonCode: "TOOL_WOULD_ERASE",
+            tool: "replace_file_text",
+            server: "files",
+            reason: `${MARK} would be erased`,
+          },
+        },
+        {
+          type: "ActionRetargetRequested",
+          data: {
+            actionType: "tool_call",
+            reasonCode: "TOOL_NO_PAGE",
+            tool: `${MARK} is not a tool name`,
+            server: "web",
+          },
+        },
       ]);
       log.snapshot(s);
       const raw = readFileSync(log.file, "utf8");
@@ -2764,6 +2827,20 @@ describe("the journal's content-free rows", () => {
         ...base(s, 7),
         source: "pill",
         approvalCode: "CLICK_CONTROL",
+      });
+      expect(r[7].data).toEqual({
+        ...base(s, 8),
+        actionType: "tool_call",
+        reasonCode: "TOOL_WOULD_ERASE",
+        reasonLength: `${MARK} would be erased`.length,
+        tool: "replace_file_text",
+        server: "files",
+      });
+      expect(r[8].data).toEqual({
+        ...base(s, 9),
+        actionType: "tool_call",
+        reasonCode: "TOOL_NO_PAGE",
+        server: "web",
       });
     }));
 
