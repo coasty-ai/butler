@@ -79,7 +79,14 @@ export const DONE_AUDIT_MIN_ACTIONS = 3;
  * cycle 4 in 15). With evidence the step's number a requirement is nearer
  * 40 tokens, so a dozen fit in 500 and the rest is thinking room.
  */
-export const DONE_AUDIT_MAX_OUTPUT_TOKENS = 1_400;
+/**
+ * 4,000 since cd48fe2 asked for medium effort: market 3/3 at 72ef8e4
+ * (cycle 20260920-0631, checkin-flight-seat #1) spent exactly 1,400 output
+ * tokens on both attempts — OpenAI counts the thinking against this cap and
+ * medium thinking alone can pass 1,000 — so the reply was cut twice and a
+ * false done stood as "unavailable". The reply itself stays near 500.
+ */
+export const DONE_AUDIT_MAX_OUTPUT_TOKENS = 4_000;
 /** The whole call, retries included; the run's clock keeps running. */
 export const DONE_AUDIT_DEADLINE_MS = 30_000;
 /** The auditor's reasoning effort; see doneAuditCall for why not low. */

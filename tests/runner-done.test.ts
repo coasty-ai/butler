@@ -1723,9 +1723,9 @@ describe("the done audit's pieces", () => {
     // on both attempts (4 unavailable in 15 audits, against 1 in 17 and 1
     // in 13 the two cycles before); a reasoning model's thinking counts
     // against it. About 90 tokens a requirement with a sentence of evidence
-    // times 12, plus the object and the thinking: 1,400. The deadline is
+    // times 12, plus the object and medium thinking (counted against the cap): 4,000. The deadline is
     // the same 30 s.
-    expect(DONE_AUDIT_MAX_OUTPUT_TOKENS).toBe(1_400);
+    expect(DONE_AUDIT_MAX_OUTPUT_TOKENS).toBe(4_000);
     expect(DONE_AUDIT_DEADLINE_MS).toBe(30_000);
     const call = doneAuditCall(TWO_CLAUSES, [], "Done.");
     expect(call.system).toBe(DONE_AUDIT_PROMPT);
