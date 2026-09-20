@@ -1633,9 +1633,10 @@ describe("pause cause from a real run", () => {
       },
     );
     await runner.start("keep looking at the screen", { origin: "bench" });
-    // Nobody at the bench says continue: the run got one reflection step at
-    // the seventh capture (the warning at the third, four cycling steps on),
-    // looped again at once and was failed as stuck three captures later.
+    // Nobody at the bench says continue: a capture is no revisit (8158662),
+    // so the period rule spoke at the fourth capture; the run got one
+    // reflection step four cycling steps on, looped again at once and was
+    // failed as stuck four captures later.
     expect(paused).toBe(false);
     expect(m.events.some((e) => e.type === "RunPaused")).toBe(false);
     expect(
@@ -1645,7 +1646,7 @@ describe("pause cause from a real run", () => {
       { episode: 2, outcome: "fail" },
     ]);
     expect(m.events.filter((e) => e.type === "ActionExecuted")).toHaveLength(
-      10,
+      12,
     );
     expect(runner.snapshot.run?.status).toBe("failed");
     expect(runner.snapshot.run?.summary).toBe(LOOP_STUCK_MESSAGE);

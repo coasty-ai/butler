@@ -3949,6 +3949,8 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
         "files__append_text_file",
         "files__replace_file_text",
         "files__list_directory",
+        "files__rename_file",
+        "files__move_file",
       ]);
       expect(list.unavailable).toEqual([]);
       expect(tools.registry.status().apple.state).toBe("off");
