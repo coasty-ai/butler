@@ -86,6 +86,7 @@ import {
   evaluate,
   focusedTextField,
   normalizeAppName,
+  normalizeControlLabel,
   surfacePolicy,
   PASTE_ALLOWED,
   type Decision,
@@ -972,6 +973,58 @@ export function pasteRequested(
   return /\bpaste\b/i.test(
     [own ? task : "", ...(corrections ?? []).map((c) => c.text)].join("\n"),
   );
+}
+/**
+ * A clipboard command reached through the menus with nothing for it to act
+ * on, answered before the helper is asked to press it. Probe
+ * 20260919-2339-54b99b3, ops-crm-data-entry #1 and #2 (autonomy all,
+ * gpt-5.4-mini): the lead's values rode in the note (47–55 characters) while
+ * the form's three fields were never clicked (every click_control read
+ * effect changed, never focused) and no type_text was proposed in 36 actions;
+ * each run alternated a menu item on the form and the link back to it until
+ * the loop rule failed it. Edit > Paste lands nowhere without an editable
+ * field focused, and Edit > Copy or Cut takes nothing without a selection or
+ * a field: the answer sends the value in by typing from the note the model
+ * already carries. Policy's clipboard rule still judges every menu Copy, Cut
+ * or Paste this check lets through, and a menu item that is none of these is
+ * untouched.
+ */
+export const MENU_NEEDS_FOCUS_LINE =
+  "No input was sent. Nothing is focused to paste into. Click the field by name (click_control on its label), then type_text the value from your note.";
+export const MENU_NEEDS_SELECTION_LINE =
+  "No input was sent. Nothing is selected to copy. A value read from a page is carried in your note and typed into the form with type_text, not copied.";
+/** Focused roles a menu Paste lands in (policy's editable roles and a search field). */
+const pasteFocusRoles = new Set([
+  "AXTextField",
+  "AXTextArea",
+  "AXComboBox",
+  "AXSearchField",
+]);
+/** Edit > Paste and its variants ("Paste and Match Style"); Edit > Copy, Cut and theirs. */
+const pasteMenuTitle = /^paste\b/;
+const copyMenuTitle = /^(?:copy|cut)\b/;
+export function menuClipboardRefusal(
+  action: Action,
+  surface: Surface,
+  context?: ScreenContext,
+):
+  | { code: "MENU_NEEDS_FOCUS" | "MENU_NEEDS_SELECTION"; line: string }
+  | undefined {
+  if (action.type !== "menu_item") return undefined;
+  // The model's own last title and the item native resolved it to.
+  const titles = [action.path[action.path.length - 1], surface.menuLabel]
+    .filter((t): t is string => typeof t === "string")
+    .map(normalizeControlLabel);
+  const editable = pasteFocusRoles.has(surface.focusedRole ?? "");
+  if (titles.some((t) => pasteMenuTitle.test(t)))
+    return editable
+      ? undefined
+      : { code: "MENU_NEEDS_FOCUS", line: MENU_NEEDS_FOCUS_LINE };
+  if (titles.some((t) => copyMenuTitle.test(t)))
+    return editable || (context?.selectedText ?? "").trim()
+      ? undefined
+      : { code: "MENU_NEEDS_SELECTION", line: MENU_NEEDS_SELECTION_LINE };
+  return undefined;
 }
 export const MANUAL_PAUSE_MESSAGE = "Paused — you’re controlling the computer.";
 /** Hand-off after repeated unidentified targets; a click by the user resolves it. */
@@ -4644,6 +4697,29 @@ export class Runner {
           planFail(nativeReason(error));
           if (await this.recoverNative(error, epoch, action)) continue;
           throw error;
+        }
+        // A menu Copy, Cut or Paste with nothing to act on is answered with
+        // its fixed line and counted as an invalid step, as a refused tool
+        // call is: it never executes, so it is no revisit the loop rule
+        // could hold against the model (menuClipboardRefusal).
+        const clipboard = menuClipboardRefusal(
+          action,
+          actionSurface,
+          frame.context,
+        );
+        if (clipboard) {
+          planFail("retry");
+          this.event("ActionFailed", {
+            code: clipboard.code,
+            actionType: action.type,
+          });
+          history.push({
+            type: action.type,
+            action: echoAction(action),
+            result: clipboard.line,
+          });
+          this.countInvalid();
+          continue;
         }
         const userWords = this.userWords(run);
         const toolContext =

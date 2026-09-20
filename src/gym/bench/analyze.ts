@@ -576,6 +576,14 @@ const NOTE: Record<string, string> = {
   APP_SWITCH_THRASH:
     "The run bounced between applications without reading them.",
   INVALID_ACTION: "The model returned an action the schema rejected.",
+  // A menu Copy, Cut or Paste with nothing to act on: the runner answered it
+  // with a fixed line and counted an invalid step, never a revisit (probe
+  // 20260919-2339-54b99b3: ops-crm-data-entry carried the lead's values in
+  // its note, clicked no field and typed nothing in 36 actions).
+  MENU_NEEDS_FOCUS:
+    "Edit > Paste (or a variant such as Paste and Match Style) was proposed through the menus with no editable field focused, so the runner answered it without pressing it: click the field by name, then type_text the value from the note. Counted as an invalid step, never a revisit.",
+  MENU_NEEDS_SELECTION:
+    "Edit > Copy or Cut was proposed through the menus with nothing selected and no editable field focused, so the runner answered it without pressing it: a value read from a page is typed into the form from the note, not copied. Counted as an invalid step, never a revisit.",
   MALFORMED_RESPONSE: "The model reply did not contain one usable action.",
   MODEL_REFUSED: "The model declined the step.",
   APPROVAL_REQUESTED: "The policy asked the user to approve a step.",

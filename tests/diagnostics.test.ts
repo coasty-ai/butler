@@ -623,6 +623,14 @@ describe("local diagnostic stream", () => {
         effect: "focused",
         via: "press",
       });
+      // A menu Paste answered for want of a focused field (src/core/runner.ts
+      // menuClipboardRefusal): its code and the step's type; the menu path
+      // stays in the journal.
+      add("ActionFailed", {
+        code: "MENU_NEEDS_FOCUS",
+        actionType: "menu_item",
+        path: ["Edit", "Paste"],
+      });
       log.snapshot(snapshot);
       const raw = readFileSync(log.file, "utf8");
       const events = raw
@@ -665,6 +673,12 @@ describe("local diagnostic stream", () => {
       });
       expect(events[4].event).toBe("RunFailed");
       expect(events[4].data.code).toBe("DELIVERABLE_MISSING");
+      expect(events[8].data).toMatchObject({
+        code: "MENU_NEEDS_FOCUS",
+        actionType: "menu_item",
+      });
+      expect(events[8].data.path).toBeUndefined();
+      expect(raw).not.toContain("Paste");
     }));
   it("logs memory recall and replay plans as counts and codes, never task text or paths", () =>
     fixture((log) => {

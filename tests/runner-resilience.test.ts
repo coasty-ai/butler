@@ -15,10 +15,13 @@ import {
   type Surface,
 } from "../src/core/schema";
 import {
+  MENU_NEEDS_FOCUS_LINE,
+  MENU_NEEDS_SELECTION_LINE,
   Runner,
   TARGET_HANDOFF_MESSAGE,
   actionSignature,
   declinedResult,
+  menuClipboardRefusal,
   nativeAction,
   refusedTargetsWarning,
   repetitionPeriod,
@@ -2397,5 +2400,261 @@ describe("the model's last word before a targeting hand-off", () => {
       false,
       true,
     ]);
+  });
+});
+
+// Probe 20260919-2339-54b99b3, ops-crm-data-entry #1 and #2 (autonomy all,
+// gpt-5.4-mini): the lead's values rode in the note (47–55 characters) while
+// no field was ever clicked (every click_control read effect changed, never
+// focused) and no type_text was proposed in 36 actions; each run alternated
+// a menu item on the form and the link back to it until the loop rule failed
+// it. A menu Copy, Cut or Paste with nothing to act on is answered before it
+// is pressed, as an invalid step the model can break, never a revisit.
+describe("a menu Copy or Paste with nothing to act on", () => {
+  const menu = (path: string[]) => act({ type: "menu_item", path });
+  const focused = (focusedRole?: string, menuLabel?: string) =>
+    controller({
+      surface: async () => ({
+        ...surface,
+        ...(focusedRole ? { focusedRole } : {}),
+        ...(menuLabel ? { menuLabel } : {}),
+      }),
+    });
+  const selecting = (selectedText: string) =>
+    controller({
+      capture: async () => ({
+        id: `frame-${++captures}`,
+        sha256: "sha",
+        image: "",
+        geometry,
+        capturedAt: 0,
+        synthetic: false,
+        appId: surface.appId,
+        context: { appName: "App", windowTitle: "Window", selectedText },
+      }),
+    });
+  it("names the two clipboard commands by the model's title or native's, and nothing else", () => {
+    const item = (path: string[]) =>
+      ({ type: "menu_item", frame_id: "f", path }) as Action;
+    const screen = (selectedText: string): ScreenContext => ({
+      appName: "App",
+      windowTitle: "Window",
+      selectedText,
+    });
+    expect(menuClipboardRefusal(item(["Edit", "Paste"]), surface)).toEqual({
+      code: "MENU_NEEDS_FOCUS",
+      line: MENU_NEEDS_FOCUS_LINE,
+    });
+    expect(
+      menuClipboardRefusal(item(["Edit", "Paste and Match Style"]), surface)
+        ?.code,
+    ).toBe("MENU_NEEDS_FOCUS");
+    // Native's resolved title counts as much as the model's spelling.
+    expect(
+      menuClipboardRefusal(item(["Edit", "Special"]), {
+        ...surface,
+        menuLabel: "Paste Special…",
+      })?.code,
+    ).toBe("MENU_NEEDS_FOCUS");
+    for (const focusedRole of [
+      "AXTextField",
+      "AXTextArea",
+      "AXComboBox",
+      "AXSearchField",
+    ])
+      expect(
+        menuClipboardRefusal(item(["Edit", "Paste"]), {
+          ...surface,
+          focusedRole,
+        }),
+      ).toBeUndefined();
+    expect(
+      menuClipboardRefusal(item(["Edit", "Paste"]), {
+        ...surface,
+        focusedRole: "AXStaticText",
+      })?.code,
+    ).toBe("MENU_NEEDS_FOCUS");
+    expect(menuClipboardRefusal(item(["Edit", "Copy"]), surface)).toEqual({
+      code: "MENU_NEEDS_SELECTION",
+      line: MENU_NEEDS_SELECTION_LINE,
+    });
+    expect(menuClipboardRefusal(item(["Edit", "Cut"]), surface)?.code).toBe(
+      "MENU_NEEDS_SELECTION",
+    );
+    expect(
+      menuClipboardRefusal(item(["Edit", "Copy"]), surface, screen("  "))?.code,
+    ).toBe("MENU_NEEDS_SELECTION");
+    expect(
+      menuClipboardRefusal(item(["Edit", "Copy"]), surface, screen("Acme")),
+    ).toBeUndefined();
+    expect(
+      menuClipboardRefusal(item(["Edit", "Cut"]), {
+        ...surface,
+        focusedRole: "AXTextField",
+      }),
+    ).toBeUndefined();
+    for (const path of [
+      ["Edit", "Select All"],
+      ["Edit", "Undo"],
+      ["File", "New Message"],
+      ["Edit", "Copyright Notice"],
+      ["Tools", "Cutting Guide"],
+    ])
+      expect(menuClipboardRefusal(item(path), surface)).toBeUndefined();
+    expect(
+      menuClipboardRefusal(
+        { type: "hotkey", frame_id: "f", keys: ["CMD", "V"] } as Action,
+        surface,
+      ),
+    ).toBeUndefined();
+  });
+  it("answers Edit > Paste with nothing focused and never presses it", async () => {
+    allowAll();
+    const m = memory();
+    const c = focused();
+    const p = scripted([menu(["Edit", "Paste"])]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(m.of("ActionFailed").map((e) => e.data)).toEqual([
+      { code: "MENU_NEEDS_FOCUS", actionType: "menu_item" },
+    ]);
+    // The fixed line on the next frame, under the echoed step.
+    expect(p.observations[1].history.map((h) => [h.type, h.result])).toEqual([
+      ["menu_item", MENU_NEEDS_FOCUS_LINE],
+    ]);
+    expect(p.observations[1].history[0].action).toMatchObject({
+      type: "menu_item",
+      path: ["Edit", "Paste"],
+    });
+    // Answered before policy and the trace's proposal: only the done was
+    // proposed, nothing was sent back as a target or denied, and no loop.
+    expect(
+      m.of("ActionProposed").map((e) => (e.data.action as Action).type),
+    ).toEqual(["done"]);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(0);
+    expect(m.of("UserDenied")).toHaveLength(0);
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+    expect(m.of("RunPaused")).toHaveLength(0);
+  });
+  it("reads a variant title and a static focus the same way", async () => {
+    allowAll();
+    const m = memory();
+    const c = focused("AXStaticText", "Paste and Match Style");
+    const p = scripted([menu(["Edit", "Paste and Match Style…"])]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(m.of("ActionFailed").map((e) => e.data.code)).toEqual([
+      "MENU_NEEDS_FOCUS",
+    ]);
+  });
+  it("presses a Paste into a focused text field as before", async () => {
+    allowAll();
+    const m = memory();
+    const c = focused("AXTextField");
+    const p = scripted([menu(["Edit", "Paste"])]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(c.execute).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(c.execute).mock.calls[0][0]).toMatchObject({
+      type: "menu_item",
+      path: ["Edit", "Paste"],
+    });
+    expect(m.of("ActionFailed")).toHaveLength(0);
+  });
+  it("steps aside for policy's own clipboard rule once a field is focused", async () => {
+    const m = memory();
+    const c = focused("AXTextField");
+    const p = scripted([menu(["Edit", "Paste"])]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(m.of("ActionFailed").map((e) => e.data.code)).not.toContain(
+      "MENU_NEEDS_FOCUS",
+    );
+    expect(m.of("UserDenied")).toHaveLength(1);
+    expect(p.observations[1].history[0].result).toMatch(
+      /^No input was sent\. Clipboard access is disabled/,
+    );
+  });
+  it("answers Edit > Copy with nothing selected and no field focused", async () => {
+    allowAll();
+    const m = memory();
+    const c = focused();
+    const p = scripted([menu(["Edit", "Copy"])]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(m.of("ActionFailed").map((e) => e.data)).toEqual([
+      { code: "MENU_NEEDS_SELECTION", actionType: "menu_item" },
+    ]);
+    expect(p.observations[1].history.map((h) => [h.type, h.result])).toEqual([
+      ["menu_item", MENU_NEEDS_SELECTION_LINE],
+    ]);
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+  });
+  it("presses a Copy of selected text, and a Cut in a focused field, as before", async () => {
+    allowAll();
+    const m = memory();
+    const c = selecting("Acme Corp");
+    const p = scripted([menu(["Edit", "Copy"])]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(c.execute).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(c.execute).mock.calls[0][0]).toMatchObject({
+      type: "menu_item",
+      path: ["Edit", "Copy"],
+    });
+    expect(m.of("ActionFailed")).toHaveLength(0);
+    const m2 = memory();
+    const c2 = focused("AXTextArea");
+    const p2 = scripted([menu(["Edit", "Cut"])]);
+    const runner2 = new Runner(c2, p2, m2.recorder, settings, () => {});
+    await runner2.start("test");
+    expect(c2.execute).toHaveBeenCalledTimes(1);
+    expect(m2.of("ActionFailed")).toHaveLength(0);
+  });
+  it("leaves every other menu item alone", async () => {
+    allowAll();
+    const m = memory();
+    const c = focused();
+    const p = scripted([
+      menu(["File", "New Message"]),
+      menu(["Edit", "Select All"]),
+    ]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(c.execute).toHaveBeenCalledTimes(2);
+    expect(m.of("ActionFailed")).toHaveLength(0);
+  });
+  it("counts four such answers as invalid steps and pauses, never a loop or a hand-off", async () => {
+    allowAll();
+    const m = memory();
+    const c = focused();
+    const p = scripted(
+      Array.from({ length: 4 }, () => menu(["Edit", "Paste"])),
+    );
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(runner.snapshot.message).toContain(
+      "keeps proposing invalid actions",
+    );
+    expect(p.next).toHaveBeenCalledTimes(4);
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(m.of("ActionFailed").map((e) => e.data.code)).toEqual(
+      Array(4).fill("MENU_NEEDS_FOCUS"),
+    );
+    expect(m.of("ActionLoopDetected")).toHaveLength(0);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(0);
+    expect(m.of("UserTakeoverStarted")).toHaveLength(0);
+    await runner.resume();
+    await running;
+    expect(runner.snapshot.run?.status).toBe("completed");
   });
 });

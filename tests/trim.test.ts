@@ -482,10 +482,11 @@ describe("what one step costs", () => {
     // instruction and the screenshot are most of it; the estimate is close
     // enough to say where the rest goes. 8,040 once the instruction carries
     // the actions-left and files-tool sentences (both landed 2026-09-19);
-    // 8,280 with the web tool sentence (below); the bound moves with the
-    // instruction pin below, never ahead of it.
+    // 8,280 with the web tool sentence (below); 8,334 with the sentence that
+    // a value read on one page is typed into a form from the note (below);
+    // the bound moves with the instruction pin below, never ahead of it.
     expect(total(m.beforeJson)).toBeGreaterThan(5300);
-    expect(total(m.beforeJson)).toBeLessThan(8300);
+    expect(total(m.beforeJson)).toBeLessThan(8400);
     expect(m.fixed.instruction).toBeGreaterThan(fixed / 2);
     // The per-step JSON shrinks by at least a quarter on this screen.
     expect(m.afterJson).toBeLessThan(m.beforeJson * 0.75);
@@ -533,9 +534,16 @@ describe("what one step costs", () => {
     // listing #1 and research-compare-to-csv #1 ended STUCK_LOOP paging
     // between two controls, period 2, with every frame read whole and every
     // fact missing; src/tools/providers/web.ts), 380 characters the pin
-    // moved for.
+    // moved for; 17,977 with the sentence that a value read on one page goes
+    // into a form on another by click_control on the field's label and
+    // type_text from the note, and that Edit > Copy and Paste move nothing
+    // between pages (probe 20260919-2339-54b99b3: ops-crm-data-entry #1 and
+    // #2 carried the lead's values in the note, clicked no field, typed
+    // nothing and ended STUCK_LOOP alternating a menu item and a link;
+    // src/core/runner.ts menuClipboardRefusal), 214 characters the pin moved
+    // for.
 
-    expect(instruction.length).toBeLessThan(17800);
+    expect(instruction.length).toBeLessThan(18000);
     expect(instruction).toContain(
       "is read with the web tool, read_current_page for the page in front or read_page_text",
     );
@@ -576,7 +584,8 @@ describe("what one step costs", () => {
     // 18,964 with the rename/move sentence above (the pin moved with it).
     // 19,170 with the cut-marker sentence above (the pin moved with it).
     // 19,550 with the web tool sentence above (the pin moved with it).
-    expect(instruction.length + paragraph.length).toBeLessThan(19600);
+    // 19,763 with the typing-from-the-note sentence above (the pin moved with it).
+    expect(instruction.length + paragraph.length).toBeLessThan(19800);
     expect(instruction.indexOf(" Return exactly one action")).toBeGreaterThan(
       15000,
     );

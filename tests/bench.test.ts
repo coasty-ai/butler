@@ -1721,6 +1721,25 @@ describe("pause cause from a real run", () => {
     expect(noteFor("CLICK_NO_EFFECT")).toMatch(/loop at once/);
     expect(ownerOf("CLICK_NO_EFFECT")).toBe("agent");
   });
+  it("counts a menu Copy or Paste the runner answered for want of focus or a selection, by its code alone", () => {
+    // src/core/runner.ts menuClipboardRefusal: the step never executed and
+    // is no revisit; the code is the pattern, the menu path never enters it.
+    for (const code of ["MENU_NEEDS_FOCUS", "MENU_NEEDS_SELECTION"]) {
+      expect(
+        frictionCodes({
+          event: "ActionFailed",
+          data: { code, actionType: "menu_item" },
+        }),
+      ).toEqual([code]);
+      expect(ownerOf(code)).toBe("agent");
+    }
+    expect(noteFor("MENU_NEEDS_FOCUS")).toMatch(
+      /type_text the value from the note/,
+    );
+    expect(noteFor("MENU_NEEDS_SELECTION")).toMatch(
+      /typed into the form from the note/,
+    );
+  });
   it("counts a frame whose page text the helper cut short, by the helper's reason", () => {
     // FrameCaptured carries the stop as a fixed code (electron/diagnostics.ts
     // textTruncated, from ScreenContext.visibleTextTruncated); the pattern is
