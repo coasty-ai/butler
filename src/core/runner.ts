@@ -1090,13 +1090,22 @@ export const reaimNote =
  * now closes the menu itself, once, with the Escape key proposed as a normal
  * step (validation, surface, policy, native checks, one counted action) and
  * says so in the step's history line; the covered refusal that asked for it
- * is not a strike. The menu is known open when the last executed step was a
- * right_click and no dismissal was issued for it yet; a second covered
+ * is not a strike. The menu is known open from the step a right_click
+ * executed (menuOpenedAt) until a menu_item or an Escape (the runner's own
+ * or the model's) executes, or more than MENU_OPEN_STEPS further steps have
+ * executed — a menu rarely survives three deliberate actions — and no
+ * dismissal was issued for it yet. Sweep A at bad4c35 (cycle
+ * 20260920-0731), mail-save-attachment #2: a right_click, then a coordinate
+ * click that landed beside the menu and left it open, then three covered
+ * targets refused in a row and the pause; the earlier rule (the last
+ * executed step a right_click) lost the menu at that click. A second covered
  * target after the dismissal counts as before, so a menu the Escape did not
  * close still pauses the run on the third strike.
  */
 export const MENU_CLOSED_LINE =
   "Closed the open menu (Escape) so the target is reachable again.";
+/** Steps after a right_click within which its menu is still taken as open (menuOpen). */
+export const MENU_OPEN_STEPS = 3;
 /** The retarget reason for a menu item missing after a right_click, with the dismissal on it. */
 export function menuClosedReason(reason: string): string {
   return `${reason.replace(/\.\s*$/, "")}; the menu was closed.`;
@@ -1737,10 +1746,12 @@ export class Runner {
   private rungMisses = new Map<string, number>();
   /** Points refused in a row because the covered window's picture may be stale: the second goes in front. */
   private coveredStaleRefusals = 0;
-  /** An Escape to propose on the next pass, closing the menu the last right_click left open (MENU_CLOSED_LINE). */
+  /** An Escape to propose on the next pass, closing the menu a right_click left open (MENU_CLOSED_LINE). */
   private dismissMenu = false;
   /** Whether that menu already had its one dismissal; cleared by the next executed right_click. */
   private menuDismissed = false;
+  /** The run step (run.actions) at which the last right_click executed; unset once its menu is known closed. */
+  private menuOpenedAt?: number;
   /** What the postcondition reads found this run, for memory (bounded). */
   private backgroundObservations: BackgroundObservation[] = [];
   /** Run steps at which the window had to come in front, for the cap. */
@@ -2678,12 +2689,20 @@ export class Runner {
     return ++this.declines;
   }
   /**
-   * Whether a context menu is open as far as the runner knows: the last
-   * executed step was a right_click and its menu was not dismissed yet. A
-   * click, a key or the Escape itself executing after it ends that.
+   * Whether a context menu is open as far as the runner knows: a right_click
+   * executed within the last MENU_OPEN_STEPS steps (menuOpenedAt, cleared
+   * when a menu_item or an Escape executes) and its menu was not dismissed
+   * yet. A click that lands beside the menu leaves it open (cycle
+   * 20260920-0731, mail-save-attachment #2), so an executed step in between
+   * does not end that on its own; three further steps do.
    */
   private menuOpen() {
-    return this.executed.at(-1)?.type === "right_click" && !this.menuDismissed;
+    const opened = this.menuOpenedAt;
+    return (
+      opened !== undefined &&
+      (this.snapshot.run?.actions ?? 0) - opened <= MENU_OPEN_STEPS &&
+      !this.menuDismissed
+    );
   }
   /** Asks the next pass for the one Escape that closes the open menu. */
   private requestMenuDismissal() {
@@ -2692,9 +2711,9 @@ export class Runner {
   }
   private recoverStateChange(error: unknown, action?: Action) {
     if (!(error instanceof ScreenChangedError)) return false;
-    // A target covered by the menu the last right_click opened: the runner
-    // closes it (MENU_CLOSED_LINE) and this refusal is not a strike. Once per
-    // menu; the next covered target counts as any change.
+    // A target covered by the menu a recent right_click opened (menuOpen):
+    // the runner closes it (MENU_CLOSED_LINE) and this refusal is not a
+    // strike. Once per menu; the next covered target counts as any change.
     const dismiss = error.change === "TARGET_COVERED" && this.menuOpen();
     if (dismiss) this.requestMenuDismissal();
     // The kind of change as its fixed code; the helper's sentence is not kept.
@@ -4138,8 +4157,18 @@ export class Runner {
     this.resetCounters();
     run.actions++;
     this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
-    // A new context menu: it may have its one dismissal (menuOpen).
-    if (action.type === "right_click") this.menuDismissed = false;
+    // A new context menu, open from this step: it may have its one dismissal
+    // (menuOpen). A chosen menu item or an Escape, the runner's own or the
+    // model's, closes whatever menu was open.
+    if (action.type === "right_click") {
+      this.menuOpenedAt = run.actions;
+      this.menuDismissed = false;
+    } else if (
+      action.type === "menu_item" ||
+      (action.type === "key" && action.key === "ESC")
+    ) {
+      this.menuOpenedAt = undefined;
+    }
     this.lastStep = {
       type: action.type,
       confirmed: actionConfirmed(action, actionSurface, outcome),
@@ -4383,6 +4412,7 @@ export class Runner {
     this.streamedPage = undefined;
     this.dismissMenu = false;
     this.menuDismissed = false;
+    this.menuOpenedAt = undefined;
     this.resetMemory();
   }
   private newRun(task: string, options: StartOptions): Run {
@@ -5289,7 +5319,7 @@ export class Runner {
         }
         if (decision.kind === "RETRY") {
           const reasonCode = retryCode(decision.reason);
-          // A menu item named while the last right_click's menu is open:
+          // A menu item named while a recent right_click's menu is open:
           // menu_item reaches the menu bar, so the item is missing, and the
           // open menu would cover every target after it. The runner closes
           // it (the Escape proposed on the next pass, MENU_CLOSED_LINE) and

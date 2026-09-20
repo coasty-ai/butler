@@ -17,6 +17,7 @@ import {
 import {
   MENU_CLOSED_LINE,
   MENU_NEEDS_FOCUS_LINE,
+  MENU_OPEN_STEPS,
   MENU_NEEDS_SELECTION_LINE,
   Runner,
   TARGET_HANDOFF_MESSAGE,
@@ -2668,6 +2669,11 @@ describe("a menu Copy or Paste with nothing to act on", () => {
 // until the third strike paused the run for a user the bench does not have.
 // The runner closes the menu once, with an Escape that goes through the same
 // pipeline as a model's key, and the refusal that asked for it is no strike.
+// Sweep A at bad4c35 (cycle 20260920-0731), the same task #2: a right_click,
+// then a coordinate click that executed beside the menu and left it open, then
+// three covered targets and the pause — the menu is state now (menuOpenedAt),
+// open for MENU_OPEN_STEPS further steps or until a menu_item or an Escape
+// executes, not read off the last executed step.
 describe("a context menu left open over the target", () => {
   const covered = () =>
     new ScreenChangedError(
@@ -2967,5 +2973,162 @@ describe("a context menu left open over the target", () => {
     const [retarget] = m.of("ActionRetargetRequested").map((e) => e.data);
     expect(retarget).toMatchObject({ reasonCode: "MENU_ITEM_DISABLED" });
     expect(retarget.dismissed).toBeUndefined();
+  });
+  // The window: the menu stays open in the runner's eyes past executed steps
+  // that did not close it, for MENU_OPEN_STEPS of them.
+  const escape = act({ type: "key", key: "ESC" });
+  const chosen = act({ type: "menu_item", path: ["File", "Save Attachment"] });
+  it("keeps the menu open past an executed click that left it there: the Escape fires, and three covered targets after it still pause", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: executes(
+        undefined, // the right_click
+        undefined, // a click beside the menu, executed, the menu still open
+        covered, // the next click, covered: the dismissal
+        undefined, // the Escape
+        covered,
+        covered,
+        covered,
+      ),
+    });
+    const p = scripted([rightClick, click, click, click, click, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    const running = runner.start("test");
+    await until(() => runner.snapshot.run?.status === "paused");
+    expect(runner.snapshot.message).toBe(pausedMessage);
+    expect(types(c)).toEqual([
+      "right_click",
+      "click",
+      "click",
+      "key",
+      "click",
+      "click",
+      "click",
+    ]);
+    expect(executedActions(c)[3]).toMatchObject({ type: "key", key: "ESC" });
+    // The covered target is the dismissal, not a strike; the three after the
+    // Escape are strikes, so a menu the Escape did not close still pauses.
+    expect(failures(m)).toEqual([dismissed, strike, strike, strike]);
+    expect(m.of("RunPaused")).toHaveLength(1);
+    // What the model read after the Escape: the executed click stands between
+    // the right_click and the refusal, and the Escape is the runner's.
+    const history = p.observations[3].history;
+    expect(history.map((h) => h.type)).toEqual([
+      "right_click",
+      "click",
+      "rejected",
+      "key",
+    ]);
+    expect(history[3].result).toBe(MENU_CLOSED_LINE);
+    expect(
+      m
+        .of("ActionExecuted")
+        .map((e) => [(e.data.action as Action).type, e.data.synthetic]),
+    ).toEqual([
+      ["right_click", undefined],
+      ["click", undefined],
+      ["key", true],
+    ]);
+    runner.stop();
+    await running;
+  });
+  it("still takes the menu as open at exactly MENU_OPEN_STEPS executed steps after the right_click", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: executes(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        covered,
+        undefined,
+      ),
+    });
+    const p = scripted([rightClick, click, click, click, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    expect(types(c)).toEqual([
+      "right_click",
+      "click",
+      "click",
+      "click",
+      "click",
+      "key",
+    ]);
+    expect(failures(m)).toEqual([dismissed]);
+    expect(MENU_OPEN_STEPS).toBe(3);
+  });
+  it("takes the menu as closed once more than MENU_OPEN_STEPS steps have executed after the right_click: a covered target counts as before", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({
+      execute: executes(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        covered,
+      ),
+    });
+    const p = scripted([rightClick, click, click, click, click, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    // No Escape: the four executed steps outlived the window.
+    expect(types(c)).toEqual([
+      "right_click",
+      "click",
+      "click",
+      "click",
+      "click",
+      "click",
+    ]);
+    expect(failures(m)).toEqual([strike]);
+    expect(m.of("RunPaused")).toHaveLength(0);
+    expect(
+      m.of("ActionExecuted").every((e) => e.data.synthetic === undefined),
+    ).toBe(true);
+  });
+  it("takes the menu as closed once a menu_item executes: a covered target after it counts", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({ execute: executes(undefined, undefined, covered) });
+    const p = scripted([rightClick, chosen, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    // The choice closed the menu; no Escape for the covered click after it.
+    expect(types(c)).toEqual(["right_click", "menu_item", "click"]);
+    expect(failures(m)).toEqual([strike]);
+    expect(m.of("ActionRetargetRequested")).toHaveLength(0);
+    expect(m.of("RunPaused")).toHaveLength(0);
+  });
+  it("takes the menu as closed once the model's own Escape executes: a covered target after it counts", async () => {
+    allowAll();
+    const m = memory();
+    const c = controller({ execute: executes(undefined, undefined, covered) });
+    const p = scripted([rightClick, escape, click]);
+    const runner = new Runner(c, p, m.recorder, settings, () => {});
+    await runner.start("test");
+    expect(runner.snapshot.run?.status).toBe("completed");
+    // The model's Escape is its own step, not the runner's dismissal, and
+    // no second Escape follows for the covered click.
+    expect(types(c)).toEqual(["right_click", "key", "click"]);
+    expect(failures(m)).toEqual([strike]);
+    expect(
+      m
+        .of("ActionExecuted")
+        .map((e) => [(e.data.action as Action).type, e.data.synthetic]),
+    ).toEqual([
+      ["right_click", undefined],
+      ["key", undefined],
+    ]);
+    const history = p.observations[2].history;
+    expect(history.map((h) => h.type)).toEqual(["right_click", "key"]);
+    expect(history[1].result).not.toBe(MENU_CLOSED_LINE);
   });
 });
