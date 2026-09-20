@@ -39,9 +39,10 @@ struct ClickSnapshot: Equatable {
 enum ClickEffect: String { case changed, focused, none }
 
 /// How the click reached the control: a pointer click at its centre (the HID
-/// tap in front; events posted to the process in a bound window) or the
-/// accessibility route (AXPress, or AXFocused for a field).
-enum ClickRoute: String { case pointer, press }
+/// tap in front; events posted to the process in a bound window), the
+/// accessibility route (AXPress, or AXFocused for a field), or either after
+/// the page was scrolled to bring the control into the clear (Reveal.swift).
+enum ClickRoute: String { case pointer, press, scrolled }
 
 /// Roles whose click asks for focus. AXSearchField is a subrole of a text
 /// field on macOS, so it is matched as either.

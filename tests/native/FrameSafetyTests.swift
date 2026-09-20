@@ -34,6 +34,7 @@ import CoreGraphics
         agendaRulesChecks(check)
         backgroundInputChecks(check)
         clickEffectChecks(check)
+        revealChecks(check)
         observerChecks(check)
         webTextChecks(check)
         screenChangeChecks(check)

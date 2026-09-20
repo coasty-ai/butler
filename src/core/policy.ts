@@ -1323,10 +1323,15 @@ function namedControlRefusal(
   // The named control was found, but the element under its centre is
   // something else (live: a Chrome tab's centre landed in a ChatGPT window in
   // front of it). Clicking there would act on whatever covers the control.
+  // When native already scrolled the page to reveal it (controlScrolled,
+  // Reveal.swift) and it is covered still, its window in front would not
+  // uncover it: the model scrolls the page itself or reaches it by keyboard.
   if (!namedTargetUnderPointer(surface))
     return {
       kind: "RETRY",
-      reason: `No input was sent. ${quote(action.label)} is covered by something else right now. Bring its window to the front first, or choose another route.`,
+      reason: surface.controlScrolled
+        ? `No input was sent. ${quote(action.label)} was scrolled into view and is still covered by something else. Scroll the page yourself until it sits in the middle of the window, or reach it with the keyboard (TAB to it, then SPACE or ENTER).`
+        : `No input was sent. ${quote(action.label)} is covered by something else right now. Bring its window to the front first, or choose another route.`,
     };
   return undefined;
 }

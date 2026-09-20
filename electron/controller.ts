@@ -863,6 +863,7 @@ const routes = new Set<NonNullable<ExecutionResult["via"]>>([
   "keys",
   "press",
   "pointer",
+  "scrolled",
 ]);
 /** The helper's route or effect as one of the runner's fixed words; anything else is dropped. */
 const routeOf = (value: unknown) =>
@@ -892,8 +893,12 @@ export function targetResult(value: unknown): ExecutionResult | undefined {
     );
   const rung = rungs.has(v.rung as Rung) ? (v.rung as Rung) : undefined;
   const effect = effectOf(v.effect);
-  // A click by name says which route acted last (press or pointer).
-  const via = v.via === "press" || v.via === "pointer" ? v.via : undefined;
+  // A click by name says which route acted last (press or pointer), or that
+  // the page was scrolled to reveal the control first (native Reveal.swift).
+  const via =
+    v.via === "press" || v.via === "pointer" || v.via === "scrolled"
+      ? v.via
+      : undefined;
   const launched = launchedResult(v.launched),
     opened = openedResult(v.opened);
   return {

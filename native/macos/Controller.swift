@@ -73,7 +73,58 @@ func elementRect(_ element: AXUIElement) -> CGRect? {
 }
 func controlLabel(_ element:AXUIElement) -> String {
     for name in [kAXTitleAttribute,kAXDescriptionAttribute,kAXValueAttribute] {if let value=attribute(element,name) as? String,!value.isEmpty{return value}}
+    return titleElementName(element)
+}
+/**
+ The text of the element that titles a control (Reveal.swift
+ titleElementAttribute): a <label> wrapping or pointing at it in a web page,
+ an AppKit field's label. WebKit leaves a control's own AXTitle empty when a
+ label names it, so the mail fixture's radios ("Receipts" under "File under")
+ and its Subject field and Reply text area had no name at all (probe of
+ 2026-09-20: 14 controls, no radio listed, 2 fields unlabelled). The label's
+ value or title, else the first static text under it, two levels down and
+ bounded; a label that is itself a field or a secure field gives its title
+ only, never its contents.
+ */
+func titleElementName(_ element: AXUIElement) -> String {
+    guard let raw = attribute(element, titleElementAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else { return "" }
+    let label = raw as! AXUIElement
+    let role = attribute(label, kAXRoleAttribute) as? String ?? ""
+    let field = ["AXTextField", "AXTextArea", "AXComboBox"].contains(role) || attribute(label, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole
+    let names = (field ? [kAXTitleAttribute, kAXDescriptionAttribute] : [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute])
+    let own = firstControlName(names.map { name in { attribute(label, name) as? String } })
+    if !own.isEmpty { return String(own.prefix(120)) }
+    var queue = [(label, 0)], index = 0
+    while index < queue.count, index < 16 {
+        let (node, depth) = queue[index]; index += 1
+        if depth > 0, attribute(node, kAXRoleAttribute) as? String == "AXStaticText",
+           let value = attribute(node, kAXValueAttribute) as? String {
+            let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return String(text.prefix(120)) }
+        }
+        guard depth < 2 else { continue }
+        for child in (attribute(node, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(6) { queue.append((child, depth + 1)) }
+    }
     return ""
+}
+/// The group a radio button or check box sits in (a fieldset's legend, a
+/// radio group's title), bounded: the first ancestor group above the
+/// control's own label whose name differs from the control's, six levels up
+/// at most, never past the page or the window. Nil for other roles.
+func controlGroup(_ element: AXUIElement, role: String, own: String) -> String? {
+    guard groupedControlRoles.contains(role) else { return nil }
+    var node = attribute(element, kAXParentAttribute).map { $0 as! AXUIElement }
+    for _ in 0..<6 {
+        guard let current = node else { return nil }
+        let currentRole = attribute(current, kAXRoleAttribute) as? String ?? ""
+        if controlGroupStopRoles.contains(currentRole) { return nil }
+        if controlGroupRoles.contains(currentRole) {
+            let name = firstControlName([{ attribute(current, kAXTitleAttribute) as? String }, { attribute(current, kAXDescriptionAttribute) as? String }, { titleElementName(current) }])
+            if !name.isEmpty, name != own { return utf16Prefix(name, 60) }
+        }
+        node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+    }
+    return nil
 }
 func controlSignature(_ element:AXUIElement) -> String {
     let fields=[kAXRoleAttribute,kAXSubroleAttribute,kAXValueAttribute,kAXEnabledAttribute,"AXURL"].map {String(describing:attribute(element,$0) ?? "" as CFString)}
@@ -103,9 +154,13 @@ struct TrackedControl { let element: AXUIElement; let bounds: CGRect; let signat
 // description or placeholder, never their contents.
 func modelControlName(_ element:AXUIElement, role:String) -> String {
     let editable = ["AXTextField","AXTextArea","AXComboBox"].contains(role)
-    let names = editable ? [kAXTitleAttribute,kAXDescriptionAttribute,"AXPlaceholderValue"] : [kAXTitleAttribute,kAXDescriptionAttribute,kAXValueAttribute]
-    for name in names { if let value = attribute(element,name) as? String, !value.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { return utf16Prefix(value, 80) } }
-    return ""
+    // Title, description, value or placeholder, then the element that titles
+    // it (Reveal.swift controlNameOrder): the last is what names a control
+    // under a <label> in WebKit.
+    let name = firstControlName(controlNameOrder(editable: editable).map { attributeName in
+        attributeName == titleElementAttribute ? { titleElementName(element) } : { attribute(element, attributeName) as? String }
+    })
+    return name.isEmpty ? "" : utf16Prefix(name, 80)
 }
 // Visible controls of the focused window with their centers as screenshot
 // fractions, so the model can click a listed control exactly instead of
@@ -139,6 +194,9 @@ func webControlEntries(_ window: AXUIElement, display: CGRect, limit: Int = 45) 
                     "x": (Double(rect.midX - display.minX) / Double(display.width) * 1000).rounded() / 1000,
                     "y": (Double(rect.midY - display.minY) / Double(display.height) * 1000).rounded() / 1000]
                 if !name.isEmpty { item["label"] = name }
+                // A radio or check box carries its fieldset's legend, so
+                // "Receipts" is known to be a folder under "File under".
+                if let group = controlGroup(node, role: role, own: name) { item["group"] = group }
                 if attribute(node, kAXEnabledAttribute) as? Bool == false { item["enabled"] = false }
                 result.append(ControlEntry(item: item, element: node))
             }
@@ -439,6 +497,122 @@ func hitMatches(_ expected: AXUIElement, at point: CGPoint, application: AXUIEle
     }
     return false
 }
+// MARK: Revealing a covered control (Reveal.swift)
+
+/// The Dock's frame on the display (its list of tiles) when it is on screen:
+/// the system's own cover, which a window can extend under, and which the
+/// system-wide hit test returns for a point inside it. Nil when the Dock is
+/// hidden, on another display, or not running. Bounded messaging, so a
+/// stalled Dock cannot hold a click.
+func dockFrame(display: CGRect) -> CGRect? {
+    guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
+    let app = AXUIElementCreateApplication(dock.processIdentifier)
+    _ = AXUIElementSetMessagingTimeout(app, 0.25)
+    for child in (attribute(app, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(6) where attribute(child, kAXRoleAttribute) as? String == "AXList" {
+        if let rect = elementRect(child), rect.width > 0, rect.height > 0, rect.intersects(display) { return rect.intersection(display) }
+    }
+    return nil
+}
+/// Whether the element under a point, system-wide, belongs to the Dock.
+func dockCovers(_ point: CGPoint) -> Bool {
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success, let hit else { return false }
+    var pid: pid_t = 0
+    return AXUIElementGetPid(hit, &pid) == .success && NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.apple.dock"
+}
+/// The part of a window's content a click can land on: the window's frame
+/// within the display and the screen's visible frame (which leaves out the
+/// menu bar and a Dock that does not hide), minus the Dock's own frame when
+/// it is on screen (clearContentRect).
+func clearContent(window: AXUIElement?, display: CGRect) -> CGRect {
+    let frame = (window.flatMap(elementRect) ?? display).intersection(display)
+    guard !frame.isNull else { return .null }
+    let screens = NSScreen.screens
+    let primaryHeight = screens.first?.frame.height ?? display.height
+    let visible = screens.map { topLeftRect(fromAppKit: $0.visibleFrame, primaryHeight: primaryHeight) }
+        .max { $0.intersection(frame).area < $1.intersection(frame).area }
+        .map { frame.intersection($0) } ?? frame
+    return clearContentRect(visible: visible.isNull ? frame : visible, dock: dockFrame(display: display))
+}
+extension CGRect { var area: CGFloat { isNull ? 0 : width * height } }
+/// The two ways a reveal moves a page, supplied by the route: an
+/// accessibility action on an element (AXScrollToVisible), and a scroll of
+/// the page by a distance, aimed at the clear rectangle. Nil while the helper
+/// is stopped: the reveal then only reads.
+struct RevealRoutes {
+    let perform: (AXUIElement, String) throws -> Void
+    let scroll: (CGFloat, CGRect) throws -> Void
+}
+/// The frontmost route's scrolls: the accessibility action behind the stop
+/// latch, and a wheel event by the distance that clears the control, posted
+/// after the pointer is moved into the clear part of the window (a wheel
+/// event goes to the window under the pointer, which may be resting on the
+/// Dock after a click near the bottom). Marked as the helper's own by
+/// postInput like every other input.
+func frontRevealRoutes() -> RevealRoutes {
+    RevealRoutes(perform: { element, action in try ensureRunning(); _ = AXUIElementPerformAction(element, action as CFString) },
+                 scroll: { delta, clear in
+                     try ensureRunning()
+                     let at = CGPoint(x: floor(clear.midX), y: floor(clear.midY))
+                     postInput(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: at, mouseButton: .left))
+                     Thread.sleep(forTimeInterval: 0.012)
+                     try ensureRunning()
+                     postScroll(dx: 0, dy: Int(delta))
+                 })
+}
+/**
+ The point a click by name lands on, once the control is in the clear
+ (Reveal.swift): inside the clear rectangle of its window, with this control
+ (or one of its own parts) under it by the hit test the route uses
+ (system-wide in front, the application's own for a bound window). A control
+ listed under the Dock, or scrolled away since the model read it, is first
+ asked to scroll itself into view (AXScrollToVisible, on it or the nearest
+ ancestor that offers it), then, when its frame still lies outside the clear
+ rectangle, the page is scrolled by the distance that clears it and asked
+ once more; when the page cannot move (a short page), the part of the
+ control that is clear is the point instead. Each scroll is followed by one
+ read of the frame after revealSettleMs; `scrolled` is true only when the
+ frame moved. Nothing is done at all when the centre is clear already.
+ */
+func revealControl(_ element: AXUIElement, window: AXUIElement?, display: CGRect, application: AXUIElement, routes: RevealRoutes?) throws -> Reveal {
+    let clear = clearContent(window: window, display: display)
+    func centre(_ rect: CGRect) -> CGPoint { CGPoint(x: floor(rect.midX), y: floor(rect.midY)) }
+    func isClear(_ point: CGPoint) -> Bool { pointClear(point, clear: clear) && hitMatches(element, at: point, application: application) }
+    guard var frame = elementRect(element), frame.width > 0, frame.height > 0 else { return Reveal(point: nil, scrolled: false, clear: false) }
+    var point = centre(frame), scrolled = false
+    if isClear(point) { return Reveal(point: point, scrolled: false, clear: true) }
+    func reread() {
+        Thread.sleep(forTimeInterval: Double(revealSettleMs) / 1000)
+        guard let now = elementRect(element), now.width > 0, now.height > 0 else { return }
+        if now != frame { frame = now; point = centre(frame); scrolled = true }
+    }
+    func scrollIntoView() throws -> Bool {
+        var node: AXUIElement? = element
+        for _ in 0..<7 {
+            guard let current = node else { return false }
+            if actionNames(current).contains(scrollToVisibleAction) { try routes?.perform(current, scrollToVisibleAction); return routes != nil }
+            node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+        }
+        return false
+    }
+    if let routes {
+        if try scrollIntoView() { reread(); if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true) } }
+        let delta = revealDelta(frame: frame, clear: clear)
+        if delta != 0 {
+            try routes.scroll(delta, clear); reread()
+            if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true) }
+            // A page-sized scroll may have carried the control past the top: its own action brings it back.
+            if try scrollIntoView() { reread(); if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true) } }
+        }
+    }
+    if let part = clearPoint(frame: frame, clear: clear), isClear(part) { return Reveal(point: part, scrolled: scrolled, clear: true) }
+    return Reveal(point: point, scrolled: scrolled, clear: false)
+}
+/// A screen point as the fractions of the display the model and the runner use.
+func displayFraction(_ point: CGPoint, display: CGRect) -> (x: Double, y: Double) {
+    (Double(point.x - display.minX) / Double(display.width), Double(point.y - display.minY) / Double(display.height))
+}
+
 // Breadth-first, bounded walk over the web areas under a window, in tree
 // order, stopping at the first the visitor accepts. Toolbars can hold many
 // nodes and never contain the page, so they are not entered. Safari holds its
@@ -959,21 +1133,25 @@ func readClickEffect(before: ClickSnapshot, control: AXUIElement, editable: Bool
  control's centre through the HID tap as it always did, marked as the helper's
  own by postInput; when the reads see nothing, the control's own AXPress is
  tried and read again. The result carries the route that acted last and the
- final effect. Every input keeps the stop-latch check (mouse, ensureRunning)
- behind the protected-surface walk execute ran first.
+ final effect, or `scrolled` when the page was moved to reveal the control
+ first (Reveal.swift). A point that is not clear (the control still under
+ the Dock, or something else under the hit test) gets no pointer click at
+ all: only the control's own focus or press. Every input keeps the
+ stop-latch check (mouse, ensureRunning) behind the protected-surface walk
+ execute ran first.
  */
-func clickNamedControl(_ element: AXUIElement, at target: CGPoint, mouse: (CGEventType, CGPoint) throws -> Void) throws -> [String:Any] {
+func clickNamedControl(_ element: AXUIElement, at target: CGPoint, pointer: Bool = true, scrolled: Bool = false, mouse: (CGEventType, CGPoint) throws -> Void) throws -> [String:Any] {
     let role = attribute(element, kAXRoleAttribute) as? String ?? "", subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
     let editable = focusRequested(role: role, subrole: subrole)
     let before = clickSnapshot(state: windowState(), control: element)
-    var via = ClickRoute.pointer, effect = ClickEffect.none
+    var via = pointer ? ClickRoute.pointer : .press, effect = ClickEffect.none
     if editable {
         try ensureRunning()
         via = .press
         if !before.targetFocused { _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
         effect = readClickEffect(before: before, control: element, editable: true)
     }
-    if effect == .none {
+    if effect == .none, pointer {
         via = .pointer
         try mouse(.leftMouseDown, target)
         postInput(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left))
@@ -985,7 +1163,7 @@ func clickNamedControl(_ element: AXUIElement, at target: CGPoint, mouse: (CGEve
         _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
         effect = readClickEffect(before: before, control: element, editable: editable)
     }
-    return clickResult(effect: effect, via: via)
+    return clickResult(effect: effect, via: revealRoute(scrolled: scrolled, route: via) ?? via)
 }
 func resolveNamedControl(_ action: [String:Any]) -> (match: ControlMatch, control: NamedControl?) {
     let controls = currentNamedControls()
@@ -1015,12 +1193,29 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     // a moving page has since given to something else.
     var action = requested
     var namedControl: (status: String, label: String?)? = nil
+    // A control under the Dock, or one the page has moved since the model read
+    // it, is brought into the clear first (revealControl, Reveal.swift); the
+    // hit test below then describes the point the click will land on. Under
+    // the Dock still (a short page cannot scroll), the application's own
+    // element at the point is what the click reaches, by accessibility alone
+    // (clickNamedControl posts no pointer there), so it is what policy reads.
+    var hitScope = AXUIElementCreateSystemWide(), controlScrolled = false
     if requested?["type"] as? String == "click_control", let request = requested {
-        let resolution = resolveNamedControl(request)
+        let resolution = resolveNamedControlEntry(request)
         switch resolution.match {
         case .matched:
-            if let control = resolution.control {
+            if let control = resolution.control, let entry = resolution.entry {
                 action?["x"] = control.x; action?["y"] = control.y
+                if control.enabled, let window = attribute(element, kAXFocusedWindowAttribute).map({ $0 as! AXUIElement }) {
+                    let b = CGDisplayBounds(displayID)
+                    if let reveal = try? revealControl(entry.element, window: window, display: b, application: hitScope, routes: isStopped() ? nil : frontRevealRoutes()),
+                       let point = reveal.point {
+                        let fraction = displayFraction(point, display: b)
+                        action?["x"] = fraction.x; action?["y"] = fraction.y
+                        controlScrolled = reveal.scrolled
+                        if !reveal.clear, dockCovers(point) { hitScope = element }
+                    }
+                }
                 namedControl = (control.enabled ? "resolved" : "disabled", control.label)
             }
         case .ambiguous: namedControl = ("ambiguous", nil)
@@ -1076,7 +1271,7 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     if app.bundleIdentifier == "com.apple.Spotlight" {result["launcher"] = spotlightState(element)}
     if let a = action, let x = a["x"] as? Double,let y = a["y"] as? Double,x>=0,x<=1,y>=0,y<=1 {
         let b = CGDisplayBounds(displayID)
-        for (key, value) in hitTargetFacts(AXUIElementCreateSystemWide(), at: CGPoint(x: b.minX+x*b.width, y: b.minY+y*b.height)) { result[key] = value }
+        for (key, value) in hitTargetFacts(hitScope, at: CGPoint(x: b.minX+x*b.width, y: b.minY+y*b.height)) { result[key] = value }
     }
     if let a = action, a["type"] as? String == "open_app", let name = a["name"] as? String {
         let resolution = resolveLaunch(query:name, candidates:applicationCandidates(), protectedApps:protectedApps)
@@ -1131,6 +1326,7 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     if let status = namedControl {
         result["controlStatus"] = status.status
         if let label = status.label { result["controlLabel"] = utf16Prefix(label, 120) }
+        if controlScrolled { result["controlScrolled"] = true }
     }
     // Computed last: the hit test above is the pointer evidence that this
     // application publishes something at the requested position.
@@ -1299,7 +1495,8 @@ func actionNames(_ element:AXUIElement) -> [String] {
 // Bounded label of an element: title, description or placeholder, never its value.
 func fieldLabel(_ element:AXUIElement) -> String {
     for name in [kAXTitleAttribute,kAXDescriptionAttribute,kAXPlaceholderValueAttribute] {if let value=attribute(element,name) as? String,!value.isEmpty{return String(value.prefix(120))}}
-    return ""
+    // The <label for> or AppKit label that titles the field, never its contents.
+    return titleElementName(element)
 }
 // Visible text of the element the pointer actually hits, before walking up to
 // its control. Editable and secure fields contribute only their label.
@@ -2084,10 +2281,15 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> [Strin
             }
         }
         guard control.enabled else { throw ControlError("That control is disabled.", code: "TARGET_DISABLED") }
-        let target = CGPoint(x: b.minX+min(b.width-1, floor(control.x*b.width)), y: b.minY+min(b.height-1, floor(control.y*b.height)))
+        var target = CGPoint(x: b.minX+min(b.width-1, floor(control.x*b.width)), y: b.minY+min(b.height-1, floor(control.y*b.height)))
+        // A control under the Dock, or moved since the model read it, is
+        // brought into the clear first (Reveal.swift); a point still covered
+        // gets no pointer click, only the control's own focus or press.
+        let reveal = try revealControl(entry.element, window: savedWindow.window, display: b, application: AXUIElementCreateSystemWide(), routes: frontRevealRoutes())
+        if let point = reveal.point { target = point }
         // Cycle 20260919-2044: five STUCK_LOOP runs were this click repeated on
         // an unchanged page, the step reported done with nothing read back.
-        return try clickNamedControl(entry.element, at: target) { type, point in try mouse(type, point) }
+        return try clickNamedControl(entry.element, at: target, pointer: reveal.clear, scrolled: reveal.scrolled) { type, point in try mouse(type, point) }
     case "key", "hotkey":
         let names = action["keys"] as? [String] ?? [action["key"] as? String ?? ""]
         guard names.count<=4,names.allSatisfy({keys[$0] != nil}) else {throw ControlError("Unsupported key.")}
@@ -3251,12 +3453,22 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
     let state = targetState(bound), facts = targetFacts(bound), cover = targetCover(bound)
     var action = requested
     var namedControl: (status: String, label: String?)? = nil
+    var controlScrolled = false
     if requested?["type"] as? String == "click_control", let request = requested {
         let resolution = targetNamedControl(request, entries: targetControlEntries(bound, state: state, frame: frame))
         switch resolution.match {
         case .matched:
-            if let control = resolution.control {
+            if let control = resolution.control, let entry = resolution.entry {
                 action?["x"] = control.x; action?["y"] = control.y
+                // Brought into the clear of the bound window first (Reveal.swift),
+                // so the hit test below reads the point the posted click lands on.
+                if control.enabled, frame.width > 0, frame.height > 0,
+                   let reveal = try? revealControl(entry.element, window: bound.window, display: frame, application: element, routes: isStopped() ? nil : targetRevealRoutes(bound)),
+                   let point = reveal.point {
+                    let fraction = displayFraction(point, display: frame)
+                    action?["x"] = fraction.x; action?["y"] = fraction.y
+                    controlScrolled = reveal.scrolled
+                }
                 namedControl = (control.enabled ? "resolved" : "disabled", control.label)
             }
         case .ambiguous: namedControl = ("ambiguous", nil)
@@ -3290,6 +3502,7 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
     if let status = namedControl {
         result["controlStatus"] = status.status
         if let label = status.label { result["controlLabel"] = utf16Prefix(label, 120) }
+        if controlScrolled { result["controlScrolled"] = true }
     }
     if let level = accessibilityLevel(window: bound.window, focusedRole: focusedRole, hitTarget: result["targetRole"] != nil) { result["accessibility"] = level.rawValue }
     result["windowCount"] = min(onScreenWindowCount(bound.pid), 99)
@@ -3397,7 +3610,7 @@ func executeTarget(token: String, action: [String:Any], rungs requested: [Rung])
     let entries = targetControlEntries(bound, state: state, frame: frame)
     // What the step acts on: the control it named, the point it gave (the
     // window's centre for a scroll), the field it types into.
-    var control: ControlEntry? = nil, point: CGPoint? = nil
+    var control: ControlEntry? = nil, point: CGPoint? = nil, revealed = false
     if type == "click_control" {
         let resolution = targetNamedControl(action, entries: entries)
         guard case .matched = resolution.match, let entry = resolution.entry, let named = resolution.control else {
@@ -3406,6 +3619,11 @@ func executeTarget(token: String, action: [String:Any], rungs requested: [Rung])
         }
         guard named.enabled else { throw ControlError("That control is disabled.", code: "TARGET_DISABLED") }
         control = entry; point = windowPoint(x: named.x, y: named.y, in: frame)
+        // Brought into the clear of the bound window first (Reveal.swift), by
+        // the window's own scroll bar; the posted click then lands on it.
+        let reveal = try revealControl(entry.element, window: bound.window, display: frame, application: element, routes: targetRevealRoutes(bound))
+        if let shown = reveal.point { point = shown }
+        revealed = reveal.scrolled
     } else if type == "scroll" { point = CGPoint(x: frame.midX, y: frame.midY) }
     else if let x = action["x"] as? Double, let y = action["y"] as? Double {
         guard let mapped = windowPoint(x: x, y: y, in: frame) else { throw ControlError("Invalid coordinates.") }
@@ -3454,13 +3672,28 @@ func executeTarget(token: String, action: [String:Any], rungs requested: [Rung])
         if effect == .changed || effect == .focused {
             // Only the same context (not one a pause or another command replaced) learns the finished text.
             if let before = typedInto { withState { if searchCommand?.pid == before.pid, searchCommand?.at == before.at { searchCommand = nextSearchContext(before, .typed(text, replaced: replacing)) } } }
-            return targetResult(rung: rung, effect: effect, code: nil, read: read, via: clickRoute(type: type, rung: rung))
+            return targetResult(rung: rung, effect: effect, code: nil, read: read, via: revealRoute(scrolled: revealed, route: clickRoute(type: type, rung: rung)))
         }
         withState { targetMisses.record(appId: bound.appId, type: type, rung: rung) }
         last = (rung, effect, read)
     }
     guard let last else { return targetResult(rung: nil, effect: nil, code: .unavailable, read: nil) }
-    return targetResult(rung: last.rung, effect: last.effect, code: .noEffect, read: last.read, via: clickRoute(type: type, rung: last.rung))
+    return targetResult(rung: last.rung, effect: last.effect, code: .noEffect, read: last.read, via: revealRoute(scrolled: revealed, route: clickRoute(type: type, rung: last.rung)))
+}
+/// A bound window's scrolls for a reveal: its own elements' actions
+/// (assertTargetElement keeps them to the bound window) and its scroll bar's
+/// page button under the clear rectangle's centre, one page in the control's
+/// direction, as the accessibility scroll rung presses it; the control's own
+/// action then corrects an overshoot (revealControl).
+func targetRevealRoutes(_ bound: TargetBinding) -> RevealRoutes {
+    RevealRoutes(perform: { element, action in try performTargetAction(element, action, bound: bound) },
+                 scroll: { delta, clear in
+                     guard let area = targetScrollArea(at: CGPoint(x: clear.midX, y: clear.midY), bound: bound),
+                           let bar = attribute(area, kAXVerticalScrollBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return }
+                     let subrole = delta > 0 ? kAXIncrementPageSubrole : kAXDecrementPageSubrole
+                     guard let button = (attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] ?? []).first(where: { attribute($0, kAXSubroleAttribute) as? String == subrole }) else { return }
+                     try performTargetAction(button, kAXPressAction, bound: bound)
+                 })
 }
 /**
  Rung 3 (design §2.8), only after the runner has announced it: the application

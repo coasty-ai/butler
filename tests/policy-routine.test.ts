@@ -2226,6 +2226,39 @@ describe("named targets: menus and controls the agent can name", () => {
     });
     expect(covered.kind).toBe("RETRY");
     expect(covered.reason).toContain("covered by something else");
+    expect(covered.reason).toContain("Bring its window to the front");
+    expect(covered.reason).not.toContain("scrolled");
+    // Market 1/3 (cycle 20260920-0241): the mail fixture's reply form sat
+    // under the Dock and every click on it was refused as covered. Native now
+    // scrolls the page to reveal the control first (surface.controlScrolled);
+    // one covered after that is not one its window in front would uncover,
+    // so the sentence sends the model to the page's scroll or the keyboard.
+    const scrolled = decide(named("Keep draft"), {
+      ...chrome,
+      controlStatus: "resolved",
+      controlLabel: "Keep draft",
+      controlScrolled: true,
+      targetRole: "AXDockItem",
+      targetLabel: "Finder",
+    });
+    expect(scrolled.kind).toBe("RETRY");
+    expect(scrolled.reason).toContain(
+      "was scrolled into view and is still covered by something else",
+    );
+    expect(scrolled.reason).toContain("Scroll the page yourself");
+    expect(scrolled.reason).toContain("TAB");
+    expect(scrolled.reason).not.toContain("Bring its window to the front");
+    // Revealed and clear: the control itself is under the pointer, as usual.
+    expect(
+      decide(named("Keep draft"), {
+        ...chrome,
+        controlStatus: "resolved",
+        controlLabel: "Keep draft",
+        controlScrolled: true,
+        targetRole: "AXButton",
+        targetLabel: "Keep draft",
+      }).reason,
+    ).not.toContain("covered");
     // The same control under the pointer, or text that contains its name.
     expect(
       decide(named("Midwest Safety"), {

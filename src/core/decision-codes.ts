@@ -428,6 +428,10 @@ const RETRY: Table<RetryCode> = {
       "CONTROL_COVERED",
     ],
     [
+      /^No input was sent\. .+ was scrolled into view and is still covered by something else\. Scroll the page yourself until it sits in the middle of the window, or reach it with the keyboard \(TAB to it, then SPACE or ENTER\)\.$/su,
+      "CONTROL_COVERED",
+    ],
+    [
       /^No input was sent\. This run works in .+'s window in the background: it is already the window in the screenshot, so nothing else is opened or switched to\. Work in it, or finish with done\.$/su,
       "BACKGROUND_NO_SWITCH",
     ],

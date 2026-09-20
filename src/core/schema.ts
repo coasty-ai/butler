@@ -1024,6 +1024,8 @@ export interface ScreenContext {
     x: number;
     y: number;
     enabled?: boolean;
+    /** A radio button's or check box's group: its fieldset's legend. */
+    group?: string;
   }[];
   /**
    * How much of its own interface the frontmost application publishes to the
@@ -1234,6 +1236,13 @@ export interface Surface {
   /** click_control resolution produced natively by surface(action). */
   controlStatus?: "resolved" | "disabled" | "ambiguous" | "missing";
   controlLabel?: string;
+  /**
+   * The page was scrolled to bring the resolved control into the clear of its
+   * window (native Reveal.swift) before the hit test below was taken: a
+   * control still covered after that is not one its window in front would
+   * uncover.
+   */
+  controlScrolled?: boolean;
   /** The menu item a proposed shortcut invokes in this application, if any. */
   shortcutLabel?: string;
   /**
@@ -1407,7 +1416,7 @@ export interface ExecutionResult {
    * accessibility route (AXPress; AXFocused for a field), the route that
    * acted last when an earlier one read as nothing.
    */
-  via?: "menu" | "keys" | "press" | "pointer";
+  via?: "menu" | "keys" | "press" | "pointer" | "scrolled";
   launched?: {
     appId: string;
     name: string;

@@ -631,6 +631,14 @@ describe("local diagnostic stream", () => {
         actionType: "menu_item",
         path: ["Edit", "Paste"],
       });
+      // A click by name after native scrolled the page to reveal the control
+      // (Reveal.swift): the route word rides as a code, the label stays out.
+      add("ActionExecuted", {
+        action: { type: "click_control", label: "Keep draft", frame_id: "f" },
+        frame_id: "f",
+        via: "scrolled",
+        effect: "changed",
+      });
       log.snapshot(snapshot);
       const raw = readFileSync(log.file, "utf8");
       const events = raw
@@ -678,6 +686,12 @@ describe("local diagnostic stream", () => {
         actionType: "menu_item",
       });
       expect(events[8].data.path).toBeUndefined();
+      expect(events[9].data).toMatchObject({
+        actionType: "click_control",
+        via: "scrolled",
+        effect: "changed",
+      });
+      expect(raw).not.toContain("Keep draft");
       expect(raw).not.toContain("Paste");
     }));
   it("logs memory recall and replay plans as counts and codes, never task text or paths", () =>

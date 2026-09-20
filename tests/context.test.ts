@@ -149,6 +149,29 @@ describe("bounded screen context", () => {
     expect(long?.appName).toHaveLength(300);
     expect(long?.controls?.[0].label?.length).toBeLessThanOrEqual(80);
     expect(cleanScreenContext(long)).toBeDefined();
+    // A radio button's group (its fieldset's legend, native controlGroup)
+    // rides beside its label, cleaned and bounded to 60 characters.
+    const radio = {
+      role: "radiobutton",
+      label: "Receipts",
+      group: "File under",
+      x: 0.4,
+      y: 0.6,
+    };
+    expect(
+      cleanScreenContext({
+        appName: "Safari",
+        windowTitle: "Mail",
+        controls: [radio],
+      })?.controls?.[0],
+    ).toEqual(radio);
+    expect(
+      cleanScreenContext({
+        appName: "A",
+        windowTitle: "B",
+        controls: [{ ...radio, group: "g".repeat(61) }],
+      })?.controls?.[0].group,
+    ).toHaveLength(60);
     for (const bad of [
       [{ role: "button", x: 1.5, y: 0.2 }],
       [{ role: "button", x: 0.2, y: 0.2, value: "secret" }],

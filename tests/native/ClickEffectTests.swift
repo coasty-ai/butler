@@ -40,7 +40,8 @@ func clickEffectChecks(_ check: (Bool, String) -> Void) {
     let result = clickResult(effect: .none, via: .press)
     check(result["effect"] as? String == "none" && result["via"] as? String == "press" && result.count == 2, "the result names the effect and the route as fixed words, nothing else")
     check(ClickEffect.changed.rawValue == "changed" && ClickEffect.focused.rawValue == "focused" && ClickEffect.none.rawValue == "none"
-          && ClickRoute.pointer.rawValue == "pointer" && ClickRoute.press.rawValue == "press", "the codes are the runner's")
+          && ClickRoute.pointer.rawValue == "pointer" && ClickRoute.press.rawValue == "press" && ClickRoute.scrolled.rawValue == "scrolled", "the codes are the runner's")
+    check(clickResult(effect: .changed, via: .scrolled)["via"] as? String == "scrolled", "a click after a reveal that moved the page names scrolled as its route (Reveal.swift)")
     check(clickRoute(type: "click_control", rung: .ax) == .press && clickRoute(type: "click_control", rung: .post) == .pointer, "in a bound window accessibility is the press and posting the pointer")
     check(clickRoute(type: "click", rung: .ax) == nil && clickRoute(type: "type_text", rung: .post) == nil && clickRoute(type: "click_control", rung: .foreground) == .pointer,
           "other steps name no route; the announced foreground is the pointer")

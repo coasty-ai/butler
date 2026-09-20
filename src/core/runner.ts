@@ -3854,7 +3854,9 @@ export class Runner {
       ((action.type === "hotkey" &&
         (outcome.via === "menu" || outcome.via === "keys")) ||
         (action.type === "click_control" &&
-          (outcome.via === "press" || outcome.via === "pointer")))
+          (outcome.via === "press" ||
+            outcome.via === "pointer" ||
+            outcome.via === "scrolled")))
         ? outcome.via
         : undefined;
     // What a click by name changed, as the helper read it on either route.

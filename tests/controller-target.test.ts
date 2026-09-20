@@ -113,6 +113,15 @@ describe("target replies are parsed, bounded and never trusted for shape", () =>
         via: "mouse",
       }),
     ).toEqual({ rung: "post", effect: "none" });
+    // The page was scrolled to reveal the control first (Reveal.swift).
+    expect(
+      targetResult({
+        executed: true,
+        rung: "post",
+        effect: "changed",
+        via: "scrolled",
+      }),
+    ).toEqual({ rung: "post", effect: "changed", via: "scrolled" });
     expect(targetResult(null)).toBeUndefined();
     expect(() =>
       targetResult({

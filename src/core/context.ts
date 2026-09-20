@@ -44,6 +44,9 @@ const contextSchema = z
             x: z.number().finite().min(0).max(1),
             y: z.number().finite().min(0).max(1),
             enabled: z.boolean().optional(),
+            // A radio button's or check box's group: its fieldset's legend
+            // ("File under" over "Receipts"), so a value is known for what it is.
+            group: bounded(60).optional(),
           })
           .strict(),
       )
@@ -140,6 +143,9 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
         ...control,
         ...(control.label !== undefined && {
           label: clean(control.label).slice(0, 80),
+        }),
+        ...(control.group !== undefined && {
+          group: clean(control.group).slice(0, 60),
         }),
       })),
     }),

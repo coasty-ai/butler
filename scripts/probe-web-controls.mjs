@@ -5,6 +5,13 @@
 // point and sends no input), so it says whether a page's controls reach
 // `context.controls` and whether the policy would be able to identify them.
 //
+// Cycle 20260920-0241 (market 1/3, autonomy all): this probe on the mail
+// message fixture read 14 controls with no radio among them and the hit test
+// at the textarea's centre landing on an AXDockItem; `grouped` and `covered`
+// below say whether the title-element names and the reveal before a covered
+// click (native Reveal.swift) took: after `npm run build:native`, expect the
+// radios listed with their group and `covered` 0 on that page.
+//
 // Written for the STOPPED_AFTER_HANDOFF lane of cycle 20260919-0739: market
 // tasks ran "In Safari" for the first time and three runs saw UNIDENTIFIED_TARGET
 // there. Chrome's web controls reached the model in earlier cycles; Safari's
@@ -64,6 +71,10 @@ try {
       controls: controls.length,
       labelled: controls.filter((c) => typeof c.label === "string" && c.label)
         .length,
+      // Radio buttons and check boxes with their fieldset's legend (native
+      // controlGroup): the mail fixture's folders under "File under".
+      grouped: controls.filter((c) => typeof c.group === "string" && c.group)
+        .length,
       disabled: controls.filter((c) => c.enabled === false).length,
       roles: tally(controls.map((c) => c.role)),
       visibleTextChars: (context.visibleText ?? "").length,
@@ -89,6 +100,11 @@ try {
       hit: at.targetRole ?? "(none)",
       web: at.targetWebHost !== undefined,
       named: typeof at.targetLabel === "string" && at.targetLabel.length > 0,
+      // Covered where it is: the element at the control's centre belongs to
+      // another application (the Dock, another window) or there is none (the
+      // point lies outside the visible content). The click path scrolls such
+      // a control into the clear first (native Reveal.swift).
+      covered: at.targetAppId !== frame.appId,
     });
   }
   console.log(
@@ -96,6 +112,8 @@ try {
       hitTested: hits.length,
       hitRoles: tally(hits.map((h) => h.hit)),
       inWebPage: hits.filter((h) => h.web).length,
+      covered: hits.filter((h) => h.covered).length,
+      coveredBy: tally(hits.filter((h) => h.covered).map((h) => h.hit)),
       named: hits.filter((h) => h.named).length,
       listedVsHit: tally(hits.map((h) => `${h.listed}→${h.hit}`)),
     }),

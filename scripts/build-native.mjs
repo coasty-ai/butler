@@ -24,6 +24,7 @@ const result = spawnSync(
     "native/macos/Workspace.swift",
     "native/macos/BackgroundInput.swift",
     "native/macos/ClickEffect.swift",
+    "native/macos/Reveal.swift",
     "native/macos/Observer.swift",
     "native/macos/WebText.swift",
     "-framework",
