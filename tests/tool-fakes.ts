@@ -173,6 +173,28 @@ export const FILES_TOOLS = [
   FILES_RENAME,
   FILES_MOVE,
 ];
+/** The in-process web tool: builtin, trusted, closed-world reads with their own result cap (src/tools/providers/web.ts). */
+const web = (name: string, does: string, params: string): ToolSpec => ({
+  ...builtin(name, "Web", "read", [], does, params),
+  id: `web__${name}`,
+  provider: "web",
+  undoable: false,
+  trace: { tool: name, server: "web" },
+  resultChars: 30_400,
+});
+export const WEB_READ = web(
+  "read_page_text",
+  "Reads a public web page at an http(s) address and returns its whole text.",
+  "url (text, a full http or https address), maxChars? (integer)",
+);
+export const WEB_CURRENT = web(
+  "read_current_page",
+  "Reads the whole text of the web page in front.",
+  "maxChars? (integer)",
+);
+export const WEB_TOOLS_FAKE = [WEB_READ, WEB_CURRENT];
+/** The hosts the fake treats as protected, as defaultSettings.protectedDomains has them. */
+const FAKE_PROTECTED = ["paypal.com", "chase.com"];
 /** The home folder the fakes stand in for: an absolute path under it grounds as its ~/ form. */
 export const FAKE_HOME = "/Users/me";
 /** The one file the fake home holds with text in it (what FILES_READ reads); every other path is absent or empty. */
@@ -252,6 +274,8 @@ const REQUIRED: Record<string, string[]> = {
   github__search_repositories: ["query"],
   scratch__notes_delete_all: [],
   "claude-code__Agent": ["prompt"],
+  web__read_page_text: ["url"],
+  web__read_current_page: [],
 };
 const leaves = (value: unknown, skip: Set<string>, out: string[] = []) => {
   if (typeof value === "string" || typeof value === "number")
@@ -316,6 +340,9 @@ const questionOf = (
         name: baseName(args.path),
         folder: baseName(args.toFolder),
       };
+    case WEB_READ.id:
+    case WEB_CURRENT.id:
+      return { kind: "web_read", host: s(args.url) };
     default:
       return {
         kind:
@@ -338,6 +365,37 @@ export function prepare(
   const required = REQUIRED[spec.id] ?? [];
   if (required.some((k) => typeof args[k] !== "string"))
     return { ok: false, problem: "invalid_args" };
+  // The web tool judges the address (or the page in front, from the words)
+  // before policy: not http(s) or on this Mac is bad_url, a protected host
+  // protected_site, no page in front no_page; an accepted one grounds on
+  // its host and asks the web_read kind, which a trusted read never renders.
+  if (spec.provider === "web") {
+    const address =
+      spec.id === WEB_READ.id ? String(args.url) : words?.pageAddress;
+    if (!address) return { ok: false, problem: "no_page" };
+    let url: URL;
+    try {
+      url = new URL(address);
+    } catch {
+      return { ok: false, problem: "bad_url" };
+    }
+    if (!/^https?:$/.test(url.protocol) || url.username)
+      return { ok: false, problem: "bad_url" };
+    if (
+      FAKE_PROTECTED.some(
+        (d) => url.hostname === d || url.hostname.endsWith("." + d),
+      )
+    )
+      return { ok: false, problem: "protected_site" };
+    if (/^(?:127\.|localhost$|10\.|192\.168\.)/.test(url.hostname))
+      return { ok: false, problem: "bad_url" };
+    return {
+      ok: true,
+      question: { kind: "web_read", host: url.hostname },
+      groundText: [url.hostname],
+      argsBytes: JSON.stringify(args).length,
+    };
+  }
   // The files tool refuses a path outside the rules before policy, and
   // grounds the call on the ~/ path alone (the text is the file's content).
   if (spec.provider === "files") {
@@ -475,6 +533,21 @@ const defaultOutcome = (
         lines: ["receipt-1.txt (48 bytes)", "receipt-2.txt (50 bytes)"],
         resultItems: 2,
       });
+    case WEB_READ.id:
+    case WEB_CURRENT.id:
+      return ok(
+        spec,
+        "Page: Listings, page 1 — shop.example, 64 characters of text.\n\n# Listings\nId | Price\nLST-1 | $12.00\nNext page (/tok/listings/2)",
+        {
+          facts: {
+            kind: "page",
+            title: "Listings, page 1",
+            host: "shop.example",
+            chars: 64,
+            truncated: false,
+          },
+        },
+      );
     case FILES_RENAME.id:
       return ok(
         spec,

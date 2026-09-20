@@ -117,6 +117,10 @@ const toolCases: [ToolQuestion, ApprovalCode][] = [
   [{ kind: "send_to", server: "GitHub", tool: "search" }, "TOOL_SEND_TO"],
   [{ kind: "file_read", name: "notes.txt" }, "TOOL_FILE_READ"],
   [{ kind: "file_list", name: "Documents" }, "TOOL_FILE_READ"],
+  [{ kind: "web_read", host: "shop.example.com" }, "TOOL_WEB_READ"],
+  // A host that reads like an MCP read's frame is still the web tool's.
+  [{ kind: "web_read", host: "with.example" }, "TOOL_WEB_READ"],
+  [{ kind: "web_read", host: "" }, "TOOL_WEB_READ"],
   [
     { kind: "file_append", name: "notes.txt", text: "Q3 total: 15,888" },
     "TOOL_FILE_APPEND",

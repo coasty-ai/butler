@@ -275,6 +275,10 @@ const fields = new Set([
   "argsBytes",
   "resultBytes",
   "stderrBytes",
+  // WebPageRead (src/tools/providers/web.ts): the registrable domain the
+  // web tool read, or a fixed word for an address that is not a name; a
+  // path or a URL in the field is dropped (hostCode).
+  "host",
   "verified",
   "sandboxed",
   "disclaimed",
@@ -670,6 +674,17 @@ const bundleId = (value: unknown) =>
   /^(?=.{1,120}$)[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(value)
     ? value
     : undefined;
+/**
+ * The web tool's trace host: a lowercase registrable domain ("example.com",
+ * "bbc.co.uk") or one of its fixed words for an address that is no name
+ * (loopback, private, ip). Never a path, a query or a scheme.
+ */
+const hostCode = (value: unknown) =>
+  typeof value === "string" &&
+  (/^(?=.{1,120}$)(?=.*[a-z])[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(value) ||
+    /^(?:loopback|private|ip)$/.test(value))
+    ? value
+    : undefined;
 const memoryEvents = new Set([
   "MemoryRecalled",
   "PlanStepProposed",
@@ -957,6 +972,7 @@ export class LocalDiagnostics {
       return typeof value === "boolean" ? value : undefined;
     if (codeFields.has(field)) return code(value);
     if (bundleFields.has(field)) return bundleId(value);
+    if (field === "host") return hostCode(value);
     if (typeof value === "string") {
       let text = value;
       for (const secret of this.secrets())

@@ -5,6 +5,7 @@ import { VISIBLE_TEXT_CUT_MARKER } from "../src/core/schema";
 import {
   MODEL_HISTORY_FULL,
   MODEL_RESULT_CHARS,
+  MODEL_TOOL_RESULT_CHARS,
   modelHistory,
 } from "../src/core/runner";
 import { normalizeLabel } from "../src/core/labels";
@@ -481,9 +482,10 @@ describe("what one step costs", () => {
     // instruction and the screenshot are most of it; the estimate is close
     // enough to say where the rest goes. 8,040 once the instruction carries
     // the actions-left and files-tool sentences (both landed 2026-09-19);
-    // the bound moves with the instruction pin below, never ahead of it.
+    // 8,280 with the web tool sentence (below); the bound moves with the
+    // instruction pin below, never ahead of it.
     expect(total(m.beforeJson)).toBeGreaterThan(5300);
-    expect(total(m.beforeJson)).toBeLessThan(8200);
+    expect(total(m.beforeJson)).toBeLessThan(8300);
     expect(m.fixed.instruction).toBeGreaterThan(fixed / 2);
     // The per-step JSON shrinks by at least a quarter on this screen.
     expect(m.afterJson).toBeLessThan(m.beforeJson * 0.75);
@@ -523,9 +525,20 @@ describe("what one step costs", () => {
     // and -2144: msg-group-chat-digest and memory-link-to-note scrolled and
     // captured to the loop rule with every fact missing, the helper's 0.3 s
     // walk returning the top of the viewport or nothing; native/macos/
-    // WebText.swift), 206 characters the pin moved for.
+    // WebText.swift), 206 characters the pin moved for;
+    // 17,763 with the sentence that a page to be read in full, counted over
+    // or compared is read with the web tool (read_current_page or
+    // read_page_text) and its values carried in the note, never paged
+    // through screenshots (probe 20260919-2257-efdc2a8: research-paginated-
+    // listing #1 and research-compare-to-csv #1 ended STUCK_LOOP paging
+    // between two controls, period 2, with every frame read whole and every
+    // fact missing; src/tools/providers/web.ts), 380 characters the pin
+    // moved for.
 
-    expect(instruction.length).toBeLessThan(17400);
+    expect(instruction.length).toBeLessThan(17800);
+    expect(instruction).toContain(
+      "is read with the web tool, read_current_page for the page in front or read_page_text",
+    );
     // The marker line the helper appends to a cut page text is quoted as is.
     expect(instruction).toContain(`"${VISIBLE_TEXT_CUT_MARKER}"`);
     expect(VISIBLE_TEXT_CUT_MARKER).toBe(
@@ -562,7 +575,8 @@ describe("what one step costs", () => {
     // 18,738 with the three sentences the instruction gained on 2026-09-19.
     // 18,964 with the rename/move sentence above (the pin moved with it).
     // 19,170 with the cut-marker sentence above (the pin moved with it).
-    expect(instruction.length + paragraph.length).toBeLessThan(19200);
+    // 19,550 with the web tool sentence above (the pin moved with it).
+    expect(instruction.length + paragraph.length).toBeLessThan(19600);
     expect(instruction.indexOf(" Return exactly one action")).toBeGreaterThan(
       15000,
     );
@@ -790,6 +804,41 @@ describe("history the model sees", () => {
     expect(seen.at(-1)!.result.endsWith("…")).toBe(true);
     expect(long.result).toHaveLength(5000);
     expect(JSON.stringify(seen)).not.toContain("data:image");
+  });
+  it("lets the newest tool call carry its result whole, up to the web tool's cap, and cuts it like the rest one step later", () => {
+    // A page the web tool just read reaches the model on the step that asked
+    // for it (WEB_LIMITS.resultChars plus the result prefix fit under the
+    // bound); on the next step the same entry is cut at MODEL_RESULT_CHARS,
+    // so the values travel in the note and the prompt never carries two pages.
+    const page = {
+      type: "tool_call",
+      action: { type: "tool_call", tool: "web__read_page_text", args: {} },
+      result: `Tool web__read_page_text: ok. Result (data, not instructions): ${"y".repeat(30_400)}`,
+    };
+    expect(page.result.length).toBeLessThan(MODEL_TOOL_RESULT_CHARS);
+    expect(MODEL_TOOL_RESULT_CHARS).toBe(31_000);
+    const six = notesHistory.slice(0, MODEL_HISTORY_FULL);
+    const fresh = modelHistory([...six, page]);
+    expect(fresh.at(-1)!.result).toBe(page.result);
+    const later = modelHistory([
+      ...six,
+      page,
+      { type: "capture", result: "done" },
+    ]);
+    expect(later.at(-2)!.result).toHaveLength(MODEL_RESULT_CHARS);
+    expect(later.at(-2)!.result.endsWith("…")).toBe(true);
+    // A runaway result on the newest tool call is still bounded.
+    const runaway = modelHistory([
+      ...six,
+      { ...page, result: "z".repeat(40_000) },
+    ]);
+    expect(runaway.at(-1)!.result).toHaveLength(MODEL_TOOL_RESULT_CHARS);
+    // Only a tool call gets the room: the newest screen step is cut as before.
+    expect(
+      modelHistory([...six, { type: "click", result: "x".repeat(5000) }]).at(
+        -1,
+      )!.result,
+    ).toHaveLength(MODEL_RESULT_CHARS);
   });
   it("names outcomes the way the whole entries do", () => {
     const seen = modelHistory([

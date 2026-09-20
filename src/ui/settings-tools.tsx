@@ -285,6 +285,29 @@ export function SettingsTools({
           </span>
         </label>
         <p>
+          <b>Web</b>
+        </p>
+        <label className="consent">
+          <input
+            type="checkbox"
+            checked={s.tools.web}
+            disabled={busy}
+            onChange={(e) =>
+              set("tools", { ...s.tools, web: e.target.checked })
+            }
+          />
+          <span>
+            Web: reads the text of one public web page at a time, the page in
+            front or an address from the task, so a page to be read in full,
+            counted over or compared is one step and not a scroll through
+            screenshots. A plain fetch with no cookies, sign-in or other
+            headers, http or https only, never a protected website, never an
+            address on this Mac or your network, at most 2 MB and 10 seconds.
+            The page’s text goes to your configured model as any tool result
+            does; nothing else leaves this Mac.
+          </span>
+        </label>
+        <p>
           <b>Servers</b>
         </p>
         <p>

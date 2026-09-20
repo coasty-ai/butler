@@ -27,7 +27,11 @@ import {
 import { withoutAsking, type PolicyContext } from "../src/core/policy";
 import { autonomyChange } from "../src/ui/settings-voice";
 import { FILES_APPEND, fakeTools } from "./tool-fakes";
-import { BENCH_TOOL_SETTINGS, createBenchTools } from "../src/gym/bench/tools";
+import {
+  BENCH_TOOL_SETTINGS,
+  createBenchTools,
+  FIXTURE_ORIGIN,
+} from "../src/gym/bench/tools";
 import { LOOP_STUCK_MESSAGE } from "../src/core/runner";
 import {
   createHarnessState,
@@ -3934,15 +3938,17 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
     expect(requeue.stderr).toContain("--requeue must be");
   });
 
-  it("gives every run the built-in files tool alone, in both harnesses", async () => {
+  it("gives every run the built-in files and web tools alone, with the fixture origin as the web tool's one loopback allowance, in both harnesses", async () => {
     // The tool settings the registry lists under: no Apple consent (the
-    // bridge is never started or asked), no server, the files tool on.
+    // bridge is never started or asked), no server, the files and web tools on.
     expect(BENCH_TOOL_SETTINGS.tools).toEqual({
       enabled: true,
       apple: { calendar: false, reminders: false, notes: false, mail: false },
       files: true,
+      web: true,
       servers: [],
     });
+    expect(FIXTURE_ORIGIN).toBe("http://127.0.0.1:47831");
     const home = mkdtempSync(join(tmpdir(), "butler-bench-tools-"));
     try {
       const traced: string[] = [];
@@ -3961,8 +3967,31 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
         "files__list_directory",
         "files__rename_file",
         "files__move_file",
+        "web__read_page_text",
+        "web__read_current_page",
       ]);
       expect(list.unavailable).toEqual([]);
+      // The fixture origin prepares; any other loopback address is refused
+      // as in the product (the bench's one allowance, never the app's).
+      const read = list.tools.find((t) => t.id === "web__read_page_text")!;
+      expect(
+        tools.access.prepare(read, {
+          url: `${FIXTURE_ORIGIN}/benchnote0a1b/listings`,
+        }),
+      ).toMatchObject({
+        ok: true,
+        question: { kind: "web_read", host: "127.0.0.1" },
+      });
+      expect(
+        tools.access.prepare(read, {
+          url: "http://127.0.0.1:47832/benchnote0a1b/listings",
+        }),
+      ).toEqual({ ok: false, problem: "bad_url" });
+      expect(
+        tools.access.prepare(read, {
+          url: "http://localhost:47831/benchnote0a1b/listings",
+        }),
+      ).toEqual({ ok: false, problem: "bad_url" });
       expect(tools.registry.status().apple.state).toBe("off");
       expect(traced).not.toContain("ToolServerStarting");
       await tools.close();

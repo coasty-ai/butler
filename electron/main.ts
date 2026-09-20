@@ -4449,12 +4449,14 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       next.remoteDevices = settings.remoteDevices;
       // The Apple consents and the server list are edited only through their
       // own bridge calls (setAppleTool, addToolServer, …): a save carries the
-      // master switch and the files switch alone. Private local turns off the
-      // servers that reach the internet, and says so below.
+      // master switch, the files switch and the web switch alone. Private
+      // local turns off the servers that reach the internet, and says so
+      // below.
       next.tools = {
         ...settings.tools,
         enabled: next.tools.enabled,
         files: next.tools.files,
+        web: next.tools.web,
       };
       const localTools = localToolSettings(next);
       next.tools = localTools.settings.tools;

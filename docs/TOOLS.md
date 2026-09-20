@@ -1,9 +1,9 @@
-# Tools: the Apple bridge, the files tool, the launcher shim and the connection recipes
+# Tools: the Apple bridge, the files tool, the web tool, the launcher shim and the connection recipes
 
 Tools first, the screen only as fallback: when a connected tool can do the
 step, Butler calls it instead of driving windows. This document covers the
 first tools Butler ships or connects: the Apple bridge, the built-in files
-tool, and the community servers the recipes connect. The client, the registry, the Settings
+tool, the built-in web page text tool, and the community servers the recipes connect. The client, the registry, the Settings
 pane, the runner's tool step and the policy that decides when a call asks are
 documented with the lanes that own them (`.data/design/mcp-lanes.md`); the
 shared contract is `src/core/tools.ts`.
@@ -18,6 +18,7 @@ shared contract is `src/core/tools.ts`.
 | Shim     | `native/macos/Launch.swift` (`coarena-launch`)                                                                                                    | Starts a user-added server with TCC responsibility disclaimed and, when asked, without network. Passes stdio through, returns the child's status.                                                                                                              |
 | Table    | `src/tools/providers/apple.ts`                                                                                                                    | The bridge as the registry sees it: title, description, tier, consent, date keys, the approval question, and parsers for exactly the recorded result shapes.                                                                                                   |
 | Files    | `src/tools/providers/files.ts`, `src/tools/local.ts`                                                                                              | The built-in files tool: six tools over files inside the home folder (read, append, replace, list, rename, move), run in the app's own process (no binary, no MCP framing) under open_file's path rules, verified after every change, with an undo of its own. |
+| Web      | `src/tools/providers/web.ts`, `src/tools/local.ts`                                                                                                | The built-in web page text tool: two read tools that fetch one public page by GET (no cookies, one fixed header, http(s) only, never a protected or private host) and hand the model its text whole, headings, lists, rows and links kept, up to maxChars.     |
 | Recipes  | `src/tools/providers/recipes.ts`                                                                                                                  | The community servers and the coding agent the pane offers by name, with their argv, consent text, install note, default tools and tier overrides; `serverFromRecipe` shapes one into a settings row.                                                          |
 | Install  | `src/tools/install.ts`                                                                                                                            | The app's own install of a recipe's pinned Node package (npm into `<userData>/mcp/<rowId>`), the live argv that runs its bin with `node`, and `--offline` for a pasted npx row that may not reach the network. npx never runs a recipe.                        |
 | Tests    | `tests/native/AppleRulesTests.swift`, `AppleProtocolTests.swift`, `LaunchTests.swift`, `tests/tools-apple.test.ts`, `tests/tools-recipes.test.ts` | The fixtures under `tests/fixtures/apple` are the contract: the Swift tests replay every exchange against a fixture store and compare bytes; the app's tests parse the same replies.                                                                           |
@@ -355,6 +356,167 @@ was still making progress.
   (four tool writes, no Finder click or key, `renamed` true) and that
   `files-receipts-to-csv` finishes without a `STUCK_LOOP` ending: its lists
   and reads no longer count as revisits, so the run reaches its appends.
+
+## The web page text tool (built in, in-process)
+
+"Count how many listings are under the cap across all the pages" and
+"compare the three vendors into a CSV" ask for an aggregate over pages, and a
+frame-by-frame loop over screenshots does that badly: in probe
+20260919-2257-efdc2a8 (`STUCK_LOOP`, autonomy all, gpt-5.4-mini)
+`research-paginated-listing` #1 (19 actions) and `research-compare-to-csv` #1
+(18 actions) each ended `STUCK_LOOP` with `noteRoute: none` and every fact
+missing (count and cheapestId; vendor1..3). The shape was `click_control` ×8
+with `ActionLoopDetected period 2` (the model paging back and forth between
+two controls), a reflection, the same again; every frame was read whole
+(`textTruncated` null on all 37 frames, 50–116 text nodes in 3–8 ms) and
+every click by name registered `effect: changed`, so neither reading nor
+clicking failed. The pages are plain HTML the runner can read in one call, so
+the app ships a web tool the runner reaches for first. It is a `LocalServer`
+(`src/tools/local.ts`) like the files tool: no helper binary, no MCP framing;
+the registry composes it after the files tool (`LOCAL_SERVERS`), gates it by
+`settings.tools.web` (on by default) under the master switch, and runs its
+calls through the same `prepare`, policy, call and bounding door. To the model
+its tools are builtin: `transport: "builtin"`, trusted, local, closed-world,
+read tier, so they run unasked in every autonomy mode as the files reads do.
+
+| Tool                     | Arguments                               | Tier | Result                                                                                                                                                                                           |
+| ------------------------ | --------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `web__read_page_text`    | `url`, `maxChars?` (200–30,000; 12,000) | read | one facts line (`Page: <title> — <host>, <n> characters of text[, cut at <maxChars>; …]`), a blank line, the page's text; `facts { kind: "page", title, host, chars, truncated }`                |
+| `web__read_current_page` | `maxChars?`                             | read | the same for the browser's current address, which the runner hands the tool off the frame's `ScreenContext.browserAddress` (`ToolWords.pageAddress`); `no_page` when no browser page is in front |
+
+The fetch is a GET of one http or https address with a fixed `User-Agent`
+naming Butler (`WEB_USER_AGENT`) and no other header: no cookies, no
+credentials, no `Accept`, no `Accept-Encoding` (a server that compresses
+anyway is decompressed within the size cap). It follows at most
+`WEB_LIMITS.redirects` (3) redirects on the same host, each judged by the
+same rules (`REDIRECT_OFF_HOST`, `TOO_MANY_REDIRECTS` otherwise), within
+`WEB_LIMITS.timeoutMs` (10 s, the whole fetch; `TIMEOUT`), takes a `text/html`
+or `text/plain` response (`NOT_TEXT` for anything else) of at most
+`WEB_LIMITS.responseBytes` (2 MiB, refused by `Content-Length` or as it
+streams, `TOO_LARGE`), and reports any other status as `HTTP_ERROR` with the
+number. An address without a scheme is read as the bench's instructions
+write their site (`siteOf`: `127.0.0.1:47831/<token>`): http for a loopback
+or private host, https for any other.
+
+The text comes from a minimal HTML-to-text in TypeScript (`htmlToText`; no new
+dependency): the title from `<title>`; script, style, noscript, template, svg,
+math, iframe, object, embed, nav, head, title and select gone with their
+contents, as is anything `hidden` or `aria-hidden`; comments gone; each
+heading (`## Heading`), paragraph, list item (`- item`, `1. item`), table row
+(cells joined by `|`) and other block on a line of its own; character
+references decoded; whitespace folded. A link is its text followed by its
+address in parentheses when the address is not the text itself, resolved
+against the page and shown as the path on the page's own origin (`Next page
+(/tok/listings/2)`, `Details (/tok/vendors/acme)`): the fixture's pagination
+and vendor links carry no address in their text, and a page the tool cannot
+name is a page the tool cannot read next. The text is capped at `maxChars`
+(default 12,000, at most 30,000, a larger value clamped) with
+`WEB_TEXT_CUT_MARKER` as its last line when cut and the facts line saying
+so; the whole result passes the registry's `sanitizeResult` (invisible
+characters, credential redaction) at the tool's own cap
+(`ToolSpec.resultChars`, `WEB_LIMITS.resultChars`), and a credential finding
+in the text (`scanText` BLOCK_UPLOAD) drops the whole result with
+`CREDENTIAL`, as the files tool refuses to write one.
+
+Two caps stood between a page read and the model, and both moved for this
+tool alone. The registry's `sanitizeResult` cut every result body at
+`TOOL_LIMITS.resultChars` (1,500), so `ToolSpec.resultChars` lets a tool set
+its own (the web tool: 30,400, the text at its cap and the facts line;
+nothing else sets one). The model's copy of the history (`modelHistory`) cut
+every entry's result at `MODEL_RESULT_CHARS` (640), so the newest entry,
+when it is a `tool_call`, now carries its result whole up to
+`MODEL_TOOL_RESULT_CHARS` (31,000); on the step after it is cut at 640 like
+every other, so the prompt never carries two pages and the values the model
+needs travel in its `note`, as the core instruction says: a page to be read
+in full, counted over or compared with another is read with the web tool,
+`read_current_page` for the page in front or `read_page_text` with an
+address from the objective or a link an earlier page text shows, the values
+carried in the note of the next step, never paged through screenshots
+(380 characters; the `tests/trim.test.ts` pins moved 17,400 → 17,800 and
+19,200 → 19,600 with the reason). `TOOL_LIMITS.list` moved from 16 to 18:
+the nine Apple tools, the six files tools and the two web tools are 17, and
+the seat a user's server had beside every first-party tool is kept.
+
+### Floors
+
+An address is judged at `prepare` (a fixed RETRY, never a question, in every
+mode) and again at `call` and on every redirect: not http or https, with
+credentials, empty, over 2,048 characters or holding a control character is
+`bad_url` (`BAD_URL`); a host on `settings.protectedDomains` (equal or under,
+as `open_url` judges it) is `protected_site`, whose sentence is
+`PROTECTED_SITE_REFUSAL` behind "No input was sent."; an address on this Mac
+or a private network is `bad_url` (`LOCAL_ADDRESS`): loopback, a bare name,
+`.local`, `.localhost`, `.internal`, `.lan`, `.intranet` and `.home.arpa`
+names, and the ranges 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12,
+192.168/16 and 224/3 for IPv4, the unspecified and loopback addresses,
+fc00::/7, fe80::/10 and a mapped IPv4 for IPv6, in the decimal and hex forms
+the URL parser normalises. The same test runs over every address DNS answers
+for a public name (`guardedLookup`), so a name that resolves inward is refused
+before a connection is made. The one exception is an origin the registry
+names in `LocalProviderOptions.loopbackOrigins`: the bench's own registry
+(`src/gym/bench/tools.ts createBenchTools`) names its fixture server's,
+`http://127.0.0.1:47831` (`FIXTURE_ORIGIN`), and the app names none, so
+nothing of the owner's app fetches loopback by default. A bench run is marked
+`origin: "bench"` at `runner.start`, but the allowance lives in the registry
+the bench builds, which only `scripts/bench.mjs` and `scripts/harness-cycle.mjs`
+do. Under `PRIVATE_LOCAL` the tool lists as the files tool does: the fetch is
+a local act (no model is involved in it), and the page's text then goes to
+the configured model as part of the step like any tool result, which is where
+the same text goes today off the screen. The credential deny in the
+arguments, the per-run budget and the master switch hold as for every tool.
+
+### Trace
+
+`ToolCallFinished` carries the tool and server codes (`read_page_text`,
+`web`), the outcome and the result size like any tool step. The provider's
+own `WebPageRead` line carries `{ tool, server: "web", outcome, resultBytes,
+host }`, where `host` is the registrable domain alone (`traceHost`:
+`example.com`, `bbc.co.uk`) or one of `loopback`, `private`, `ip` for a
+literal address; the diagnostics stream's `host` field (`electron/diagnostics.ts
+hostCode`) keeps exactly that shape and drops a URL, a path, an IP or a
+sentence. The path never enters a trace.
+
+### Refusal codes
+
+`BAD_ARGS`, `BAD_URL`, `PROTECTED_SITE`, `LOCAL_ADDRESS`, `NO_PAGE`,
+`TIMEOUT`, `TOO_LARGE`, `NOT_TEXT`, `TOO_MANY_REDIRECTS`, `REDIRECT_OFF_HOST`,
+`HTTP_ERROR`, `FETCH_FAILED`, `CREDENTIAL`, `FAILED`: each an `error` outcome
+whose body begins with the code and one sentence the model can act on; an
+abort of the run's signal is the `interrupted` outcome.
+
+### The benchmark
+
+Every bench and cycle attempt's Runner carries the files tool and the web
+tool and nothing else of the tool layer (`createBenchTools`). The research
+graders' `visited` checks read the fixture server's own log
+(`src/gym/bench/fixtures.ts createFixtureStore`): every GET of a registered
+page that is not a side request (`isSideRequest`: a prefetch or prerender
+purpose, or an `Accept` without `text/html` or `*/*`) is a visit, and the
+tool sends no `Accept` header at all, which the store reads as `*/*`. So a
+tool read of a fixture page counts as a visit with no grader change
+(`tests/tools-web.test.ts` "counts a tool read of a fixture page as a
+visit"), and `noteRoute` is unchanged: the note is still written by the
+files tool.
+
+### What only a live run can confirm
+
+- That gpt-5.4-mini reads the two research tasks' pages by the tool once it
+  is listed and the instruction names it:
+  `npm run cycle -- --probe STUCK_LOOP --baseline 20260919-2044-60630f0 --autonomy all --repeat 3`
+  and `--probe FACT_NOT_NOTED --baseline 20260919-1646-09c5412 …` must show
+  `ToolCallFinished web read_page_text ok` (four reads for
+  `research-paginated-listing`, four for `research-compare-to-csv`: the
+  index and three vendor pages), `visited` true on every page, the facts
+  noted (`count` and `cheapestId`; `vendor1..3`) through `noteRoute: tool`,
+  and no `ActionLoopDetected period 2` over `click_control`.
+- That the page text the tool returns for the fixture's listings and vendor
+  pages reads as the tests' synthetic markup does (the fixture's `table()`
+  and `link()` are the shapes the tests use), and that the model follows
+  `Next page (/tok/listings/2)` by calling `read_page_text` with the address
+  as shown rather than clicking it.
+- What a 12,000-character result costs a step on the cell models (about
+  3,000 input tokens once, then 640 characters), against the scroll, capture
+  and model call it replaces.
 
 ## The launcher shim (`coarena-launch`)
 

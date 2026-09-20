@@ -297,6 +297,11 @@ export function toolQuestion(
     case "file_move":
       text = `Move ${questionText(q.name, 60) || "the file"} to ${questionText(q.folder, 60) || "that folder"}?`;
       break;
+    // The web tool: the host alone, never the path. A read is trusted and
+    // never asked; the sentence exists so the kind renders like every other.
+    case "web_read":
+      text = `Use Web to read ${questionText(q.host, 80).replace(/\s+/g, "") || "that page"}?`;
+      break;
   }
   const line = redactSecrets(text.replace(/\s+/g, " ").trim());
   return line.length > QUESTION_MAX
@@ -395,6 +400,10 @@ export function toolDoneLine(
         return `Moved ${name} to ${spokenTitle(facts.folder ?? "", "the folder", userWords)}.`;
       return `Added ${facts.lines === 1 ? "a line" : `${facts.lines ?? 0} lines`} to ${name}.`;
     }
+    // A page read never completes a run (the runner asks for verified
+    // facts, which a read has none of); the line exists for the kind.
+    case "page":
+      return `Read the page on ${questionText(facts.host, 80).replace(/\s+/g, "") || "the website"}.`;
   }
 }
 /** What "Undone: …" says after ToolAccess.undoLast took a write back. */
@@ -420,9 +429,10 @@ export function toolUndoLine(facts: ToolFacts | undefined): string {
 export function toolFallbackLine(title: string): string {
   return `${questionText(title, 40) || "The tool"} couldn’t do that, so I’ll do it on screen.`;
 }
-/** The builtin app a tool id belongs to ("apple__calendar_create_event" → "Calendar", "files__…" → "Files"), or undefined. */
+/** The builtin app a tool id belongs to ("apple__calendar_create_event" → "Calendar", "files__…" → "Files", "web__…" → "Web"), or undefined. */
 export function builtinToolTitle(id: string): string | undefined {
   if (/^files__[a-z_]+$/.test(id)) return "Files";
+  if (/^web__[a-z_]+$/.test(id)) return "Web";
   const app = /^apple__(calendar|reminders|notes|mail)_/.exec(id)?.[1];
   return app && app[0].toUpperCase() + app.slice(1);
 }

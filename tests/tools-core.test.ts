@@ -71,6 +71,7 @@ const QUESTIONS = (title: string): ToolQuestion[] => [
   { kind: "file_write", name: title, text: title },
   { kind: "file_rename", name: title, newName: title },
   { kind: "file_move", name: title, folder: title },
+  { kind: "web_read", host: title },
 ];
 const ENTITIES: ((title: string) => string)[] = [
   (title) => title,
@@ -671,9 +672,44 @@ describe("undo, fallback and helpers", () => {
     expect(builtinToolTitle("files__append_text_file")).toBe("Files");
     expect(builtinToolTitle("files__replace_file_text")).toBe("Files");
     expect(builtinToolTitle("files__read_text_file")).toBe("Files");
+    expect(builtinToolTitle("web__read_page_text")).toBe("Web");
+    expect(builtinToolTitle("web__read_current_page")).toBe("Web");
 
     expect(builtinToolTitle("files__")).toBeUndefined();
     expect(builtinToolTitle("files__Agent")).toBeUndefined();
+    expect(builtinToolTitle("web__")).toBeUndefined();
+    expect(builtinToolTitle("web__Agent")).toBeUndefined();
+  });
+  it("read the web tool's question and done line with the host as one token", () => {
+    expect(
+      toolQuestion({ kind: "web_read", host: "shop.example.com" }, [], CLOCK),
+    ).toBe("Use Web to read shop.example.com?");
+    expect(toolQuestion({ kind: "web_read", host: "" }, [], CLOCK)).toBe(
+      "Use Web to read that page?",
+    );
+    // A page read never completes a run; the line exists for the kind.
+    expect(
+      toolDoneLine(
+        {
+          kind: "page",
+          title: "Listings",
+          host: "shop.example.com",
+          chars: 640,
+          truncated: false,
+        },
+        CLOCK,
+        "count the listings",
+      ),
+    ).toBe("Read the page on shop.example.com.");
+    expect(
+      toolUndoLine({
+        kind: "page",
+        title: "",
+        host: "x.example",
+        chars: 0,
+        truncated: false,
+      }),
+    ).toBe("the last tool step was taken back.");
   });
   it("walk every key and string leaf of the arguments to the allowed depth", () => {
     expect(

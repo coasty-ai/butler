@@ -19,7 +19,7 @@ import {
   type ProviderResult,
   type ToolSpec,
 } from "../src/core/tools";
-import { LOCAL_SERVERS } from "../src/tools/providers";
+import { LOCAL_SERVERS, WEB } from "../src/tools/providers";
 import {
   FILES,
   FILE_LIMITS,
@@ -90,7 +90,7 @@ afterEach(async () => {
 describe("the files tool's table", () => {
   it("is six builtin, trusted, local, closed-world tools under a reserved id", () => {
     expect(RESERVED_PROVIDERS.has("files")).toBe(true);
-    expect(LOCAL_SERVERS).toEqual([FILES]);
+    expect(LOCAL_SERVERS).toEqual([FILES, WEB]);
     expect(FILE_TOOL_NAMES).toEqual([
       "read_text_file",
       "append_text_file",

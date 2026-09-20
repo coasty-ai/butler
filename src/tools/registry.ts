@@ -20,6 +20,7 @@ import {
   type ToolSpec,
   type ToolTier,
   type ToolUnavailable,
+  type ToolWords,
   type ToolsStatus,
 } from "../core/tools";
 import { toolClock } from "./clock";
@@ -49,7 +50,7 @@ import { resultLines, resultText, sanitizeResult } from "./result";
  * Every tool a run may call, behind one door (src/core/tools.ts ToolAccess):
  * the first-party bridges (BUILTIN_SERVERS) first, then the tools the app
  * runs in its own process (LOCAL_SERVERS: the files tool, gated by
- * settings.tools.files), then the user's own servers, each a long-lived
+ * settings.tools.files, and the web tool, by settings.tools.web), then the user's own servers, each a long-lived
  * provider the registry starts and stops as settings change. The registry decides what is usable (consent, approval,
  * privacy, a resolvable command), ranks and caps what the model sees,
  * validates arguments before policy, and bounds every result before the
@@ -90,6 +91,11 @@ export interface RegistryOptions {
   builtin?: readonly BuiltinServer[];
   /** The in-process first-party tools; tests pass [] to keep them out, or a fake. */
   local?: readonly LocalServer[];
+  /**
+   * Loopback origins the web tool may read (LocalProviderOptions): the
+   * bench names its fixture server's, the app names none.
+   */
+  loopbackOrigins?: readonly string[];
   recipes?: readonly ServerRecipe[];
 }
 /** The install step of a preview or an approval: whether it ran, and how it went. */
@@ -411,7 +417,13 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     const running = providers.get(server.id);
     if (running && !wanted) await stop(server.id);
     if (!wanted || providers.has(server.id)) return;
-    const provider = server.create({ home: o.home, now, trace });
+    const provider = server.create({
+      home: o.home,
+      settings: o.settings,
+      loopbackOrigins: o.loopbackOrigins ?? [],
+      now,
+      trace,
+    });
     providers.set(server.id, { provider, signature: "local" });
     void provider.start();
   };
@@ -516,7 +528,11 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     result: ProviderResult,
     startedAt: number,
   ): ToolOutcome => {
-    const body = sanitizeResult(result.raw, result.items);
+    const body = sanitizeResult(
+      result.raw,
+      result.items,
+      spec.resultChars ?? TOOL_LIMITS.resultChars,
+    );
     return {
       code: result.code,
       text: resultText(spec, result.code, {
@@ -649,7 +665,7 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
         return { ok: false, problem: "unavailable" };
       return running.prepare(spec, args, words);
     },
-    async call(spec, args, signal) {
+    async call(spec, args, signal, words?: ToolWords) {
       const startedAt = now();
       const running = providers.get(spec.provider)?.provider;
       if (
@@ -669,7 +685,11 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
         return refusal(spec, "pin_mismatch", startedAt);
       }
       const result = await serialised(spec.provider, () =>
-        running.call(spec, args, { signal, timeoutMs: spec.timeoutMs }),
+        running.call(spec, args, {
+          signal,
+          timeoutMs: spec.timeoutMs,
+          ...(words ? { words } : {}),
+        }),
       ).catch((): ProviderResult => ({ code: "error", raw: "", items: 0 }));
       if (result.code === "ok" && result.undoToken)
         undos.push({

@@ -49,6 +49,24 @@ describe("tool settings", () => {
     expect(() => row({ id: "a".repeat(41) })).toThrow();
   });
 
+  it("turns the web tool on by default, keeps a stored config's choice, and refuses a non-boolean", () => {
+    expect(defaultSettings.tools.web).toBe(true);
+    const legacy: Record<string, unknown> = structuredClone(defaultSettings);
+    delete (legacy.tools as Record<string, unknown>).web;
+    expect(settingsSchema.parse(legacy).tools.web).toBe(true);
+    expect(
+      settingsSchema.parse({
+        ...defaultSettings,
+        tools: { ...defaultSettings.tools, web: false },
+      }).tools.web,
+    ).toBe(false);
+    expect(() =>
+      settingsSchema.parse({
+        ...defaultSettings,
+        tools: { ...defaultSettings.tools, web: "yes" },
+      }),
+    ).toThrow();
+  });
   it("turns the files tool on by default, keeps a stored config's choice, and lets the master switch gate it", () => {
     expect(defaultSettings.tools.files).toBe(true);
     const legacy: Record<string, unknown> = structuredClone(defaultSettings);
@@ -84,7 +102,7 @@ describe("tool settings", () => {
       withServers("PRIVATE_BYOM", [
         row(),
         row({
-          id: "web",
+          id: "remote",
           transport: "http",
           url: "https://mcp.example/mcp",
           network: "internet",
@@ -127,7 +145,13 @@ describe("tool settings", () => {
 
   it("refuses HTTP in Private local and requires a bare https address elsewhere", () => {
     const web = (url: string, over: Partial<ToolServer> = {}) =>
-      row({ id: "web", transport: "http", url, network: "internet", ...over });
+      row({
+        id: "remote",
+        transport: "http",
+        url,
+        network: "internet",
+        ...over,
+      });
     expect(() =>
       validateToolSettings(
         withServers("PRIVATE_LOCAL", [web("https://mcp.example/mcp")]),
@@ -162,8 +186,8 @@ describe("tool settings", () => {
       // "files" is the built-in files tool's reserved id; a user's server takes another.
       row({ id: "docs", name: "Docs" }),
       row({
-        id: "web",
-        name: "Web",
+        id: "remote",
+        name: "Remote",
         transport: "http",
         url: "https://mcp.example/mcp",
         network: "internet",
@@ -172,12 +196,12 @@ describe("tool settings", () => {
       row({ id: "quiet", name: "Quiet", network: "internet", enabled: false }),
     ]);
     const flipped = localToolSettings(settings);
-    expect(flipped.disabled).toEqual(["Web", "Net"]);
+    expect(flipped.disabled).toEqual(["Remote", "Net"]);
     expect(
       flipped.settings.tools.servers.map((r) => [r.id, r.enabled]),
     ).toEqual([
       ["docs", true],
-      ["web", false],
+      ["remote", false],
       ["net", false],
       ["quiet", false],
     ]);

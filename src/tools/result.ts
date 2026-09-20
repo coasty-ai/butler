@@ -19,11 +19,14 @@ export function stripInvisible(text: string): string {
 /**
  * The one bounded, stripped, redacted body the model reads from a result:
  * invisible characters removed, credential spans redacted, whitespace
- * collapsed, cut at TOOL_LIMITS.resultChars with the omitted length named.
+ * collapsed, cut at TOOL_LIMITS.resultChars (or the tool's own
+ * ToolSpec.resultChars: the web tool's page text) with the omitted length
+ * named.
  */
 export function sanitizeResult(
   raw: string,
   items: number,
+  limit: number = TOOL_LIMITS.resultChars,
 ): { text: string; bytes: number; items: number } {
   const clean = redactSecrets(stripInvisible(raw))
     .replace(/\r\n?/g, "\n")
@@ -32,8 +35,8 @@ export function sanitizeResult(
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   const text =
-    clean.length > TOOL_LIMITS.resultChars
-      ? `${clean.slice(0, TOOL_LIMITS.resultChars)} [+${clean.length - TOOL_LIMITS.resultChars} chars]`
+    clean.length > limit
+      ? `${clean.slice(0, limit)} [+${clean.length - limit} chars]`
       : clean;
   return { text, bytes: Buffer.byteLength(raw), items };
 }

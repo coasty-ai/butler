@@ -27,6 +27,8 @@ import {
   REMINDER_ADD,
   SCRATCH_DELETE,
   SHELL,
+  WEB_CURRENT,
+  WEB_READ,
   prepare,
 } from "./tool-fakes";
 
@@ -247,6 +249,75 @@ describe("toolDecision: the files tool", () => {
     expect(decide(FILES_READ, { path: NOTES }, "ask").reason).toBe(
       TOOL_ALLOWED.read,
     );
+  });
+  it("runs a web page read in every mode, as any trusted read, and retries its refused addresses with a fixed sentence and never a question", () => {
+    const LISTINGS = "https://shop.example/tok/listings";
+    expect(kinds(WEB_READ, { url: LISTINGS })).toEqual({
+      ask: "ALLOW",
+      task: "ALLOW",
+      flow: "ALLOW",
+      all: "ALLOW",
+    });
+    expect(decide(WEB_READ, { url: LISTINGS }, "ask").reason).toBe(
+      TOOL_ALLOWED.read,
+    );
+    // Without the user's words (a rewrite, a wake-up) it still runs: a
+    // closed-world read grounds on nothing.
+    expect(decide(WEB_READ, { url: LISTINGS }, "task").kind).toBe("ALLOW");
+    // The page in front is read from the frame's address the runner hands
+    // prepare (ToolWords.pageAddress); without one the fixed retry.
+    const front = (autonomy: Autonomy, pageAddress?: string) =>
+      evaluate(
+        call(WEB_CURRENT.id, {}),
+        surface,
+        settingsFor(autonomy),
+        false,
+        {
+          tool: {
+            spec: WEB_CURRENT,
+            prepared: prepare(WEB_CURRENT, {}, { pageAddress }),
+            calls: 0,
+          },
+          clock: CLOCK,
+        },
+      );
+    for (const mode of MODES) {
+      expect(front(mode, LISTINGS).kind).toBe("ALLOW");
+      expect(front(mode)).toEqual({
+        kind: "RETRY",
+        reason: TOOL_REFUSALS.no_page,
+      });
+    }
+    for (const mode of MODES) {
+      expect(decide(WEB_READ, { url: "ftp://shop.example/x" }, mode)).toEqual({
+        kind: "RETRY",
+        reason: TOOL_REFUSALS.bad_url,
+      });
+      expect(
+        decide(WEB_READ, { url: "http://127.0.0.1:8080/x" }, mode),
+      ).toEqual({
+        kind: "RETRY",
+        reason: TOOL_REFUSALS.bad_url,
+      });
+      expect(
+        decide(WEB_READ, { url: "https://www.paypal.com/x" }, mode),
+      ).toEqual({ kind: "RETRY", reason: TOOL_REFUSALS.protected_site });
+    }
+    expect(TOOL_REFUSALS.protected_site).not.toMatch(/\?/);
+    expect(TOOL_REFUSALS.bad_url).not.toMatch(/\?/);
+    // The floors hold over it: the budget, the master switch, a credential in the address.
+    expect(
+      decide(WEB_READ, { url: LISTINGS }, "all", {
+        calls: TOOL_LIMITS.callsPerRun,
+      }),
+    ).toEqual({ kind: "DENY", reason: TOOL_REFUSALS.budget });
+    expect(
+      decide(
+        WEB_READ,
+        { url: `${LISTINGS}?token=sk-abcdefghijklmnopqrstuvwxyz` },
+        "all",
+      ),
+    ).toEqual({ kind: "DENY", reason: TOOL_REFUSALS.credential });
   });
   it("runs an append the words named by its path under task, flow and all, whatever the text says", () => {
     expect(kinds(FILES_APPEND, LINE, { userWords: NOTE_WORDS })).toEqual({

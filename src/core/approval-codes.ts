@@ -72,6 +72,7 @@ export const APPROVAL_CODES = [
   "TOOL_FILE_WRITE",
   "TOOL_FILE_RENAME",
   "TOOL_FILE_MOVE",
+  "TOOL_WEB_READ",
   "OTHER",
 ] as const;
 export type ApprovalCode = (typeof APPROVAL_CODES)[number];
@@ -143,6 +144,10 @@ const SHAPES: readonly (readonly [RegExp, ApprovalCode])[] = [
   [/^Add .* to Reminders(?:, due .*)?\?$/su, "TOOL_REMINDER_ADD"],
   [/^Add a note .* to Notes\?$/su, "TOOL_NOTE_ADD"],
   [/^Add a Mail draft to .*\?$/su, "TOOL_MAIL_DRAFT"],
+  // The web tool (tool-text.ts): the host is one token with no space, so
+  // the shape is tried before the MCP read's, which a host such as
+  // "with.example" would otherwise fit.
+  [/^Use Web to read (?:that page|\S+)\?$/su, "TOOL_WEB_READ"],
   [/^Use .* to read with .*\?$/su, "TOOL_MCP_READ"],
   [/^Use .* to run .*\?$/su, "TOOL_MCP_WRITE"],
   [/^Run .* in .*\?$/su, "TOOL_AGENT_RUN"],

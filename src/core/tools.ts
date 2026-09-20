@@ -32,6 +32,7 @@ export const RESERVED_PROVIDERS: ReadonlySet<string> = new Set([
   "shortcuts",
   "builtin",
   "files",
+  "web",
   "coding-agent",
 ]);
 /** Shells with a different accent: never listed, never ticked, never called (docs/THREAT_MODEL.md). */
@@ -57,6 +58,12 @@ export interface ToolSpec {
   dateKeys: string[];
   /** Content-free codes for traces: "apple"/tool name for builtin; "s"+12 hex / "t"+12 hex for MCP. */
   trace: { tool: string; server: string };
+  /**
+   * The longest result body the model reads from this tool, when it is not
+   * TOOL_LIMITS.resultChars: the web tool's page text (WEB_LIMITS) is the
+   * one that sets it, since a page read in full is the point of the call.
+   */
+  resultChars?: number;
 }
 export type ToolSummary = Pick<ToolSpec, "id" | "title" | "does" | "params">;
 export interface ToolUnavailable {
@@ -93,7 +100,9 @@ export type ToolQuestion =
   | { kind: "file_append" | "file_write"; name: string; text: string }
   /** A rename says the new name; a move the folder's own name. */
   | { kind: "file_rename"; name: string; newName: string }
-  | { kind: "file_move"; name: string; folder: string };
+  | { kind: "file_move"; name: string; folder: string }
+  /** The web tool (src/tools/providers/web.ts): the page's host. A read is trusted and never asked; the kind renders like every other. */
+  | { kind: "web_read"; host: string };
 /**
  * The user's own words at prepare: the run's objective when it is theirs
  * (Runner.userWords), undefined for a rewrite, an accepted offer or a watch
@@ -102,6 +111,14 @@ export type ToolQuestion =
  */
 export interface ToolWords {
   userWords?: string;
+  /**
+   * The browser's current address from the frame in front
+   * (ScreenContext.browserAddress), so a tool that reads the current page
+   * (the web tool's read_current_page) knows which page that is; undefined
+   * when no browser page is in front. The runner hands it to prepare and to
+   * call; it never enters a trace.
+   */
+  pageAddress?: string;
 }
 export type ToolProblem =
   | "unknown_tool"
@@ -112,7 +129,13 @@ export type ToolProblem =
   /** A path (or a rename's new name, or a move's folder) the files tool may not touch: outside the home folder, under ~/Library, hidden, credential-like or executable. */
   | "bad_path"
   /** A whole-file replace of a file that holds text, when the user's words did not say to replace, overwrite or clear it (the files tool): append_text_file is the route. */
-  | "would_erase";
+  | "would_erase"
+  /** An address the web tool never reads: not http(s), with credentials, or on this Mac or a private network (the bench fixture origin excepted under the bench). */
+  | "bad_url"
+  /** An address on the user's protected-websites list (settings.protectedDomains): the same floor open_url has, as a retry. */
+  | "protected_site"
+  /** read_current_page with no browser page in front. */
+  | "no_page";
 export type ToolPrepared =
   | { ok: false; problem: ToolProblem }
   | {
@@ -157,6 +180,14 @@ export type ToolFacts =
       lines?: number;
       from?: string;
       folder?: string;
+    }
+  /** The web tool read a page: its title, its host, how many characters of text came back and whether maxChars cut them. A read never completes a run. */
+  | {
+      kind: "page";
+      title: string;
+      host: string;
+      chars: number;
+      truncated: boolean;
     };
 export interface ToolOutcome {
   code: ToolCode;
@@ -189,10 +220,12 @@ export interface ToolAccess {
     args: Record<string, unknown>,
     words?: ToolWords,
   ): ToolPrepared;
+  /** The words go along here too, for a tool that reads the page in front (ToolWords.pageAddress). */
   call(
     spec: ToolSpec,
     args: Record<string, unknown>,
     signal: AbortSignal,
+    words?: ToolWords,
   ): Promise<ToolOutcome>;
   /** Takes back this app session's last undoable write (≤ undoWindowMs old); undefined when there is none. */
   undoLast(signal: AbortSignal): Promise<ToolOutcome | undefined>;
@@ -219,7 +252,7 @@ export interface ToolProvider {
   call(
     spec: ToolSpec,
     args: Record<string, unknown>,
-    o: { signal: AbortSignal; timeoutMs: number },
+    o: { signal: AbortSignal; timeoutMs: number; words?: ToolWords },
   ): Promise<ProviderResult>;
   undo(token: string, signal: AbortSignal): Promise<ProviderResult>;
   close(): Promise<void>;
@@ -340,8 +373,13 @@ export interface ToolsStatus {
 }
 
 export const TOOL_LIMITS = {
-  /** Tools the model sees per run: the nine Apple tools and the six files tools (15) fit, with one seat left for a server's. */
-  list: 16,
+  /**
+   * Tools the model sees per run: the nine Apple tools, the six files tools
+   * and the two web tools (17) fit, with one seat left for a server's. Was
+   * 16 before the web tool (9 + 6 = 15 and one seat); the seat is kept so a
+   * user's server still lists one tool beside every first-party one.
+   */
+  list: 18,
   unavailable: 4,
   argsBytes: 8192,
   argsDepth: 4,
@@ -371,6 +409,12 @@ export const TOOL_REFUSALS = {
     "No input was sent. The files tool touches only a ~/ path inside your home folder that is not under ~/Library, hidden, credential-like or executable; use the path as the objective writes it, or use the screen.",
   would_erase:
     "No input was sent. That file already holds text and replace_file_text would erase it. To add to the file, call append_text_file with the same path; the whole file is replaced only when the objective says to replace, overwrite or clear it.",
+  bad_url:
+    "No input was sent. The web tool reads only a full http or https address without credentials, and never an address on this Mac or a private network; use the address as the objective or the page text writes it, or read the page on screen.",
+  protected_site:
+    "No input was sent. That website is protected. Ask the user to open it with request_user.",
+  no_page:
+    "No input was sent. No web page is in front to read: bring the browser page forward, or call read_page_text with the address.",
 
   unavailable:
     "No input was sent. That tool is not available right now; use the screen, or finish with done or fail.",

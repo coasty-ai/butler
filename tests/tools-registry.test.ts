@@ -34,6 +34,7 @@ import type { InstallRequest } from "../src/tools/install";
 import type { LocalServer } from "../src/tools/local";
 import { commandHash } from "../src/tools/pins";
 import { FILES } from "../src/tools/providers/files";
+import { WEB, WEB_LIMITS } from "../src/tools/providers/web";
 import { createToolRegistry, parseAppleAccess } from "../src/tools/registry";
 import {
   resultLines,
@@ -324,6 +325,7 @@ const byom = (over: Partial<Settings["tools"]> = {}): Settings => ({
     enabled: true,
     apple: { calendar: true, reminders: false, notes: false, mail: false },
     files: true,
+    web: true,
     servers: [],
     ...over,
   },
@@ -447,8 +449,8 @@ describe("tool registry: the list", () => {
       row({ id: "local", name: "Local" }),
       row({ id: "net", name: "Net", network: "internet" }),
       row({
-        id: "web",
-        name: "Web",
+        id: "remote",
+        name: "Remote",
         transport: "http",
         url: "https://mcp.example/mcp",
         network: "internet",
@@ -458,8 +460,8 @@ describe("tool registry: the list", () => {
       apple: { specs: [spec("apple", "calendar_list_events")] },
       local: { specs: [spec("local", "read", { local: true })] },
       net: { specs: [spec("net", "read", { local: false })] },
-      web: {
-        specs: [spec("web", "read", { transport: "http", local: false })],
+      remote: {
+        specs: [spec("remote", "read", { transport: "http", local: false })],
       },
     };
     const open = registry({
@@ -475,7 +477,7 @@ describe("tool registry: the list", () => {
       "apple__calendar_list_events",
       "local__read",
       "net__read",
-      "web__read",
+      "remote__read",
     ]);
     const local = registry({
       settings: {
@@ -539,14 +541,14 @@ describe("tool registry: the in-process files tool", () => {
     );
     return home;
   };
-  it("lists the six files tools after the bridge's, gated by settings.tools.files and the master switch", async () => {
+  it("lists the six files tools and the two web tools after the bridge's, each gated by its own switch and the master switch", async () => {
     const { reg, state } = registry({
       settings: byom({
         servers: [row({ tools: { dummy: { on: true, pin: "x" } } })],
       }),
       launch: LAUNCH,
       home: scratch(),
-      local: [FILES],
+      local: [FILES, WEB],
       tables: {
         apple: { specs: [spec("apple", "calendar_list_events")] },
         memo: { specs: [spec("memo", "dummy")] },
@@ -563,8 +565,14 @@ describe("tool registry: the in-process files tool", () => {
       "files__list_directory",
       "files__rename_file",
       "files__move_file",
+      "web__read_page_text",
+      "web__read_current_page",
       "memo__dummy",
     ]);
+    // Nine Apple tools, six files tools and two web tools fit under the cap
+    // with one seat left for a server's: the cap moved from 16 with the web tool.
+    expect(TOOL_LIMITS.list).toBe(18);
+    expect(list.tools.length).toBeLessThanOrEqual(TOOL_LIMITS.list);
     const files = list.tools.filter((t) => t.provider === "files");
     for (const t of files)
       expect(t).toMatchObject({
@@ -574,16 +582,36 @@ describe("tool registry: the in-process files tool", () => {
         openWorld: false,
         title: "Files",
       });
-    // The switch stops the provider; the master switch stops everything.
+    for (const t of list.tools.filter((t) => t.provider === "web"))
+      expect(t).toMatchObject({
+        transport: "builtin",
+        trusted: true,
+        local: true,
+        openWorld: false,
+        tier: "read",
+        title: "Web",
+        resultChars: WEB_LIMITS.resultChars,
+      });
+    // Each switch stops its own provider; the master switch stops everything.
     state.settings = byom({ files: false });
     await reg.configure();
-    expect(
-      (await access.list("anything", signal)).tools.map((t) => t.provider),
-    ).not.toContain("files");
+    const providers = (await access.list("anything", signal)).tools.map(
+      (t) => t.provider,
+    );
+    expect(providers).not.toContain("files");
+    expect(providers).toContain("web");
+    state.settings = byom({ web: false });
+    await reg.configure();
+    const withoutWeb = (await access.list("anything", signal)).tools.map(
+      (t) => t.provider,
+    );
+    expect(withoutWeb).toContain("files");
+    expect(withoutWeb).not.toContain("web");
     state.settings = byom({ enabled: false });
     await reg.configure();
     expect(reg.access({ synthetic: false })).toBeUndefined();
-    // Private local keeps it: it never leaves the Mac.
+    // Private local keeps both: the fetch is a local act, and the text goes
+    // to the configured model as the screen's text does.
     state.settings = { ...byom(), privacy: "PRIVATE_LOCAL" };
     await reg.configure();
     expect(
@@ -591,8 +619,74 @@ describe("tool registry: the in-process files tool", () => {
         (t) => t.provider === "files",
       ),
     ).toHaveLength(6);
+    expect(
+      (await access.list("anything", signal)).tools.filter(
+        (t) => t.provider === "web",
+      ),
+    ).toHaveLength(2);
     // The bridge's status is untouched by it.
     expect(reg.status().apple.state).toBe("on");
+  });
+  it("prepares and refuses a web read through the one door, with the words carried to call and the result bounded at the tool's own cap", async () => {
+    const { reg } = registry({
+      settings: byom({
+        apple: { calendar: false, reminders: false, notes: false, mail: false },
+      }),
+      launch: LAUNCH,
+      home: scratch(),
+      local: [WEB],
+      tables: {},
+    });
+    await reg.configure();
+    const access = reg.access({ synthetic: false })!;
+    const list = await access.list("count the listings", signal);
+    expect(list.tools.map((t) => t.id)).toEqual([
+      "web__read_page_text",
+      "web__read_current_page",
+    ]);
+    const read = list.tools[0];
+    const current = list.tools[1];
+    expect(
+      access.prepare(read, { url: "https://example.com/a" }),
+    ).toMatchObject({
+      ok: true,
+      question: { kind: "web_read", host: "example.com" },
+    });
+    expect(access.prepare(read, { url: "http://127.0.0.1:47831/tok" })).toEqual(
+      {
+        ok: false,
+        problem: "bad_url",
+      },
+    );
+    expect(access.prepare(read, { url: "https://paypal.com/x" })).toEqual({
+      ok: false,
+      problem: "protected_site",
+    });
+    expect(access.prepare(current, {})).toEqual({
+      ok: false,
+      problem: "no_page",
+    });
+    expect(
+      access.prepare(current, {}, { pageAddress: "https://example.com/a" }),
+    ).toMatchObject({ ok: true });
+    // No allowance: a loopback fetch is refused at call as at prepare,
+    // with the code the model can act on, and the address never reaches
+    // the network.
+    const outcome = await access.call(
+      read,
+      { url: "http://127.0.0.1:47831/tok" },
+      signal,
+    );
+    expect(outcome.code).toBe("error");
+    expect(outcome.text).toContain("LOCAL_ADDRESS");
+    const none = await access.call(current, {}, signal);
+    expect(none.text).toContain("NO_PAGE");
+    const fromFront = await access.call(current, {}, signal, {
+      pageAddress: "http://127.0.0.1:47831/tok",
+    });
+    expect(fromFront.text).toContain("LOCAL_ADDRESS");
+    expect(fromFront.text).not.toContain("NO_PAGE");
+    await reg.closeAll();
   });
   it("prepares, calls, bounds and undoes a files write through the one door", async () => {
     const { reg, traced } = registry({
@@ -1229,8 +1323,8 @@ describe("tool registry: lifecycle and status", () => {
     const servers = [
       row({ id: "net", name: "Net", network: "internet", consented: false }),
       row({
-        id: "web",
-        name: "Web",
+        id: "remote",
+        name: "Remote",
         transport: "http",
         url: "https://x.example/mcp",
         consented: false,
@@ -1240,7 +1334,7 @@ describe("tool registry: lifecycle and status", () => {
     const tables = {
       apple: { specs: [] },
       net: { specs: [] },
-      web: { specs: [] },
+      remote: { specs: [] },
       local: { specs: [] },
     };
     const local = registry({
@@ -1248,7 +1342,7 @@ describe("tool registry: lifecycle and status", () => {
       launch: LAUNCH,
       tables,
     });
-    for (const id of ["net", "web"]) {
+    for (const id of ["net", "remote"]) {
       expect(await local.reg.test(id)).toMatchObject({
         ok: false,
         state: "blocked_local",
@@ -1280,7 +1374,7 @@ describe("tool registry: lifecycle and status", () => {
       tables,
     });
     expect((await open.reg.test("net")).ok).toBe(true);
-    expect((await open.reg.test("web")).ok).toBe(true);
+    expect((await open.reg.test("remote")).ok).toBe(true);
   });
 });
 

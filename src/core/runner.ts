@@ -103,6 +103,7 @@ import {
   type ToolOutcome,
   type ToolPrepared,
   type ToolSpec,
+  type ToolWords,
 } from "./tools";
 import {
   argsHash,
@@ -230,17 +231,33 @@ export const MODEL_HISTORY_FULL = 6;
  */
 export const MODEL_RESULT_CHARS = 640;
 /**
+ * The one exception: the newest entry, when it is a tool call, carries its
+ * result whole up to this, so a page the web tool just read (WEB_LIMITS: at
+ * most 30,000 characters of text behind the facts line and the result
+ * prefix) reaches the model on the step that asked for it. On the step
+ * after, the same entry is cut at MODEL_RESULT_CHARS like every other: the
+ * values the model needs travel in its note, as the instruction says, and
+ * the prompt never carries two pages.
+ */
+export const MODEL_TOOL_RESULT_CHARS = 31_000;
+/**
  * The model's copy of the history: the last MODEL_HISTORY_FULL entries whole
  * (rejections with their echoed actions, refusals, the loop and no-progress
  * notes), behind one line naming every earlier step and how it ended. Twelve
  * whole entries were 1.1-1.5k input tokens a step on the 2026-09-19 runs (a
  * 24-step run grew from 7.5k to 9.7k). Typed text never enters the line, no
- * entry carries an image, and every result is cut at MODEL_RESULT_CHARS.
+ * entry carries an image, and every result is cut at MODEL_RESULT_CHARS,
+ * except the newest tool call's (MODEL_TOOL_RESULT_CHARS).
  */
 export function modelHistory(history: History): History {
-  const whole = history.slice(-MODEL_HISTORY_FULL).map((entry) => ({
+  const whole = history.slice(-MODEL_HISTORY_FULL).map((entry, i, all) => ({
     ...entry,
-    result: bound(entry.result, MODEL_RESULT_CHARS),
+    result: bound(
+      entry.result,
+      i === all.length - 1 && entry.type === "tool_call"
+        ? MODEL_TOOL_RESULT_CHARS
+        : MODEL_RESULT_CHARS,
+    ),
   }));
   if (history.length <= MODEL_HISTORY_FULL) return whole;
   return [
@@ -2587,12 +2604,15 @@ export class Runner {
    * What policy needs for a tool_call: the frozen spec of the tool it names,
    * the tool layer's validation of the arguments (given the user's own words,
    * for a tool whose rule reads them at prepare: the files tool refuses to
-   * erase a file the words did not ask to replace), the calls so far and the
-   * clock. Empty when the tool is not in this run's list (policy retries).
+   * erase a file the words did not ask to replace; and the browser's current
+   * address, for the web tool's read of the page in front), the calls so far
+   * and the clock. Empty when the tool is not in this run's list (policy
+   * retries).
    */
   private toolContext(
     action: Extract<Action, { type: "tool_call" }>,
     userWords: string | undefined,
+    frame: Frame,
   ): {
     tool?: { spec: ToolSpec; prepared: ToolPrepared; calls: number };
     clock?: ToolClock;
@@ -2603,10 +2623,26 @@ export class Runner {
     return {
       tool: {
         spec,
-        prepared: tools.prepare(spec, action.args, { userWords }),
+        prepared: tools.prepare(
+          spec,
+          action.args,
+          this.toolWords(userWords, frame),
+        ),
         calls: this.snapshot.run!.tools?.calls ?? 0,
       },
       clock: tools.clock(),
+    };
+  }
+  /**
+   * What a tool reads beside its arguments (ToolWords): the user's own words
+   * and the browser's current address off the frame's context, when the
+   * frame shows a browser page. Neither enters a trace.
+   */
+  private toolWords(userWords: string | undefined, frame: Frame): ToolWords {
+    const pageAddress = frame.context?.browserAddress;
+    return {
+      ...(userWords !== undefined ? { userWords } : {}),
+      ...(pageAddress ? { pageAddress } : {}),
     };
   }
   /** The run's objective when it is the user's own words; grounding reads nothing else. */
@@ -2655,7 +2691,12 @@ export class Runner {
     if (spec.longRunning) this.markHeld();
     let outcome: ToolOutcome;
     try {
-      outcome = await tools.call(spec, action.args, this.abort.signal);
+      outcome = await tools.call(
+        spec,
+        action.args,
+        this.abort.signal,
+        this.toolWords(this.userWords(run), frame),
+      );
     } catch {
       // The tool layer promises not to throw; a broken one reads as away.
       outcome = {
@@ -4607,7 +4648,7 @@ export class Runner {
         const userWords = this.userWords(run);
         const toolContext =
           action.type === "tool_call"
-            ? this.toolContext(action, userWords)
+            ? this.toolContext(action, userWords, frame)
             : {};
 
         const evaluated = evaluate(

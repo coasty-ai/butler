@@ -427,6 +427,15 @@ export const toolsSettingsSchema = z
      * process. On by default; nothing leaves the Mac through it.
      */
     files: z.boolean().default(true),
+    /**
+     * The built-in web page text tool (src/tools/providers/web.ts): reads one
+     * public page by GET, with no cookies or credentials, and hands the model
+     * its text, so a page to be read in full, counted over or compared is one
+     * call and not a scroll-and-capture loop. On by default. The page's text
+     * goes to the configured model as any tool result does (it goes there
+     * off the screen today); the fetch itself sends nothing but the address.
+     */
+    web: z.boolean().default(true),
     servers: z.array(toolServerSchema).max(TOOL_LIMITS.servers).default([]),
   })
   .strict()
@@ -909,6 +918,7 @@ export const defaultSettings: Settings = {
     enabled: true,
     apple: { calendar: false, reminders: false, notes: false, mail: false },
     files: true,
+    web: true,
     servers: [],
   },
   modules: {},
