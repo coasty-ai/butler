@@ -631,6 +631,15 @@ export const reflectionNote =
 export const PAGE_TOOL_NOTE =
   " Looking again shows the same page. Its visible text is already in context.visibleText; to read all of it, or a linked page, call web__read_current_page or web__read_page_text and carry the values in your note.";
 /**
+ * The line a second consecutive capture anywhere else gets when tools are
+ * listed: probe 20260920-0158-f594550, files-rename-receipts #1 and #2 and
+ * files-receipts-to-csv #2 read receipts through the files tool and then
+ * captured the Finder four and five times running, with rename_file and
+ * append_text_file listed and never called.
+ */
+export const LOOK_AGAIN_NOTE =
+  " Looking again shows the same screen. The values you read are in your note: act on them now with a tool from context.tools (files: append_text_file, rename_file, move_file) or a control by name, or fail with what blocks.";
+/**
  * How long the capture after a transition waits for the screen it moved to:
  * a page sent for with open_url (the browser is told and answers at once), a
  * cold launch whose window is on its way, or an application or page a click
@@ -3941,15 +3950,19 @@ export class Runner {
     });
     if (loop === "stuck") this.stuck(this.history.at(-1));
   }
-  /** PAGE_TOOL_NOTE on the second consecutive capture of a browser page when a web read tool is listed. */
+  /**
+   * On the second consecutive capture: PAGE_TOOL_NOTE on a browser page
+   * when a web read tool is listed, else LOOK_AGAIN_NOTE when any tool is.
+   */
   private pageToolNote(action: Action, frame: Frame): string {
     if (action.type !== "capture" || this.looksInARow < 2) return "";
-    if (!hostOf(frame)) return "";
-    const listed = this.toolList?.tools.some(
+    const tools = this.toolList?.tools ?? [];
+    if (!tools.length) return "";
+    const web = tools.some(
       (t) =>
         t.id === "web__read_current_page" || t.id === "web__read_page_text",
     );
-    return listed ? PAGE_TOOL_NOTE : "";
+    return hostOf(frame) && web ? PAGE_TOOL_NOTE : LOOK_AGAIN_NOTE;
   }
   /** The state every run (and every preparation) begins from. */
   private resetState(undo?: boolean) {

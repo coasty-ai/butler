@@ -24,7 +24,7 @@ import {
   type RunnerExtras,
 } from "../src/core/runner";
 import { TOOL_ALLOWED } from "../src/core/tool-policy";
-import { PAGE_TOOL_NOTE } from "../src/core/runner";
+import { LOOK_AGAIN_NOTE, PAGE_TOOL_NOTE } from "../src/core/runner";
 import {
   REQUIREMENT_UNMET,
   requirementChallenge,
@@ -1217,8 +1217,15 @@ describe("looking again at a browser page", () => {
       tools: fakeTools({ tools: WEB_TOOLS_FAKE }),
     });
     await notes.runner.start("count the notes", voice);
-    expect(
-      notes.provider.observations.map((o) => o.history.at(-1)?.result ?? ""),
-    ).not.toContainEqual(expect.stringContaining(PAGE_TOOL_NOTE.trim()));
+    const lines = notes.provider.observations.map(
+      (o) => o.history.at(-1)?.result ?? "",
+    );
+    expect(lines).not.toContainEqual(
+      expect.stringContaining(PAGE_TOOL_NOTE.trim()),
+    );
+    // Off a page, with tools listed, the second look gets the general note:
+    // the values read are in the note, act on them with a tool.
+    expect(lines[2]).toContain(LOOK_AGAIN_NOTE.trim());
+    expect(lines[1]).not.toContain(LOOK_AGAIN_NOTE.trim());
   });
 });
