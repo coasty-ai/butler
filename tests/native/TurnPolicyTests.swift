@@ -273,6 +273,13 @@ func turnPolicyChecks(_ check: (Bool, String) -> Void) {
     check(strippedWordCount(raw: "open notes", command: "open notes") == 0, "nothing excluded without a wake phrase")
 
     // Follow-up windows
+    // Speech in an approval or scroll window latches the controller's input; in a continuation
+    // or answer window it never does, so a run keeps working while the person talks.
+    check(followUpLatchesInput(.approval) && followUpLatchesInput(.scroll), "approval and scroll windows latch input on detection")
+    check(!followUpLatchesInput(.continuation) && !followUpLatchesInput(.answer), "continuation and answer windows never latch input on detection")
+    // The recovered hypothesis's own confidence: the mean of the positive finite values, 0 without any.
+    check(meanConfidence([]) == 0 && meanConfidence([0, 0]) == 0 && meanConfidence([.nan, -1]) == 0, "no usable confidence reads as 0")
+    check(near(meanConfidence([0.5, 0.9]), 0.7) && near(meanConfidence([0, 0.8]), 0.8) && meanConfidence([1.5]) == 1, "the mean of the positive confidences, capped at 1, zeros left out")
     check(followUpSeconds(.continuation) == 3 && followUpSeconds(.answer) == 8 && followUpSeconds(.approval) == 8, "follow-up window lengths")
     check(clampFollowUpSeconds(nil, kind: .answer) == 8 && clampFollowUpSeconds(60, kind: .answer) == 15 && clampFollowUpSeconds(0, kind: .answer) == 0.5, "requested window lengths are bounded")
     // The Keep listening setting: kind x setting, approvals bounded everywhere; a conversation

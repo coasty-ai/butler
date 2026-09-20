@@ -286,6 +286,16 @@ describe("conversation: when to speak", () => {
     expect(t.texts()).toEqual(["On it.", "Opened Safari."]);
   });
 
+  it("says what became of a run replaced by a new request, as a statement", () => {
+    const t = setup({ handsFree: true });
+    t.event({ event: "wake_detected" });
+    t.render(snapshot("paused"));
+    t.conversation.acknowledge({ kind: "replace", text: "Open Safari" });
+    expect(t.texts()).toEqual(["Stopped for your new task."]);
+    expect(t.spoken[0].text.endsWith("?")).toBe(false);
+    expect(t.spoken[0].listen).toMatchObject({ kind: "continuation" });
+  });
+
   it("mirrors modality: silent for typed runs in voice mode", () => {
     const t = setup();
     t.typedStart();

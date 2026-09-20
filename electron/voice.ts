@@ -32,6 +32,11 @@ export interface VoiceEvent {
   /** turn_endpoint (content-free) and followup_closed. */
   endReason?: string;
   stableMs?: number;
+  /**
+   * transcript_recovered (empty_final_after_endpoint): the word mean of the
+   * last partial's segment confidences, 0 when the recognizer gave none.
+   */
+  partialConfidence?: number;
   /** standby_trace (BUTLER_TRACE_STANDBY, local trials only). */
   sinceStartMs?: number;
   buffers?: number;

@@ -13,8 +13,10 @@ import {
   deicticTask,
   dropsCurrentTask,
   endsConversation,
+  followUpHoldsRun,
   followUpSeconds,
   isThanks,
+  leadingControlWord,
   isWakePhraseOnly,
   cleanTaskText,
   clarifyFragment,
@@ -359,6 +361,71 @@ describe("intent normalization", () => {
           text,
           kind === "stop" || kind === "pause",
         ]);
+  });
+
+  it("reads a control off the head of a partial, and nothing else", () => {
+    // Live 2026-09-19: a "stop" during a run acted only at the endpoint,
+    // seconds later. The head of the partial is enough to hold the run.
+    for (const [text, control] of [
+      ["stop", "stop"],
+      ["Stop", "stop"],
+      ["um, stop", "stop"],
+      ["okay stop", "stop"],
+      ["stop stop", "stop"],
+      ["cancel", "stop"],
+      ["stop scrolling and click", "stop"],
+      ["wait", "pause"],
+      ["wait a second", "pause"],
+      ["wait for the page", "pause"],
+      ["pause", "pause"],
+      ["hold on", "pause"],
+      ["hold up", "pause"],
+      ["hang on", "pause"],
+      ["no no", "pause"],
+      ["no no the other one", "pause"],
+    ] as const)
+      expect([text, leadingControlWord(text)]).toEqual([text, control]);
+    // Not a control: a lone "no" (an answer), a control word that is not
+    // first, "stop watching" (the observer's), "hold" without "on", and
+    // ordinary words; an empty or filler-only partial is nothing yet.
+    for (const text of [
+      "no",
+      "no the other one",
+      "please continue",
+      "open notes and stop there",
+      "stop watching",
+      "hold the door",
+      "hang up",
+      "go to the next page",
+      "",
+      "um",
+      "okay",
+    ])
+      expect([text, leadingControlWord(text)]).toEqual([text, undefined]);
+    // Anything read off a partial is a stop or a pause: a doubled word
+    // ("wait, wait, stop") holds on its first word and the final decides.
+    for (const kind of ["stop", "pause"] as const)
+      for (const text of fixture[kind]) {
+        const control = leadingControlWord(text);
+        expect([
+          text,
+          control === undefined || control === "stop" || control === "pause",
+        ]).toEqual([text, true]);
+      }
+    expect(leadingControlWord("Wait, wait, stop")).toBe("pause");
+  });
+
+  it("holds the run on a follow-up detection only for an approval or scroll window, or a run confirming", () => {
+    for (const status of ["executing", "thinking", "capturing", "paused"]) {
+      expect(followUpHoldsRun("continuation", status)).toBe(false);
+      expect(followUpHoldsRun("answer", status)).toBe(false);
+      expect(followUpHoldsRun(undefined, status)).toBe(false);
+      expect(followUpHoldsRun("approval", status)).toBe(true);
+      expect(followUpHoldsRun("scroll", status)).toBe(true);
+    }
+    for (const kind of ["continuation", "answer", undefined] as const)
+      expect(followUpHoldsRun(kind, "confirming")).toBe(true);
+    expect(followUpHoldsRun("continuation", undefined)).toBe(false);
   });
 
   it("ends a conversation on exactly the closing fixtures (native parity)", () => {

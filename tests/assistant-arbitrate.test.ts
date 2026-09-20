@@ -1112,6 +1112,33 @@ describe("a run the user paused", () => {
     ).toBe("replace_held");
   });
 
+  it("is replaced unasked under an acknowledged never-ask when heard clearly (tests/voice-keeps-working)", () => {
+    const a = decide(
+      base,
+      { act: "start", task: "Read the note" },
+      {
+        run: paused,
+        context: ["read the note"],
+        neverAsks: true,
+        confidence: 0.7,
+      },
+    );
+    expect(a.plan).toEqual({ kind: "replace", text: "Read the note" });
+    expect([a.code, a.speakSay]).toEqual(["replace_unasked", false]);
+    expect(
+      decide(
+        base,
+        { act: "start", task: "Read the note" },
+        {
+          run: paused,
+          context: ["read the note"],
+          neverAsks: true,
+          confidence: 0.4,
+        },
+      ).code,
+    ).toBe("replace_held");
+  });
+
   it("is replaced when the user's own words let go of it", () => {
     const words = "forget that, instead read the note";
     const a = decide(

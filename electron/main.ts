@@ -47,6 +47,7 @@ import { stepLine } from "../src/assistant/steps";
 import {
   MANUAL_PAUSE_MESSAGE,
   Runner,
+  type PauseReason,
   TARGET_HANDOFF_MESSAGE,
   terminal,
   type ApprovalSource,
@@ -187,6 +188,8 @@ import {
   APPROVAL_MIN_CONFIDENCE,
   isWakePhraseOnly,
   migrateFollowUpWindow,
+  followUpHoldsRun,
+  leadingControlWord,
   planVoiceTurn,
   transcriptRequest,
   type TurnPlan,
@@ -547,6 +550,30 @@ let speculatedInvocation = -1;
 let activationSource: "ptt" | "wake" | "followup" = "wake";
 let activationWindow: FollowUpKind | undefined;
 let activationAt: number | undefined;
+/** The activation whose partials already held the run on a control word. */
+let controlledInvocation = -1;
+/**
+ * A control word at the head of a partial ("stop", "wait", "hold on",
+ * "cancel", "no no") holds the run under way at once, within the partial
+ * that says it, instead of at the endpoint two to four seconds later (live
+ * 2026-09-19). Once per activation; never for a run waiting on an approval
+ * (its words answer the question at the final), in an approval window, or
+ * while a spoken scroll runs (the helper's latch ends that on the first
+ * word). The hold is the activation's, so the final decides: a bare stop
+ * cancels, a bare wait keeps it, a longer correction resumes with it, and
+ * "continue" resumes it.
+ */
+function controlPartial(invocation: number, text: string) {
+  if (controlledInvocation === invocation) return;
+  if (!runActive() || runHeld() || snapshot.run!.status === "confirming")
+    return;
+  if (activationWindow === "approval" || scrolling) return;
+  const word = leadingControlWord(text);
+  if (!word) return;
+  controlledInvocation = invocation;
+  debug("ControlPartial", { code: word });
+  interruptForVoice("control");
+}
 /**
  * A partial transcript of the current activation: a prepared step whose words
  * it no longer says is let go at once (its request aborted), and the stable
@@ -1225,7 +1252,7 @@ const messages = new MessagesChannel({
   control: {
     pause: () => {
       voiceHeld = false;
-      runner?.pause();
+      runner?.pause(undefined, "manual");
     },
     stop: () => {
       cancelVoiceCapture();
@@ -1427,7 +1454,7 @@ const remote = new RemoteServer({
   control: {
     pause: () => {
       voiceHeld = false;
-      runner?.pause();
+      runner?.pause(undefined, "manual");
     },
     stop: () => {
       cancelVoiceCapture();
@@ -2163,7 +2190,7 @@ function getNative() {
           // resumes on its own and the pill says why.
           voiceHeld = false;
           if (run.status === "takeover") return;
-          runner?.pause(helperPause);
+          runner?.pause(helperPause, "system");
         },
         onRestart: (pid) => {
           if (shuttingDown) return;
@@ -2737,10 +2764,16 @@ function cancelVoiceCapture() {
   discardSpeculation("cancelled");
   void voice?.call("cancel").catch(() => {});
 }
-function interruptForVoice() {
+/**
+ * The user took the floor with a control: a wake or push-to-talk activation,
+ * the command window, a control word heard in the partials. Never speech in
+ * a continuation or answer window (followUpHoldsRun): the run keeps working
+ * while the owner talks, and the endpoint's words steer it live.
+ */
+function interruptForVoice(reason: PauseReason = "control") {
   const before = runActive() ? snapshot.run!.status : undefined,
     stillHeld = voiceHoldResumable();
-  runner?.interruptForVoice();
+  runner?.interruptForVoice(reason);
   // Only a pause an interruption caused may be undone automatically; a second
   // press keeps that hold (the runner re-journals the pause).
   if (
@@ -2945,7 +2978,9 @@ async function receiveVoice(event: VoiceEvent) {
       event.event === "wake_detected" ||
       event.event === "followup_detected"
     ) {
-      // The helper already latched input and stopped playback.
+      // The helper already stopped playback, and latched input for a wake,
+      // a key-down or speech in an approval or scroll window; a continuation
+      // or answer detection leaves the run's input on (followUpLatchesInput).
       conversation.onVoiceEvent(event);
       lastPartial = "";
       // A new turn: the last one's prepared step, if any, is let go.
@@ -2974,7 +3009,18 @@ async function receiveVoice(event: VoiceEvent) {
           ? conversation.windowGate
           : currentGate();
       listening = true;
-      interruptForVoice();
+      // Speech in a continuation or answer window holds nothing: the run
+      // keeps executing its step and proposing the next while the owner
+      // talks, and the helper did not latch input for it either
+      // (followUpLatchesInput). An approval or scroll window, or a run
+      // waiting on an approval, keeps the hold it always had. Live
+      // 2026-09-19: every utterance during a run paused it here and the
+      // click in flight died STOPPED.
+      if (
+        event.event !== "followup_detected" ||
+        followUpHoldsRun(activationWindow, snapshot.run?.status)
+      )
+        interruptForVoice("control");
       const invocation = ++voiceInvocation;
       setPill({
         phase: "listening",
@@ -3014,6 +3060,7 @@ async function receiveVoice(event: VoiceEvent) {
       if (listening) {
         lastPartial = event.text ?? "";
         setPill({ transcript: lastPartial, closing: false });
+        controlPartial(voiceInvocation, lastPartial);
         early.partial(voiceInvocation, lastPartial);
         streaming.partial(voiceInvocation, lastPartial);
         watchHypothesis(voiceInvocation, lastPartial);
@@ -3506,7 +3553,7 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
     }
     case "pause":
       voiceHeld = false;
-      runner?.pause();
+      runner?.pause(undefined, ctx.origin === "voice" ? "control" : "manual");
       show({
         phase: "paused",
         label: "Paused.",
@@ -3626,7 +3673,8 @@ async function runPlan(plan: TurnPlan, ctx: PlanCtx) {
       // The activation already paused a working run; one waiting on an
       // approval is paused here. The user's own pause, so nothing narrates it.
       const active = runActive();
-      if (active && !runHeld()) runner!.pause();
+      if (active && !runHeld())
+        runner!.pause(undefined, ctx.origin === "voice" ? "control" : "manual");
       // "Keep scrolling" and "faster" keep the direction; "scroll up" flips it.
       const direction =
         (request.act === "start" && request.direction) ||
@@ -4608,7 +4656,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
     }
     case "pause":
       voiceHeld = false;
-      runner?.pause();
+      runner?.pause(undefined, "manual");
       return;
     case "resume":
       voiceHeld = false;

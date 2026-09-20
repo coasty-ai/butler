@@ -350,6 +350,54 @@ export function isControlPhrase(text: string): boolean {
   return kind === "stop" || kind === "pause";
 }
 
+/**
+ * The control a partial transcript already carries, read from its leading
+ * words alone: "stop" and "cancel" stop, "wait", "pause", "hold on", "hold
+ * up", "hang on" and a doubled "no" pause ("hang up" is a call's). A run under way holds on the partial that
+ * says one (live 2026-09-19: the owner's "stop" was acted on only at the
+ * endpoint, two to four seconds later), and the final decides what it was:
+ * a bare control word stops or keeps the hold; anything longer ("stop
+ * scrolling and click Save", "wait for the page to load") is the correction
+ * it always was and resumes the run with it. "Stop watching" is about the
+ * observer, never the run. Anything else in the partial is not a control.
+ */
+export function leadingControlWord(text: string): "stop" | "pause" | undefined {
+  const { raw, key } = keyParts(text);
+  const [first, second] = key;
+  if (!first) return undefined;
+  if (first === "stop" || first === "cancel")
+    return second === "watching" ? undefined : "stop";
+  if (first === "wait" || first === "pause") return "pause";
+  if (
+    (first === "hold" && (second === "on" || second === "up")) ||
+    (first === "hang" && second === "on")
+  )
+    return "pause";
+  // The key collapses repeats ("no no" is one "no", an answer): the doubled
+  // "no" is read off the words as heard, past any leading filler.
+  const heard = raw.filter((w) => !FILLERS.has(w) && !DISCOURSE.has(w));
+  if (heard[0] === "no" && heard[1] === "no") return "pause";
+  return undefined;
+}
+
+/**
+ * Whether speech detected in a follow-up window holds the run under way.
+ * Only an approval window (its words may answer the question; the runner's
+ * voice-approval hold is that window's semantics) or a scroll window (the
+ * helper's latch is what ends a spoken scroll on the first word), or a run
+ * already waiting on an approval, does. A continuation or answer window
+ * never does: the owner speaks while Butler works, and the run keeps
+ * executing its step and proposing the next while the words are heard
+ * (owner's rules, 2026-09-19); a control word in the partials, or Escape,
+ * is what stops it. Mirrors followUpLatchesInput in TurnPolicy.swift.
+ */
+export function followUpHoldsRun(
+  kind: FollowUpKind | undefined,
+  runStatus: string | undefined,
+): boolean {
+  return kind === "approval" || kind === "scroll" || runStatus === "confirming";
+}
+
 export type Completeness =
   "control" | "shortAnswer" | "complete" | "incomplete";
 /** "scroll": the window open while a spoken scroll runs (native FollowUpKind.scroll). */

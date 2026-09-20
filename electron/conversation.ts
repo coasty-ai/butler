@@ -581,9 +581,19 @@ export class Conversation {
         // Acknowledge out loud in every mode, like a person would. In
         // hands-free the follow-up window reopens right after the reply.
         case "start":
-        case "replace":
           reply(
             "ackStart",
+            "ack",
+            true,
+            ptt ? undefined : this.listenWindow("continuation"),
+          );
+          break;
+        // The run under way was stopped for this request: said as a
+        // statement, so the user hears what became of it and is asked
+        // nothing.
+        case "replace":
+          reply(
+            "ackReplace",
             "ack",
             true,
             ptt ? undefined : this.listenWindow("continuation"),

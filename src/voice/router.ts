@@ -15,6 +15,7 @@ export function voiceCommandConfidence(event: {
   confidence?: number;
   source?: string;
   stableMs?: number;
+  partialConfidence?: number;
 }): number {
   const value = event.confidence;
   if (
@@ -26,14 +27,32 @@ export function voiceCommandConfidence(event: {
   )
     return value;
   // A recovered hypothesis starts or steers a task when it stood still long
-  // enough; it never authorizes an approval, whatever confidence it carries.
+  // enough, or when the recognizer's last partial carried a confidence of
+  // its own (partialConfidence, the word mean of that partial's segments;
+  // Apple reports 0 on most partials, so the standing time is the usual
+  // source). Either way it is never surer than a stable hypothesis and never
+  // authorizes an approval (VoiceTurnInput.recovered), whatever it carries.
+  // Live 2026-09-19: a recovered 63-character command arriving at confidence
+  // 0 read as unsure words, one step from a question the owner never wants.
   if (
     event.event === "transcript_recovered" &&
-    event.source === "empty_final_after_endpoint" &&
-    typeof event.stableMs === "number" &&
-    event.stableMs >= STABLE_HYPOTHESIS_MS
-  )
-    return STABLE_HYPOTHESIS_CONFIDENCE;
+    event.source === "empty_final_after_endpoint"
+  ) {
+    const partial = event.partialConfidence;
+    const fromPartial =
+      typeof partial === "number" &&
+      Number.isFinite(partial) &&
+      partial > 0 &&
+      partial <= 1
+        ? Math.min(partial, STABLE_HYPOTHESIS_CONFIDENCE)
+        : 0;
+    const fromStanding =
+      typeof event.stableMs === "number" &&
+      event.stableMs >= STABLE_HYPOTHESIS_MS
+        ? STABLE_HYPOTHESIS_CONFIDENCE
+        : 0;
+    return Math.max(fromPartial, fromStanding);
+  }
   return 0;
 }
 

@@ -414,6 +414,27 @@ enum FollowUpKind: String { case answer, approval, continuation, scroll }
 // The "Keep listening" setting (settings.followUpWindow), received through configure.
 enum FollowUpWindow: String { case short, long, conversation }
 
+// Whether speech detected in a window sends the controller the input-stop latch (SIGUSR1,
+// signalController). Only an approval window (a "yes" there acts, so nothing else may) or a
+// scroll window (the latch is what ends a spoken scroll on the first word) does. Speech in a
+// continuation or answer window latches nothing: the person speaks while Butler works, and the
+// run keeps executing (live 2026-09-19: every utterance during a run stopped its click in
+// flight with STOPPED). A control word in the partials, Escape and the wake or push-to-talk
+// activations still latch. Mirrors followUpHoldsRun in src/voice/turns.ts.
+func followUpLatchesInput(_ kind: FollowUpKind) -> Bool {
+    kind == .approval || kind == .scroll
+}
+
+// The word-mean of the confidences a recognizer result carries, 0 when none is finite and
+// positive: a partial's segments (Apple reports 0 on most partials) or a final's. Sent with an
+// empty-final recovery as partialConfidence, so Electron can weigh the hypothesis the
+// recognizer left standing by more than its standing time (src/voice/router.ts).
+func meanConfidence(_ values: [Double]) -> Double {
+    let usable = values.filter { $0.isFinite && $0 > 0 }.map { min($0, 1) }
+    guard !usable.isEmpty else { return 0 }
+    return usable.reduce(0, +) / Double(usable.count)
+}
+
 let followUpOnsetSeconds = 0.24
 let continuationWindowDelay = 0.25
 let followUpGraceSeconds = 1.5

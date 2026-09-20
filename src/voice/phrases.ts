@@ -8,6 +8,7 @@
  */
 export type PhraseKind =
   | "ackStart"
+  | "ackReplace"
   | "ackCorrection"
   | "ackResume"
   | "ackPause"
@@ -43,6 +44,9 @@ export const PHRASES: Record<PhraseKind, readonly string[]> = {
     "Straight away.",
     "Working on it.",
   ],
+  // A new request while a run is under way or paused ends that run and
+  // starts this one: a statement of what happened, never a question.
+  ackReplace: ["Stopped for your new task."],
   ackCorrection: ["Got it.", "Understood.", "Changing course.", "Noted."],
   ackResume: ["Continuing.", "Picking back up.", "Okay, continuing."],
   ackPause: ["Paused.", "Holding here.", "Okay, holding."],

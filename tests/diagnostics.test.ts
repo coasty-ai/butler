@@ -360,6 +360,9 @@ describe("local diagnostic stream", () => {
         period: 2,
         summary: "private loop text",
       });
+      // A pause names its reason as a code (control, approval, takeover,
+      // manual, system), so a pause speech caused can never go unnamed again.
+      add("RunPaused", { reason: "control" });
       // The revisit rule's detection carries its count; the loop breaker's
       // decision an episode number and an outcome code; a settle its kind.
       // A note, a title or a sentence in any of them is dropped.
@@ -400,26 +403,33 @@ describe("local diagnostic stream", () => {
         actionType: "click",
         period: 2,
       });
+      expect(events[2].event).toBe("RunPaused");
       expect(events[2].data).toEqual({
         runId: id,
         sequence: 3,
+        synthetic: false,
+        reason: "control",
+      });
+      expect(events[3].data).toEqual({
+        runId: id,
+        sequence: 4,
         synthetic: false,
         actionType: "open_app",
         period: 0,
         revisits: 3,
       });
-      expect(events[3].event).toBe("ActionLoopBroken");
-      expect(events[3].data).toEqual({
+      expect(events[4].event).toBe("ActionLoopBroken");
+      expect(events[4].data).toEqual({
         runId: id,
-        sequence: 4,
+        sequence: 5,
         synthetic: false,
         episode: 2,
         outcome: "fail",
       });
-      expect(events[4].event).toBe("TransitionSettled");
-      expect(events[4].data).toEqual({
+      expect(events[5].event).toBe("TransitionSettled");
+      expect(events[5].data).toEqual({
         runId: id,
-        sequence: 5,
+        sequence: 6,
         synthetic: false,
         kind: "switched",
       });

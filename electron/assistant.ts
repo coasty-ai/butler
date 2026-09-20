@@ -220,6 +220,10 @@ interface JevAsk {
 }
 
 const TERMINAL_RUN = new Set(["completed", "cancelled", "failed"]);
+/** "Never ask, allow everything", acknowledged: no question a command can avoid. */
+function neverAsks(s: Settings): boolean {
+  return s.autonomy === "all" && s.autonomyAllAcknowledged;
+}
 /** What one turn launched, so a failure in the turn can end all of it. */
 interface TurnLaunch {
   flight?: Flight;
@@ -475,6 +479,10 @@ export class AssistantSession implements AssistantSessionApi {
       heard,
       channel: i.channel,
       heldByVoice: this.options.heldByVoice(),
+      // "Never ask, allow everything", acknowledged: a clear command to a
+      // held run replaces it with a statement rather than a question.
+      neverAsks: neverAsks(this.options.settings()),
+      confidence: i.confidence,
       // The notifications the user asked about came with the request: words
       // that ask to be told never run on the model's say-so (arbitrate).
       readOut: flight.readOut,

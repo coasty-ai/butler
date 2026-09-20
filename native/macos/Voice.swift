@@ -54,6 +54,8 @@ var segmentGeneration = 0
 var wakeSegment = -1
 var errorRotations = 0
 var turn = TurnTranscript()
+// The word-mean confidence of the last partial result, for an empty-final recovery (meanConfidence).
+var lastPartialConfidence = 0.0
 var turnContext = TurnContext.command
 var noiseFloor = NoiseFloor()
 var windowKind = FollowUpKind.continuation
@@ -305,7 +307,7 @@ func clearSpeech(windowReason: String = "cancel") {
         output(["event": "followup_closed", "kind": windowKind.rawValue, "endReason": windowReason])
     }
     // Invalidate callbacks before stopping/cancelling the old recognizer.
-    generation += 1; mode = nil; pendingWake = false
+    generation += 1; mode = nil; pendingWake = false; lastPartialConfidence = 0
     stopAudio(); task?.cancel(); task = nil; request = nil
     finalDeadline?.cancel(); finalDeadline = nil; releaseTail?.cancel(); releaseTail = nil
     setWakeListening(false)
@@ -359,6 +361,7 @@ func completeTurn(_ how: TurnCompletion) {
     let unconfirmed = !trimmed(turn.current).isEmpty
     if unconfirmed { absorbFinalSegment(&turn, text: "", confidence: nil) }
     let text = turn.text, segments = turn.committed.count, confidence = turnConfidence(turn)
+    let partialConfidence = lastPartialConfidence
     clearSpeech()
     var accepted = false
     if text.isEmpty {
@@ -379,9 +382,12 @@ func completeTurn(_ how: TurnCompletion) {
         // stableMs: how long the hypothesis had stood unchanged when the endpoint came.
         // Electron treats a long-stable hypothesis as the user's words for starting a
         // task (never for approving one).
+        // partialConfidence: what the recognizer's last partial said of its own words, so a
+        // hypothesis that stood briefly is not weighed as nothing (src/voice/router.ts).
         output(["event": "transcript_recovered", "text": text, "confidence": 0,
                 "source": "empty_final_after_endpoint", "segments": segments,
-                "stableMs": Int(((uptime() - lastTextAt) * 1000).rounded())]); accepted = true
+                "stableMs": Int(((uptime() - lastTextAt) * 1000).rounded()),
+                "partialConfidence": partialConfidence]); accepted = true
     } else {
         // Never routes by itself: Electron asks the user to confirm it.
         output(["event": "transcript_unconfirmed", "text": text, "source": "deadline_hypothesis", "segments": segments])
@@ -783,9 +789,11 @@ func activateWake(context: TurnContext, window: FollowUpKind?) {
     playEarcon("Tink")
 }
 func activateFollowUp() {
-    signalController()
-    speaker.stop(.bargeIn)
     let kind = windowKind, now = uptime()
+    // Only an approval or scroll window stops the controller's input (followUpLatchesInput):
+    // speech in a continuation or answer window leaves a run working while the person talks.
+    if followUpLatchesInput(kind) { signalController() }
+    speaker.stop(.bargeIn)
     mode = .handsFree; turnContext = turnContext(for: kind); containsWakePhrase = false; wakeSegment = -1; pendingWake = false
     startedAt = now; lastTextAt = now; lastSpeechAt = now
     setWakeListening(false)
@@ -826,6 +834,8 @@ func absorbRecognition(_ result: SFSpeechRecognitionResult, raw full: String, no
         rotateRequest(reason: "final")
         return
     }
+    let partialSegments = result.bestTranscription.segments
+    lastPartialConfidence = meanConfidence(partialSegments.dropFirst(min(strippedWordCount(raw: full, command: command), partialSegments.count)).map { Double($0.confidence) })
     absorbPartial(&turn, update: command, gap: now - lastTextAt)
     if turn.text != before {
         output(["event": "recognition_update", "textLength": turn.text.count,
@@ -833,8 +843,10 @@ func absorbRecognition(_ result: SFSpeechRecognitionResult, raw full: String, no
         textChanged(now)
     }
 }
-// Stop/pause intents are routed from the final transcript only: a partial "Stop" is often
-// the start of a longer correction. Input is already latched at shortcut_down/wake_detected.
+// Stop/pause intents are routed from the final transcript here; Electron reads a leading control
+// word off the partials itself (leadingControlWord) and holds the run at once, the final then
+// deciding what it was. Input is latched at shortcut_down/wake_detected and at speech in an
+// approval or scroll window, never in a continuation or answer window (followUpLatchesInput).
 func textChanged(_ now: TimeInterval) {
     lastTextAt = now; endpointNearSent = false
     output(["event": "transcript_partial", "text": turn.text])

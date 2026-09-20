@@ -407,7 +407,7 @@ describe("main wires the prepared step so nothing acts before the final", () => 
     expect(
       between(
         "function cancelVoiceCapture() {",
-        "function interruptForVoice() {",
+        "function interruptForVoice(reason: PauseReason",
       ),
     ).toContain('discardSpeculation("cancelled");');
     // A final whose plan is not a start (a control word, an answer, a question).

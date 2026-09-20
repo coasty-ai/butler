@@ -504,6 +504,25 @@ function revisitable(signature: string): boolean {
 export const STUCK_PAUSE_MESSAGE =
   "I seem to be stuck repeating the same steps. Say continue with a hint.";
 /**
+ * Why a run paused, on RunPaused as a code: a spoken control word or a voice
+ * activation taking the floor (control), a declined or refused approval
+ * (approval), the user's own mouse or keyboard (takeover), the pause button
+ * or a typed or texted pause (manual), or the runner's own hold (a loop, a
+ * lost target, a helper restart, a model that declined, repeated denials:
+ * system). Live 2026-09-19: speech in the continuation window paused runs
+ * with no reason on the event; a pause names its cause so that class can
+ * never come back unnamed.
+ */
+export type PauseReason =
+  "control" | "approval" | "takeover" | "manual" | "system";
+/**
+ * The history line a live correction leaves: the run was working when the
+ * user spoke, and the words are the last line under the task's corrections
+ * (never repeated here, so the line carries nothing the user said).
+ */
+export const CORRECTION_NOTE =
+  "The user gave a correction while this was running; it is the last line under the task's corrections. Read the screenshot and follow it from here.";
+/**
  * The run's end when nobody can answer and its reflection step did not break
  * the loop: an honest fail, never a claim. The benchmark's analyzer compares
  * it whole (STUCK_LOOP), as it does the budget messages.
@@ -1575,7 +1594,7 @@ export class Runner {
    */
   private stuck(entry: History[number] | undefined) {
     if (!this.nobodyToAnswer()) {
-      this.pause(STUCK_PAUSE_MESSAGE);
+      this.pause(STUCK_PAUSE_MESSAGE, "system");
       return;
     }
     const episode = ++this.loopEpisodes;
@@ -1723,7 +1742,10 @@ export class Runner {
       if (signal.aborted) done();
     });
   }
-  pause(message = "Paused. Capture and input are stopped.") {
+  pause(
+    message = "Paused. Capture and input are stopped.",
+    reason: PauseReason = "manual",
+  ) {
     if (!this.active()) return;
     this.epoch++;
     this.held = true;
@@ -1736,7 +1758,7 @@ export class Runner {
     // The screen may change while held; a replay never continues after it.
     this.abandonPlan("paused");
     this.undoRequest = undefined;
-    this.event("RunPaused");
+    this.event("RunPaused", { reason });
     this.status("paused", message);
   }
   /**
@@ -1758,6 +1780,7 @@ export class Runner {
       target && scope === "target"
         ? targetHold(target.appName)
         : MANUAL_PAUSE_MESSAGE,
+      "takeover",
     );
     this.event("UserTakeoverStarted", {
       source: "manual_input",
@@ -1782,7 +1805,7 @@ export class Runner {
     const target = this.boundTarget();
     if (!target) return;
     this.leaveBackground("gone", code);
-    this.pause(targetGoneMessage(target.appName));
+    this.pause(targetGoneMessage(target.appName), "system");
   }
   /** The window this run still works in from the background, if any. */
   private boundTarget(): RunTarget | undefined {
@@ -1862,7 +1885,15 @@ export class Runner {
     this.approval?.(yes);
     this.approval = undefined;
   }
-  interruptForVoice() {
+  /**
+   * The user took the floor with a control: a control word heard in the
+   * partials, a wake or push-to-talk activation, the command window. A run
+   * waiting on an approval only lets go of native input (its words may be
+   * the answer); any other run pauses with the reason given. Speech in a
+   * continuation window never comes here (main.ts followUpHoldsRun): the run
+   * keeps working while the owner talks.
+   */
+  interruptForVoice(reason: PauseReason = "control") {
     if (!this.active()) return;
     if (this.snapshot.pending && this.snapshot.run?.status === "confirming") {
       this.voiceApproval = true;
@@ -1870,7 +1901,7 @@ export class Runner {
       this.controller.stop();
       return;
     }
-    this.pause();
+    this.pause(undefined, reason);
   }
   async approveFromVoice(yes: boolean, source: ApprovalSource = "voice") {
     const pending = this.snapshot.pending;
@@ -1882,7 +1913,7 @@ export class Runner {
       this.recordDecline(pending.action, source, pending.reason);
       // A run that exists only for a declined undo has nothing left to do.
       if (this.undoRequest?.own) this.stop("Left as it was.");
-      else this.pause();
+      else this.pause(undefined, "approval");
       return;
     }
     if (this.voiceApproval) {
@@ -1927,7 +1958,23 @@ export class Runner {
     this.handsOn = true;
     // A correction changes the task; a known plan no longer applies.
     this.abandonPlan("correction");
-    if (!this.held) this.pause();
+    const run = this.snapshot.run!;
+    if (!this.held && run.status !== "confirming" && !this.snapshot.pending) {
+      // A run under way takes the correction live (owner's rules 2026-09-19:
+      // act on what is said while working): no pause, native input stays
+      // on, nothing in flight is aborted. A model call for the old words is
+      // let go through the epoch, so the loop captures afresh and asks with
+      // the correction; a step already executing finishes and is recorded,
+      // and the next model call reads the correction. The history line says
+      // when it arrived; the words themselves ride on the task.
+      this.recordCorrection(text);
+      this.history.push({ type: "correction", result: CORRECTION_NOTE });
+      if (run.status !== "executing") this.epoch++;
+      this.resetCounters();
+      this.resetLoop();
+      return;
+    }
+    if (!this.held) this.pause(undefined, "control");
     this.recordCorrection(text);
     this.resetCounters();
     this.resetLoop();
@@ -1945,7 +1992,7 @@ export class Runner {
     if (!this.active()) throw new Error("No active run.");
     this.handsOn = true;
     this.abandonPlan("undo");
-    if (!this.held) this.pause();
+    if (!this.held) this.pause(undefined, "control");
     this.recordCorrection(words);
     this.undoRequest = { own: false };
     this.resetCounters();
@@ -1966,7 +2013,7 @@ export class Runner {
   private endUndo(undo: { own: boolean }, message: string) {
     this.undoRequest = undefined;
     if (!undo.own) {
-      this.pause(message);
+      this.pause(message, "control");
       return;
     }
     this.snapshot.run!.summary = message;
@@ -2044,6 +2091,7 @@ export class Runner {
     this.invalidActions = 0;
     this.pause(
       "The model keeps proposing invalid actions. Say continue to retry or give a hint.",
+      "system",
     );
     return false;
   }
@@ -2085,6 +2133,7 @@ export class Runner {
       this.stateChanges = 0;
       this.pause(
         "The target keeps changing. Wait for it to settle, then continue.",
+        "system",
       );
     }
     return true;
@@ -2174,7 +2223,7 @@ export class Runner {
       }
       if (error.code === "TARGET_GONE") {
         if (this.boundTarget()) this.targetGone(error.code);
-        else this.pause(bound(error.message, 300));
+        else this.pause(bound(error.message, 300), "system");
         return true;
       }
       this.reject({
@@ -2206,11 +2255,14 @@ export class Runner {
       )
         await new Promise((r) => setTimeout(r, 25));
       if (this.active() && !this.held && epoch === this.epoch)
-        this.pause("Input was interrupted. Say continue when ready.");
+        this.pause("Input was interrupted. Say continue when ready.", "system");
       return true;
     }
     if (error instanceof HelperUnavailableError) {
-      this.pause("Desktop control restarted. Say continue to resume.");
+      this.pause(
+        "Desktop control restarted. Say continue to resume.",
+        "system",
+      );
       return true;
     }
     if (error instanceof HelperSlowError) {
@@ -2218,7 +2270,7 @@ export class Runner {
       // its whole extended wait: alive and busy, so it was kept and the run
       // hears the truth. The pause latches the helper, which frees its queue
       // at the request's next stop check; continue asks afresh.
-      this.pause(error.message);
+      this.pause(error.message, "system");
       return true;
     }
     return false;
@@ -4222,6 +4274,7 @@ export class Runner {
               this.providerFailures = 0;
               this.pause(
                 "I can’t reach the model service right now. Say continue to try again.",
+                "system",
               );
               continue;
             }
@@ -4255,6 +4308,7 @@ export class Runner {
             this.event("ActionFailed", { code: "REFUSED" });
             this.pause(
               "The model declined this step. Rephrase the request or take over.",
+              "system",
             );
             continue;
           }
@@ -4504,7 +4558,7 @@ export class Runner {
               throw new Error("Repeated policy violations.");
           } else if (++this.denials >= 3) {
             this.denials = 0;
-            this.pause(decision.reason);
+            this.pause(decision.reason, "system");
           }
           continue;
         }
@@ -4591,6 +4645,7 @@ export class Runner {
               this.declines = 0;
               this.pause(
                 "You declined several actions. Say continue with a hint when ready.",
+                "approval",
               );
             }
             continue;

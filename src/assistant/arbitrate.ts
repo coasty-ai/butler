@@ -441,6 +441,14 @@ export interface ArbitrateInput {
   /** main.ts voiceHoldResumable(): the only hold a model resume may end. */
   heldByVoice: boolean;
   /**
+   * Autonomy "all" acknowledged: the user asked never to be asked. A clear
+   * command (confidence at or above NEVER_ASK_MIN_CONFIDENCE) to a held run
+   * then replaces it with a statement instead of the pausedFirst question.
+   */
+  neverAsks?: boolean;
+  /** How clearly the words were heard (1 for typed words). */
+  confidence?: number;
+  /**
    * The request carried the notifications the user asked about
    * (buildDialogState sends them only for a question about them), so the
    * answer to words that ask to be told is already in hand: a task act for
@@ -448,6 +456,14 @@ export interface ArbitrateInput {
    */
   readOut?: boolean;
 }
+
+/**
+ * Under an acknowledged "never ask", words heard at least this clearly are a
+ * command and never a question back (live 2026-09-19: a 63-character
+ * request to a run speech had paused came back as "Should I stop it, or
+ * carry on?"). Below it, or under any other setting, the question stands.
+ */
+export const NEVER_ASK_MIN_CONFIDENCE = 0.5;
 
 const reply = (
   act: "answer" | "status" | "none",
@@ -658,7 +674,17 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
       !i.heldByVoice &&
       base.kind !== "replace" &&
       !dropsCurrentTask(utterance, run.task)
-    )
+    ) {
+      // Under an acknowledged "never ask" a clear command is the decision:
+      // the held run ends for it, said as a statement (ackReplace), and no
+      // question is asked. Unsure words still ask.
+      if (i.neverAsks && (i.confidence ?? 1) >= NEVER_ASK_MIN_CONFIDENCE)
+        return {
+          plan: { kind: "replace", text: task },
+          speakSay: false,
+          taskSource: source,
+          code: "replace_unasked",
+        };
       return settle(
         {
           kind: "clarify",
@@ -667,6 +693,7 @@ export function arbitrate(i: ArbitrateInput): Arbitrated {
         },
         "replace_held",
       );
+    }
     return {
       plan: { kind: "replace", text: task },
       speakSay: true,
