@@ -2141,6 +2141,20 @@ describe("the benchmark harness's browser quit", () => {
         code: "it would not go",
       });
       log.write("BrowserQuit", { browser: "Safari", quit: false });
+      // A process the harness ended itself, behind a sheet it would not
+      // dismiss: the code says how, and nothing about the sheet.
+      log.write("BrowserQuit", {
+        browser: "com.apple.Safari",
+        quit: true,
+        code: "TERMINATED",
+        pid: 4242,
+        signal: "SIGTERM",
+      });
+      log.write("BrowserQuit", {
+        browser: "com.apple.Safari",
+        quit: true,
+        code: "KILLED",
+      });
       const lines = readFileSync(log.file, "utf8")
         .trim()
         .split("\n")
@@ -2149,29 +2163,42 @@ describe("the benchmark harness's browser quit", () => {
         { browser: "com.apple.Safari", quit: true, code: "STILL_RUNNING" },
         {},
         { quit: false },
+        { browser: "com.apple.Safari", quit: true, code: "TERMINATED" },
+        { browser: "com.apple.Safari", quit: true, code: "KILLED" },
       ]);
       expect(readFileSync(log.file, "utf8")).not.toMatch(
-        /benchnote|127\.0\.0\.1|password|would not go|Safari,/,
+        /benchnote|127\.0\.0\.1|password|would not go|Safari,|4242|SIGTERM/,
       );
     }));
 
-  it("keeps BrowserSheet's bundle id, button count and flag, never a title, a URL or a button's name", () =>
+  it("keeps BrowserSheet's bundle id, button count, flag and code, never a title, a URL or a button's name", () =>
     fixture((log) => {
       log.write("BrowserSheet", {
         browser: "com.apple.Safari",
         buttons: 2,
         cancelled: true,
+        code: "NAMED",
         // Smuggled extras: never written, whatever a caller passes.
         title: "Save · benchnote1a2b-invoice.pdf",
         url: "http://127.0.0.1:47831/benchnote1a2b/mail",
         names: ["Cancel", "Save"],
         button: "Save",
       });
-      // Only a bundle id, a count and a boolean pass through each field.
+      // Only a bundle id, a count, a boolean and a code pass through each
+      // field: a sentence in the code field is dropped.
       log.write("BrowserSheet", {
         browser: "Safari, the one with the Save panel",
         buttons: "two",
         cancelled: "clicked Cancel",
+        code: "two buttons with no name at all",
+      });
+      // The night of 2026-09-19: Safari's save-password prompt, two buttons
+      // reading missing value for name, title and description.
+      log.write("BrowserSheet", {
+        browser: "com.apple.Safari",
+        buttons: 2,
+        cancelled: false,
+        code: "UNNAMED",
       });
       log.write("BrowserSheet", {
         browser: "com.google.Chrome",
@@ -2183,12 +2210,23 @@ describe("the benchmark harness's browser quit", () => {
         .split("\n")
         .map((line) => JSON.parse(line).data);
       expect(lines).toEqual([
-        { browser: "com.apple.Safari", buttons: 2, cancelled: true },
+        {
+          browser: "com.apple.Safari",
+          buttons: 2,
+          cancelled: true,
+          code: "NAMED",
+        },
         {},
+        {
+          browser: "com.apple.Safari",
+          buttons: 2,
+          cancelled: false,
+          code: "UNNAMED",
+        },
         { browser: "com.google.Chrome", buttons: 0, cancelled: false },
       ]);
       expect(readFileSync(log.file, "utf8")).not.toMatch(
-        /benchnote|127\.0\.0\.1|invoice|Cancel|Save|clicked|Safari,/,
+        /benchnote|127\.0\.0\.1|invoice|Cancel|Save|clicked|Safari,|no name/,
       );
     }));
 });

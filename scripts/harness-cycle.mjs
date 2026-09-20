@@ -67,6 +67,7 @@ const {
   quitBrowser,
   readTabCounts,
   resetFixtureTabs,
+  terminateBrowser,
 } = await import("../src/gym/bench/browser-reset.ts");
 const {
   CYCLE_ID,
@@ -1516,18 +1517,28 @@ const resetOwnTabs = async (id) => {
  * the cycle, so the next one starts clean. browser-reset.ts quitBrowser
  * applies the benchOwnBrowser rule itself over the facts, so a browser of
  * the person's is never quit and no other application ever is, and it
- * cancels a sheet with a Cancel button (a Save panel: cycle 1952's left one
- * that blocked two plain quits) before the quit, sending nothing to a
- * browser whose sheet it would not dismiss (SHEET_UP). The terminal says
- * what was quit and why, the diagnostics trace each sheet as BrowserSheet
- * (the bundle id, a count of buttons, whether Cancel was clicked) and the
- * quit as BrowserQuit (the bundle id, the flag and the code; never a title
- * or a button's name), and once the browser has gone it is forgotten as
- * running, as at a cycle's start: chooseBrowser treats it as not running
- * (safe), and a relaunch by a person during a wait counts as theirs
- * (openedByPerson compares with what ran after the last attempt).
+ * cancels a sheet with a dismissive button (a Save panel's Cancel: cycle
+ * 1952's left one that blocked two plain quits; a save-password prompt's
+ * Not Now; DISMISS_BUTTONS) before the quit, sending nothing to a browser
+ * whose sheet it would not dismiss (SHEET_UP). The terminal says what was
+ * quit and why, and for SHEET_UP what follows (`then`: at the gate, the
+ * next poll ends the process; elsewhere, the operator or the next cycle's
+ * gate). The diagnostics trace each sheet as BrowserSheet (the bundle id, a
+ * count of buttons, whether one was clicked, and how its buttons read:
+ * NAMED, NO_DISMISS or UNNAMED) and the quit as BrowserQuit (the bundle id,
+ * the flag and the code; never a title or a button's name), and once the
+ * browser has gone it is forgotten as running (forgetBrowser), as at a
+ * cycle's start: chooseBrowser treats it as not running (safe), and a
+ * relaunch by a person during a wait counts as theirs (openedByPerson
+ * compares with what ran after the last attempt).
  */
-const quitOwnBrowser = async (id, where, why) => {
+const forgetBrowser = (id) => {
+  facts.running?.delete(id);
+  runningAfterLast?.delete(id);
+  if (facts.windows) delete facts.windows[id];
+  facts.leftover?.delete(id);
+};
+const quitOwnBrowser = async (id, where, why, then = "dismiss it yourself") => {
   let quit;
   try {
     quit = await quitBrowser(run, id, facts);
@@ -1539,6 +1550,7 @@ const quitOwnBrowser = async (id, where, why) => {
       browser: id,
       buttons: sheet.buttons,
       cancelled: sheet.cancelled,
+      code: sheet.code,
     });
   diagnostics.write("BrowserQuit", {
     browser: id,
@@ -1546,25 +1558,69 @@ const quitOwnBrowser = async (id, where, why) => {
     ...(quit.code ? { code: quit.code } : {}),
   });
   const sheets = quit.sheets?.length
-    ? ` (${quit.sheets.filter((sheet) => sheet.cancelled).length} of ${quit.sheets.length} sheet(s) cancelled first)`
+    ? ` (${quit.sheets.filter((sheet) => sheet.cancelled).length} of ${quit.sheets.length} sheet(s) cancelled first; ${quit.sheets.map((sheet) => sheet.code).join(", ")})`
     : "";
   console.warn(
     `${where}: ${why}: ${
       quit.quit
         ? `quit ${id}${sheets}`
         : quit.code === "SHEET_UP"
-          ? `a sheet the harness would not dismiss stands on a window of ${id}${sheets}; no quit was sent (SHEET_UP): dismiss it yourself`
+          ? `a sheet the harness would not dismiss stands on a window of ${id}${sheets}; no quit was sent (SHEET_UP): ${then}`
           : `asked ${id} to quit, but it did not go (${quit.code})${sheets}`
     }.`,
   );
-  if (quit.quit) {
-    facts.running?.delete(id);
-    runningAfterLast?.delete(id);
-    if (facts.windows) delete facts.windows[id];
-    facts.leftover?.delete(id);
-  }
+  if (quit.quit) forgetBrowser(id);
   return quit;
 };
+/**
+ * Ends the harness's own browser's process, for the one case the quit
+ * cannot reach: a sheet the harness would not dismiss (SHEET_UP) still
+ * standing a poll (or a pass) after the quit was refused. The night of
+ * 2026-09-19 at 23:0x the sign-in fixture left Safari, the benchmark's own
+ * browser with its fixture tabs blank, holding secure event input behind
+ * Safari's save-password prompt, a nested sheet whose two buttons had no
+ * name, title or description; the gate printed SHEET_UP and waited nine
+ * minutes, until the operator sent `kill -TERM` to Safari's pid, which quit
+ * at once and released secure input. browser-reset.ts terminateBrowser does
+ * that: benchOwnBrowser first (a browser of the person's is never
+ * signalled, its process not even looked up), the main process by the
+ * executable rule from ps, SIGTERM (process.kill: no Apple Event, so nothing
+ * queues behind the sheet), up to five seconds for it to go, five more, and
+ * SIGKILL only when it is still there and still the benchmark's own. Traced
+ * as BrowserQuit with code TERMINATED or KILLED; the browser is then
+ * forgotten as running as after a quit. Safari may offer to restore its
+ * windows at its next launch (blank tabs).
+ */
+const terminateOwnBrowser = async (id, where, why) => {
+  let quit;
+  try {
+    quit = await terminateBrowser(run, id, facts, {
+      kill: (pid, signal) => process.kill(pid, signal),
+      sleep,
+    });
+  } catch {
+    quit = { quit: false, code: "UNREAD" };
+  }
+  diagnostics.write("BrowserQuit", {
+    browser: id,
+    quit: quit.quit,
+    ...(quit.code ? { code: quit.code } : {}),
+  });
+  console.warn(
+    `${where}: ${why}: ${
+      quit.quit
+        ? `ended ${id}'s process (${quit.code}); it may offer to restore its windows at its next launch`
+        : `did not end ${id}'s process (${quit.code}): dismiss the sheet yourself`
+    }.`,
+  );
+  if (quit.quit) forgetBrowser(id);
+  return quit;
+};
+/** A quit as the loop's escalation takes it: the flag and the code (src/gym/bench/cycle.ts EscalationAnswer). */
+const escalationAnswer = (quit) => ({
+  quit: quit.quit,
+  ...(quit.code ? { code: quit.code } : {}),
+});
 /**
  * Recomputes every start skip from the facts as they stand, in place (the
  * task gate holds this map): a leftover browser quit at the gate frees the
@@ -1592,23 +1648,49 @@ const refreshSkips = () => {
  * leftover at the start may be the person's now. Undefined when nothing of
  * the kind was running; else whether every leftover browser went.
  */
+/**
+ * Leftover browsers whose quit a sheet refused (SHEET_UP) at an earlier
+ * pass, by bundle id, with the pid it was then: the next pass that finds
+ * the same process still leftover and still refused ends it
+ * (terminateOwnBrowser), a pass being the gate's wait on it. A browser that
+ * went, was relaunched (another pid) or read as the person's is forgotten.
+ */
+const sheetUpLeftovers = new Map();
 const quitLeftoverBrowsers = async (report) => {
   const judged = await judgeLeftovers(
     Math.max(report.tapIdleSeconds ?? 0, report.hidIdleSeconds ?? 0),
   );
   let asked;
+  let code;
   for (const entry of judged) {
-    if (!entry.verdict.leftover) continue;
+    if (!entry.verdict.leftover) {
+      sheetUpLeftovers.delete(entry.id);
+      continue;
+    }
     await resetOwnTabs(entry.id);
-    const quit = await quitOwnBrowser(
+    let quit = await quitOwnBrowser(
       entry.id,
       "gate",
       `${describeLeftover(entry)}, and nobody's input since it launched`,
+      "the next pass ends its process if it is still the benchmark's and still refused",
     );
+    if (quit.code === "SHEET_UP") {
+      if (sheetUpLeftovers.get(entry.id) === entry.verdict.pid)
+        quit = await terminateOwnBrowser(
+          entry.id,
+          "gate",
+          `a sheet the harness would not dismiss still stands on ${entry.id}, left by an earlier cycle, a pass after its quit was refused`,
+        );
+      else sheetUpLeftovers.set(entry.id, entry.verdict.pid);
+    }
+    if (quit.code !== "SHEET_UP") sheetUpLeftovers.delete(entry.id);
     asked = (asked ?? true) && quit.quit;
+    code = quit.code;
   }
   if (judged.length) refreshSkips();
-  return asked;
+  return asked === undefined
+    ? undefined
+    : { quit: asked, ...(code ? { code } : {}) };
 };
 try {
   // The fixture server runs as a child process for the cycle, on the
@@ -1713,7 +1795,13 @@ try {
     // this: the browser is quit (quitOwnBrowser: the benchOwnBrowser rule
     // again, never a browser of the person's, never another application)
     // and the gate reads again at once. Whatever holds the keyboard after
-    // that is named and waited on as today. Never during an attempt.
+    // that is named and waited on as today. Never during an attempt. When
+    // the quit was refused for a sheet the harness would not dismiss
+    // (SHEET_UP: Safari's save-password prompt, two buttons with no name,
+    // the night of 2026-09-19) and the poll after still names that browser,
+    // the loop asks once more with cause SHEET_UP and the process is ended
+    // (terminateOwnBrowser: benchOwnBrowser again, SIGTERM then SIGKILL),
+    // as the operator did by hand that night after nine minutes.
     escalate: async (report, cause) => {
       // The gate passed: a browser an earlier cycle left is quit now, its
       // fixture tabs blanked first, and the skips recomputed.
@@ -1722,12 +1810,21 @@ try {
       const ours =
         owner && BROWSER_APPS.includes(owner) && benchOwnBrowser(owner, facts);
       if (!ours) return undefined;
+      if (cause === "SHEET_UP")
+        return escalationAnswer(
+          await terminateOwnBrowser(
+            owner,
+            "gate",
+            `secure event input is still on in ${owner}, the benchmark's own browser, behind a sheet the harness would not dismiss, a poll after its quit was refused`,
+          ),
+        );
       const quit = await quitOwnBrowser(
         owner,
         "gate",
         `secure event input is still on in ${owner}, the benchmark's own browser, with its fixture tabs already blank (a blank tab keeps the field's state until its window goes)`,
+        "the next poll ends its process if it still holds the keyboard",
       );
-      return quit.quit;
+      return escalationAnswer(quit);
     },
     // The start read ps once, and the gate may then wait for hours while
     // the person keeps working: a document they opened meanwhile may hold

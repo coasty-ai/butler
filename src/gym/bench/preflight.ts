@@ -54,7 +54,7 @@ export const REMEDY: Record<RemedyCode, string> = {
   PRESENCE_UNKNOWN:
     "ps or pmset could not be read, so nothing can say whether another agent or a watched screen is here; try again.",
   SECURE_INPUT:
-    "Secure event input is on: a password field has the keyboard (the gate line names the application when it can), and every attempt would hand off at once. Click somewhere else or close that window. A sign-in fixture page left in the benchmark's own browser is not this: the gate points its fixture tabs at about:blank itself, and quits that browser when the blank tabs still hold it (cancelling a Save or Open panel first; a sheet with no Cancel button leaves it standing, SHEET_UP).",
+    "Secure event input is on: a password field has the keyboard (the gate line names the application when it can), and every attempt would hand off at once. Click somewhere else or close that window. A sign-in fixture page left in the benchmark's own browser is not this: the gate points its fixture tabs at about:blank itself, and quits that browser when the blank tabs still hold it (clicking a Cancel, Not Now or Don't Save on its sheets first; a sheet with no such button, Safari's unnamed save-password prompt included, leaves the quit unsent, SHEET_UP, and one poll later the gate ends that browser's process itself, SIGTERM then SIGKILL, TERMINATED or KILLED on the line; never a browser of yours).",
   MISSING_KEY:
     "Put the cell's key in .env under the name the app reads (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY or GOOGLE_API_KEY), or drop the cell from --matrix.",
   NOTHING_TO_RUN:
@@ -72,7 +72,7 @@ export const REMEDY: Record<RemedyCode, string> = {
   FIXTURE_PORT:
     "Free port 47831 on 127.0.0.1 (another fixture server or a forgotten test server holds it); the browser and research tasks need it.",
   APPS_OPEN:
-    "Save your work and quit the application named (TextEdit, Calendar, Reminders, Notes, Music, System Settings, or every browser a web task could use), or leave it open with no window; the harness never quits an application of yours (its own browser is the one it quits: at the end of every cycle, when its blank fixture tabs hold secure event input, and at the gate when an earlier cycle left it with only blank, start-page or fixture tabs and nobody has typed since it launched), and one an earlier attempt left open with only benchmark windows (titles carrying its token) does not count. A browser with any tab of yours, or one you have used since it launched, is yours: quit it yourself if you want the web tasks to run.",
+    "Save your work and quit the application named (TextEdit, Calendar, Reminders, Notes, Music, System Settings, or every browser a web task could use), or leave it open with no window; the harness never quits an application of yours (its own browser is the one it quits: at the end of every cycle, when its blank fixture tabs hold secure event input, and at the gate when an earlier cycle left it with only blank, start-page or fixture tabs and nobody has typed since it launched; and only its own browser, behind a sheet it would not dismiss, is the one whose process it ends), and one an earlier attempt left open with only benchmark windows (titles carrying its token) does not count. A browser with any tab of yours, or one you have used since it launched, is yours: quit it yourself if you want the web tasks to run.",
   BENCH_ROOT_DIRTY:
     "An earlier cycle left benchmark items behind: run npm run cycle -- --cleanup-only, then remove by hand anything it still reports.",
 };

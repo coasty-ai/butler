@@ -1,17 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
   CANCEL_BUTTON,
+  DISMISS_BUTTONS,
   HARNESS_SLACK_SECONDS,
+  KILL_GRACE_SECONDS,
+  KILL_WAIT_SECONDS,
   LAUNCH_SLACK_SECONDS,
   QUIT_WAIT_QUARTERS,
   RESETTABLE_BROWSERS,
   SHEET_WAIT_QUARTERS,
+  SOLE_OK_BUTTON,
   START_PAGES,
+  TERMINATE_POLL_MS,
+  TERM_WAIT_SECONDS,
   benchLeftover,
   browserUptime,
   cancelSheetsScript,
+  dismissButton,
+  dismissLabels,
   fixtureOrigin,
-  hasCancel,
   inputSinceLaunch,
   onFixtureOrigin,
   parseCancelAnswer,
@@ -25,10 +32,13 @@ import {
   readTabCounts,
   resetFixtureTabs,
   resetTabsScript,
+  sheetCode,
   sheetOutcomes,
   sheetsScript,
   tabKind,
   tabsScript,
+  terminateBrowser,
+  type BrowserSignal,
   type TabCounts,
 } from "../src/gym/bench/browser-reset";
 import {
@@ -263,7 +273,21 @@ describe("browser sheets: the scripts", () => {
         expect(script).not.toContain(`"${other}"`);
       expect(script).toContain('if (count of procs) is 0 then return ""');
       expect(script).toContain("set shs to sheets of w");
-      expect(script).toContain("set n to name of b as text");
+      // A button's label is its name, else its title, else its description,
+      // each read behind its own try and `missing value` never coerced (the
+      // save-password prompt of 2026-09-19 read missing value on all three,
+      // and such a button prints "").
+      const name = script.indexOf("set v to name of b");
+      const title = script.indexOf("set v to title of b");
+      const description = script.indexOf("set v to description of b");
+      expect(name).toBeGreaterThan(0);
+      expect(title).toBeGreaterThan(name);
+      expect(description).toBeGreaterThan(title);
+      expect(
+        script.match(/if v is not missing value then set n to v as text/g),
+      ).toHaveLength(3);
+      expect(script.match(/if n is "" then/g)).toHaveLength(2);
+      expect(script).not.toContain("name of b as text");
       expect(script).toContain("set names to names & n & (character id 31)");
       expect(script).toContain("set out to out & names & (character id 30)");
     }
@@ -298,43 +322,156 @@ describe("browser sheets: the scripts", () => {
       parseSheetsAnswer("Cancel" + FIELD + "Save" + FIELD),
     ).toBeUndefined();
     expect(parseSheetsAnswer("Cancel" + RECORD)).toBeUndefined();
-    expect(hasCancel(["Cancel", "Save"])).toBe(true);
-    expect(hasCancel(["Don't Save", "Save"])).toBe(false);
-    expect(hasCancel([])).toBe(false);
+    // The evidence: two buttons with no name, title or description.
+    expect(parseSheetsAnswer(sheet("", ""))).toEqual([["", ""]]);
     expect(CANCEL_BUTTON).toBe("Cancel");
-    // Outcomes: the first `clicked` sheets with a Cancel button are the
-    // cancelled ones, in the order they were read; counts only.
+    // Outcomes: the first `clicked` sheets with a dismissive button are the
+    // cancelled ones, in the order they were read; counts and codes only.
     expect(
-      sheetOutcomes([["Cancel", "Save"], ["OK"], ["Cancel", "Replace"]], 2),
+      sheetOutcomes(
+        [["Cancel", "Save"], ["OK"], ["Cancel", "Replace"], ["", ""]],
+        2,
+      ),
     ).toEqual([
-      { buttons: 2, cancelled: true },
-      { buttons: 1, cancelled: false },
-      { buttons: 2, cancelled: true },
+      { buttons: 2, cancelled: true, code: "NAMED" },
+      { buttons: 1, cancelled: true, code: "NAMED" },
+      { buttons: 2, cancelled: false, code: "NAMED" },
+      { buttons: 2, cancelled: false, code: "UNNAMED" },
     ]);
     expect(sheetOutcomes([["Cancel", "Save"], ["Cancel"]], 1)).toEqual([
-      { buttons: 2, cancelled: true },
-      { buttons: 1, cancelled: false },
+      { buttons: 2, cancelled: true, code: "NAMED" },
+      { buttons: 1, cancelled: false, code: "NAMED" },
     ]);
     expect(sheetOutcomes([["Cancel", "Save"]], 0)).toEqual([
-      { buttons: 2, cancelled: false },
+      { buttons: 2, cancelled: false, code: "NAMED" },
+    ]);
+    expect(sheetOutcomes([["Save", "Replace"], ["", "Save"], []], 3)).toEqual([
+      { buttons: 2, cancelled: false, code: "NO_DISMISS" },
+      { buttons: 2, cancelled: false, code: "NO_DISMISS" },
+      { buttons: 0, cancelled: false, code: "UNNAMED" },
     ]);
   });
 
-  it("clicks nothing but a button named Cancel, through System Events alone, then waits for the sheets to go", () => {
+  it("dismisses by the fixed list of dismissive names, matched whole and case-insensitively, OK only alone, never a button that commits", () => {
+    expect(DISMISS_BUTTONS).toEqual([
+      "Cancel",
+      "Not Now",
+      "Don't Save",
+      "Don't Allow",
+      "Never for This Website",
+      "Never Save",
+      "Close",
+      "Dismiss",
+    ]);
+    expect(SOLE_OK_BUTTON).toBe("OK");
+    // Each name on the list, beside a committing button, is the one clicked,
+    // as read (the label the script found, whichever of name, title or
+    // description gave it), in any case and with either apostrophe.
+    for (const name of DISMISS_BUTTONS) {
+      expect(dismissButton([name, "Save"]), name).toBe(name);
+      expect(dismissButton(["Allow", name]), name).toBe(name);
+      expect(dismissButton([name.toUpperCase()]), name).toBe(
+        name.toUpperCase(),
+      );
+      expect(dismissButton([name.toLowerCase()]), name).toBe(
+        name.toLowerCase(),
+      );
+      const curly = name.replace(/'/g, "’");
+      expect(dismissButton([curly, "Save Password"]), name).toBe(curly);
+      expect(dismissButton([` ${name} `]), name).toBe(` ${name} `);
+      expect(sheetCode([name, "Save"]), name).toBe("NAMED");
+    }
+    // The first dismissive button in reading order.
+    expect(dismissButton(["Save", "Not Now", "Cancel"])).toBe("Not Now");
+    // Whole match: a button whose label contains a name is not it.
+    expect(dismissButton(["Cancel Subscription", "Keep"])).toBeUndefined();
+    expect(dismissButton(["Don't Cancel", "Cancel Order"])).toBeUndefined();
+    expect(dismissButton(["Close Tab", "Close Window"])).toBeUndefined();
+    // Never a button that commits, whatever else stands beside it.
+    for (const buttons of [
+      ["Save"],
+      ["Save", "Replace"],
+      ["Allow", "Save Password"],
+      ["Save Password"],
+      ["Allow"],
+      ["Delete"],
+      ["Keep", "Replace"],
+      ["Continue"],
+      ["Yes", "No"],
+      ["Quit"],
+    ])
+      expect(dismissButton(buttons), buttons.join("/")).toBeUndefined();
+    // OK only when it is the sole button: an alert with one way out.
+    expect(dismissButton(["OK"])).toBe("OK");
+    expect(dismissButton(["ok"])).toBe("ok");
+    expect(dismissButton(["OK", "Allow"])).toBeUndefined();
+    expect(dismissButton(["Allow", "OK"])).toBeUndefined();
+    expect(dismissButton(["OK", "OK"])).toBeUndefined();
+    // Unlabelled buttons (the save-password prompt of 2026-09-19), a sheet
+    // with none, or with only a label that commits: nothing to click.
+    expect(dismissButton(["", ""])).toBeUndefined();
+    expect(dismissButton([])).toBeUndefined();
+    expect(dismissButton(["", "Save"])).toBeUndefined();
+    expect(sheetCode(["", ""])).toBe("UNNAMED");
+    expect(sheetCode([" ", ""])).toBe("UNNAMED");
+    expect(sheetCode([])).toBe("UNNAMED");
+    expect(sheetCode(["", "Save"])).toBe("NO_DISMISS");
+    expect(sheetCode(["Save", "Replace"])).toBe("NO_DISMISS");
+    expect(sheetCode(["OK", "Allow"])).toBe("NO_DISMISS");
+    expect(sheetCode(["OK"])).toBe("NAMED");
+    // The script's list literal: every name in both apostrophes, the shape
+    // strict enough to quote.
+    const labels = dismissLabels();
+    for (const name of DISMISS_BUTTONS) expect(labels).toContain(name);
+    expect(labels).toContain("Don’t Save");
+    expect(labels).toContain("Don’t Allow");
+    expect(labels).toHaveLength(DISMISS_BUTTONS.length + 2);
+    for (const label of labels) expect(label).toMatch(/^[A-Za-z'’ ]+$/);
+  });
+
+  it("clicks nothing but one dismissive button per sheet, through System Events alone, then waits for the sheets to go", () => {
     for (const id of RESETTABLE_BROWSERS) {
       const script = cancelSheetsScript(id);
+      // No keystroke, above all: a System Events `key code` lands in the
+      // frontmost application, whatever the tell block names.
       expect(script).not.toMatch(
-        /keystroke|key code|do shell script|\bquit\b|\bdelete\b|\bclose\b|\bmake\b|\bactivate\b|\blaunch\b|\bopen\b|\bsave\b|set URL|tell application id|\bperform\b|\bselect\b/,
+        /keystroke|key code|do shell script|\bquit\b|\bdelete\b|\bmake\b|\bactivate\b|\blaunch\b|\bopen\b|set URL|tell application id|\bperform\b|\bselect\b/,
       );
       expect(script.match(/tell application/g)).toHaveLength(1);
       expect(script).toContain('tell application "System Events"');
       expect(script).toContain(`bundle identifier is "${id}"`);
       expect(script).not.toMatch(/argv|\$\{/);
-      // Every click in the script is the one click, on the one button name,
-      // behind an existence check.
+      // Every click in the script is the one click, on the button whose
+      // label the read rule gave (name, else title, else description), and
+      // only when that label is on the list or is the sole button's OK;
+      // then the sheet's loop ends, so one click per sheet.
       const clicks = script.match(/\bclick\b.*$/gm) ?? [];
-      expect(clicks).toEqual([`click button "${CANCEL_BUTTON}" of s`]);
-      expect(script).toContain(`if exists button "${CANCEL_BUTTON}" of s then`);
+      expect(clicks).toEqual(["click b"]);
+      expect(script).toContain(
+        `if (n is in dismissNames) or ((count of bs) is 1 and n is "${SOLE_OK_BUTTON}") then`,
+      );
+      expect(script.indexOf("if (n is in dismissNames)")).toBeLessThan(
+        script.indexOf("click b"),
+      );
+      expect(script).toMatch(
+        /click b\s+set clicked to clicked \+ 1\s+end try\s+exit repeat/,
+      );
+      expect(script).not.toMatch(/button "/);
+      // The list literal holds this file's fixed names and nothing else,
+      // each in both apostrophes.
+      const literal = /set dismissNames to \{(.*)\}/.exec(script);
+      expect(literal).not.toBeNull();
+      expect(literal![1].split(", ")).toEqual(
+        dismissLabels().map((label) => `"${label}"`),
+      );
+      // The label rule is the read script's, line for line.
+      for (const line of [
+        "set v to name of b",
+        "set v to title of b",
+        "set v to description of b",
+        "if v is not missing value then set n to v as text",
+      ])
+        expect(script).toContain(line);
       expect(script).toContain('if (count of procs) is 0 then return "0 0"');
       // Then it waits for the cancelled sheets to go, at most two seconds,
       // and answers what it clicked and what stands.
@@ -345,7 +482,14 @@ describe("browser sheets: the scripts", () => {
       );
       expect(script).toContain("if standing is 0 then exit repeat");
       expect(script.trim().endsWith("end tell")).toBe(true);
-      expect(script).toContain('return (n as text) & " " & (standing as text)');
+      expect(script).toContain(
+        'return (clicked as text) & " " & (standing as text)',
+      );
+      // "Save" and "Close" occur in the list literal (Never Save, Don't
+      // Save, Close: labels to match) and nowhere else: no save, no close.
+      expect(script.replace(/set dismissNames to \{.*\}/, "")).not.toMatch(
+        /\bsave\b|\bclose\b/i,
+      );
     }
     for (const bad of [
       "org.mozilla.firefox",
@@ -396,8 +540,9 @@ describe("browser quit: the quit", () => {
       }
       if (script === cancelSheetsScript(id)) {
         if (broken.has("cancel")) return undefined;
-        const clicked = sheets.filter(hasCancel).length;
-        if (!state.sheetsStay) sheets = sheets.filter((b) => !hasCancel(b));
+        const dismissible = (b: string[]) => dismissButton(b) !== undefined;
+        const clicked = sheets.filter(dismissible).length;
+        if (!state.sheetsStay) sheets = sheets.filter((b) => !dismissible(b));
         return `${clicked} ${sheets.length}\n`;
       }
       if (script === quitBrowserScript(id)) {
@@ -496,35 +641,75 @@ describe("browser quit: the quit", () => {
     const panel = browser(SAFARI, { sheets: [["Cancel", "Save"]] });
     expect(await quitBrowser(panel.run, SAFARI, {})).toEqual({
       quit: true,
-      sheets: [{ buttons: 2, cancelled: true }],
+      sheets: [{ buttons: 2, cancelled: true, code: "NAMED" }],
     });
     expect(panel.kinds()).toEqual(["sheets", "cancel", "quit"]);
-    // Two sheets, one with no Cancel button: the one is cancelled, the
-    // other stands, and no quit is sent (SHEET_UP).
+    // A save-password prompt with its buttons named (Not Now, Never for
+    // This Website, Save Password), a close-with-changes alert (Don't Save,
+    // Cancel, Save) and a one-button OK alert: each has a dismissive button,
+    // each is cancelled, and the quit goes.
+    const named = browser(SAFARI, {
+      sheets: [
+        ["Not Now", "Never for This Website", "Save Password"],
+        ["Don’t Save", "Cancel", "Save"],
+        ["OK"],
+      ],
+    });
+    expect(await quitBrowser(named.run, SAFARI, {})).toEqual({
+      quit: true,
+      sheets: [
+        { buttons: 3, cancelled: true, code: "NAMED" },
+        { buttons: 3, cancelled: true, code: "NAMED" },
+        { buttons: 1, cancelled: true, code: "NAMED" },
+      ],
+    });
+    expect(named.kinds()).toEqual(["sheets", "cancel", "quit"]);
+    // The evidence of 2026-09-19, 23:0x: two sheets, one a Save panel and
+    // one Safari's save-password prompt whose two buttons read missing
+    // value for name, title and description. The one is cancelled, the
+    // other stands (UNNAMED), and no quit is sent (SHEET_UP).
     const mixed = browser(SAFARI, {
       sheets: [
         ["Cancel", "Save"],
-        ["Don't Save", "Save"],
+        ["", ""],
       ],
     });
     expect(await quitBrowser(mixed.run, SAFARI, {})).toEqual({
       quit: false,
       code: "SHEET_UP",
       sheets: [
-        { buttons: 2, cancelled: true },
-        { buttons: 2, cancelled: false },
+        { buttons: 2, cancelled: true, code: "NAMED" },
+        { buttons: 2, cancelled: false, code: "UNNAMED" },
       ],
     });
     expect(mixed.kinds()).toEqual(["sheets", "cancel"]);
-    // No sheet has a Cancel button: nothing is clicked and nothing is sent
-    // to the browser.
-    const alert = browser(SAFARI, { sheets: [["OK"]] });
-    expect(await quitBrowser(alert.run, SAFARI, {})).toEqual({
+    // Only the unnamed prompt: nothing is clicked (no guess between two
+    // nameless buttons, no keystroke), nothing is sent to the browser, and
+    // the caller reads UNNAMED beside SHEET_UP.
+    const unnamed = browser(SAFARI, { sheets: [["", ""]] });
+    expect(await quitBrowser(unnamed.run, SAFARI, {})).toEqual({
       quit: false,
       code: "SHEET_UP",
-      sheets: [{ buttons: 1, cancelled: false }],
+      sheets: [{ buttons: 2, cancelled: false, code: "UNNAMED" }],
     });
-    expect(alert.kinds()).toEqual(["sheets"]);
+    expect(unnamed.kinds()).toEqual(["sheets"]);
+    // Named buttons, none dismissive (Save and Replace; OK beside Allow):
+    // nothing is clicked and nothing is sent to the browser.
+    const commit = browser(SAFARI, {
+      sheets: [
+        ["Save", "Replace"],
+        ["OK", "Allow"],
+      ],
+    });
+    expect(await quitBrowser(commit.run, SAFARI, {})).toEqual({
+      quit: false,
+      code: "SHEET_UP",
+      sheets: [
+        { buttons: 2, cancelled: false, code: "NO_DISMISS" },
+        { buttons: 2, cancelled: false, code: "NO_DISMISS" },
+      ],
+    });
+    expect(commit.kinds()).toEqual(["sheets"]);
     // The click did not land (the sheet stayed): SHEET_UP, no quit.
     const stuck = browser(SAFARI, {
       sheets: [["Cancel", "Save"]],
@@ -533,7 +718,7 @@ describe("browser quit: the quit", () => {
     expect(await quitBrowser(stuck.run, SAFARI, {})).toEqual({
       quit: false,
       code: "SHEET_UP",
-      sheets: [{ buttons: 2, cancelled: true }],
+      sheets: [{ buttons: 2, cancelled: true, code: "NAMED" }],
     });
     expect(stuck.kinds()).toEqual(["sheets", "cancel"]);
     // The cancel script did not answer: UNREAD, no quit.
@@ -544,7 +729,7 @@ describe("browser quit: the quit", () => {
     expect(await quitBrowser(mute.run, SAFARI, {})).toEqual({
       quit: false,
       code: "UNREAD",
-      sheets: [{ buttons: 2, cancelled: false }],
+      sheets: [{ buttons: 2, cancelled: false, code: "NAMED" }],
     });
     expect(mute.kinds()).toEqual(["sheets", "cancel"]);
     // Cancelled, quit sent, and the browser still ran: the sheet stays on
@@ -556,7 +741,7 @@ describe("browser quit: the quit", () => {
     expect(await quitBrowser(held.run, SAFARI, {})).toEqual({
       quit: false,
       code: "STILL_RUNNING",
-      sheets: [{ buttons: 2, cancelled: true }],
+      sheets: [{ buttons: 2, cancelled: true, code: "NAMED" }],
     });
   });
 
@@ -623,6 +808,316 @@ describe("browser quit: the quit", () => {
       });
       expect(calls).toEqual([]);
     }
+  });
+});
+
+describe("browser terminate: the process", () => {
+  const PS_ARGS = ["-axo", "pid=,etime=,command="];
+  const main = (pid: number) =>
+    `${pid}  01:23:45 /Applications/Safari.app/Contents/MacOS/Safari`;
+  const helper =
+    " 777  01:23:44 /Applications/Safari.app/Contents/Frameworks/Safari.framework/Versions/A/XPCServices/com.apple.Safari.History.xpc/Contents/MacOS/com.apple.Safari.History";
+  const finder =
+    "  99  02:00:00 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder";
+  /** The benchmark's own by the window rule: running, one window, no title of the person's. */
+  const own = () => ({
+    running: new Set([SAFARI]),
+    windows: { [SAFARI]: { windows: 1, foreign: 0 } },
+  });
+  const theirWindow = {
+    running: new Set([SAFARI]),
+    windows: { [SAFARI]: { windows: 2, foreign: 1 } },
+  };
+  /**
+   * A Mac as the terminate sees it: ps lists the browser's main process
+   * (pid 4242 unless said otherwise, beside a helper under Frameworks and
+   * the Finder) until the signal named by `goesOn` has been sent and
+   * `looksBefore` more looks at ps have passed (1 by default; undefined
+   * `goesOn`: it never goes). `relaunchAs` puts another pid on the main
+   * line once SIGTERM was sent. Every signal, every look and every sleep is
+   * kept; an osascript is refused outright.
+   */
+  const mac = (
+    over: {
+      pid?: number;
+      goesOn?: BrowserSignal;
+      looksBefore?: number;
+      relaunchAs?: number;
+      psBrokenAfterSignal?: boolean;
+      killThrows?: boolean;
+      onSleep?: (sleeps: number) => void;
+    } = {},
+  ) => {
+    const pid = over.pid ?? 4242;
+    const kills: [number, BrowserSignal][] = [];
+    const sleeps: number[] = [];
+    let looks = 0;
+    let running = true;
+    let looksLeft: number | undefined;
+    const run = async (command: string, args: string[]) => {
+      expect(command).toBe("ps");
+      expect(args).toEqual(PS_ARGS);
+      looks++;
+      if (over.psBrokenAfterSignal && kills.length) return undefined;
+      if (looksLeft !== undefined && --looksLeft <= 0) running = false;
+      const shown =
+        over.relaunchAs !== undefined && kills.length ? over.relaunchAs : pid;
+      return [helper, ...(running ? [main(shown)] : []), finder, ""].join("\n");
+    };
+    const kill = (target: number, signal: BrowserSignal) => {
+      kills.push([target, signal]);
+      if (over.killThrows) {
+        const error = new Error("kill ESRCH") as NodeJS.ErrnoException;
+        error.code = "ESRCH";
+        throw error;
+      }
+      if (signal === over.goesOn) looksLeft = over.looksBefore ?? 1;
+    };
+    const sleep = async (ms: number) => {
+      sleeps.push(ms);
+      over.onSleep?.(sleeps.length);
+    };
+    return { run, kill, sleep, kills, sleeps, looks: () => looks };
+  };
+  const termLooks = (TERM_WAIT_SECONDS * 1000) / TERMINATE_POLL_MS;
+  const graceLooks = (KILL_GRACE_SECONDS * 1000) / TERMINATE_POLL_MS;
+  const killLooks = (KILL_WAIT_SECONDS * 1000) / TERMINATE_POLL_MS;
+
+  it("sends SIGTERM to the browser's main process and reads it gone from ps, as the operator did on 2026-09-19", async () => {
+    expect(TERM_WAIT_SECONDS).toBe(5);
+    expect(KILL_GRACE_SECONDS).toBe(5);
+    expect(KILL_WAIT_SECONDS).toBe(5);
+    expect(TERMINATE_POLL_MS).toBe(250);
+    // Safari quit at once on the operator's kill -TERM: one signal, one
+    // look, TERMINATED. The facts say the benchmark's own by the window
+    // rule; not-running-at-the-start and leftover count the same.
+    for (const facts of [
+      own(),
+      {},
+      { ...theirWindow, leftover: new Set([SAFARI]) },
+    ]) {
+      const quick = mac({ goesOn: "SIGTERM" });
+      expect(await terminateBrowser(quick.run, SAFARI, facts, quick)).toEqual({
+        quit: true,
+        code: "TERMINATED",
+      });
+      expect(quick.kills).toEqual([[4242, "SIGTERM"]]);
+      expect(quick.sleeps).toEqual([TERMINATE_POLL_MS]);
+      // The look before the signal, then the one that found it gone.
+      expect(quick.looks()).toBe(2);
+    }
+    // Gone on the last look of the first wait, or during the grace after
+    // it: still TERMINATED, and no SIGKILL.
+    const slow = mac({ goesOn: "SIGTERM", looksBefore: termLooks });
+    expect(await terminateBrowser(slow.run, SAFARI, own(), slow)).toEqual({
+      quit: true,
+      code: "TERMINATED",
+    });
+    expect(slow.kills).toEqual([[4242, "SIGTERM"]]);
+    expect(slow.sleeps).toHaveLength(termLooks);
+    const grace = mac({ goesOn: "SIGTERM", looksBefore: termLooks + 3 });
+    expect(await terminateBrowser(grace.run, SAFARI, own(), grace)).toEqual({
+      quit: true,
+      code: "TERMINATED",
+    });
+    expect(grace.kills).toEqual([[4242, "SIGTERM"]]);
+    expect(grace.sleeps).toHaveLength(termLooks + 3);
+    // The pid comes from ps, whatever it is; the helper under Frameworks
+    // never matches the executable rule.
+    const other = mac({ pid: 90992, goesOn: "SIGTERM" });
+    expect(await terminateBrowser(other.run, SAFARI, own(), other)).toEqual({
+      quit: true,
+      code: "TERMINATED",
+    });
+    expect(other.kills).toEqual([[90992, "SIGTERM"]]);
+    // The kernel refused the signal (ESRCH: gone between the look and the
+    // signal): taken as sent, and the look decides.
+    const raced = mac({ killThrows: true });
+    const racedRun = (() => {
+      let looks = 0;
+      return async (command: string, args: string[]) => {
+        expect([command, ...args]).toEqual(["ps", ...PS_ARGS]);
+        looks++;
+        return looks === 1 ? [main(4242), finder, ""].join("\n") : finder;
+      };
+    })();
+    expect(await terminateBrowser(racedRun, SAFARI, own(), raced)).toEqual({
+      quit: true,
+      code: "TERMINATED",
+    });
+    expect(raced.kills).toEqual([[4242, "SIGTERM"]]);
+  });
+
+  it("sends SIGKILL only after both waits, only to the same process, only while it is still the benchmark's own, and says when even that failed", async () => {
+    // SIGTERM ignored (a browser stuck in a modal run loop), the two waits
+    // pass, SIGKILL, gone on the next look: KILLED.
+    const killed = mac({ goesOn: "SIGKILL" });
+    expect(await terminateBrowser(killed.run, SAFARI, own(), killed)).toEqual({
+      quit: true,
+      code: "KILLED",
+    });
+    expect(killed.kills).toEqual([
+      [4242, "SIGTERM"],
+      [4242, "SIGKILL"],
+    ]);
+    expect(killed.sleeps).toHaveLength(termLooks + graceLooks + 1);
+    expect(killed.sleeps.every((ms) => ms === TERMINATE_POLL_MS)).toBe(true);
+    // Nothing ends it: STILL_RUNNING after the third wait, both signals
+    // sent once each, nothing more.
+    const stuck = mac();
+    expect(await terminateBrowser(stuck.run, SAFARI, own(), stuck)).toEqual({
+      quit: false,
+      code: "STILL_RUNNING",
+    });
+    expect(stuck.kills).toEqual([
+      [4242, "SIGTERM"],
+      [4242, "SIGKILL"],
+    ]);
+    expect(stuck.sleeps).toHaveLength(termLooks + graceLooks + killLooks);
+    // The facts turned during the waits (a window of the person's now, by
+    // a read the caller made meanwhile): no SIGKILL, STILL_RUNNING.
+    const facts = own();
+    const turned = mac({
+      onSleep: (sleeps) => {
+        if (sleeps === termLooks + 2) facts.windows[SAFARI].foreign = 1;
+      },
+    });
+    expect(await terminateBrowser(turned.run, SAFARI, facts, turned)).toEqual({
+      quit: false,
+      code: "STILL_RUNNING",
+    });
+    expect(turned.kills).toEqual([[4242, "SIGTERM"]]);
+    // Another pid on the browser's line after SIGTERM (it went, and someone
+    // or something relaunched it): the process asked is gone, TERMINATED,
+    // and the new one is never signalled.
+    const relaunched = mac({ relaunchAs: 5151 });
+    expect(
+      await terminateBrowser(relaunched.run, SAFARI, own(), relaunched),
+    ).toEqual({ quit: true, code: "TERMINATED" });
+    expect(relaunched.kills).toEqual([[4242, "SIGTERM"]]);
+    // ps stopped answering after the signal: never read as gone, and with
+    // no look confirming the same process, no SIGKILL.
+    const blind = mac({ psBrokenAfterSignal: true });
+    expect(await terminateBrowser(blind.run, SAFARI, own(), blind)).toEqual({
+      quit: false,
+      code: "STILL_RUNNING",
+    });
+    expect(blind.kills).toEqual([[4242, "SIGTERM"]]);
+  });
+
+  it("never signals a browser of the person's, one it cannot script, a process it cannot find, or pid 1 or less", async () => {
+    // A window of the person's: THEIRS before ps is even read, and
+    // process.kill is never called.
+    const theirs = mac({ goesOn: "SIGTERM" });
+    expect(
+      await terminateBrowser(theirs.run, SAFARI, theirWindow, theirs),
+    ).toEqual({ quit: false, code: "THEIRS" });
+    expect(theirs.kills).toEqual([]);
+    expect(theirs.looks()).toBe(0);
+    // Running with its windows unread (a dry run, a refused query): theirs.
+    const unread = mac({ goesOn: "SIGTERM" });
+    expect(
+      await terminateBrowser(
+        unread.run,
+        SAFARI,
+        { running: new Set([SAFARI]) },
+        unread,
+      ),
+    ).toEqual({ quit: false, code: "THEIRS" });
+    expect(unread.kills).toEqual([]);
+    expect(unread.looks()).toBe(0);
+    // The rule is benchOwnBrowser's, over both browsers at once.
+    const both = {
+      running: new Set([SAFARI, CHROME]),
+      windows: {
+        [SAFARI]: { windows: 1, foreign: 1 },
+        [CHROME]: { windows: 1, foreign: 0 },
+      },
+    };
+    expect(benchOwnBrowser(SAFARI, both)).toBe(false);
+    const refused = mac({ goesOn: "SIGTERM" });
+    expect(
+      (await terminateBrowser(refused.run, SAFARI, both, refused)).code,
+    ).toBe("THEIRS");
+    expect(refused.kills).toEqual([]);
+    // A leftover set naming the other browser changes nothing for this one.
+    const otherLeftover = mac({ goesOn: "SIGTERM" });
+    expect(
+      (
+        await terminateBrowser(
+          otherLeftover.run,
+          SAFARI,
+          { ...both, leftover: new Set([CHROME]) },
+          otherLeftover,
+        )
+      ).code,
+    ).toBe("THEIRS");
+    expect(otherLeftover.kills).toEqual([]);
+    // Not scriptable, or no browser at all: nothing runs, whatever the
+    // facts say.
+    for (const id of [
+      "org.mozilla.firefox",
+      "company.thebrowser.Browser",
+      "com.apple.finder",
+      "com.apple.Terminal",
+      "com.1password.1password",
+    ]) {
+      const none = mac({ goesOn: "SIGTERM" });
+      expect(await terminateBrowser(none.run, id, {}, none), id).toEqual({
+        quit: false,
+        code: "NO_SCRIPT",
+      });
+      expect(none.kills).toEqual([]);
+      expect(none.looks()).toBe(0);
+    }
+    // Not in ps (only a helper under Frameworks, or nothing of Safari's):
+    // NOT_RUNNING, no signal.
+    for (const text of [[helper, finder, ""].join("\n"), finder, ""]) {
+      const kills: [number, BrowserSignal][] = [];
+      expect(
+        await terminateBrowser(async () => text, SAFARI, own(), {
+          kill: (pid, signal) => {
+            kills.push([pid, signal]);
+          },
+          sleep: async () => {},
+        }),
+      ).toEqual({ quit: false, code: "NOT_RUNNING" });
+      expect(kills).toEqual([]);
+    }
+    // ps did not answer: UNREAD, no signal.
+    const kills: [number, BrowserSignal][] = [];
+    const deps = {
+      kill: (pid: number, signal: BrowserSignal) => {
+        kills.push([pid, signal]);
+      },
+      sleep: async () => {},
+    };
+    expect(
+      await terminateBrowser(async () => undefined, SAFARI, own(), deps),
+    ).toEqual({ quit: false, code: "UNREAD" });
+    expect(kills).toEqual([]);
+    // A pid of 1 or less on the browser's line (a ps that cannot be, and
+    // process.kill(0) or a negative would address a process group): never
+    // signalled.
+    for (const pid of [0, 1]) {
+      expect(
+        await terminateBrowser(
+          async () => [main(pid), finder, ""].join("\n"),
+          SAFARI,
+          own(),
+          deps,
+        ),
+        String(pid),
+      ).toEqual({ quit: false, code: "UNREAD" });
+      expect(kills).toEqual([]);
+    }
+    // The executable rule reads the pid and the age as browserUptime does.
+    expect(
+      browserUptime([helper, main(4242), finder].join("\n"), SAFARI),
+    ).toEqual({
+      pid: 4242,
+      seconds: 3600 + 23 * 60 + 45,
+    });
   });
 });
 

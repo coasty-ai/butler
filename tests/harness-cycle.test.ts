@@ -93,10 +93,12 @@ import {
   remaining,
   rerunnable,
   cutByInput,
+  escalationAnswer,
   runCycleLoop,
   shardOf,
   spent,
   type CycleCaps,
+  type EscalationReply,
   type LedgerLine,
   type PlanEntry,
   type QueueEntry,
@@ -2503,9 +2505,13 @@ function loop(
     observe?: (row: AttemptResult) => void;
     afterGate?: (pass: { first: boolean; sawInput: boolean }) => Promise<void>;
     remedy?: (report: GateReport) => Promise<number | undefined>;
-    escalate?: (report: GateReport) => Promise<boolean | undefined>;
+    /** The hook's SECURE_INPUT cause, and its SHEET_UP cause a poll after a quit answered SHEET_UP (`cause` says which). */
+    escalate?: (
+      report: GateReport,
+      cause: "SECURE_INPUT" | "SHEET_UP",
+    ) => Promise<EscalationReply>;
     /** The same hook's LEFTOVER cause, asked at every pass. */
-    leftover?: (report: GateReport) => Promise<boolean | undefined>;
+    leftover?: (report: GateReport) => Promise<EscalationReply>;
   } = {},
 ) {
   let clock = 1_000_000;
@@ -2596,10 +2602,14 @@ function loop(
     ...(over.remedy ? { remedy: over.remedy } : {}),
     ...(over.escalate || over.leftover
       ? {
-          escalate: (gateReport: GateReport, cause: string) =>
+          escalate: (
+            gateReport: GateReport,
+            cause: "SECURE_INPUT" | "LEFTOVER" | "SHEET_UP",
+          ) =>
             cause === "LEFTOVER"
               ? (over.leftover?.(gateReport) ?? Promise.resolve(undefined))
-              : (over.escalate?.(gateReport) ?? Promise.resolve(undefined)),
+              : (over.escalate?.(gateReport, cause) ??
+                Promise.resolve(undefined)),
         }
       : {}),
   });
@@ -7851,6 +7861,201 @@ describe("secure event input at the gate", () => {
     ).not.toHaveProperty("browserQuit");
   });
 
+  it("ends its own browser's process a poll after a sheet refused the quit, records it on the line, reads again when it went, and never for the person's", async () => {
+    // The night of 2026-09-19, 23:0x: the sign-in fixture left Safari, the
+    // benchmark's own browser with blank fixture tabs, holding secure input
+    // behind a save-password sheet whose two buttons had no name; the quit
+    // answered SHEET_UP and the gate waited nine minutes for the operator's
+    // kill -TERM. Now: the remedy (0 tabs), the read at once, the quit
+    // refused (SHEET_UP), one poll slept, Safari still holds it, the hook is
+    // asked with cause SHEET_UP and ends the process (TERMINATED), the gate
+    // reads again at once, and the field has let go.
+    const causes: string[] = [];
+    let secure = true;
+    const ended = loop({
+      gate: () => ({
+        secureInput: secure,
+        ...(secure ? { secureInputOwner: SAFARI } : {}),
+      }),
+      remedy: async () => 0,
+      escalate: async (gateReport, cause) => {
+        causes.push(cause);
+        expect(gateReport.secureInputOwner).toBe(SAFARI);
+        if (cause === "SECURE_INPUT") return { quit: false, code: "SHEET_UP" };
+        secure = false;
+        return { quit: true, code: "TERMINATED" };
+      },
+    });
+    const outcome = await ended.run;
+    expect(causes).toEqual(["SECURE_INPUT", "SHEET_UP"]);
+    expect(ended.ran).toHaveLength(4);
+    // One poll between the refusal and the termination, none after it.
+    expect(ended.ran[0].wait).toBe(15);
+    const gates = ended.lines.filter((line) => line.kind === "gate");
+    expect(gates).toEqual([
+      {
+        kind: "gate",
+        at: expect.any(String),
+        reason: "SECURE_INPUT",
+        reasons: ["SECURE_INPUT"],
+        waitedSeconds: 15,
+        secureInputOwner: SAFARI,
+        browserReset: 0,
+        browserQuit: true,
+        browserQuitReason: "SHEET_UP",
+        browserQuitCode: "TERMINATED",
+      },
+    ]);
+    expect(outcome.gateWaits.byReason).toEqual({ SECURE_INPUT: 1 });
+    expect(gateWaitsOf(gates).byReason).toEqual({ SECURE_INPUT: 1 });
+
+    // SIGKILL was needed: the code says so, the line the same otherwise.
+    causes.length = 0;
+    const killed = loop({
+      gate: (_now, calls) =>
+        calls < 3 ? { secureInput: true, secureInputOwner: SAFARI } : {},
+      remedy: async () => 0,
+      escalate: async (_gateReport, cause) =>
+        cause === "SECURE_INPUT"
+          ? { quit: false, code: "SHEET_UP" }
+          : { quit: true, code: "KILLED" },
+    });
+    await killed.run;
+    expect(causes).toEqual([]);
+    expect(
+      killed.lines.filter((line) => line.kind === "gate")[0],
+    ).toMatchObject({
+      browserQuit: true,
+      browserQuitReason: "SHEET_UP",
+      browserQuitCode: "KILLED",
+    });
+
+    // Even the signal did not end it (STILL_RUNNING): false on the line
+    // with the reason and the code, asked no third time though the gate
+    // refused four more times, and every later refusal waited a poll.
+    causes.length = 0;
+    const held = loop({
+      gate: (_now, calls) =>
+        calls < 7 ? { secureInput: true, secureInputOwner: SAFARI } : {},
+      remedy: async () => 0,
+      escalate: async (_gateReport, cause) => {
+        causes.push(cause);
+        return cause === "SECURE_INPUT"
+          ? { quit: false, code: "SHEET_UP" }
+          : { quit: false, code: "STILL_RUNNING" };
+      },
+    });
+    await held.run;
+    expect(causes).toEqual(["SECURE_INPUT", "SHEET_UP"]);
+    expect(held.lines.filter((line) => line.kind === "gate")[0]).toEqual({
+      kind: "gate",
+      at: expect.any(String),
+      reason: "SECURE_INPUT",
+      reasons: ["SECURE_INPUT"],
+      waitedSeconds: 90,
+      secureInputOwner: SAFARI,
+      browserReset: 0,
+      browserQuit: false,
+      browserQuitReason: "SHEET_UP",
+      browserQuitCode: "STILL_RUNNING",
+    });
+
+    // The quit was refused for another reason (STILL_RUNNING: a dialog, not
+    // a sheet), or answered a bare flag (an older hook): nothing escalates
+    // past the quit, however long the field is held.
+    for (const reply of [
+      { quit: false, code: "STILL_RUNNING" },
+      false,
+    ] as EscalationReply[]) {
+      causes.length = 0;
+      const noSheet = loop({
+        gate: (_now, calls) =>
+          calls < 5 ? { secureInput: true, secureInputOwner: SAFARI } : {},
+        remedy: async () => 0,
+        escalate: async (_gateReport, cause) => {
+          causes.push(cause);
+          return reply;
+        },
+      });
+      await noSheet.run;
+      expect(causes).toEqual(["SECURE_INPUT"]);
+      const line = noSheet.lines.filter((l) => l.kind === "gate")[0];
+      expect(line).toMatchObject({ browserQuit: false });
+      expect(line).not.toHaveProperty("browserQuitReason");
+      if (typeof reply === "boolean")
+        expect(line).not.toHaveProperty("browserQuitCode");
+      else expect(line).toMatchObject({ browserQuitCode: "STILL_RUNNING" });
+    }
+
+    // The person's browser: the hook would not ask (undefined) with cause
+    // SHEET_UP, since the holder is no longer the harness's to touch; the
+    // line keeps the refusal as it was, and nothing is ended.
+    causes.length = 0;
+    const theirs = loop({
+      gate: (_now, calls) =>
+        calls < 4 ? { secureInput: true, secureInputOwner: SAFARI } : {},
+      remedy: async () => 0,
+      escalate: async (_gateReport, cause) => {
+        causes.push(cause);
+        return cause === "SECURE_INPUT"
+          ? { quit: false, code: "SHEET_UP" }
+          : undefined;
+      },
+    });
+    await theirs.run;
+    expect(causes).toEqual(["SECURE_INPUT", "SHEET_UP"]);
+    const theirLine = theirs.lines.filter((l) => l.kind === "gate")[0];
+    expect(theirLine).toMatchObject({
+      browserQuit: false,
+      browserQuitCode: "SHEET_UP",
+    });
+    expect(theirLine).not.toHaveProperty("browserQuitReason");
+
+    // The holder changed after the refusal (Terminal at the next poll): the
+    // termination is for the browser the quit was refused on, and that read
+    // did not name it, so nothing is ended.
+    causes.length = 0;
+    const changed = loop({
+      gate: (_now, calls) =>
+        calls < 2
+          ? { secureInput: true, secureInputOwner: SAFARI }
+          : calls < 4
+            ? { secureInput: true, secureInputOwner: TERMINAL }
+            : {},
+      remedy: async () => 0,
+      escalate: async (_gateReport, cause) => {
+        causes.push(cause);
+        return { quit: false, code: "SHEET_UP" };
+      },
+    });
+    await changed.run;
+    expect(causes).toEqual(["SECURE_INPUT"]);
+
+    // A leftover quit's code travels too, its reason LEFTOVER as before.
+    const leftover = loop({
+      leftover: async () => ({ quit: true, code: "TERMINATED" }),
+    });
+    await leftover.run;
+    expect(
+      leftover.lines.filter((line) => line.kind === "gate")[0],
+    ).toMatchObject({
+      reason: "NONE",
+      reasons: [],
+      browserQuit: true,
+      browserQuitReason: "LEFTOVER",
+      browserQuitCode: "TERMINATED",
+    });
+
+    // The reply reader: a flag is a quit with no code, nothing stays nothing.
+    expect(escalationAnswer(true)).toEqual({ quit: true });
+    expect(escalationAnswer(false)).toEqual({ quit: false });
+    expect(escalationAnswer(undefined)).toBeUndefined();
+    expect(escalationAnswer({ quit: false, code: "SHEET_UP" })).toEqual({
+      quit: false,
+      code: "SHEET_UP",
+    });
+  });
+
   it("keeps a reset's count and code on the row, and nothing else, and sums them in the report", () => {
     expect(
       contentFree(row({ browserReset: { tabs: 2 } })).browserReset,
@@ -7970,30 +8175,59 @@ describe("secure event input at the gate", () => {
     expect(escalate).toMatch(
       /const quit = await quitOwnBrowser\(\s+owner,\s+"gate",\s+`secure event input is still on in \$\{owner\}, the benchmark's own browser/,
     );
-    expect(escalate).toContain("return quit.quit;");
+    expect(escalate).toContain("return escalationAnswer(quit);");
+    // The SHEET_UP cause (a poll after the quit was refused for a sheet):
+    // the same rule first, then the process is ended through the one
+    // terminate helper, and the answer carries the code for the line.
+    expect(escalate).toMatch(
+      /if \(cause === "SHEET_UP"\)\s+return escalationAnswer\(\s+await terminateOwnBrowser\(\s+owner,\s+"gate",/,
+    );
+    expect(escalate.indexOf("if (!ours) return undefined;")).toBeLessThan(
+      escalate.indexOf('if (cause === "SHEET_UP")'),
+    );
     const helper = cycle.slice(
-      cycle.indexOf("const quitOwnBrowser = async (id, where, why) => {"),
+      cycle.indexOf("const quitOwnBrowser = async ("),
       cycle.indexOf("const refreshSkips = () => {"),
     );
     expect(helper).toContain("quit = await quitBrowser(run, id, facts);");
-    // Each sheet the quit met is traced as counts and a flag, then the quit.
+    // Each sheet the quit met is traced as counts, a flag and a code, then
+    // the quit.
     expect(helper).toMatch(
-      /for \(const sheet of quit\.sheets \?\? \[\]\)\s+diagnostics\.write\("BrowserSheet", \{\s+browser: id,\s+buttons: sheet\.buttons,\s+cancelled: sheet\.cancelled,\s+\}\);/,
+      /for \(const sheet of quit\.sheets \?\? \[\]\)\s+diagnostics\.write\("BrowserSheet", \{\s+browser: id,\s+buttons: sheet\.buttons,\s+cancelled: sheet\.cancelled,\s+code: sheet\.code,\s+\}\);/,
     );
+    expect(
+      helper.match(
+        /diagnostics\.write\("BrowserQuit", \{\s+browser: id,\s+quit: quit\.quit,\s+\.\.\.\(quit\.code \? \{ code: quit\.code \} : \{\}\),\s+\}\);/g,
+      ),
+    ).toHaveLength(2);
+    // The SHEET_UP line says what follows where it is called from: the
+    // gate's next poll or pass ends the process; elsewhere the operator.
+    expect(helper).toContain("no quit was sent (SHEET_UP): ${then}");
+    expect(helper).toMatch(/then = "dismiss it yourself",?\s*\) => \{/);
+    // The terminate helper: browser-reset.ts terminateBrowser (benchOwnBrowser
+    // again, over the facts), process.kill injected, the harness's own sleep.
     expect(helper).toMatch(
-      /diagnostics\.write\("BrowserQuit", \{\s+browser: id,\s+quit: quit\.quit,\s+\.\.\.\(quit\.code \? \{ code: quit\.code \} : \{\}\),\s+\}\);/,
+      /quit = await terminateBrowser\(run, id, facts, \{\s+kill: \(pid, signal\) => process\.kill\(pid, signal\),\s+sleep,\s+\}\);/,
     );
-    expect(helper).toContain(
-      "no quit was sent (SHEET_UP): dismiss it yourself",
+    expect(helper).toContain("ended ${id}'s process (${quit.code})");
+    // Both forget a browser that went, the one way.
+    expect(cycle).toMatch(
+      /const forgetBrowser = \(id\) => \{\s+facts\.running\?\.delete\(id\);\s+runningAfterLast\?\.delete\(id\);\s+if \(facts\.windows\) delete facts\.windows\[id\];\s+facts\.leftover\?\.delete\(id\);\s+\};/,
     );
-    expect(helper).toMatch(
-      /if \(quit\.quit\) \{\s+facts\.running\?\.delete\(id\);\s+runningAfterLast\?\.delete\(id\);\s+if \(facts\.windows\) delete facts\.windows\[id\];\s+facts\.leftover\?\.delete\(id\);\s+\}/,
-    );
+    expect(
+      helper.match(/if \(quit\.quit\) forgetBrowser\(id\);/g),
+    ).toHaveLength(2);
     // One quit call in the harness, through the helper, from the gate (the
     // secure-input escalation and the leftover one), from the attempt
     // callback and from the end of the cycle; nothing else quits anything.
+    // One terminate call, through its helper, from the gate's SHEET_UP
+    // cause and from the leftover pass after a refusal; one process.kill in
+    // the whole script, and no killall or pkill.
     expect(cycle.match(/quitBrowser\(/g)).toHaveLength(1);
     expect(cycle.match(/quitOwnBrowser\(/g)).toHaveLength(4);
+    expect(cycle.match(/terminateBrowser\(/g)).toHaveLength(1);
+    expect(cycle.match(/terminateOwnBrowser\(/g)).toHaveLength(2);
+    expect(cycle.match(/process\.kill\(/g)).toHaveLength(1);
     expect(cycle).not.toMatch(/\bkillall\b|\bpkill\b/);
     // After each attempt: after the window accounting, before the row, and
     // never after real input or a stop.
@@ -8027,7 +8261,7 @@ describe("secure event input at the gate", () => {
       /const quit = await quitOwnBrowser\(\s+browser\.browser\.id,\s+`\$\{task\.id\} #\$\{entry\.attempt\}`,\s+`secure event input is still on in \$\{browser\.browser\.id\}[^`]*`,\s+\);\s+if \(quit\.quit\) browserReset = \{ \.\.\.browserReset, quit: true \};/,
     );
     expect(cycle).toMatch(
-      /const \{\s+RESETTABLE_BROWSERS,\s+benchLeftover,\s+browserUptime,\s+quitBrowser,\s+readTabCounts,\s+resetFixtureTabs,\s+\} = await import\("\.\.\/src\/gym\/bench\/browser-reset\.ts"\);/,
+      /const \{\s+RESETTABLE_BROWSERS,\s+benchLeftover,\s+browserUptime,\s+quitBrowser,\s+readTabCounts,\s+resetFixtureTabs,\s+terminateBrowser,\s+\} = await import\("\.\.\/src\/gym\/bench\/browser-reset\.ts"\);/,
     );
     // The origin is the fixture's, running or not (a tab an earlier cycle left).
     expect(cycle).toMatch(
@@ -8306,7 +8540,10 @@ describe("a browser an earlier cycle left", () => {
     expect(REMEDY.APPS_OPEN).toMatch(/at the end of every cycle/);
     expect(REMEDY.APPS_OPEN).toMatch(/nobody has typed since it launched/);
     expect(REMEDY.APPS_OPEN).toMatch(/never quits an application of yours/);
+    expect(REMEDY.APPS_OPEN).toMatch(/whose process it ends/);
     expect(REMEDY.SECURE_INPUT).toMatch(/SHEET_UP/);
+    expect(REMEDY.SECURE_INPUT).toMatch(/SIGTERM then SIGKILL/);
+    expect(REMEDY.SECURE_INPUT).toMatch(/never a browser of yours/);
   });
 
   it("judges leftovers at the start and at every pass, quits them at the gate and at the end, and never in a dry run", () => {
@@ -8365,11 +8602,26 @@ describe("a browser an earlier cycle left", () => {
     );
     expect(gate.indexOf("await resetOwnTabs(entry.id);")).toBeLessThan(
       gate.indexOf(
-        'const quit = await quitOwnBrowser(\n      entry.id,\n      "gate",',
+        'let quit = await quitOwnBrowser(\n      entry.id,\n      "gate",',
       ),
     );
+    // A leftover whose quit a sheet refused is remembered with its pid, and
+    // the next pass that finds the same process still leftover and still
+    // refused ends it; a relaunch (another pid) starts over.
+    expect(gate).toMatch(
+      /if \(quit\.code === "SHEET_UP"\) \{\s+if \(sheetUpLeftovers\.get\(entry\.id\) === entry\.verdict\.pid\)\s+quit = await terminateOwnBrowser\(\s+entry\.id,\s+"gate",/,
+    );
+    expect(gate).toContain(
+      "else sheetUpLeftovers.set(entry.id, entry.verdict.pid);",
+    );
+    expect(gate).toContain(
+      'if (quit.code !== "SHEET_UP") sheetUpLeftovers.delete(entry.id);',
+    );
     expect(gate).toContain("if (judged.length) refreshSkips();");
-    expect(gate).toContain("return asked;");
+    // The answer carries the last quit's code for the line.
+    expect(gate).toMatch(
+      /return asked === undefined\s+\? undefined\s+: \{ quit: asked, \.\.\.\(code \? \{ code \} : \{\}\) \};/,
+    );
     const refresh = cycle.slice(
       cycle.indexOf("const refreshSkips = () => {"),
       cycle.indexOf("const quitLeftoverBrowsers = async (report) => {"),

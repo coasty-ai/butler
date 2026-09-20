@@ -92,9 +92,10 @@ const fields = new Set([
   "taskLength",
   "appId",
   // BrowserQuit (scripts/harness-cycle.mjs): the bundle id of the browser
-  // the benchmark quit to release secure event input, and whether it went;
+  // the benchmark quit (or, behind a sheet it would not dismiss, whose
+  // process it ended) to release secure event input, and whether it went;
   // BrowserSheet: how many buttons the sheet it met had, and whether its
-  // Cancel button was clicked.
+  // dismissive button was clicked.
   "browser",
   "quit",
   "buttons",
@@ -481,7 +482,7 @@ const flagFields = new Set([
   "quotedAtEnd",
   "repaired",
   // BrowserQuit: whether the browser's process had gone. BrowserSheet:
-  // whether the sheet's Cancel button was clicked.
+  // whether the sheet's dismissive button was clicked.
   "quit",
   "cancelled",
   // ForegroundRequested: the detour that releases the window for good.
@@ -645,13 +646,16 @@ const observerEvents = new Map<string, Set<string>>([
 /**
  * The benchmark harness quitting its own browser (scripts/harness-cycle.mjs,
  * src/gym/bench/browser-reset.ts): the browser's bundle id, whether it went
- * and a fixed code; and each sheet the quit met, as the browser's bundle
- * id, a count of its buttons and whether its Cancel button was clicked.
- * Never a title, a URL or a button's name, whatever a caller passes.
+ * and a fixed code (SHEET_UP, STILL_RUNNING, and for a process the harness
+ * ended itself behind a sheet it would not dismiss, TERMINATED or KILLED);
+ * and each sheet the quit met, as the browser's bundle id, a count of its
+ * buttons, whether its dismissive button was clicked, and how its buttons
+ * read as a code (NAMED, NO_DISMISS, UNNAMED). Never a title, a URL or a
+ * button's name, whatever a caller passes.
  */
 const harnessEvents = new Map<string, Set<string>>([
   ["BrowserQuit", new Set(["browser", "quit", "code"])],
-  ["BrowserSheet", new Set(["browser", "buttons", "cancelled"])],
+  ["BrowserSheet", new Set(["browser", "buttons", "cancelled", "code"])],
 ]);
 const keyedEvents = new Map([
   ...streamEvents,

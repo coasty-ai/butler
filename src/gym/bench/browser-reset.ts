@@ -59,14 +59,35 @@ import { FIELD, RECORD, type Run } from "./windows";
  * cleared it by clicking Cancel on every sheet through System Events, then
  * quitting. So quitBrowser reads the sheets of the browser's windows first
  * (System Events, read-only, sheetsScript), and for the benchmark's own
- * browser only clicks the one button named Cancel on each sheet that has one
- * (cancelSheetsScript: a Save or Open panel, a confirmation; the click
+ * browser only clicks one dismissive button on each sheet that has one
+ * (cancelSheetsScript: a Save or Open panel's Cancel, a save-password
+ * prompt's Not Now or Never for This Website, a Don't Save; the whole list
+ * is DISMISS_BUTTONS, matched whole and case-insensitively, and the click
  * discards nothing that was not already the panel's default), waits for the
- * sheets to go, and only then sends the quit. A sheet with no Cancel button
+ * sheets to go, and only then sends the quit. A button's label is its name,
+ * else its title, else its description. A sheet with no dismissive button
  * is never touched and the quit is not sent (SHEET_UP): an Apple Event to an
  * application showing a sheet can hang for hours (a TextEdit `close`, the
  * morning of 2026-09-19), and the caller says why. Sheets on a browser of
  * the person's are never read: THEIRS comes first, with no event at all.
+ *
+ * A sheet whose buttons have no label at all. The night of 2026-09-19 at
+ * 23:0x the sign-in fixture left Safari, the benchmark's own browser with
+ * its fixture tabs already blank, holding secure event input behind a nested
+ * sheet (an AXGroup and an inner AXSheet: Safari's save-password prompt)
+ * whose two buttons read `missing value` for name, title and description
+ * alike; the gate answered SHEET_UP and waited nine minutes, until the
+ * operator sent `kill -TERM` to Safari's pid, which quit at once and released
+ * secure input. No keystroke is sent for it (a System Events `key code`
+ * lands in whatever application is frontmost, not in the process the tell
+ * block names, and the harness types to no application but through the
+ * helper during an attempt); the sheet is traced UNNAMED, the quit is still
+ * SHEET_UP, and the caller, having waited a poll on it, does what the
+ * operator did: terminateBrowser sends SIGTERM to the browser's main process
+ * (no Apple Event: nothing queues behind the sheet), waits for it to go, and
+ * SIGKILL only when it is still there after a second wait and still the
+ * benchmark's own. A browser of the person's is never signalled: THEIRS
+ * comes first here too, before the process is even looked up.
  *
  * A browser an earlier cycle left running is *bench leftover*, the
  * benchmark's own and not the person's, when two facts hold, read here and
@@ -269,15 +290,84 @@ export function quitBrowserScript(browserId: string): string {
 
 /* ---------------------------------------------------------------- sheets */
 
-/** The one button the harness ever clicks on a sheet. */
+/** The first of the dismissive names, and the one every Save or Open panel carries. */
 export const CANCEL_BUTTON = "Cancel";
+/**
+ * The buttons the harness will click to dismiss a sheet on its own browser:
+ * the dismissive words macOS and Safari put on their panels and prompts (a
+ * Save or Open panel, a save-password prompt, a notification or location
+ * prompt, a close-with-changes alert). Matched whole and case-insensitively
+ * against a button's label (its name, else its title, else its
+ * description), the curly apostrophe macOS types read as the straight one.
+ * Never Save, Allow, Save Password, Replace, Delete, Keep or any button that
+ * commits: the click may discard the panel's default and nothing else.
+ */
+export const DISMISS_BUTTONS: readonly string[] = [
+  CANCEL_BUTTON,
+  "Not Now",
+  "Don't Save",
+  "Don't Allow",
+  "Never for This Website",
+  "Never Save",
+  "Close",
+  "Dismiss",
+];
+/** Clicked only when it is the sheet's sole button: an alert with one way out, which then dismisses and commits nothing. */
+export const SOLE_OK_BUTTON = "OK";
 /** How long the cancel script waits for the cancelled sheets to go, in quarter seconds. */
 export const SHEET_WAIT_QUARTERS = 8;
+const DISMISS_LABEL = /^[A-Za-z'’ ]{1,40}$/;
+const CURLY_APOSTROPHE = /’/g;
+
+/**
+ * The dismissive names as the script's list literal holds them: each name
+ * in both apostrophes, since System Events reads the label as macOS typed
+ * it ("Don’t Save" on a current system, "Don't Save" on an older one). Fixed
+ * text from this file, checked against a strict shape before it is quoted.
+ */
+export function dismissLabels(): string[] {
+  const labels: string[] = [];
+  for (const name of DISMISS_BUTTONS) {
+    if (!DISMISS_LABEL.test(name)) throw new Error("Not a button label.");
+    labels.push(name);
+    if (name.includes("'")) labels.push(name.replace(/'/g, "’"));
+  }
+  return labels;
+}
+
+/**
+ * The lines that read one button's label into `n`: its name, else its
+ * title, else its description, each behind its own try, and "" when all
+ * three are missing (Safari's save-password prompt, the night of
+ * 2026-09-19: every button `missing value` on all three). Shared by the
+ * read and the cancel so both apply the one rule.
+ */
+const labelLines = (indent: string): string[] =>
+  [
+    'set n to ""',
+    "try",
+    "  set v to name of b",
+    "  if v is not missing value then set n to v as text",
+    "end try",
+    'if n is "" then',
+    "  try",
+    "    set v to title of b",
+    "    if v is not missing value then set n to v as text",
+    "  end try",
+    "end if",
+    'if n is "" then',
+    "  try",
+    "    set v to description of b",
+    "    if v is not missing value then set n to v as text",
+    "  end try",
+    "end if",
+  ].map((line) => indent + line);
 
 /**
  * The sheets of every window of the browser's process, from System Events
  * (read-only, the same target the preflight's window count uses, so no new
- * consent): one record per sheet, holding its buttons' names, each name
+ * consent): one record per sheet, holding its buttons' labels (name, else
+ * title, else description; "" for a button with none), each label
  * FIELD-terminated and each record RECORD-terminated, as windows.ts's
  * scripts print theirs. A browser not running answers "" and is never
  * launched: System Events is asked, never the browser. No argument, no
@@ -300,10 +390,7 @@ export function sheetsScript(browserId: string): string {
     '      set names to ""',
     "      try",
     "        repeat with b in buttons of s",
-    '          set n to ""',
-    "          try",
-    "            set n to name of b as text",
-    "          end try",
+    ...labelLines("          "),
     "          set names to names & n & (character id 31)",
     "        end repeat",
     "      end try",
@@ -343,39 +430,95 @@ export function parseSheetsAnswer(
   return sheets;
 }
 
-/** Whether a sheet, by its buttons' names, can be dismissed with Cancel. */
-export const hasCancel = (buttons: readonly string[]): boolean =>
-  buttons.includes(CANCEL_BUTTON);
+/** A label as the rule compares it: trimmed, spaces folded, the curly apostrophe straightened, case folded. */
+const foldLabel = (label: string): string =>
+  label
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(CURLY_APOSTROPHE, "'")
+    .toLowerCase();
+const DISMISS_FOLDED = new Set(DISMISS_BUTTONS.map(foldLabel));
 
 /**
- * Clicks the button named Cancel on every sheet of every window of the
+ * The button the harness would click on a sheet with these labels, as read
+ * (the first on DISMISS_BUTTONS, else OK when it is the sheet's sole
+ * button), or undefined when there is none: a sheet of Save and Replace, of
+ * Allow and Save Password, or of unlabelled buttons is left standing. The
+ * rule the cancel script encodes, here in TypeScript so a test reads it.
+ */
+export function dismissButton(buttons: readonly string[]): string | undefined {
+  const hit = buttons.find((label) => DISMISS_FOLDED.has(foldLabel(label)));
+  if (hit !== undefined) return hit;
+  if (
+    buttons.length === 1 &&
+    foldLabel(buttons[0]) === foldLabel(SOLE_OK_BUTTON)
+  )
+    return buttons[0];
+  return undefined;
+}
+
+/**
+ * How the harness read a sheet's buttons: a dismissive label among them
+ * (NAMED, the one it clicks), labels but none dismissive (NO_DISMISS: Save
+ * and Replace), or no label on any button (UNNAMED: Safari's save-password
+ * prompt, or a sheet with no buttons at all).
+ */
+export type SheetCode = "NAMED" | "NO_DISMISS" | "UNNAMED";
+export function sheetCode(buttons: readonly string[]): SheetCode {
+  if (dismissButton(buttons) !== undefined) return "NAMED";
+  return buttons.some((label) => label.trim() !== "")
+    ? "NO_DISMISS"
+    : "UNNAMED";
+}
+
+/**
+ * Clicks one dismissive button on every sheet of every window of the
  * browser's process that has one, through System Events (an AXPress: no
  * focus, no pointer, no keystroke), then waits up to two seconds for the
  * sheets to go, and answers "<clicked> <left>": how many it clicked and how
- * many sheets still stand. A sheet with no Cancel button is passed over.
- * The one click, on the one button name; nothing else is pressed, typed or
- * closed. System Events is the only application addressed.
+ * many sheets still stand. The button is the first whose label (name, else
+ * title, else description, as the read script reads it) is on
+ * DISMISS_BUTTONS (`is in` a list literal of this file's fixed names: whole
+ * items, and case-insensitive as AppleScript compares by default), or the
+ * sole button of a sheet when its label is OK; a sheet with no such button,
+ * an unlabelled one included, is passed over. One click per sheet, on that
+ * button and no other; nothing else is pressed, typed or closed. System
+ * Events is the only application addressed.
  */
 export function cancelSheetsScript(browserId: string): string {
   if (!RESETTABLE_BROWSERS.includes(browserId) || !BUNDLE_ID.test(browserId))
     throw new Error("Not a resettable browser.");
+  if (!DISMISS_LABEL.test(SOLE_OK_BUTTON))
+    throw new Error("Not a button label.");
+  const labels = dismissLabels()
+    .map((label) => `"${label}"`)
+    .join(", ");
   return [
     'tell application "System Events"',
     `  set procs to every process whose bundle identifier is "${browserId}"`,
     '  if (count of procs) is 0 then return "0 0"',
-    "  set n to 0",
+    `  set dismissNames to {${labels}}`,
+    "  set clicked to 0",
     "  repeat with w in windows of item 1 of procs",
     "    set shs to {}",
     "    try",
     "      set shs to sheets of w",
     "    end try",
     "    repeat with s in shs",
+    "      set bs to {}",
     "      try",
-    `        if exists button "${CANCEL_BUTTON}" of s then`,
-    `          click button "${CANCEL_BUTTON}" of s`,
-    "          set n to n + 1",
-    "        end if",
+    "        set bs to buttons of s",
     "      end try",
+    "      repeat with b in bs",
+    ...labelLines("        "),
+    `        if (n is in dismissNames) or ((count of bs) is 1 and n is "${SOLE_OK_BUTTON}") then`,
+    "          try",
+    "            click b",
+    "            set clicked to clicked + 1",
+    "          end try",
+    "          exit repeat",
+    "        end if",
+    "      end repeat",
     "    end repeat",
     "  end repeat",
     "  set standing to 0",
@@ -389,7 +532,7 @@ export function cancelSheetsScript(browserId: string): string {
     "    if standing is 0 then exit repeat",
     "    delay 0.25",
     "  end repeat",
-    '  return (n as text) & " " & (standing as text)',
+    '  return (clicked as text) & " " & (standing as text)',
     "end tell",
   ].join("\n");
 }
@@ -404,19 +547,21 @@ export function parseCancelAnswer(
     : undefined;
 }
 
-/** One sheet the quit met, for the diagnostics (BrowserSheet) and the terminal: counts and a flag, never a name. */
+/** One sheet the quit met, for the diagnostics (BrowserSheet) and the terminal: a count, a flag and a code, never a label. */
 export interface BrowserSheet {
   /** Buttons on the sheet. */
   buttons: number;
-  /** The harness clicked its Cancel button. */
+  /** The harness clicked its dismissive button. */
   cancelled: boolean;
+  /** How its buttons read: NAMED (a dismissive label), NO_DISMISS (labels, none dismissive), UNNAMED (no label at all). */
+  code: SheetCode;
 }
 
 /**
  * The sheets as the row and the trace carry them: a count of buttons each,
- * and whether it was cancelled. The cancel script clicks in the order the
- * read listed the sheets, so the first `clicked` sheets with a Cancel
- * button are the ones it clicked.
+ * whether it was cancelled, and how it read. The cancel script clicks in
+ * the order the read listed the sheets, so the first `clicked` sheets with
+ * a dismissive button are the ones it clicked.
  */
 export function sheetOutcomes(
   sheets: readonly (readonly string[])[],
@@ -424,9 +569,10 @@ export function sheetOutcomes(
 ): BrowserSheet[] {
   let left = clicked;
   return sheets.map((buttons) => {
-    const cancelled = hasCancel(buttons) && left > 0;
+    const code = sheetCode(buttons);
+    const cancelled = code === "NAMED" && left > 0;
     if (cancelled) left--;
-    return { buttons: buttons.length, cancelled };
+    return { buttons: buttons.length, cancelled, code };
   });
 }
 
@@ -438,10 +584,13 @@ export interface BrowserQuit {
    * Why not: the browser scripts nothing (NO_SCRIPT, as for the reset), is
    * the person's by benchOwnBrowser and was never asked (THEIRS), is not
    * running (NOT_RUNNING), shows a sheet the harness would not dismiss (no
-   * Cancel button, or one that stayed after the click) so no quit was sent
-   * (SHEET_UP), was asked and still ran five seconds later, a dialog
+   * dismissive button, or one that stayed after the click) so no quit was
+   * sent (SHEET_UP), was asked and still ran five seconds later, a dialog
    * holding it (STILL_RUNNING), or did not answer (UNREAD: no Automation
-   * consent from this terminal, a hung query).
+   * consent from this terminal, a hung query). With `quit: true`, how a
+   * process the harness ended itself went (terminateBrowser): on SIGTERM
+   * (TERMINATED) or only on SIGKILL (KILLED); a quit by Apple Event carries
+   * no code.
    */
   code?:
     | "NO_SCRIPT"
@@ -449,7 +598,9 @@ export interface BrowserQuit {
     | "NOT_RUNNING"
     | "SHEET_UP"
     | "STILL_RUNNING"
-    | "UNREAD";
+    | "UNREAD"
+    | "TERMINATED"
+    | "KILLED";
   /** The sheets the browser showed when asked, cancelled or not; absent when it showed none. */
   sheets?: BrowserSheet[];
 }
@@ -473,12 +624,12 @@ export function parseQuitAnswer(
  * resetFixtureTabs navigates under. A browser that rule refuses is the
  * person's: THEIRS, and no Apple Event is sent, not even to read its
  * sheets. For the benchmark's own, the sheets of its windows are read
- * first; each with a Cancel button is cancelled and the script waits for
- * them to go; a sheet with no Cancel button, or one still standing after
- * the click, means no quit is sent (SHEET_UP), since an event to an
- * application showing a sheet may never return. Then `quit saving no`, and
- * up to five seconds for the process to go. Never throws for what the
- * browser does.
+ * first; each with a dismissive button (dismissButton) is cancelled and the
+ * script waits for them to go; a sheet with no such button, an unlabelled
+ * one included, or one still standing after the click, means no quit is
+ * sent (SHEET_UP), since an event to an application showing a sheet may
+ * never return. Then `quit saving no`, and up to five seconds for the
+ * process to go. Never throws for what the browser does.
  */
 export async function quitBrowser(
   run: Run,
@@ -495,7 +646,7 @@ export async function quitBrowser(
   if (sheets === undefined) return { quit: false, code: "UNREAD" };
   let seen = sheetOutcomes(sheets, 0);
   if (sheets.length) {
-    if (!sheets.some(hasCancel))
+    if (!sheets.some((buttons) => dismissButton(buttons) !== undefined))
       return { quit: false, code: "SHEET_UP", sheets: seen };
     const cancel = parseCancelAnswer(
       await run("osascript", ["-e", cancelSheetsScript(browserId)]),
@@ -507,6 +658,100 @@ export async function quitBrowser(
   const answer = await run("osascript", ["-e", quitBrowserScript(browserId)]);
   const quit = parseQuitAnswer(answer) ?? { quit: false, code: "UNREAD" };
   return seen.length ? { ...quit, sheets: seen } : quit;
+}
+
+/* ------------------------------------------------------------- terminate */
+
+/** The two signals the harness may send its own browser, in this order and no other. */
+export type BrowserSignal = "SIGTERM" | "SIGKILL";
+/** Seconds the terminate waits for the browser's process to go after SIGTERM. */
+export const TERM_WAIT_SECONDS = 5;
+/** Seconds more it waits, the process still there, before SIGKILL. */
+export const KILL_GRACE_SECONDS = 5;
+/** Seconds it waits for the process to go after SIGKILL. */
+export const KILL_WAIT_SECONDS = 5;
+/** Milliseconds between two looks at ps while waiting. */
+export const TERMINATE_POLL_MS = 250;
+const PS_ARGS = ["-axo", "pid=,etime=,command="];
+
+/** What terminateBrowser needs beyond `run`: the signal and the clock, injected so a test proves what is never sent. */
+export interface TerminateDeps {
+  /** Sends the signal to the pid: process.kill. Never called for a browser of the person's, and never with a pid of 1 or less. */
+  kill: (pid: number, signal: BrowserSignal) => void;
+  sleep: (ms: number) => Promise<void>;
+}
+
+/**
+ * Ends the browser's main process itself, for the one case the quit cannot
+ * reach: the benchmark's own browser behind a sheet no button of which the
+ * harness will click (SHEET_UP), after the caller has waited a poll on it
+ * (the night of 2026-09-19: Safari's save-password prompt, two buttons with
+ * no name, title or description, secure input held nine minutes until the
+ * operator's `kill -TERM`). No Apple Event, so nothing queues behind the
+ * sheet. The rules, in order: only a browser the reset can script
+ * (NO_SCRIPT otherwise), and only one benchOwnBrowser says is the
+ * benchmark's own over the facts given (THEIRS otherwise, with the process
+ * not even looked up, so `kill` is never called for a browser of the
+ * person's); its main process from `ps -axo pid=,etime=,command=` by the
+ * executable rule (browserUptime: a helper under Frameworks never matches;
+ * NOT_RUNNING when there is none, UNREAD when ps did not answer); SIGTERM,
+ * then up to TERM_WAIT_SECONDS looking for the pid to leave ps
+ * (TERMINATED); still there, another KILL_GRACE_SECONDS (TERMINATED if it
+ * goes meanwhile); still there after that, and still the benchmark's own by
+ * the same rule over the same facts, and still the same pid on the
+ * browser's own executable line, SIGKILL and up to KILL_WAIT_SECONDS
+ * (KILLED); otherwise STILL_RUNNING with nothing more sent. A pid of 1 or
+ * less is never signalled (0 and negatives address process groups). A
+ * signal the kernel refuses (the process gone between the look and the
+ * signal, ESRCH) is taken as sent and the wait decides. Never throws.
+ */
+export async function terminateBrowser(
+  run: Run,
+  browserId: string,
+  facts: Pick<StartFacts, "running" | "windows" | "leftover">,
+  deps: TerminateDeps,
+): Promise<BrowserQuit> {
+  if (!RESETTABLE_BROWSERS.includes(browserId))
+    return { quit: false, code: "NO_SCRIPT" };
+  if (!benchOwnBrowser(browserId, facts))
+    return { quit: false, code: "THEIRS" };
+  const psText = await run("ps", PS_ARGS);
+  if (psText === undefined) return { quit: false, code: "UNREAD" };
+  const up = browserUptime(psText, browserId);
+  if (!up) return { quit: false, code: "NOT_RUNNING" };
+  const pid = up.pid;
+  if (!Number.isInteger(pid) || pid <= 1)
+    return { quit: false, code: "UNREAD" };
+  /** Whether the same pid still stands on the browser's own executable line; undefined when ps did not answer. */
+  const alive = async (): Promise<boolean | undefined> => {
+    const text = await run("ps", PS_ARGS);
+    if (text === undefined) return undefined;
+    return browserUptime(text, browserId)?.pid === pid;
+  };
+  /** Waits up to `seconds` for the process to go; true when it went. A ps that does not answer counts as still there. */
+  const gone = async (seconds: number): Promise<boolean> => {
+    const looks = Math.ceil((seconds * 1000) / TERMINATE_POLL_MS);
+    for (let i = 0; i < looks; i++) {
+      await deps.sleep(TERMINATE_POLL_MS);
+      if ((await alive()) === false) return true;
+    }
+    return false;
+  };
+  const signal = (which: BrowserSignal) => {
+    try {
+      deps.kill(pid, which);
+    } catch {
+      // ESRCH: gone between the look and the signal; the wait decides.
+    }
+  };
+  signal("SIGTERM");
+  if (await gone(TERM_WAIT_SECONDS)) return { quit: true, code: "TERMINATED" };
+  if (await gone(KILL_GRACE_SECONDS)) return { quit: true, code: "TERMINATED" };
+  if (!benchOwnBrowser(browserId, facts) || (await alive()) !== true)
+    return { quit: false, code: "STILL_RUNNING" };
+  signal("SIGKILL");
+  if (await gone(KILL_WAIT_SECONDS)) return { quit: true, code: "KILLED" };
+  return { quit: false, code: "STILL_RUNNING" };
 }
 
 /* -------------------------------------------------------------- leftover */

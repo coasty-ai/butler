@@ -465,9 +465,9 @@ export type LedgerLine =
       /**
        * The harness asked its own browser to quit at this gate (the
        * escalation): true when its process had gone, false when it was
-       * asked and still ran (or a sheet with no Cancel button kept the quit
-       * from being sent). For SECURE_INPUT, the next read after the reset
-       * still named that browser; for a bench-leftover browser
+       * asked and still ran (or a sheet with no dismissive button kept the
+       * quit from being sent). For SECURE_INPUT, the next read after the
+       * reset still named that browser; for a bench-leftover browser
        * (browserQuitReason), the gate passed with an earlier cycle's browser
        * still running. Absent when no quit was asked.
        */
@@ -476,11 +476,23 @@ export type LedgerLine =
        * LEFTOVER: the quit was of a browser an earlier cycle left, with only
        * blank, start-page or fixture tabs and no input of the person's
        * since it launched (browser-reset.ts benchLeftover), asked when the
-       * gate passed. Absent for a SECURE_INPUT quit, which the line's reason
-       * already names. A line with this and `reasons: []` records a quit at
-       * a gate that passed at once: it is no wait (gateWaitsOf).
+       * gate passed. SHEET_UP: the quit was refused for a sheet the harness
+       * would not dismiss (SHEET_UP on the earlier poll), and one poll later,
+       * the same browser still holding the keyboard, the harness ended its
+       * own browser's process itself (browser-reset.ts terminateBrowser;
+       * browserQuitCode TERMINATED or KILLED, or STILL_RUNNING when even that
+       * did not end it). Absent for a SECURE_INPUT quit by Apple Event, which
+       * the line's reason already names. A line with LEFTOVER and
+       * `reasons: []` records a quit at a gate that passed at once: it is no
+       * wait (gateWaitsOf).
        */
-      browserQuitReason?: "LEFTOVER";
+      browserQuitReason?: "LEFTOVER" | "SHEET_UP";
+      /**
+       * The last quit's code (browser-reset.ts BrowserQuit.code: SHEET_UP,
+       * STILL_RUNNING, TERMINATED, KILLED, UNREAD ...). Absent when the
+       * browser went on the Apple Event, or the hook answered a bare flag.
+       */
+      browserQuitCode?: string;
     }
   | ({ kind: "attempt"; at: string } & AttemptResult)
   | { kind: "requeue"; at: string; planIndex: number; requeued: number }
@@ -684,8 +696,26 @@ export interface LoopState {
 
 export type QueueEntry = PlanEntry & { requeued: number };
 
-/** Why the loop asks the escalation to quit the harness's own browser. */
-export type EscalationCause = "SECURE_INPUT" | "LEFTOVER";
+/**
+ * Why the loop asks the escalation about the harness's own browser: to quit
+ * it (SECURE_INPUT, LEFTOVER), or to end its process behind a sheet the
+ * quit could not pass, a poll after that refusal (SHEET_UP).
+ */
+export type EscalationCause = "SECURE_INPUT" | "LEFTOVER" | "SHEET_UP";
+/** The escalation's answer: browser-reset.ts BrowserQuit's flag and code (the hook keeps the sheets and the terminal line). */
+export interface EscalationAnswer {
+  quit: boolean;
+  code?: string;
+}
+/** What the hook may answer: an answer with its code, a bare flag (a quit with no code), or nothing (it would not ask). */
+export type EscalationReply = boolean | EscalationAnswer | undefined;
+/** A reply as an answer; a bare flag carries no code, and nothing stays nothing. */
+export function escalationAnswer(
+  reply: EscalationReply,
+): EscalationAnswer | undefined {
+  if (reply === undefined) return undefined;
+  return typeof reply === "boolean" ? { quit: reply } : reply;
+}
 
 export interface CycleLoopDeps {
   queue: QueueEntry[];
@@ -752,11 +782,25 @@ export interface CycleLoopDeps {
    * the gate line as browserQuit with browserQuitReason LEFTOVER, written
    * even when the gate passed at once (then with `reasons: []`, which no
    * tally counts as a wait). The pass is never held up by the answer.
+   *
+   * Asked once more, with cause SHEET_UP, on the poll after a SECURE_INPUT
+   * quit answered with code SHEET_UP (a sheet the harness would not
+   * dismiss kept the quit from being sent: Safari's save-password prompt,
+   * two buttons with no name, the night of 2026-09-19, nine minutes until
+   * the operator's `kill -TERM`), when the next read still names that same
+   * browser: the hook ends its own browser's process (browser-reset.ts
+   * terminateBrowser, SIGTERM then SIGKILL, under benchOwnBrowser again, so
+   * never a browser of the person's) and answers with the code (TERMINATED,
+   * KILLED, STILL_RUNNING). The answer goes on the line as browserQuit with
+   * browserQuitReason SHEET_UP and browserQuitCode; a browser that went is
+   * read again at once; anything else waits, and the hook is not asked
+   * again this wait. A bare boolean reply carries no code, so no SHEET_UP
+   * is seen in it and nothing escalates past the quit.
    */
   escalate?: (
     report: GateReport,
     cause: EscalationCause,
-  ) => Promise<boolean | undefined>;
+  ) => Promise<EscalationReply>;
   /** Every row the loop records, for rules that learn from results (IDE_BLIND). */
   observe?: (row: AttemptResult) => void;
   /** Appends one ledger line. */
@@ -830,8 +874,12 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
     let browserReset: number | undefined;
     let remedied = false;
     let browserQuit: boolean | undefined;
-    let browserQuitReason: "LEFTOVER" | undefined;
+    let browserQuitReason: "LEFTOVER" | "SHEET_UP" | undefined;
+    let browserQuitCode: string | undefined;
     let escalated = false;
+    /** The quit was refused for a sheet (code SHEET_UP): the next poll that still names the browser ends its process, once. */
+    let sheetUp = false;
+    let terminated = false;
     const close = () => {
       const seconds = (d.now() - started) / 1000;
       // A wait is tallied by its reasons; a quit of a leftover browser at a
@@ -856,6 +904,7 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
         ...(browserReset !== undefined ? { browserReset } : {}),
         ...(browserQuit !== undefined ? { browserQuit } : {}),
         ...(browserQuitReason ? { browserQuitReason } : {}),
+        ...(browserQuitCode ? { browserQuitCode } : {}),
       });
       return seconds;
     };
@@ -881,10 +930,11 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
         // its browser. Nothing of the kind: undefined, and the line as
         // before.
         if (d.escalate) {
-          const quit = await d.escalate(report, "LEFTOVER");
+          const quit = escalationAnswer(await d.escalate(report, "LEFTOVER"));
           if (quit !== undefined) {
-            browserQuit = quit;
+            browserQuit = quit.quit;
             browserQuitReason = "LEFTOVER";
+            browserQuitCode = quit.code;
           }
         }
         return { seconds: close(), sawInput: sawInput() };
@@ -914,14 +964,30 @@ export async function runCycleLoop(d: CycleLoopDeps): Promise<CycleOutcome> {
         } else if (
           remedied &&
           browserReset !== undefined &&
-          !escalated &&
           d.escalate &&
           secureInputOwner !== undefined &&
-          report.secureInputOwner === secureInputOwner
+          report.secureInputOwner === secureInputOwner &&
+          (!escalated || (sheetUp && !terminated))
         ) {
+          // The first time, the quit. When that answered SHEET_UP (a sheet
+          // the harness would not dismiss kept the quit from being sent)
+          // and the poll slept since still finds the same browser holding
+          // the keyboard, the process is ended instead (the hook's
+          // terminateBrowser, under benchOwnBrowser again), once per wait;
+          // a browser that went is read again at once either time.
+          const cause: EscalationCause = escalated
+            ? "SHEET_UP"
+            : "SECURE_INPUT";
+          if (escalated) terminated = true;
           escalated = true;
-          browserQuit = await d.escalate(report, "SECURE_INPUT");
-          if (browserQuit) continue;
+          const answer = escalationAnswer(await d.escalate(report, cause));
+          if (answer !== undefined) {
+            browserQuit = answer.quit;
+            browserQuitCode = answer.code;
+            if (cause === "SHEET_UP") browserQuitReason = "SHEET_UP";
+          }
+          if (cause === "SECURE_INPUT") sheetUp = answer?.code === "SHEET_UP";
+          if (answer?.quit) continue;
         }
       }
       // A refusal for input needs no "person seen" flag: the tap's clock
