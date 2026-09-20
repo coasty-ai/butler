@@ -543,7 +543,9 @@ describe("what one step costs", () => {
     // src/core/runner.ts menuClipboardRefusal), 214 characters the pin moved
     // for.
 
-    expect(instruction.length).toBeLessThan(18000);
+    // 18,154 with the sign-in wall sentence (probe 20260920-0158: a guessed
+    // name typed into a login form and Sign in pressed before the hand-off).
+    expect(instruction.length).toBeLessThan(18300);
     expect(instruction).toContain(
       "is read with the web tool, read_current_page for the page in front or read_page_text",
     );
@@ -585,7 +587,7 @@ describe("what one step costs", () => {
     // 19,170 with the cut-marker sentence above (the pin moved with it).
     // 19,550 with the web tool sentence above (the pin moved with it).
     // 19,763 with the typing-from-the-note sentence above (the pin moved with it).
-    expect(instruction.length + paragraph.length).toBeLessThan(19800);
+    expect(instruction.length + paragraph.length).toBeLessThan(20100);
     expect(instruction.indexOf(" Return exactly one action")).toBeGreaterThan(
       15000,
     );

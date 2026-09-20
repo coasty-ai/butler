@@ -465,6 +465,12 @@ describe("provider-neutral adapters", () => {
     expect(sent("openai", bad.body).step.context).toBeUndefined();
     expect(sent("openai", bad.body).workspace.context).toBeUndefined();
   });
+  it("tells the model that a sign-in or code wall is the user's: no guessed entry, no Sign in, request_user at once", () => {
+    const text = buildRequest(s("anthropic"), "K", o).body.system[0].text;
+    expect(text).toContain(
+      "A sign-in, password or one-time-code wall is the user's: never type a guessed name or code into it and never press Sign in; request_user at once, saying what the site asks for.",
+    );
+  });
   it("explains the playbook and the no-progress note in the instruction", () => {
     const instruction = buildRequest(s("openai"), "K", o).body.instructions;
     for (const phrase of [
