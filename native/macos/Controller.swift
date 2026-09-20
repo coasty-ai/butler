@@ -684,6 +684,28 @@ func enclosingWebHost(_ element: AXUIElement) -> String? {
     enclosingWebArea(element).flatMap { pageHost(attribute($0, "AXURL")) }
 }
 /**
+ The URLs a browser window's page may be read from, in the order
+ browserPageAddress (InputSafety.swift) takes them for the frame context's
+ browserAddress: the web area holding focus when it sits in this window
+ (Safari's active tab), then the first web area under the window that names a
+ host (the walk pageIdentity shares, with its budget), then the window's own
+ document URL (Chromium publishes one). The address field is never read here:
+ its text is browserPageAddress's last resort, and only while it is focused.
+ */
+func pageAddressCandidates(window: AXUIElement, focused: AXUIElement?) -> [Any?] {
+    if let focused, let area = enclosingWebArea(focused) {
+        let areaWindow = attribute(area, kAXWindowAttribute)
+        if areaWindow == nil || CFEqual(areaWindow, window), let url = attribute(area, "AXURL"), pageHost(url) != nil { return [url] }
+    }
+    var walked: Any? = nil
+    visitWebAreas(window) { area in
+        let url = attribute(area, "AXURL")
+        if pageHost(url) != nil { walked = url; return true }
+        return false
+    }
+    return [walked, attribute(window, "AXDocument"), attribute(window, "AXURL")]
+}
+/**
  The page a window shows, for the policy's protected-website rule: its host,
  and whether a web area is there that published no readable URL at all. Read
  from the window's own document URL first (Chromium publishes one), else from
@@ -1705,9 +1727,19 @@ func screenContext() -> [String:Any] {
         if let truncated = page.truncated {result["visibleTextTruncated"]=truncated}
         result["visibleTextNodes"]=page.nodes;result["visibleTextMs"]=page.elapsedMs;result["visibleTextWalk"]=page.walk
     }
-    if let raw=attribute(element,kAXFocusedUIElementAttribute) {
-        let focused=raw as! AXUIElement
-        if browserAddressField(focused,appId:app.bundleIdentifier ?? "") {result["browserAddress"] = String((attribute(focused,kAXValueAttribute) as? String ?? "").prefix(2000))}
+    let focused=attribute(element,kAXFocusedUIElementAttribute).map{$0 as! AXUIElement}
+    // The page's address, whatever has focus (browserPageAddress): the web
+    // area's own URL, whole; the address field's text only while the field is
+    // focused and no page URL was read. Until 2026-09-20 the field was the
+    // only source, so a page with focus in its content had no address and
+    // web__read_current_page was refused no_page on every research page.
+    if browserAppIDs.contains(app.bundleIdentifier ?? ""),
+       let window=(attribute(element,kAXMainWindowAttribute) ?? attribute(element,kAXFocusedWindowAttribute)).map({$0 as! AXUIElement}) {
+        let field=focused.map{browserAddressField($0,appId:app.bundleIdentifier ?? "")} ?? false
+        if let address=browserPageAddress(pageURLs:pageAddressCandidates(window:window,focused:focused),
+                                          fieldValue:field ? focused.flatMap{attribute($0,kAXValueAttribute) as? String} : nil,fieldFocused:field) {result["browserAddress"] = address}
+    }
+    if let focused {
         if attribute(focused,kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole,let selection=attribute(focused,kAXSelectedTextAttribute) as? String {result["selectedText"]=String(selection.prefix(2000))}
     }
     var windows=recentWindows
@@ -3410,6 +3442,12 @@ func targetContext(_ bound: TargetBinding, state: WindowState, frame: CGRect, fa
         result["visibleTextNodes"] = page.nodes; result["visibleTextMs"] = page.elapsedMs; result["visibleTextWalk"] = page.walk
     }
     result["visibleText"] = text
+    // The page's address for a browser's bound window, as the frontmost
+    // context reports it (browserPageAddress): the web area's URL, else the
+    // address field's text while that field is focused.
+    if browserAppIDs.contains(bound.appId),
+       let address = browserPageAddress(pageURLs: pageAddressCandidates(window: bound.window, focused: state.focused),
+                                        fieldValue: state.addressBar ? state.focusedValue : nil, fieldFocused: state.addressBar) { result["browserAddress"] = address }
     // The field an accessibility write would go to is the surface's
     // (focusedRole, focusedLabel), as for the frontmost window: the context
     // carries only the keys the runner's schema knows, or it is dropped whole.

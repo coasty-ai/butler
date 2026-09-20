@@ -2771,6 +2771,42 @@ describe("the journal's content-free rows", () => {
         undefined,
       ]);
     }));
+  it("never carries a frame's browser address, wherever the payload holds it", () =>
+    fixture((log) => {
+      // The page's URL is in the frame context for the model and the web
+      // tool (ScreenContext.browserAddress, read natively off the web area
+      // since 2026-09-20); the FrameCaptured row keeps the frame's id and
+      // geometry alone, and carries no host word either.
+      const address = `http://127.0.0.1:47831/${MARK}/listings?page=2`;
+      const s = journal([
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0d1",
+            sha256: "s",
+            geometry: { width: 1440, height: 900 },
+            browserAddress: address,
+            context: {
+              browserAddress: address,
+              windowTitle: `${MARK} Listing`,
+            },
+            host: "loopback",
+          },
+        },
+      ]);
+      log.snapshot(s);
+      const written = rows(log).filter((r) => r.event === "FrameCaptured");
+      expect(written).toHaveLength(1);
+      expect(written[0].data).toEqual({
+        ...base(s, 1),
+        frameId: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0d1",
+        geometry: { width: 1440, height: 900 },
+      });
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toContain(MARK);
+      expect(raw).not.toContain("127.0.0.1");
+      expect(raw).not.toContain("browserAddress");
+    }));
   it("drops the whole payload of a journal event its table does not know", () =>
     fixture((log) => {
       const s = journal([

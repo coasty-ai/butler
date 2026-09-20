@@ -26,6 +26,32 @@ func pageHost(_ value: Any?) -> String? {
     if case .host(let host) = pageURL(value) { return host }
     return nil
 }
+/// The most an address in the frame context carries (ScreenContext.browserAddress's bound).
+let pageAddressChars = 2000
+/**
+ The address a browser frame's context reports (ScreenContext.browserAddress:
+ what tells the runner a page is in front and what web__read_current_page
+ reads): the first page URL that names a host, whole, in the order given (the
+ web area holding focus, then the window's), else the address field's text
+ when that field is the focused element, else nothing. Until 2026-09-20 the
+ field was the only source, so a page with focus in its content, which is
+ every page after a click or a scroll, reported no address: across market
+ shards 2/3 and 3/3 (cycles 20260920-0327-abc24ae and 20260920-0415-c8c9e10)
+ web__read_current_page never reached a call, was refused no_page on every
+ research page, and the runs looked and clicked to STUCK_LOOP. The field's
+ text is what was typed there, not the page committed, so it comes last and
+ only while focused; addressBar, the flag that says the field is focused, is
+ read elsewhere and unchanged.
+ */
+func browserPageAddress(pageURLs: [Any?], fieldValue: String?, fieldFocused: Bool) -> String? {
+    for value in pageURLs {
+        guard case .host = pageURL(value) else { continue }
+        let address = (value as? URL)?.absoluteString ?? (value as? String) ?? ""
+        if !address.isEmpty { return String(address.prefix(pageAddressChars)) }
+    }
+    guard fieldFocused, let fieldValue, !fieldValue.isEmpty else { return nil }
+    return String(fieldValue.prefix(pageAddressChars))
+}
 /**
  Whether a browser window shows a page the policy cannot tell from a protected
  one: no host was read from the window or any web area, and a web area was

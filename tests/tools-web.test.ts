@@ -490,6 +490,23 @@ describe("checkArgs", () => {
     }) as { target: { host: string }; maxChars: number };
     expect(current.target.host).toBe("example.com");
     expect(current.maxChars).toBe(300);
+    // The page in front on the bench's fixture server, as the helper now
+    // reports it off the web area: a loopback origin with its port, allowed
+    // when the registry lists that origin exactly, the path and query kept
+    // whole for the fetch; the same host on another port is not it.
+    const fixture = { ...RULES, loopbackOrigins: ["http://127.0.0.1:47831"] };
+    const listing = checkArgs("read_current_page", {}, fixture, {
+      pageAddress: "http://127.0.0.1:47831/t/listings?page=2",
+    }) as { target: { host: string; url: URL } };
+    expect(listing.target.host).toBe("127.0.0.1");
+    expect(listing.target.url.href).toBe(
+      "http://127.0.0.1:47831/t/listings?page=2",
+    );
+    expect(
+      checkArgs("read_current_page", {}, fixture, {
+        pageAddress: "http://127.0.0.1:47832/t/listings",
+      }),
+    ).toMatchObject({ problem: "bad_url", code: "LOCAL_ADDRESS" });
   });
   it("prepares a fixed retry for a refused address and the web_read question for an accepted one", () => {
     expect(

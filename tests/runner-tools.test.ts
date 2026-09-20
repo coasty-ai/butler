@@ -1257,16 +1257,30 @@ describe("looking again at a browser page", () => {
       browserAddress: "http://127.0.0.1:47831/t/listings",
     },
   });
-  it("points the second consecutive capture at the page tool when one is listed, and not the first", async () => {
+  it("points the second consecutive capture at the page tool when one is listed, and not the first, and hands that tool the page's address", async () => {
     // Probe 20260920-0158-f594550, research-paginated-listing #1: five
     // captures of one listing to the spin rule with web__read_page_text
     // listed and never called.
     const c = controller({ capture: vi.fn(async () => page()) });
+    const tools = fakeTools({ tools: WEB_TOOLS_FAKE });
+    // The words the runner hands the tool layer with the call the note asked for.
+    const prepare = tools.access.prepare;
+    const words: Parameters<typeof prepare>[2][] = [];
+    tools.access.prepare = (spec, args, w) => {
+      words.push(w);
+      return prepare(spec, args, w);
+    };
     const h = harness({
-      replies: [look, look, look, act({ type: "done", summary: "Read." })],
+      replies: [
+        look,
+        look,
+        look,
+        call(WEB_CURRENT.id, {}),
+        act({ type: "done", summary: "Read." }),
+      ],
       settings: all,
       controller: c,
-      tools: fakeTools({ tools: WEB_TOOLS_FAKE }),
+      tools,
     });
     await h.runner.start("count the listings and note the cheapest", voice);
     const lines = h.provider.observations.map(
@@ -1276,6 +1290,15 @@ describe("looking again at a browser page", () => {
     expect(lines[1]).not.toContain(PAGE_TOOL_NOTE.trim());
     expect(lines[2]).toContain(PAGE_TOOL_NOTE.trim());
     expect(lines[3]).toContain(PAGE_TOOL_NOTE.trim());
+    // The address the note keyed on (hostOf the frame) is the one the tool
+    // reads: the page's own URL off the frame's context, a loopback host
+    // with its port and path whole, as ToolWords.pageAddress. Cycles
+    // 20260920-0327 and 20260920-0415: the helper set the field only when
+    // the address bar was focused, so on every page the note named a tool
+    // that was then refused no_page.
+    expect(words.length).toBeGreaterThan(0);
+    for (const w of words)
+      expect(w?.pageAddress).toBe("http://127.0.0.1:47831/t/listings");
   });
   it("says nothing when no web read tool is listed, or the frame is not a page", async () => {
     const c = controller({ capture: vi.fn(async () => page()) });

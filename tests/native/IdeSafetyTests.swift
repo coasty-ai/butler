@@ -188,6 +188,29 @@ func ideSafetyChecks(_ check: (Bool, String) -> Void) {
     check(!pageHostUnknown(browser: true, host: nil, unreadableWebArea: false), "not when every web area named a local page, or none was found")
     check(!pageHostUnknown(browser: false, host: nil, unreadableWebArea: true), "never outside a browser: Mail's message view is WebKit and publishes no URL")
     check(watchDomainRefused(domain: nil, browser: true, protectedDomains: banks) == pageHostUnknown(browser: true, host: nil, unreadableWebArea: true), "an unknown page is refused by the rule a watch already applies while any domain is protected")
+    // The address the frame context reports for a browser (InputSafety.swift
+    // browserPageAddress): the page's own URL whole, whatever has focus; the
+    // address field's text only while focused and no page URL was read.
+    let listing = URL(string: "http://127.0.0.1:47831/t/listings?page=2")!
+    check(browserPageAddress(pageURLs: [listing], fieldValue: nil, fieldFocused: false) == "http://127.0.0.1:47831/t/listings?page=2",
+          "a web area's URL is the address, whole, with the focus in the page and no field at all")
+    check(browserPageAddress(pageURLs: ["https://www.example.com:8443/a/b#c"], fieldValue: nil, fieldFocused: false) == "https://www.example.com:8443/a/b#c",
+          "a string URL the same, whole")
+    check(browserPageAddress(pageURLs: [nil, "about:blank", listing], fieldValue: nil, fieldFocused: false) == listing.absoluteString,
+          "an area with no URL or a blank page is passed over for the next that names a host")
+    check(browserPageAddress(pageURLs: [listing, URL(string: "https://example.com/")!], fieldValue: nil, fieldFocused: false) == listing.absoluteString,
+          "the first with a host wins: the focused area before the window's")
+    check(browserPageAddress(pageURLs: [listing], fieldValue: "example typed", fieldFocused: true) == listing.absoluteString,
+          "the page's URL over the field's text even while the field is focused: the field holds what was typed, not the page committed")
+    check(browserPageAddress(pageURLs: [nil, "about:blank"], fieldValue: "example typed", fieldFocused: true) == "example typed",
+          "the field's text when no page URL names a host and the field is focused, as before")
+    check(browserPageAddress(pageURLs: [nil], fieldValue: "example typed", fieldFocused: false) == nil,
+          "never the field's text while it is not focused")
+    check(browserPageAddress(pageURLs: [], fieldValue: "", fieldFocused: true) == nil && browserPageAddress(pageURLs: [], fieldValue: nil, fieldFocused: false) == nil,
+          "nothing at all without a page URL or a focused field with text")
+    let overlong = "https://example.com/" + String(repeating: "a", count: 3000)
+    check(browserPageAddress(pageURLs: [overlong], fieldValue: nil, fieldFocused: false)?.count == pageAddressChars
+          && browserPageAddress(pageURLs: [], fieldValue: overlong, fieldFocused: true)?.count == pageAddressChars, "either source is cut at the context's bound")
 
     // A folder in a named application: an editor may take it (the policy asks
     // first), a terminal, a system tool or a protected app never.
