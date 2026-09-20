@@ -1,8 +1,9 @@
-# Tools: the Apple bridge, the launcher shim and the connection recipes
+# Tools: the Apple bridge, the files tool, the launcher shim and the connection recipes
 
 Tools first, the screen only as fallback: when a connected tool can do the
 step, Butler calls it instead of driving windows. This document covers the
-first tools Butler ships or connects. The client, the registry, the Settings
+first tools Butler ships or connects: the Apple bridge, the built-in files
+tool, and the community servers the recipes connect. The client, the registry, the Settings
 pane, the runner's tool step and the policy that decides when a call asks are
 documented with the lanes that own them (`.data/design/mcp-lanes.md`); the
 shared contract is `src/core/tools.ts`.
@@ -16,6 +17,7 @@ shared contract is `src/core/tools.ts`.
 | Bridge   | `native/macos/Apple.swift` (`coarena-apple`), `Apple-Info.plist`                                                                                  | The live store: EventKit for Calendar and Reminders, `NSAppleScript` from fixed templates for Notes and Mail, the non-prompting Automation preflight before every Apple event, the `status` and `request` commands.                     |
 | Shim     | `native/macos/Launch.swift` (`coarena-launch`)                                                                                                    | Starts a user-added server with TCC responsibility disclaimed and, when asked, without network. Passes stdio through, returns the child's status.                                                                                       |
 | Table    | `src/tools/providers/apple.ts`                                                                                                                    | The bridge as the registry sees it: title, description, tier, consent, date keys, the approval question, and parsers for exactly the recorded result shapes.                                                                            |
+| Files    | `src/tools/providers/files.ts`, `src/tools/local.ts`                                                                                              | The built-in files tool: four tools over plain-text files inside the home folder, run in the app's own process (no binary, no MCP framing) under open_file's path rules, read back after every write, with an undo of its own.          |
 | Recipes  | `src/tools/providers/recipes.ts`                                                                                                                  | The community servers and the coding agent the pane offers by name, with their argv, consent text, install note, default tools and tier overrides; `serverFromRecipe` shapes one into a settings row.                                   |
 | Install  | `src/tools/install.ts`                                                                                                                            | The app's own install of a recipe's pinned Node package (npm into `<userData>/mcp/<rowId>`), the live argv that runs its bin with `node`, and `--offline` for a pasted npx row that may not reach the network. npx never runs a recipe. |
 | Tests    | `tests/native/AppleRulesTests.swift`, `AppleProtocolTests.swift`, `LaunchTests.swift`, `tests/tools-apple.test.ts`, `tests/tools-recipes.test.ts` | The fixtures under `tests/fixtures/apple` are the contract: the Swift tests replay every exchange against a fixture store and compare bytes; the app's tests parse the same replies.                                                    |
@@ -156,6 +158,127 @@ accept every recorded reply and reject any shape with a key missing or added,
 and that `dateKeys` cover every parameter `tools-list.json` pins to a date
 pattern, and that the SDK's validator accepts the local forms against those
 schemas.
+
+## The files tool (built in, in-process)
+
+"Find the number on the page and write it into `~/…/notes.txt`, then save" is
+one tool call, and it was twenty screen steps: in cycle 20260919-1646 eight of
+twenty-eight attempts found the fact in the browser or Mail and then lost it
+between TextEdit's window, the file's header line and Save (`FACT_NOT_NOTED`,
+with `NOTE_HEADER_LOST`, `ROW_NOT_APPENDED` and `LINE_NOT_TYPED` beside it,
+and three of the five false "done" claims). So the app ships a files tool the
+runner reaches for first. It is a `LocalServer` (`src/tools/local.ts`): no
+helper binary and no MCP framing; the registry composes it after the Apple
+bridge (`LOCAL_SERVERS`), gates it by `settings.tools.files` (on by default)
+under the master switch, and runs its calls through the same `prepare`,
+policy, call, bounding and undo door as every other tool. To the model its
+tools are builtin: `transport: "builtin"`, trusted, local, closed-world, so
+they list in Private local too; nothing leaves the Mac through them.
+
+| Tool                      | Arguments                                 | Tier / undo        | Result                                                                                                                               |
+| ------------------------- | ----------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `files__read_text_file`   | `path`                                    | read               | the file's text, up to 64 KB (`FILE_LIMITS.readBytes`); a larger file is refused with `TOO_LARGE`, never cut                         |
+| `files__append_text_file` | `path`, `text`, `newline?` (default true) | additive, undoable | `verified: true` after read-back; `facts { kind: "file", name, change: "appended" \| "created", lines }`; `undoToken`                |
+| `files__write_text_file`  | `path`, `text`                            | write, undoable    | the same, `change: "replaced"` (or `"created"`); the previous contents are what undo puts back                                       |
+| `files__list_directory`   | `path`                                    | read               | one visible entry per line (`name/` for a folder, `name (N bytes)` for a file), up to 200, dotfiles and credential-like names hidden |
+
+`append_text_file` writes the text on its own line: a newline first when the
+file's last line is open, one after unless the text brought its own, so a
+header line the file already has stays intact and the fact lands under it;
+`newline: false` appends the bytes as given. Both writes create the file when
+it does not exist (its folder must), refuse a file that would pass 1 MiB, and
+are reported only after the file reads back as written (`READBACK_MISMATCH`
+otherwise), which is what makes `finish: true` end a run with "Added a line to
+notes.txt." (`toolDoneLine`, never "wrote"). The model's core instruction
+says to use the tool with the path exactly as the objective writes it when the
+objective names a file, instead of opening an editor; the voice fast path
+(`src/assistant/tool-answers.ts`) turns "write/add/append/log/put/note `<text>`
+in/into/to `~/…/file.txt`" into one `append_text_file` step with no model call
+when the path and the text are both in the words.
+
+### Path rules
+
+The same rules open_file's native resolution applies (`native/macos/
+FileSafety.swift indexExcluded`), ported as `homePath`, applied to the path as
+written and again to its realpath at call time so a symlink can never lead
+out: a `~/` path or the home folder's own absolute prefix; never `..`, `.`, an
+empty or hidden component, `node_modules`, `.git`, the Trash, a credential-like
+name (`.env*`, `.netrc`, `id_rsa*`, `*password*`, `*secret*`, `credentials`,
+`*.pem`, `*.key`, `*.p12`, `*.kdbx`, `*.keychain-db`, `logins.csv` and the rest
+of the native list), or `~/Library` except the iCloud Drive subtree; the home
+folder itself is never read, listed or written. A write never creates or
+touches an executable, installer, script, bundle or location file by
+extension (the native `fileRefusedExtensions` list, plus `.plist`), judged on
+the realpath's own name, so a symlink called `notes.txt` that points at a
+script is the script. A path the rules refuse is the `bad_path` problem at
+`prepare`, so policy retries with one fixed sentence and no question is ever
+asked about it. Contents are text only: a NUL byte or invalid UTF-8 anywhere
+(in the head for a large file) is `NOT_TEXT`. The text a user asked to write
+is theirs and is not redacted on the way in, but a credential in it
+(`scanText` BLOCK_UPLOAD) is refused by the tool (`CREDENTIAL`) as well as by
+policy, as it would not be typed either; what a read returns goes to the
+model through the registry's `sanitizeResult` like every result.
+
+### Policy
+
+The path alone grounds a call (`prepare` returns it in its `~/` form as the
+only `groundText`, whatever form the model wrote): the text is the file's
+content, read off a page the user's words cannot be expected to carry, and the
+tool is closed-world. With that, the tier table of `src/core/tool-policy.ts`
+reads as follows for the files tool. A read is trusted and runs in every
+mode. An append the user's own words named by its path runs under "task"
+(`TOOL_ALLOWED.grounded`), "flow" and "all"; one they did not name asks
+`Add to <name>: <text>?` except under "flow" (undoable) and "all". A write
+that replaces the file runs under "task" and "flow" only when the words named
+the file and the tool can undo it (`TOOL_ALLOWED.grounded_write`: the rule the
+Save button runs under, `askedForLabel`), asks `Change <name>, replacing what
+it holds with: <text>?` otherwise, and runs under "all". The questions are
+`TOOL_FILE_APPEND`, `TOOL_FILE_WRITE` and `TOOL_FILE_READ` in the approval
+codes, open with the closed verbs, and can be approved neither by a follow-up
+"yes" nor from the phone. No floor moves: a credential in the arguments is
+denied in every mode, the per-run budget and the master switch hold, and
+nothing here touches a protected application or host.
+
+### Undo
+
+Every write keeps the file's previous bytes (or the fact that it did not
+exist) under its `undoToken` for `TOOL_LIMITS.undoWindowMs`, at most
+`FILE_LIMITS.undoTokens` deep; `ToolAccess.undoLast` puts them back, or
+removes a file the write created, and refuses with `CHANGED_SINCE` when the
+file no longer holds what the write left, so nothing a person typed since is
+lost. A file too large to keep (over 1 MiB before the write) changes without
+a token. Tokens die with the provider.
+
+### Refusal codes
+
+`BAD_ARGS`, `BAD_PATH`, `OUTSIDE_HOME`, `PROTECTED_PATH`, `EXECUTABLE`,
+`NOT_FOUND`, `NOT_A_FILE`, `NOT_A_FOLDER`, `NOT_TEXT`, `TOO_LARGE`,
+`CREDENTIAL`, `WRITE_FAILED`, `READBACK_MISMATCH`, `CHANGED_SINCE`, `FAILED`:
+each an `error` outcome whose body begins with the code and one sentence the
+model can act on, as the Apple bridge's do.
+
+### The benchmark
+
+Every bench and cycle attempt's Runner carries this tool and nothing else of
+the tool layer (`src/gym/bench/tools.ts createBenchTools`: no Apple consent,
+so the bridge is never started or asked; no server row), over the Mac's home
+folder, so a note task can be done by one `append_text_file` call under the
+cycle's regime. The journal records a `tool_call` step with the frontmost
+app and the first-party tool id (never an argument or a result);
+`browserThenNote` accepts the tool write after the browser steps where
+TextEdit steps were required, and `savedNote` counts it as the save.
+
+### What only a live run can confirm
+
+- That gpt-5.4-mini and the other cell models call `files__append_text_file`
+  with the path as the instruction writes it once the tool is listed and the
+  instruction names it, rather than opening TextEdit; the probe
+  `npm run cycle -- --probe FACT_NOT_NOTED --baseline 20260919-1646-09c5412 --autonomy all --repeat 3`
+  measures this.
+- That a run which appends through the tool and then says done passes the
+  note graders' `single` (no other item in the folder) and `headerKept` checks
+  on a real disk write, and that TextEdit, when the person has the file open,
+  shows the appended line (it re-reads a changed file; not a grading concern).
 
 ## The launcher shim (`coarena-launch`)
 

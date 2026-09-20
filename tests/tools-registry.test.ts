@@ -1,5 +1,14 @@
-import { basename } from "node:path";
-import { describe, expect, it } from "vitest";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   defaultSettings,
   toolServerSchema,
@@ -22,7 +31,9 @@ import type {
   ProviderSource,
 } from "../src/tools/mcp";
 import type { InstallRequest } from "../src/tools/install";
+import type { LocalServer } from "../src/tools/local";
 import { commandHash } from "../src/tools/pins";
+import { FILES } from "../src/tools/providers/files";
 import { createToolRegistry, parseAppleAccess } from "../src/tools/registry";
 import {
   resultLines,
@@ -242,6 +253,9 @@ function registry(o: {
   npm?: { exitCode: number | null; timedOut?: boolean };
   /** Bare names on the fake PATH besides node and npm. */
   missing?: string[];
+  /** The in-process tools (the files tool); none unless a test asks, so the fakes above are the whole list. */
+  local?: LocalServer[];
+  home?: string;
 }) {
   const fake = fakeProviders(o.tables);
   const traced: { event: string; data: Record<string, unknown> }[] = [];
@@ -253,7 +267,7 @@ function registry(o: {
     credentials: o.credentials ?? (() => ({ env: {}, headers: {} })),
     helper: (name) => `/fake/bin/${name}`,
     launch: () => o.launch,
-    home: "/fake/home",
+    home: o.home ?? "/fake/home",
     version: "0.1.0-test",
     trace: (event, data) => traced.push({ event, data }),
     now: o.now,
@@ -286,6 +300,7 @@ function registry(o: {
     },
     createProvider: fake.create,
     builtin: [APPLE],
+    local: o.local ?? [],
     recipes: o.recipes ?? [FILESYSTEM],
     onTicks: o.onTicks,
   });
@@ -308,6 +323,7 @@ const byom = (over: Partial<Settings["tools"]> = {}): Settings => ({
   tools: {
     enabled: true,
     apple: { calendar: true, reminders: false, notes: false, mail: false },
+    files: true,
     servers: [],
     ...over,
   },
@@ -315,8 +331,8 @@ const byom = (over: Partial<Settings["tools"]> = {}): Settings => ({
 const signal = new AbortController().signal;
 
 describe("tool registry: the list", () => {
-  it("puts builtin tools first, ranks servers' tools by the task's words and caps the list at twelve", async () => {
-    const many = Array.from({ length: 14 }, (_, i) =>
+  it("puts builtin tools first, ranks servers' tools by the task's words and caps the list at TOOL_LIMITS.list", async () => {
+    const many = Array.from({ length: TOOL_LIMITS.list + 2 }, (_, i) =>
       spec("memo", `tool_${i}`, { does: i === 9 ? "Searches recipes" : "" }),
     );
     const { reg } = registry({
@@ -345,7 +361,9 @@ describe("tool registry: the list", () => {
     ]);
     // The one tool that mentions "recipes" comes first among the server's.
     expect(list.tools[2].id).toBe("memo__tool_9");
-    expect(list.tools.map((t) => t.id)).not.toContain("memo__tool_13");
+    expect(list.tools.map((t) => t.id)).not.toContain(
+      `memo__tool_${TOOL_LIMITS.list + 1}`,
+    );
     expect(list.unavailable).toEqual([]);
   });
 
@@ -502,6 +520,160 @@ describe("tool registry: the list", () => {
       tables: {},
     });
     expect(off.reg.access({ synthetic: false })).toBeUndefined();
+  });
+});
+
+describe("tool registry: the in-process files tool", () => {
+  let home: string;
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
+  const scratch = () => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "butler-registry-")));
+    mkdirSync(join(home, "OpenAssistBench/benchnote0a1b"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(home, "OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt"),
+      "Research notes for benchnote0a1b\n",
+    );
+    return home;
+  };
+  it("lists the four files tools after the bridge's, gated by settings.tools.files and the master switch", async () => {
+    const { reg, state } = registry({
+      settings: byom({
+        servers: [row({ tools: { dummy: { on: true, pin: "x" } } })],
+      }),
+      launch: LAUNCH,
+      home: scratch(),
+      local: [FILES],
+      tables: {
+        apple: { specs: [spec("apple", "calendar_list_events")] },
+        memo: { specs: [spec("memo", "dummy")] },
+      },
+    });
+    await reg.configure();
+    const access = reg.access({ synthetic: false })!;
+    const list = await access.list("write the total into the notes", signal);
+    expect(list.tools.map((t) => t.id)).toEqual([
+      "apple__calendar_list_events",
+      "files__read_text_file",
+      "files__append_text_file",
+      "files__write_text_file",
+      "files__list_directory",
+      "memo__dummy",
+    ]);
+    const files = list.tools.filter((t) => t.provider === "files");
+    for (const t of files)
+      expect(t).toMatchObject({
+        transport: "builtin",
+        trusted: true,
+        local: true,
+        openWorld: false,
+        title: "Files",
+      });
+    // The switch stops the provider; the master switch stops everything.
+    state.settings = byom({ files: false });
+    await reg.configure();
+    expect(
+      (await access.list("anything", signal)).tools.map((t) => t.provider),
+    ).not.toContain("files");
+    state.settings = byom({ enabled: false });
+    await reg.configure();
+    expect(reg.access({ synthetic: false })).toBeUndefined();
+    // Private local keeps it: it never leaves the Mac.
+    state.settings = { ...byom(), privacy: "PRIVATE_LOCAL" };
+    await reg.configure();
+    expect(
+      (await access.list("anything", signal)).tools.filter(
+        (t) => t.provider === "files",
+      ),
+    ).toHaveLength(4);
+    // The bridge's status is untouched by it.
+    expect(reg.status().apple.state).toBe("on");
+  });
+  it("prepares, calls, bounds and undoes a files write through the one door", async () => {
+    const { reg, traced } = registry({
+      settings: byom({
+        apple: { calendar: false, reminders: false, notes: false, mail: false },
+      }),
+      home: scratch(),
+      local: [FILES],
+      tables: {},
+    });
+    await reg.configure();
+    const access = reg.access({ synthetic: false })!;
+    const list = await access.list("note", signal);
+    const append = list.tools.find((t) => t.id === "files__append_text_file")!;
+    const path = "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
+    expect(
+      access.prepare(append, { path: "~/.ssh/config", text: "x" }),
+    ).toEqual({ ok: false, problem: "bad_path" });
+    expect(access.prepare(append, { path, text: "Q3 total 15,888" })).toEqual({
+      ok: true,
+      question: {
+        kind: "file_append",
+        name: "benchnote0a1b-notes.txt",
+        text: "Q3 total 15,888",
+      },
+      groundText: [path],
+      argsBytes: expect.any(Number),
+    });
+    const outcome = await access.call(
+      append,
+      { path, text: "Q3 total 15,888" },
+      signal,
+    );
+    expect(outcome).toMatchObject({
+      code: "ok",
+      verified: true,
+      resultItems: 1,
+      facts: {
+        kind: "file",
+        name: "benchnote0a1b-notes.txt",
+        change: "appended",
+        lines: 1,
+      },
+    });
+    expect(outcome.text).toBe(
+      TOOL_RESULT_TEXT.ok_verified
+        .replace("{id}", "files__append_text_file")
+        .replace(
+          "{body}",
+          `Added 1 line to ${path}; it now holds 2 lines (49 bytes).`,
+        ),
+    );
+    expect(outcome.undoToken).toMatch(/^[0-9a-f-]{36}$/);
+    expect(
+      readFileSync(
+        join(home, "OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt"),
+        "utf8",
+      ),
+    ).toBe("Research notes for benchnote0a1b\nQ3 total 15,888\n");
+    // No pin to mismatch: a builtin is never held back.
+    expect(traced.map((t) => t.event)).not.toContain("ToolPinMismatch");
+    const undone = await reg.undoLast(signal);
+    expect(undone).toMatchObject({ code: "ok" });
+    expect(
+      readFileSync(
+        join(home, "OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt"),
+        "utf8",
+      ),
+    ).toBe("Research notes for benchnote0a1b\n");
+    expect(traced.at(-1)).toEqual({
+      event: "ToolUndo",
+      data: { tool: "append_text_file", server: "files", outcome: "ok" },
+    });
+    expect(await reg.undoLast(signal)).toBeUndefined();
+    // A refusal reads as an error with its code in the body.
+    const read = list.tools.find((t) => t.id === "files__read_text_file")!;
+    const missing = await access.call(
+      read,
+      { path: "~/OpenAssistBench/none.txt" },
+      signal,
+    );
+    expect(missing.code).toBe("error");
+    expect(missing.text).toContain("NOT_FOUND:");
   });
 });
 

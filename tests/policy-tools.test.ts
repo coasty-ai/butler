@@ -14,6 +14,10 @@ import {
   CALENDAR_ADD,
   CALENDAR_LIST,
   CLOCK,
+  FAKE_HOME,
+  FILES_APPEND,
+  FILES_READ,
+  FILES_WRITE,
   FS_LIST,
   FS_WRITE,
   GH_SEARCH,
@@ -210,6 +214,189 @@ describe("toolDecision: the tier table", () => {
     expect(decide(AGENT, { prompt: "fix it" }, "all").reason).toBe(
       TOOL_ALLOWED.unasked,
     );
+  });
+});
+
+/**
+ * The files tool under the same table: a trusted read runs; an append the
+ * user's words named by its path runs under task (the path grounds it, the
+ * text is the page's, not the words'), flow and all; a write replacing the
+ * file runs under task and flow only when the words named the file; a path
+ * the tool refuses retries with the fixed sentence before any question.
+ */
+describe("toolDecision: the files tool", () => {
+  const NOTES = "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
+  const NOTE_WORDS =
+    "In Safari, go to 127.0.0.1:47831/benchnote0a1b/report, find the Q3 total near the bottom of the page, and write it on a new line in ~/OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt. Save it.";
+  const LINE = { path: NOTES, text: "Q3 total 15,888" };
+  it("runs a read in every mode, as any trusted read", () => {
+    expect(kinds(FILES_READ, { path: NOTES })).toEqual({
+      ask: "ALLOW",
+      task: "ALLOW",
+      flow: "ALLOW",
+      all: "ALLOW",
+    });
+    expect(decide(FILES_READ, { path: NOTES }, "ask").reason).toBe(
+      TOOL_ALLOWED.read,
+    );
+  });
+  it("runs an append the words named by its path under task, flow and all, whatever the text says", () => {
+    expect(kinds(FILES_APPEND, LINE, { userWords: NOTE_WORDS })).toEqual({
+      ask: "CONFIRM",
+      task: "ALLOW",
+      flow: "ALLOW",
+      all: "ALLOW",
+    });
+    expect(
+      decide(FILES_APPEND, LINE, "task", { userWords: NOTE_WORDS }).reason,
+    ).toBe(TOOL_ALLOWED.grounded);
+    expect(
+      decide(FILES_APPEND, LINE, "flow", { userWords: NOTE_WORDS }).reason,
+    ).toBe(TOOL_ALLOWED.undoable);
+    expect(
+      decide(FILES_APPEND, LINE, "ask", { userWords: NOTE_WORDS }).reason,
+    ).toBe("Add to benchnote0a1b-notes.txt: Q3 total 15,888?");
+    // The text came off the page: three lines the words never said, an
+    // amount and an address in them, and the path still grounds the call.
+    expect(
+      decide(
+        FILES_APPEND,
+        {
+          path: NOTES,
+          text: "Crane inspection 09:30\n14 workers on site\nSafety alert: scaffold B, call 415 555 0100, $2,400",
+        },
+        "task",
+        { userWords: NOTE_WORDS },
+      ),
+    ).toEqual({ kind: "ALLOW", reason: TOOL_ALLOWED.grounded });
+    // The absolute form of the same file grounds as its ~/ form.
+    expect(
+      decide(
+        FILES_APPEND,
+        { ...LINE, path: `${FAKE_HOME}/${NOTES.slice(2)}` },
+        "task",
+        { userWords: NOTE_WORDS },
+      ).kind,
+    ).toBe("ALLOW");
+  });
+  it("asks for an append to a file the words did not name, except under all", () => {
+    for (const words of [
+      "write the Q3 total into the notes file",
+      "write it into ~/OpenAssistBench/benchnote0a1b/benchnote0a1b-kpi.txt",
+      "write it into ~/Documents/benchnote0a1b-notes.txt",
+      undefined,
+    ]) {
+      const d = decide(FILES_APPEND, LINE, "task", {
+        ...(words ? { userWords: words } : {}),
+      });
+      expect([words, d.kind]).toEqual([words, "CONFIRM"]);
+      expect(d.reason).toBe("Add to benchnote0a1b-notes.txt: Q3 total 15,888?");
+    }
+    expect(kinds(FILES_APPEND, LINE, { userWords: "save it" })).toEqual({
+      ask: "CONFIRM",
+      task: "CONFIRM",
+      flow: "ALLOW",
+      all: "ALLOW",
+    });
+  });
+  it("runs a write that replaces a file only when the words named it, under task and flow, and always under all", () => {
+    const table = { path: NOTES, text: "name,price,days\nAcme,120,3" };
+    expect(kinds(FILES_WRITE, table, { userWords: NOTE_WORDS })).toEqual({
+      ask: "CONFIRM",
+      task: "ALLOW",
+      flow: "ALLOW",
+      all: "ALLOW",
+    });
+    expect(
+      decide(FILES_WRITE, table, "task", { userWords: NOTE_WORDS }).reason,
+    ).toBe(TOOL_ALLOWED.grounded_write);
+    expect(
+      kinds(FILES_WRITE, table, { userWords: "fill in the table" }),
+    ).toEqual({
+      ask: "CONFIRM",
+      task: "CONFIRM",
+      flow: "CONFIRM",
+      all: "ALLOW",
+    });
+    expect(
+      decide(FILES_WRITE, table, "task", { userWords: "fill in the table" })
+        .reason,
+    ).toBe(
+      "Change benchnote0a1b-notes.txt, replacing what it holds with: name,price,days Acme,120,3?",
+    );
+    // Without an undo of its own a write asks however the words read; an
+    // untrusted or open-world write keeps its question too.
+    expect(
+      kinds({ ...FILES_WRITE, undoable: false }, table, {
+        userWords: NOTE_WORDS,
+      }),
+    ).toEqual({
+      ask: "CONFIRM",
+      task: "CONFIRM",
+      flow: "CONFIRM",
+      all: "ALLOW",
+    });
+    expect(
+      kinds({ ...FILES_WRITE, trusted: false }, table, {
+        userWords: NOTE_WORDS,
+      }).task,
+    ).toBe("CONFIRM");
+    expect(
+      kinds({ ...FILES_WRITE, openWorld: true }, table, {
+        userWords: NOTE_WORDS,
+      }).task,
+    ).toBe("CONFIRM");
+    // The MCP write the words happen to name still asks: not trusted.
+    expect(
+      decide(FS_WRITE, { path: "/tmp/a", content: "hi" }, "task", {
+        userWords: "write hi to /tmp/a",
+      }).kind,
+    ).toBe("CONFIRM");
+  });
+  it("retries a refused path with the fixed sentence in every mode, before any question", () => {
+    for (const path of [
+      "~/.ssh/id_rsa",
+      "/etc/hosts",
+      "~/Library/Keychains/login.keychain-db",
+      "~/Documents/../.ssh/config",
+    ])
+      for (const mode of MODES) {
+        const d = decide(FILES_APPEND, { path, text: "x" }, mode, {
+          userWords: `write x into ${path}`,
+        });
+        expect([path, mode, d]).toEqual([
+          path,
+          mode,
+          { kind: "RETRY", reason: TOOL_REFUSALS.bad_path },
+        ]);
+      }
+    expect(TOOL_REFUSALS.bad_path).toMatch(/^No input was sent\./);
+  });
+  it("keeps the floors: a credential in the text is denied, the tool budget and the master switch hold", () => {
+    for (const mode of MODES)
+      expect(
+        decide(
+          FILES_APPEND,
+          { path: NOTES, text: "api_key=sk-abcdefghijklmnopqrst" },
+          mode,
+          { userWords: NOTE_WORDS },
+        ),
+      ).toEqual({ kind: "DENY", reason: TOOL_REFUSALS.credential });
+    expect(
+      decide(FILES_APPEND, LINE, "all", { calls: TOOL_LIMITS.callsPerRun }),
+    ).toEqual({ kind: "DENY", reason: TOOL_REFUSALS.budget });
+    expect(
+      decide(FILES_APPEND, LINE, "all", {
+        settings: { tools: { ...defaultSettings.tools, enabled: false } },
+      }),
+    ).toEqual({ kind: "DENY", reason: TOOL_REFUSALS.privacy });
+    // Private local keeps it: nothing leaves the Mac.
+    expect(
+      decide(FILES_APPEND, LINE, "task", {
+        userWords: NOTE_WORDS,
+        settings: { privacy: "PRIVATE_LOCAL" },
+      }).kind,
+    ).toBe("ALLOW");
   });
 });
 

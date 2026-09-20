@@ -54,6 +54,11 @@ export interface JournalStep {
   markers?: string[];
   /** Last element of a menu_item path, lowercased: the application's own menu title. */
   menuLeaf?: string;
+  /**
+   * A tool_call step's tool id, for a first-party tool only ("files__append_text_file");
+   * a user server's id is not written, nor ever an argument or a result.
+   */
+  tool?: string;
   launchedAppId?: string;
   launchedFrontmost?: boolean;
   openedPath?: string;

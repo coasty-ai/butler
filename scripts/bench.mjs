@@ -184,6 +184,9 @@ const {
   onManualInput,
   runAttempt,
 } = await import("../src/gym/bench/attempt.ts");
+// The tool layer a run may call: the built-in files tool alone, over this
+// Mac's home folder, so a note task can write its file in one tool step.
+const { createBenchTools } = await import("../src/gym/bench/tools.ts");
 
 if (!["openai", "anthropic", "google"].includes(values.provider)) {
   console.error("--provider must be openai, anthropic or google.");
@@ -367,11 +370,13 @@ if (values.memory) {
   );
 }
 
+const benchTools = await createBenchTools({ home });
 const deps = {
   controller,
   clients: { [cell]: client },
   state,
   memoryAccess,
+  tools: benchTools.access,
   // What a task declared, read back after the run; the smoke tasks declare
   // nothing and read only the grading capture. The fixture log is flushed
   // first, so the last page the model opened is in it.

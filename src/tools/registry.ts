@@ -39,16 +39,18 @@ import {
   type ProviderSource,
   type ServerSource,
 } from "./mcp";
+import type { LocalServer } from "./local";
 import { commandHash, secretsDigest, traceCode } from "./pins";
-import { BUILTIN_SERVERS, RECIPES } from "./providers";
+import { BUILTIN_SERVERS, LOCAL_SERVERS, RECIPES } from "./providers";
 import { realFs, resolveCommand, type ResolveFs } from "./resolve";
 import { resultLines, resultText, sanitizeResult } from "./result";
 
 /**
  * Every tool a run may call, behind one door (src/core/tools.ts ToolAccess):
- * the first-party bridges (BUILTIN_SERVERS) first, then the user's own
- * servers, each a long-lived McpProvider the registry starts and stops as
- * settings change. The registry decides what is usable (consent, approval,
+ * the first-party bridges (BUILTIN_SERVERS) first, then the tools the app
+ * runs in its own process (LOCAL_SERVERS: the files tool, gated by
+ * settings.tools.files), then the user's own servers, each a long-lived
+ * provider the registry starts and stops as settings change. The registry decides what is usable (consent, approval,
  * privacy, a resolvable command), ranks and caps what the model sees,
  * validates arguments before policy, and bounds every result before the
  * model reads it. Nothing here throws into a run.
@@ -86,6 +88,8 @@ export interface RegistryOptions {
   /** Tests: fake providers and tables in place of the MCP client and src/tools/providers. */
   createProvider?: typeof createMcpProvider;
   builtin?: readonly BuiltinServer[];
+  /** The in-process first-party tools; tests pass [] to keep them out, or a fake. */
+  local?: readonly LocalServer[];
   recipes?: readonly ServerRecipe[];
 }
 /** The install step of a preview or an approval: whether it ran, and how it went. */
@@ -221,6 +225,7 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
   const clock = o.clock ?? (() => toolClock());
   const createProvider = o.createProvider ?? createMcpProvider;
   const builtinServers = o.builtin ?? BUILTIN_SERVERS;
+  const localServers = o.local ?? LOCAL_SERVERS;
   const recipes = o.recipes ?? RECIPES;
   const trace = (event: string, data: Record<string, unknown> = {}) => {
     try {
@@ -398,6 +403,18 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     providers.set(id, { provider, signature });
     void provider.start();
   };
+  /**
+   * An in-process provider follows its own switch: started when settings
+   * allow it, closed when they stop; nothing to resolve, install or approve.
+   */
+  const ensureLocal = async (server: LocalServer, wanted: boolean) => {
+    const running = providers.get(server.id);
+    if (running && !wanted) await stop(server.id);
+    if (!wanted || providers.has(server.id)) return;
+    const provider = server.create({ home: o.home, now, trace });
+    providers.set(server.id, { provider, signature: "local" });
+    void provider.start();
+  };
   const readAppleAccess = async (server: BuiltinServer) => {
     try {
       appleAccess = parseAppleAccess(
@@ -420,6 +437,11 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
           : undefined;
       if (src) wanted.add(server.id);
       await ensure(server.id, src);
+    }
+    for (const server of localServers) {
+      const on = s.tools.enabled && server.enabled(s);
+      if (on) wanted.add(server.id);
+      await ensureLocal(server, on);
     }
     for (const r of s.tools.servers) {
       const check = startable(r, s);
@@ -566,6 +588,15 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
           );
         else if (state !== "off")
           unavailable.push({ title: builtinTitle(server), state });
+      }
+      // The in-process tools list after the bridge's and before any server's;
+      // an unusable one is nobody's loss (it has no permission to lack).
+      for (const server of localServers) {
+        const running = providers.get(server.id)?.provider;
+        if (!running || !usable(running.state().state)) continue;
+        builtin.push(
+          ...(await within(running.tools(signal), deadline - now(), [])),
+        );
       }
       for (const r of s.tools.servers) {
         const running = providers.get(r.id)?.provider;

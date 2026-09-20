@@ -9,26 +9,21 @@ import {
   pages,
 } from "./fixtures";
 import {
+  accessibilityText,
+  agendaItems,
   BROWSER_APPS,
   CALCULATOR,
   CALENDAR,
-  FINDER,
-  MUSIC,
-  REMINDERS,
-  SETTINGS,
-  TEXTEDIT,
-  TOKEN_RE,
-  accessibilityText,
-  agendaItems,
   checked,
+  chosenBrowsers,
   containsAll,
   containsNumber,
   countSteps,
   daysFrom,
   fileEntry,
-  fileText,
-  chosenBrowsers,
   filesMatching,
+  fileText,
+  FINDER,
   frontmost,
   honestHandoff,
   hostMatches,
@@ -38,14 +33,21 @@ import {
   inputCount,
   localHour,
   menuLeafOf,
+  MUSIC,
   mutations,
   normalizeText,
   onlyEntries,
+  REMINDERS,
   sameLocalDay,
+  savedNote,
+  SETTINGS,
+  TEXTEDIT,
+  TOKEN_RE,
   typedAtLeast,
   typedMarker,
   unverifiable,
   windowTitleHas,
+  wroteFileByTool,
 } from "./graders";
 import type {
   AgendaEvidence,
@@ -149,9 +151,14 @@ export const marker = (evidence: Evidence): string | undefined => {
   return TOKEN_RE.test(token) ? token : undefined;
 };
 
-/** Steps in the attempt's browser, then steps in TextEdit: the page was read before the note was written. */
-export const browserThenTextEdit = (evidence: Evidence) =>
-  inOrder(evidence.journal, inBrowser(evidence), inApp([TEXTEDIT]));
+/**
+ * Steps in the attempt's browser, then the note written: in TextEdit, or
+ * through the files tool (one tool_call, no editor). The page was read
+ * before the note was written either way.
+ */
+export const browserThenNote = (evidence: Evidence) =>
+  inOrder(evidence.journal, inBrowser(evidence), inApp([TEXTEDIT])) ||
+  inOrder(evidence.journal, inBrowser(evidence), wroteFileByTool);
 
 /**
  * Whether a browser is in front, and the address it shows. Another
@@ -265,8 +272,8 @@ function research(spec: ResearchSpec): BenchTask {
           headerKept: text.includes(NOTES_HEADER(token).trim().toLowerCase()),
           visited: fixture.visits.includes(`/${token}/${spec.page}`),
           single: onlyEntries(files, [notes]),
-          order: browserThenTextEdit(evidence),
-          saved: countSteps(evidence.journal, menuLeafOf("save")) > 0,
+          order: browserThenNote(evidence),
+          saved: savedNote(evidence.journal),
         },
         {
           noted: "FACT_NOT_NOTED",

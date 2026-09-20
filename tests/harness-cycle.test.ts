@@ -24,8 +24,10 @@ import {
   type Snapshot,
   type Surface,
 } from "../src/core/schema";
-import { withoutAsking } from "../src/core/policy";
+import { withoutAsking, type PolicyContext } from "../src/core/policy";
 import { autonomyChange } from "../src/ui/settings-voice";
+import { FILES_APPEND, fakeTools } from "./tool-fakes";
+import { BENCH_TOOL_SETTINGS, createBenchTools } from "../src/gym/bench/tools";
 import {
   createHarnessState,
   needsBenchDir,
@@ -248,12 +250,16 @@ vi.mock("../src/core/policy", async (original) => {
   const actual = await original<typeof import("../src/core/policy")>();
   return {
     ...actual,
+    // Transparent unless a test scripts it: the context (the user's words,
+    // a tool step's spec and validation) reaches the real policy.
     evaluate: (
       a: Action,
       s: Surface,
       st: Settings,
       synthetic: boolean,
-    ): Decision => policy.evaluate?.(a) ?? actual.evaluate(a, s, st, synthetic),
+      context?: PolicyContext,
+    ): Decision =>
+      policy.evaluate?.(a) ?? actual.evaluate(a, s, st, synthetic, context),
   };
 });
 
@@ -470,6 +476,83 @@ describe("one attempt through the real runner", () => {
       caps,
     );
     expect(order).toEqual(["launch:Finder:-", "prepare"]);
+  });
+
+  it("runs a note task's append through the tool layer it is given, in the default mode, and journals the step", async () => {
+    const { controller } = fakeController({ appId: TEXTEDIT });
+    const tools = fakeTools({ tools: [FILES_APPEND] });
+    const path = "~/OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt";
+    let steps: unknown;
+    const { deps } = attemptDeps(controller, {
+      clients: {
+        [CELL.cell]: scripted([
+          {
+            type: "tool_call",
+            tool: "files__append_text_file",
+            args: { path, text: "Q3 total 15,888" },
+            finish: true,
+          },
+        ]),
+      },
+      tools: tools.access,
+    });
+    const result = await runAttempt(
+      deps,
+      CELL,
+      testTask({
+        apps: [TEXTEDIT],
+        instruction: `Find the Q3 total and write it on a new line in ${path}. Save it.`,
+        grade: (evidence) => {
+          steps = evidence.journal.steps;
+          return { status: "passed", checks: { noted: true } };
+        },
+      }),
+      1,
+      caps,
+    );
+    // The default "task" mode ran it on the task's own words: the path
+    // grounds the call, and the verified write ended the run.
+    expect(tools.calls).toEqual([
+      {
+        id: "files__append_text_file",
+        args: { path, text: "Q3 total 15,888" },
+      },
+    ]);
+    expect(result.runStatus).toBe("completed");
+    expect(result.approvals).toBe(0);
+    expect(result.status).toBe("passed");
+    expect(steps).toEqual([
+      { type: "tool_call", appId: TEXTEDIT, tool: "files__append_text_file" },
+    ]);
+    // Without a tool layer the same step is refused and the run goes on to the screen.
+    const bare = fakeTools({ tools: [] });
+    const { deps: none } = attemptDeps(controller, {
+      clients: {
+        [CELL.cell]: scripted([
+          {
+            type: "tool_call",
+            tool: "files__append_text_file",
+            args: { path, text: "x" },
+            finish: true,
+          },
+        ]),
+      },
+    });
+    let bareSteps: unknown;
+    await runAttempt(
+      none,
+      CELL,
+      testTask({
+        grade: (evidence) => {
+          bareSteps = evidence.journal.steps;
+          return { status: "passed", checks: {} };
+        },
+      }),
+      1,
+      caps,
+    );
+    expect(bare.calls).toEqual([]);
+    expect(bareSteps).toEqual([]);
   });
 
   it("stops the run outright on real input, even while it is confirming", async () => {
@@ -3681,6 +3764,53 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
     );
     expect(requeue.status).toBe(2);
     expect(requeue.stderr).toContain("--requeue must be");
+  });
+
+  it("gives every run the built-in files tool alone, in both harnesses", async () => {
+    // The tool settings the registry lists under: no Apple consent (the
+    // bridge is never started or asked), no server, the files tool on.
+    expect(BENCH_TOOL_SETTINGS.tools).toEqual({
+      enabled: true,
+      apple: { calendar: false, reminders: false, notes: false, mail: false },
+      files: true,
+      servers: [],
+    });
+    const home = mkdtempSync(join(tmpdir(), "butler-bench-tools-"));
+    try {
+      const traced: string[] = [];
+      const tools = await createBenchTools({
+        home,
+        trace: (event) => traced.push(event),
+      });
+      const list = await tools.access.list(
+        "write a note",
+        new AbortController().signal,
+      );
+      expect(list.tools.map((t) => t.id)).toEqual([
+        "files__read_text_file",
+        "files__append_text_file",
+        "files__write_text_file",
+        "files__list_directory",
+      ]);
+      expect(list.unavailable).toEqual([]);
+      expect(tools.registry.status().apple.state).toBe("off");
+      expect(traced).not.toContain("ToolServerStarting");
+      await tools.close();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+    for (const script of ["scripts/harness-cycle.mjs", "scripts/bench.mjs"]) {
+      const source = readFileSync(join(root, script), "utf8");
+      expect(source, script).toContain(
+        'await import("../src/gym/bench/tools.ts")',
+      );
+      expect(source, script).toContain("createBenchTools({ home");
+      expect(source, script).toContain("tools: benchTools.access,");
+      // After the attempt module, so --dry-run and the exits before it load nothing paid.
+      expect(source.indexOf("createBenchTools"), script).toBeGreaterThan(
+        source.indexOf('await import("../src/gym/bench/attempt.ts")'),
+      );
+    }
   });
 
   it("takes the one desktop lock before any wait, in both harnesses", () => {

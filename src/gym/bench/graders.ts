@@ -292,6 +292,26 @@ export const menuLeafOf =
   (leaf: string): StepMatch =>
   (step) =>
     step.type === "menu_item" && step.menuLeaf === leaf.toLowerCase();
+/** A tool_call step of one of these first-party tool ids ("files__append_text_file"). */
+export const toolCallOf =
+  (ids: readonly string[]): StepMatch =>
+  (step) =>
+    step.type === "tool_call" && !!step.tool && ids.includes(step.tool);
+/**
+ * The files tool's two writes (src/tools/providers/files.ts
+ * FILE_WRITE_TOOL_IDS, spelled here so the gym stays off the tool layer):
+ * a run that wrote the note through them never opened an editor, and its
+ * verified result is the save.
+ */
+export const FILE_WRITE_TOOLS = [
+  "files__append_text_file",
+  "files__write_text_file",
+] as const;
+export const wroteFileByTool: StepMatch = toolCallOf(FILE_WRITE_TOOLS);
+/** The note was saved: TextEdit's Save, or a write through the files tool. */
+export const savedNote = (journal: RunJournal): boolean =>
+  countSteps(journal, menuLeafOf("save")) > 0 ||
+  countSteps(journal, wroteFileByTool) > 0;
 export const typedMarkerIn =
   (marker: string, appIds?: string[]): StepMatch =>
   (step) =>

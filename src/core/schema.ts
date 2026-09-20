@@ -421,6 +421,12 @@ export const toolsSettingsSchema = z
       })
       .strict()
       .prefault({}),
+    /**
+     * The built-in files tool (src/tools/providers/files.ts): reads, adds to
+     * and replaces text files inside the home folder, in the app's own
+     * process. On by default; nothing leaves the Mac through it.
+     */
+    files: z.boolean().default(true),
     servers: z.array(toolServerSchema).max(TOOL_LIMITS.servers).default([]),
   })
   .strict()
@@ -902,6 +908,7 @@ export const defaultSettings: Settings = {
   tools: {
     enabled: true,
     apple: { calendar: false, reminders: false, notes: false, mail: false },
+    files: true,
     servers: [],
   },
   modules: {},

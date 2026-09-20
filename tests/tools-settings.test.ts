@@ -49,6 +49,36 @@ describe("tool settings", () => {
     expect(() => row({ id: "a".repeat(41) })).toThrow();
   });
 
+  it("turns the files tool on by default, keeps a stored config's choice, and lets the master switch gate it", () => {
+    expect(defaultSettings.tools.files).toBe(true);
+    const legacy: Record<string, unknown> = structuredClone(defaultSettings);
+    delete (legacy.tools as Record<string, unknown>).files;
+    expect(settingsSchema.parse(legacy).tools.files).toBe(true);
+    expect(
+      settingsSchema.parse({
+        ...defaultSettings,
+        tools: { ...defaultSettings.tools, files: false },
+      }).tools.files,
+    ).toBe(false);
+    expect(() =>
+      settingsSchema.parse({
+        ...defaultSettings,
+        tools: { ...defaultSettings.tools, files: "yes" },
+      }),
+    ).toThrow();
+    // The gate a files spec passes: builtin and local, in both privacy modes.
+    const local = withServers("PRIVATE_LOCAL", []);
+    expect(toolsAllowed(local, { transport: "builtin", local: true })).toBe(
+      true,
+    );
+    expect(
+      toolsAllowed(
+        { ...local, tools: { ...local.tools, enabled: false } },
+        { transport: "builtin", local: true },
+      ),
+    ).toBe(false);
+  });
+
   it("accepts sound rows in both modes", () => {
     validateToolSettings(
       withServers("PRIVATE_BYOM", [
@@ -129,7 +159,8 @@ describe("tool settings", () => {
 
   it("switching to Private local turns off the rows that reach the internet and says which", () => {
     const settings = withServers("PRIVATE_LOCAL", [
-      row({ id: "files", name: "Files" }),
+      // "files" is the built-in files tool's reserved id; a user's server takes another.
+      row({ id: "docs", name: "Docs" }),
       row({
         id: "web",
         name: "Web",
@@ -145,7 +176,7 @@ describe("tool settings", () => {
     expect(
       flipped.settings.tools.servers.map((r) => [r.id, r.enabled]),
     ).toEqual([
-      ["files", true],
+      ["docs", true],
       ["web", false],
       ["net", false],
       ["quiet", false],

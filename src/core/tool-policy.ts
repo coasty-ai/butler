@@ -36,6 +36,8 @@ export const TOOL_ALLOWED = {
   read: "Read through a tool without changing anything.",
   grounded: "Add what the user asked for, in their words; it can be undone.",
   undoable: "Add through a tool; it can be undone.",
+  grounded_write:
+    "Change the file the user named, in their words; it can be undone.",
   unasked: "Done without asking, as you set. Reported when done.",
 } as const;
 
@@ -195,5 +197,19 @@ export function toolDecision(
     if (settings.autonomy === "task" && grounding.grounded)
       return allow(TOOL_ALLOWED.grounded);
   }
+  // A write that replaces what a first-party, closed-world tool holds (the
+  // files tool's write_text_file) runs unasked only when its own undo can
+  // take it back and the user's words named what it touches: the rule the
+  // Save button runs under (policy.ts askedForLabel), for the tool step. An
+  // MCP write, untrusted or open-world, keeps its question.
+  if (
+    spec.tier === "write" &&
+    spec.undoable &&
+    spec.trusted &&
+    !spec.openWorld &&
+    grounding.grounded &&
+    (settings.autonomy === "task" || settings.autonomy === "flow")
+  )
+    return allow(TOOL_ALLOWED.grounded_write);
   return ask();
 }

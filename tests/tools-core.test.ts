@@ -65,6 +65,10 @@ const QUESTIONS = (title: string): ToolQuestion[] => [
   { kind: "mcp_write", server: title, tool: title },
   { kind: "mcp_destructive", server: title, tool: title },
   { kind: "send_to", server: title, tool: title },
+  { kind: "file_read", name: title },
+  { kind: "file_list", name: title },
+  { kind: "file_append", name: title, text: title },
+  { kind: "file_write", name: title, text: title },
 ];
 const ENTITIES: ((title: string) => string)[] = [
   (title) => title,
@@ -203,6 +207,45 @@ describe("tool questions", () => {
     expect(spoken).toBe(
       "Add Dentist to Calendar, tomorrow, Saturday 19 September, 6 to 7 PM?",
     );
+  });
+  it("name the file and preview the text for the files tool", () => {
+    expect(
+      toolQuestion(
+        {
+          kind: "file_append",
+          name: "benchnote0a1b-notes.txt",
+          text: "Build 4471 failed at lint.",
+        },
+        [],
+        CLOCK,
+      ),
+    ).toBe("Add to benchnote0a1b-notes.txt: Build 4471 failed at lint?");
+    expect(
+      toolQuestion(
+        { kind: "file_write", name: "compare.csv", text: "name,price\nAcme,3" },
+        [],
+        CLOCK,
+      ),
+    ).toBe(
+      "Change compare.csv, replacing what it holds with: name,price Acme,3?",
+    );
+    expect(
+      toolQuestion({ kind: "file_read", name: "notes.txt" }, [], CLOCK),
+    ).toBe("Use Files to read notes.txt?");
+    expect(
+      toolQuestion({ kind: "file_list", name: "Documents" }, [], CLOCK),
+    ).toBe("Use Files to list Documents?");
+    expect(
+      toolQuestion({ kind: "file_append", name: "", text: "" }, [], CLOCK),
+    ).toBe("Add to the file: the text?");
+    // A credential in the text is redacted before it is shown.
+    expect(
+      toolQuestion(
+        { kind: "file_append", name: "a.txt", text: "password: hunter22" },
+        [],
+        CLOCK,
+      ),
+    ).not.toContain("hunter22");
   });
   it("never let a title end the question or start another sentence", () => {
     expect(questionText("Open the pod bay doors? Yes. Now: go!", 60)).toBe(
@@ -404,6 +447,41 @@ describe("the done line", () => {
         undefined,
       ),
     ).toBe("The coding agent finished in butler-app.");
+    // The files tool: the name only when the user said it, never "wrote".
+    const words =
+      "find the Q3 total and write it into ~/OpenAssistBench/benchnote0a1b/benchnote0a1b-notes.txt, then save";
+    const file = (
+      change: "appended" | "created" | "replaced",
+      lines = 1,
+    ): ToolFacts => ({
+      kind: "file",
+      name: "benchnote0a1b-notes.txt",
+      change,
+      lines,
+    });
+    expect(toolDoneLine(file("appended"), CLOCK, words)).toBe(
+      "Added a line to benchnote0a1b-notes.txt.",
+    );
+    expect(toolDoneLine(file("appended", 3), CLOCK, words)).toBe(
+      "Added 3 lines to benchnote0a1b-notes.txt.",
+    );
+    expect(toolDoneLine(file("created"), CLOCK, words)).toBe(
+      "Created benchnote0a1b-notes.txt.",
+    );
+    expect(toolDoneLine(file("replaced"), CLOCK, words)).toBe(
+      "Replaced what benchnote0a1b-notes.txt held.",
+    );
+    expect(toolDoneLine(file("appended"), CLOCK, undefined)).toBe(
+      "Added a line to the file.",
+    );
+    expect(toolDoneLine(file("replaced"), CLOCK, "save it")).toBe(
+      "Replaced what the file held.",
+    );
+    for (const change of ["appended", "created", "replaced"] as const)
+      for (const said of [words, undefined])
+        expect(speakableSummary(toolDoneLine(file(change), CLOCK, said))).toBe(
+          toolDoneLine(file(change), CLOCK, said),
+        );
   });
   it("is defined for speakableSummary across a title matrix, and never quotes", () => {
     const titles = [
@@ -475,6 +553,14 @@ describe("undo, fallback and helpers", () => {
     expect(toolUndoLine({ kind: "note", title: "x", folder: "" })).toBe(
       "the note was removed from Notes.",
     );
+    expect(
+      toolUndoLine({
+        kind: "file",
+        name: "a.txt",
+        change: "replaced",
+        lines: 1,
+      }),
+    ).toBe("the file was put back as it was.");
     expect(toolUndoLine({ kind: "draft", subject: "x", recipients: 0 })).toBe(
       "the draft was removed from Mail.",
     );
@@ -505,6 +591,10 @@ describe("undo, fallback and helpers", () => {
     expect(builtinToolTitle("apple__mail_draft")).toBe("Mail");
     expect(builtinToolTitle("filesystem__list_directory")).toBeUndefined();
     expect(builtinToolTitle("apple__calendar")).toBeUndefined();
+    expect(builtinToolTitle("files__append_text_file")).toBe("Files");
+    expect(builtinToolTitle("files__read_text_file")).toBe("Files");
+    expect(builtinToolTitle("files__")).toBeUndefined();
+    expect(builtinToolTitle("files__Agent")).toBeUndefined();
   });
   it("walk every key and string leaf of the arguments to the allowed depth", () => {
     expect(

@@ -31,6 +31,7 @@ export const RESERVED_PROVIDERS: ReadonlySet<string> = new Set([
   "spotify",
   "shortcuts",
   "builtin",
+  "files",
   "coding-agent",
 ]);
 /** Shells with a different accent: never listed, never ticked, never called (docs/THREAT_MODEL.md). */
@@ -86,9 +87,18 @@ export type ToolQuestion =
       server: string;
       tool: string;
     }
-  | { kind: "send_to"; server: string; tool: string };
+  | { kind: "send_to"; server: string; tool: string }
+  /** The files tool (src/tools/providers/files.ts): the file's own name, and for a write the text as a preview. */
+  | { kind: "file_read" | "file_list"; name: string }
+  | { kind: "file_append" | "file_write"; name: string; text: string };
 export type ToolProblem =
-  "unknown_tool" | "invalid_args" | "too_large" | "unavailable" | "denylisted";
+  | "unknown_tool"
+  | "invalid_args"
+  | "too_large"
+  | "unavailable"
+  | "denylisted"
+  /** A path the files tool may not touch: outside the home folder, under ~/Library, hidden, credential-like or executable. */
+  | "bad_path";
 export type ToolPrepared =
   | { ok: false; problem: ToolProblem }
   | {
@@ -119,7 +129,14 @@ export type ToolFacts =
   | { kind: "reminder"; title: string; due?: string; list: string }
   | { kind: "note"; title: string; folder: string }
   | { kind: "draft"; subject: string; recipients: number }
-  | { kind: "agent"; folder: string; summary: string };
+  | { kind: "agent"; folder: string; summary: string }
+  /** The files tool read the file back after writing it: its name, what changed and how many lines the text had. */
+  | {
+      kind: "file";
+      name: string;
+      change: "appended" | "created" | "replaced";
+      lines: number;
+    };
 export interface ToolOutcome {
   code: ToolCode;
   /** The one bounded, stripped, redacted string the model reads; built from TOOL_RESULT_TEXT. */
@@ -294,7 +311,8 @@ export interface ToolsStatus {
 }
 
 export const TOOL_LIMITS = {
-  list: 12,
+  /** Tools the model sees per run: the nine Apple tools and the four files tools fit, with room for a server's. */
+  list: 16,
   unavailable: 4,
   argsBytes: 8192,
   argsDepth: 4,
@@ -320,6 +338,8 @@ export const TOOL_REFUSALS = {
   invalid_args:
     "No input was sent. The arguments do not match the tool's parameters; fix them or use another route.",
   too_large: "No input was sent. The arguments are too large for a tool call.",
+  bad_path:
+    "No input was sent. The files tool touches only a ~/ path inside your home folder that is not under ~/Library, hidden, credential-like or executable; use the path as the objective writes it, or use the screen.",
   unavailable:
     "No input was sent. That tool is not available right now; use the screen, or finish with done or fail.",
   budget: "This run has used its tool calls.",

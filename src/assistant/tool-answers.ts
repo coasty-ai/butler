@@ -2,8 +2,8 @@
  * Requests one builtin tool answers or does outright, with no model call: a
  * question about the calendar or the reminders over at most a time window
  * (answered from the tool's lines), and an add to the calendar or the
- * reminders, or a request to the coding agent, said plainly enough to be one
- * tool step. The grammar is narrow on purpose: anything that points at the
+ * reminders, a line for a text file named by its ~/ path, or a request to
+ * the coding agent, said plainly enough to be one tool step. The grammar is narrow on purpose: anything that points at the
  * screen ("add it"), carries a second clause or a credential, or names any
  * other thing falls through to the dialog and the run, where the model reads
  * the screen. Dates resolve against the tool layer's clock, never Date.now().
@@ -360,6 +360,15 @@ const REMINDER_ADD =
   /^(?:add|put)\s+(?:(?:a|the)\s+)?(?:reminder\s+(?:to|for)\s+)?(.+?)\s+(?:to|on|in|into|onto)\s+(?:my\s+|the\s+)?(?:reminders?|to[- ]?do list|to[- ]?dos?)\b(.*)$/i;
 const AGENT =
   /^(?:ask|tell|have|get)\s+(?:the\s+)?(?:coding agent|claude code|claude)\s+to\s+(.+)$/i;
+/**
+ * "write/append/log/add/put/note <text> in/into/to <~/path>": one additive
+ * call to the files tool, when the path and the text are both in the words.
+ * The path is a ~/ path ending in a text-like extension with no spaces in
+ * it (a spoken path with spaces is the model's to read); "the file" before
+ * it and a trailing "and save it" are allowed and mean nothing more.
+ */
+const FILE_ADD =
+  /^(?:write|append|log|add|put|note|jot)(?:\s+down)?\s+(?:(?:the|this|a|another)\s+(?:line|note|entry|row)\s+)?(.+?)\s+(?:in|into|to|onto|at)\s+(?:the\s+)?(?:file\s+|text file\s+)?(~\/[^\s"'“”]+\.(?:txt|md|csv|log|text|markdown|tsv))(?:\s*,?\s*(?:and\s+)?(?:then\s+)?save(?:\s+it)?)?$/i;
 /** A title from the words that is one thing, said outright. */
 const plainTitle = (text: string): string | undefined => {
   const title = text
@@ -371,6 +380,18 @@ const plainTitle = (text: string): string | undefined => {
     : undefined;
 };
 function step(text: string, clock: ToolClock): ToolFastPath | undefined {
+  const fileAdd = FILE_ADD.exec(text);
+  if (fileAdd) {
+    const line = fileAdd[1].trim();
+    // The line goes in as said: a note is the user's words, not a title.
+    if (!line || DEICTIC.test(line) || SECOND_CLAUSE.test(line))
+      return undefined;
+    return {
+      kind: "step",
+      tool: "files__append_text_file",
+      args: { path: fileAdd[2], text: line },
+    };
+  }
   const agent = AGENT.exec(text);
   if (agent) {
     const prompt = agent[1].trim();

@@ -275,6 +275,21 @@ export function toolQuestion(
     case "send_to":
       text = `Send ${listed(ungrounded, 100, 60) || "these details"} to ${server}?`;
       break;
+    // The files tool: the file by its own name, the text as a bounded
+    // preview. A read is trusted and never asked; the sentence exists so the
+    // kind renders like every other.
+    case "file_read":
+      text = `Use Files to read ${questionText(q.name, 60) || "that file"}?`;
+      break;
+    case "file_list":
+      text = `Use Files to list ${questionText(q.name, 60) || "that folder"}?`;
+      break;
+    case "file_append":
+      text = `Add to ${questionText(q.name, 60) || "the file"}: ${questionText(q.text, 60) || "the text"}?`;
+      break;
+    case "file_write":
+      text = `Change ${questionText(q.name, 60) || "the file"}, replacing what it holds with: ${questionText(q.text, 60) || "the text"}?`;
+      break;
   }
   const line = redactSecrets(text.replace(/\s+/g, " ").trim());
   return line.length > QUESTION_MAX
@@ -361,6 +376,14 @@ export function toolDoneLine(
       return `Saved ${spokenTitle(facts.subject, "the draft", userWords)} as a draft in Mail.`;
     case "agent":
       return `The coding agent finished in ${questionText(basename(facts.folder), 40) || "the folder"}.`;
+    // Never "wrote" or "written": speakableSummary reads those as typed
+    // content and would refuse the whole line.
+    case "file": {
+      const name = spokenTitle(facts.name, "the file", userWords);
+      if (facts.change === "created") return `Created ${name}.`;
+      if (facts.change === "replaced") return `Replaced what ${name} held.`;
+      return `Added ${facts.lines === 1 ? "a line" : `${facts.lines} lines`} to ${name}.`;
+    }
   }
 }
 /** What "Undone: …" says after ToolAccess.undoLast took a write back. */
@@ -374,6 +397,8 @@ export function toolUndoLine(facts: ToolFacts | undefined): string {
       return "the note was removed from Notes.";
     case "draft":
       return "the draft was removed from Mail.";
+    case "file":
+      return "the file was put back as it was.";
     default:
       return "the last tool step was taken back.";
   }
@@ -382,8 +407,9 @@ export function toolUndoLine(facts: ToolFacts | undefined): string {
 export function toolFallbackLine(title: string): string {
   return `${questionText(title, 40) || "The tool"} couldn’t do that, so I’ll do it on screen.`;
 }
-/** The builtin app a tool id belongs to ("apple__calendar_create_event" → "Calendar"), or undefined. */
+/** The builtin app a tool id belongs to ("apple__calendar_create_event" → "Calendar", "files__…" → "Files"), or undefined. */
 export function builtinToolTitle(id: string): string | undefined {
+  if (/^files__[a-z_]+$/.test(id)) return "Files";
   const app = /^apple__(calendar|reminders|notes|mail)_/.exec(id)?.[1];
   return app && app[0].toUpperCase() + app.slice(1);
 }

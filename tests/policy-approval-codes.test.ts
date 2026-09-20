@@ -115,6 +115,16 @@ const toolCases: [ToolQuestion, ApprovalCode][] = [
     "TOOL_MCP_WRITE",
   ],
   [{ kind: "send_to", server: "GitHub", tool: "search" }, "TOOL_SEND_TO"],
+  [{ kind: "file_read", name: "notes.txt" }, "TOOL_FILE_READ"],
+  [{ kind: "file_list", name: "Documents" }, "TOOL_FILE_READ"],
+  [
+    { kind: "file_append", name: "notes.txt", text: "Q3 total: 15,888" },
+    "TOOL_FILE_APPEND",
+  ],
+  [
+    { kind: "file_write", name: "compare.csv", text: "name,price" },
+    "TOOL_FILE_WRITE",
+  ],
 ];
 
 describe("approval codes", () => {

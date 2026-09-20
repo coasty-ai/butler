@@ -67,6 +67,9 @@ export const APPROVAL_CODES = [
   "TOOL_MCP_READ",
   "TOOL_MCP_WRITE",
   "TOOL_SEND_TO",
+  "TOOL_FILE_READ",
+  "TOOL_FILE_APPEND",
+  "TOOL_FILE_WRITE",
   "OTHER",
 ] as const;
 export type ApprovalCode = (typeof APPROVAL_CODES)[number];
@@ -142,6 +145,11 @@ const SHAPES: readonly (readonly [RegExp, ApprovalCode])[] = [
   [/^Use .* to run .*\?$/su, "TOOL_MCP_WRITE"],
   [/^Run .* in .*\?$/su, "TOOL_AGENT_RUN"],
   [/^Send .* to .*\?$/su, "TOOL_SEND_TO"],
+  // The files tool (tool-text.ts): the file's name and a text preview are
+  // inside the frame, never the code.
+  [/^Use Files to (?:read|list) .*\?$/su, "TOOL_FILE_READ"],
+  [/^Add to .*: .*\?$/su, "TOOL_FILE_APPEND"],
+  [/^Change .*, replacing what it holds with: .*\?$/su, "TOOL_FILE_WRITE"],
 ];
 
 /**

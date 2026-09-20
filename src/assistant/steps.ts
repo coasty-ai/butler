@@ -33,6 +33,10 @@ const TOOL_STEPS: Record<string, string> = {
   apple__mail_unread: "read your mail",
   apple__mail_search: "read your mail",
   apple__mail_draft: "drafted an email in Mail",
+  files__read_text_file: "read a file",
+  files__list_directory: "listed a folder",
+  files__append_text_file: "added a line to a file",
+  files__write_text_file: "replaced a file's contents",
   "claude-code__Agent": "sent a request to Claude Code",
 };
 

@@ -12,6 +12,7 @@ import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import type { PresenceReport } from "../../../electron/controller";
 import type { MemoryAccess } from "../../core/memory";
 import { nullRecorder } from "../../core/recorder";
+import type { ToolAccess } from "../../core/tools";
 import { approvalCode } from "../../core/approval-codes";
 import { Runner, terminal } from "../../core/runner";
 import {
@@ -149,6 +150,13 @@ export interface AttemptDeps {
   state: HarnessState;
   recorder?: Recorder;
   memoryAccess?: MemoryAccess;
+  /**
+   * The tool layer a run may call (RunnerExtras.tools): the harness hands
+   * in the built-in files tool alone (tools.ts createBenchTools), so a note
+   * task can write its file through one tool step as the product would.
+   * Without it every tool_call is refused and the run drives the screen.
+   */
+  tools?: ToolAccess;
   /** The cycle's diagnostics log; bench runs are otherwise invisible to the analyzer. */
   diagnostics?: { snapshot(s: Snapshot): void };
   /** End-state readers from the suite lane; null until it lands. */
@@ -425,6 +433,8 @@ export function unseenManualInput(
   );
 }
 
+/** The tool ids the journal keeps: the app's own providers (src/core/tools.ts RESERVED_PROVIDERS "apple", "files"), never a user server's. */
+const FIRST_PARTY_TOOL = /^(?:apple|files)__[A-Za-z0-9_.-]{1,128}$/;
 /** What cleanup adds to a row. */
 type Cleaned = Pick<AttemptResult, "leftovers" | "cleanupFailed">;
 
@@ -682,6 +692,7 @@ export async function runAttempt(
     let runner: Runner;
     // The last proposed action's surface, for the approval rule.
     const seen: ApprovalView = {};
+    const steps: JournalStep[] = [];
     const emit = (snapshot: Snapshot) => {
       deps.diagnostics?.snapshot(snapshot);
       for (const event of snapshot.events.slice(printed)) {
@@ -714,6 +725,23 @@ export async function runAttempt(
         if (event.type === "RunPaused") counters.paused = true;
         if (event.type === "ActionFailed" && typeof d.code === "string")
           counters.failures[d.code] = (counters.failures[d.code] ?? 0) + 1;
+        // A tool step never reaches the controller (the runner runs it
+        // beside monitor), so the journal learns of it here: its type, the
+        // frontmost app and, for a first-party tool, the tool's fixed id.
+        // Never its arguments or its result.
+        if (event.type === "ActionExecuted") {
+          const action = d.action as
+            { type?: unknown; tool?: unknown } | undefined;
+          if (action?.type === "tool_call")
+            steps.push({
+              type: "tool_call",
+              appId: snapshot.frame?.appId,
+              ...(typeof action.tool === "string" &&
+              FIRST_PARTY_TOOL.test(action.tool)
+                ? { tool: action.tool }
+                : {}),
+            });
+        }
       }
       printed = snapshot.events.length;
       message = snapshot.message;
@@ -761,7 +789,6 @@ export async function runAttempt(
         setTimeout(() => runner.stop(`Benchmark stopped at ${status}.`), 0);
       }
     };
-    const steps: JournalStep[] = [];
     const markers = markerValues(parameters);
     runner = new Runner(
       journaled(controller, steps, markers, state, now, seen),
@@ -771,6 +798,7 @@ export async function runAttempt(
       emit,
       [],
       deps.memoryAccess,
+      deps.tools ? { tools: deps.tools } : {},
     );
     state.runner = runner;
     const started = now().getTime();

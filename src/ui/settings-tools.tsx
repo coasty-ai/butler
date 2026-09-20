@@ -262,6 +262,26 @@ export function SettingsTools({
           </label>
         ))}
         <p>
+          <b>Files</b>
+        </p>
+        <label className="consent">
+          <input
+            type="checkbox"
+            checked={s.tools.files}
+            disabled={busy}
+            onChange={(e) =>
+              set("tools", { ...s.tools, files: e.target.checked })
+            }
+          />
+          <span>
+            Files: reads, adds to and replaces plain-text files in your home
+            folder, never under Library, hidden or credential-like names, and
+            never scripts. Runs on this Mac; nothing leaves through it. A step
+            you asked for by the file’s name runs and is reported; replacing a
+            file you did not name asks first, and either can be undone.
+          </span>
+        </label>
+        <p>
           <b>Servers</b>
         </p>
         <p>

@@ -13,6 +13,7 @@ import {
 } from "../src/gym/bench/catalogue";
 import {
   CALCULATOR,
+  FILE_WRITE_TOOLS,
   FINDER,
   NOTES,
   SENSITIVE_PROMPT,
@@ -50,11 +51,14 @@ import {
   openedPathStep,
   playlistNamed,
   sameLocalDay,
+  savedNote,
+  toolCallOf,
   typedAtLeast,
   typedMarker,
   typedMarkerIn,
   visited,
   windowTitleHas,
+  wroteFileByTool,
 } from "../src/gym/bench/graders";
 import {
   HARNESS_CODES,
@@ -312,6 +316,55 @@ describe("grader helpers", () => {
       "HANDOFF_TAKEOVER",
     );
   });
+  it("reads a note written through the files tool as the note saved, after the browser", () => {
+    const SAFARI = "com.apple.Safari";
+    const j = journal({
+      steps: [
+        { type: "open_url", appId: SAFARI },
+        { type: "scroll", appId: SAFARI },
+        { type: "tool_call", appId: SAFARI, tool: "files__append_text_file" },
+      ],
+    });
+    expect(FILE_WRITE_TOOLS).toEqual([
+      "files__append_text_file",
+      "files__write_text_file",
+    ]);
+    expect(countSteps(j, wroteFileByTool)).toBe(1);
+    expect(countSteps(j, toolCallOf(["files__write_text_file"]))).toBe(0);
+    expect(countSteps(j, toolCallOf(["files__read_text_file"]))).toBe(0);
+    expect(inOrder(j, inApp([SAFARI]), wroteFileByTool)).toBe(true);
+    expect(inOrder(j, inApp([SAFARI]), inApp([TEXTEDIT]))).toBe(false);
+    expect(savedNote(j)).toBe(true);
+    // A read, a user server's tool (its id is never written) or a step with
+    // no tool id is not the note written; neither is a write before the page.
+    for (const steps of [
+      [{ type: "tool_call", appId: SAFARI, tool: "files__read_text_file" }],
+      [{ type: "tool_call", appId: SAFARI }],
+      [{ type: "menu_item", appId: TEXTEDIT, menuLeaf: "open" }],
+    ]) {
+      expect(countSteps(journal({ steps }), wroteFileByTool)).toBe(0);
+      expect(savedNote(journal({ steps }))).toBe(false);
+    }
+    expect(
+      inOrder(
+        journal({
+          steps: [
+            {
+              type: "tool_call",
+              appId: FINDER,
+              tool: "files__write_text_file",
+            },
+            { type: "open_url", appId: SAFARI },
+          ],
+        }),
+        inApp([SAFARI]),
+        wroteFileByTool,
+      ),
+    ).toBe(false);
+    // A tool step never counts as input into an application, nor as a mutation on screen.
+    expect(inputCount(j, [SAFARI])).toBe(0);
+    expect(mutations(j)).toBe(0);
+  });
   it("accepts an honest fail or a question as a hand-off", () => {
     expect(honestHandoff(journal())).toBe(false);
     expect(honestHandoff(journal({ modelFailed: true }))).toBe(true);
@@ -363,6 +416,9 @@ describe("grader helpers", () => {
     // Each match must come strictly after the previous one.
     expect(inOrder(j, inApp([NOTES]), inApp([TEXTEDIT]))).toBe(false);
     expect(inOrder(j, menuLeafOf("save"), menuLeafOf("save"))).toBe(false);
+    // No tool step here: the note was saved through TextEdit's menu.
+    expect(countSteps(j, wroteFileByTool)).toBe(0);
+    expect(savedNote(j)).toBe(true);
     // open_app, wait and scroll change nothing.
     expect(mutations(j)).toBe(4);
     // 20 characters plus one click in TextEdit; one key in Notes.
@@ -1686,6 +1742,30 @@ describe("bench --dry-run", () => {
  * real Runner with a fake controller. These rules read what stays in the
  * script: the loop around the attempts.
  */
+describe("attempt.ts and the tool layer", () => {
+  const source = readFileSync(join(root, "src/gym/bench/attempt.ts"), "utf8");
+  it("hands the runner the tool layer it is given, and journals a tool step by type, app and first-party id only", () => {
+    // RunnerExtras.tools, and nothing else in the extras.
+    expect(source).toContain("deps.tools ? { tools: deps.tools } : {},");
+    expect(source).toContain("tools?: ToolAccess;");
+    // A tool step never reaches the controller, so the journal learns of it
+    // from the ActionExecuted event: its type, the frontmost app and, for a
+    // first-party tool only, the tool id; never an argument or a result.
+    const step = source.slice(
+      source.indexOf('if (event.type === "ActionExecuted") {'),
+      source.indexOf("printed = snapshot.events.length;"),
+    );
+    expect(step).toContain('if (action?.type === "tool_call")');
+    expect(step).toContain('type: "tool_call"');
+    expect(step).toContain("appId: snapshot.frame?.appId");
+    expect(step).toContain("FIRST_PARTY_TOOL.test(action.tool)");
+    expect(step).not.toMatch(/args|result|text/);
+    expect(source).toContain(
+      "const FIRST_PARTY_TOOL = /^(?:apple|files)__[A-Za-z0-9_.-]{1,128}$/;",
+    );
+  });
+});
+
 describe("bench.mjs harness rules", () => {
   const source = readFileSync(join(root, "scripts/bench.mjs"), "utf8");
   it("runs every attempt through the shared attempt module", () => {

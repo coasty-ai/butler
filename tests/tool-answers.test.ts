@@ -235,6 +235,37 @@ describe("toolFastPath: steps", () => {
       args: { title: "Milk" },
     });
   });
+  it("adds a line to a text file named by its ~/ path, as said", () => {
+    for (const text of [
+      "write buy oat milk into ~/notes/todo.txt",
+      "add buy oat milk to ~/notes/todo.txt",
+      "append buy oat milk to the file ~/notes/todo.txt",
+      "log buy oat milk in ~/notes/todo.txt and save it",
+      "put buy oat milk into ~/notes/todo.txt, then save",
+      "Write buy oat milk into ~/notes/todo.txt.",
+      "note buy oat milk in ~/notes/todo.txt",
+      'jot down buy oat milk in "~/notes/todo.txt"',
+      "add a line buy oat milk to ~/notes/todo.txt",
+    ])
+      expect(path(text), text).toEqual({
+        kind: "step",
+        tool: "files__append_text_file",
+        args: { path: "~/notes/todo.txt", text: "buy oat milk" },
+      });
+    // The line keeps its case and inner punctuation; the path its extension.
+    // A sentence mark at a word's end goes, as in every request; a comma
+    // inside a number stays.
+    expect(
+      path("write Q3 total: 15,888 dollars into ~/Documents/ledger.csv"),
+    ).toEqual({
+      kind: "step",
+      tool: "files__append_text_file",
+      args: { path: "~/Documents/ledger.csv", text: "Q3 total 15,888 dollars" },
+    });
+    expect(path("add Dana called at 3 to ~/work/log.md")).toMatchObject({
+      args: { path: "~/work/log.md", text: "Dana called at 3" },
+    });
+  });
   it("hands a plainly said request to the coding agent", () => {
     expect(path("ask the coding agent to fix the failing test")).toEqual({
       kind: "step",
@@ -272,6 +303,20 @@ describe("toolFastPath: what falls through", () => {
     "remind me to use password: hunter22 tomorrow",
     "add sk-abcdefghijklmnopqrstuv tomorrow at 6 to my calendar",
     "ask the coding agent to deploy with token eyJhbGciOi.eyJzdWIiOiIx.SflKxwRJSMe",
+    // The files shapes: the path must be a ~/ path with a text extension,
+    // the line must be said and point at nothing on screen.
+    "write it into ~/notes/todo.txt",
+    "add that to ~/notes/todo.txt",
+    "write the total into the notes file",
+    "write buy oat milk into /etc/hosts",
+    "write buy oat milk into ~/notes/todo",
+    "write buy oat milk into ~/bin/run.sh",
+    "write buy oat milk into ~/my notes/todo.txt",
+    "write buy oat milk into ~/notes/todo.txt and then email Dana",
+    "write buy oat milk into ~/notes/todo.txt and add it to my calendar",
+    "write password: hunter22 into ~/notes/todo.txt",
+    "read ~/notes/todo.txt",
+    "replace ~/notes/todo.txt with buy oat milk",
     "",
     "x".repeat(300),
   ])("leaves %j to the dialog and the run", (text) => {

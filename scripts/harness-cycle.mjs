@@ -1066,6 +1066,7 @@ const {
   onManualInput,
   runAttempt,
 } = await import("../src/gym/bench/attempt.ts");
+const { createBenchTools } = await import("../src/gym/bench/tools.ts");
 
 if (stored) {
   if (stored.planHash !== hash)
@@ -1333,11 +1334,15 @@ let fixture;
  */
 const fixtureUrl = () =>
   fixture?.url ?? `http://${FIXTURE_HOST}:${FIXTURE_PORT}`;
+// The tool layer a run may call: the built-in files tool alone, over this
+// Mac's home folder, so a note task can write its file in one tool step.
+const benchTools = await createBenchTools({ home, trace: diagnostics.write });
 const deps = {
   controller,
   clients,
   state,
   memoryAccess,
+  tools: benchTools.access,
   diagnostics,
   // The fixture log is flushed first, so the last page the model opened is
   // in the evidence the grader reads.

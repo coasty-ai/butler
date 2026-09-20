@@ -11,10 +11,11 @@ import { TOOL_LIMITS, TOOL_RESULT_TEXT } from "../src/core/tools";
 
 /**
  * A fake tool layer for the runner and policy tests: a builtin calendar and
- * reminders set (facts and lines), an untrusted filesystem server, a trusted
- * open-world GitHub server, a destructive scratch server and the coding
- * agent's long-running Agent. Outcomes are scripted per tool id; every call
- * is recorded.
+ * reminders set (facts and lines), the built-in files tool (a read, an
+ * append and a write over a ~/ path, grounded on the path alone as the real
+ * one is), an untrusted filesystem server, a trusted open-world GitHub
+ * server, a destructive scratch server and the coding agent's long-running
+ * Agent. Outcomes are scripted per tool id; every call is recorded.
  */
 
 /** Friday 18 September 2026, 5:50 PM in Los Angeles. */
@@ -106,6 +107,50 @@ export const REMINDER_ADD = builtin(
   "Create one reminder.",
   "title (text), due? (date-time, local), list? (text)",
 );
+/** The in-process files tool: builtin, trusted, closed-world (src/tools/providers/files.ts). */
+const files = (
+  name: string,
+  tier: ToolSpec["tier"],
+  undoable: boolean,
+  does: string,
+  params: string,
+): ToolSpec => ({
+  ...builtin(name, "Files", tier, [], does, params),
+  id: `files__${name}`,
+  provider: "files",
+  undoable,
+  trace: { tool: name, server: "files" },
+});
+export const FILES_READ = files(
+  "read_text_file",
+  "read",
+  false,
+  "Reads a plain-text file inside your home folder.",
+  "path (text, a ~/ path)",
+);
+export const FILES_APPEND = files(
+  "append_text_file",
+  "additive",
+  true,
+  "Adds text to the end of a plain-text file on its own line.",
+  "path (text, a ~/ path), text (text), newline? (boolean)",
+);
+export const FILES_WRITE = files(
+  "write_text_file",
+  "write",
+  true,
+  "Replaces the whole contents of a plain-text file.",
+  "path (text, a ~/ path), text (text)",
+);
+export const FILES_TOOLS = [FILES_READ, FILES_APPEND, FILES_WRITE];
+/** The home folder the fakes stand in for: an absolute path under it grounds as its ~/ form. */
+export const FAKE_HOME = "/Users/me";
+const homeRelative = (path: unknown) =>
+  typeof path === "string" && path.startsWith(`${FAKE_HOME}/`)
+    ? `~/${path.slice(FAKE_HOME.length + 1)}`
+    : String(path ?? "");
+const baseName = (path: unknown) =>
+  homeRelative(path).split("/").filter(Boolean).at(-1) ?? "";
 /** An untrusted stdio server declared local: reads still ask. */
 export const FS_LIST = mcp(
   "filesystem",
@@ -163,6 +208,9 @@ const REQUIRED: Record<string, string[]> = {
   apple__calendar_create_event: ["title", "start"],
   apple__reminders_list: [],
   apple__reminders_create: ["title"],
+  files__read_text_file: ["path"],
+  files__append_text_file: ["path", "text"],
+  files__write_text_file: ["path", "text"],
   filesystem__list_directory: ["path"],
   filesystem__write_file: ["path", "content"],
   github__search_repositories: ["query"],
@@ -204,6 +252,20 @@ const questionOf = (
         server: spec.title,
         folder: "/Users/me/butler-app",
       };
+    case FILES_READ.id:
+      return { kind: "file_read", name: baseName(args.path) };
+    case FILES_APPEND.id:
+      return {
+        kind: "file_append",
+        name: baseName(args.path),
+        text: s(args.text),
+      };
+    case FILES_WRITE.id:
+      return {
+        kind: "file_write",
+        name: baseName(args.path),
+        text: s(args.text),
+      };
     default:
       return {
         kind:
@@ -225,6 +287,21 @@ export function prepare(
   const required = REQUIRED[spec.id] ?? [];
   if (required.some((k) => typeof args[k] !== "string"))
     return { ok: false, problem: "invalid_args" };
+  // The files tool refuses a path outside the rules before policy, and
+  // grounds the call on the ~/ path alone (the text is the file's content).
+  if (spec.provider === "files") {
+    const path = String(args.path);
+    if (!path.startsWith("~/") && !path.startsWith(`${FAKE_HOME}/`))
+      return { ok: false, problem: "bad_path" };
+    if (/(?:^|\/)\.|\/\.\.(?:\/|$)|^~\/Library\//.test(homeRelative(path)))
+      return { ok: false, problem: "bad_path" };
+    return {
+      ok: true,
+      question: questionOf(spec, args),
+      groundText: [homeRelative(path)],
+      argsBytes: JSON.stringify(args).length,
+    };
+  }
   return {
     ok: true,
     question: questionOf(spec, args),
@@ -299,6 +376,34 @@ const defaultOutcome = (
           list: "Reminders",
         },
         undoToken: "u-2",
+      });
+    case FILES_READ.id:
+      return ok(spec, "Research notes for benchnote0a1b");
+    case FILES_APPEND.id:
+      return ok(
+        spec,
+        `Added 1 line to ${homeRelative(args.path)}; it now holds 2 lines.`,
+        {
+          verified: true,
+          facts: {
+            kind: "file",
+            name: baseName(args.path),
+            change: "appended",
+            lines: 1,
+          },
+          undoToken: "u-3",
+        },
+      );
+    case FILES_WRITE.id:
+      return ok(spec, `Replaced the contents of ${homeRelative(args.path)}.`, {
+        verified: true,
+        facts: {
+          kind: "file",
+          name: baseName(args.path),
+          change: "replaced",
+          lines: 1,
+        },
+        undoToken: "u-4",
       });
     default:
       return ok(spec, "done");

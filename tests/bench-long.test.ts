@@ -119,7 +119,19 @@ import type {
   RunJournal,
   TakeoverSource,
 } from "../src/gym/bench/types";
-import type { ScreenContext } from "../src/core/schema";
+import {
+  actionSchema,
+  defaultSettings,
+  type ScreenContext,
+} from "../src/core/schema";
+import { evaluate } from "../src/core/policy";
+import { TOOL_ALLOWED } from "../src/core/tool-policy";
+import {
+  createFilesProvider,
+  fileToolSpec,
+  homePath,
+} from "../src/tools/providers/files";
+import { CLOCK } from "./tool-fakes";
 
 /*
  * The long-horizon suite: catalogue invariants (design §8), every grader on
@@ -1052,6 +1064,68 @@ describe("long suite catalogue", () => {
         task.id !== "text-find-replace"
       )
         expect(task.approve, task.id).toEqual(["Save these changes?"]);
+  });
+
+  it("names every note file by a ~/ path the files tool accepts, and the default mode lets the append run on the task's own words", async () => {
+    // The tool route for FACT_NOT_NOTED (cycle 20260919-1646): the model
+    // reads the fact off the page and calls files__append_text_file with the
+    // path the instruction names. Policy grounds the call on that path
+    // alone, so under the default "task" mode it runs with no question and
+    // the write is the save; a path the tool would refuse never gets here.
+    const spec = fileToolSpec("append_text_file");
+    const provider = createFilesProvider({ home: "/Users/me" });
+    await provider.start();
+    const surface = {
+      appId: "com.apple.Safari",
+      pid: 1,
+      secureInput: false,
+      unknown: false,
+    };
+    let noted = 0;
+    for (const task of LONG_CATALOGUE) {
+      if (
+        !/\{benchPath\}\/\{token\}-[a-z]+\.(?:txt|csv)\b/.test(task.instruction)
+      )
+        continue;
+      const a = await prepare(task);
+      const words = fillInstruction(task.instruction, {
+        ...a.parameters,
+        [BROWSER_PARAM]: "Safari",
+      });
+      for (const [raw] of words.matchAll(/~\/\S+\.(?:txt|csv)\b/g)) {
+        noted++;
+        const path = raw.replace(/[.,;:]+$/, "");
+        expect(
+          homePath(path, "/Users/me"),
+          `${task.id}: ${path}`,
+        ).toMatchObject({ relative: path });
+        const args = { path, text: "What the page said: 15,888 and Acme" };
+        const prepared = provider.prepare(spec, args);
+        expect(prepared.ok, `${task.id}: ${path}`).toBe(true);
+        const decision = evaluate(
+          actionSchema.parse({
+            type: "tool_call",
+            frame_id: "f",
+            tool: spec.id,
+            args,
+          }),
+          surface,
+          structuredClone(defaultSettings),
+          false,
+          {
+            tool: { spec, prepared, calls: 0 },
+            clock: CLOCK,
+            userWords: words,
+          },
+        );
+        expect(decision, `${task.id}: ${path}`).toEqual({
+          kind: "ALLOW",
+          reason: TOOL_ALLOWED.grounded,
+        });
+      }
+    }
+    expect(noted).toBeGreaterThanOrEqual(3);
+    await provider.close();
   });
 
   it("names every file a TextEdit or research instruction opens with the attempt's token", () => {
