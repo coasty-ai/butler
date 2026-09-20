@@ -7,6 +7,12 @@ import CoreGraphics
 // fitting inside the limit, where a frame lies against the visible rect, and
 // which roles ask for their visible children first.
 func webTextChecks(_ check: (Bool, String) -> Void) {
+    check(TextWalkBudget.fallbackNodes == 24 && TextWalkBudget.fallbackCharacters == 400, "the fallback thresholds are pinned (probe 20260919-2257: 8-11 nodes a frame on the check-in page)")
+    check(TextWalkBudget.fellShort(nodes: 10, characters: 900, truncated: nil), "a finished walk of ten nodes fell short whatever its characters")
+    check(TextWalkBudget.fellShort(nodes: 80, characters: 120, truncated: nil), "a finished walk of 120 characters fell short whatever its nodes")
+    check(!TextWalkBudget.fellShort(nodes: 80, characters: 900, truncated: nil), "a finished walk with enough of both did not fall short")
+    check(!TextWalkBudget.fellShort(nodes: 10, characters: 100, truncated: "time"), "a walk that stopped early is not short, it is cut")
+    check(WebText.empty.walk == "page", "the empty text names the page walk")
     check(TextWalkBudget.marker == "[page continues below; scroll to read more]", "the marker line is pinned (src/core/schema.ts VISIBLE_TEXT_CUT_MARKER quotes it)")
     check(TextWalkBudget.marker.count == 43, "the marker is 43 characters, the room finish() keeps for it")
     check(TextWalkBudget.webSeconds == 0.8 && TextWalkBudget.nodeCap == 4000 && TextWalkBudget.textCap == 600 && TextWalkBudget.belowStreak == 3, "the budget's constants are pinned")

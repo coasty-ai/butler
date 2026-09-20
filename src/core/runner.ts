@@ -3474,6 +3474,7 @@ export class Runner {
         textNodes: c.visibleTextNodes,
       }),
       ...(c?.visibleTextMs !== undefined && { textMs: c.visibleTextMs }),
+      ...(c?.visibleTextWalk && { textWalk: c.visibleTextWalk }),
     });
     return frame;
   }

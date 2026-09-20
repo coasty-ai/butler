@@ -194,40 +194,54 @@ func webTextRoot(_ window: AXUIElement, visible: CGRect) -> (root: AXUIElement, 
 func webVisibleText(_ window: AXUIElement, display: CGRect, limit: Int = 4200, seconds: Double = TextWalkBudget.webSeconds) -> WebText {
     let started = ProcessInfo.processInfo.systemUptime
     let visible = (elementRect(window) ?? display).intersection(display)
-    var budget = TextWalkBudget(seconds: seconds, maxNodes: TextWalkBudget.nodeCap, maxCharacters: limit)
     let start = webTextRoot(window, visible: visible)
-    // Frames are read from the page's children down; under a bare window the
-    // top two levels are chrome whose frames say nothing about the text.
-    let pruneDepth = start.web ? 1 : 3
-    var parts = [String]()
-    func visit(_ node: AXUIElement, _ depth: Int, _ contained: Bool) {
-        guard depth < 60, budget.admit(elapsed: ProcessInfo.processInfo.systemUptime - started) else { return }
-        let role = attribute(node, kAXRoleAttribute) as? String ?? ""
-        if role == "AXStaticText" {
-            if let value = attribute(node, kAXValueAttribute) as? String, let bounded = budget.take(value) { parts.append(bounded) }
-            return
-        }
-        // A secure field publishes no static text, and nothing under it is read either.
-        if role == "AXTextField", attribute(node, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole { return }
-        let children = (attribute(node, TextWalkBudget.childrenAttribute(role: role)) ?? attribute(node, kAXChildrenAttribute)) as? [AXUIElement] ?? []
-        var below = 0
-        for child in children.prefix(200) {
-            guard budget.truncated == nil else { return }
-            var inside = contained
-            if depth + 1 >= pruneDepth, !contained {
-                switch TextWalkBudget.place(elementRect(child), in: visible) {
-                case .visible(let whole): inside = whole
-                case .above, .aside: below = 0; continue
-                case .below: below += 1; if below >= TextWalkBudget.belowStreak { return }; continue
-                }
+    // One walk from a root: frames are read from the page's children down;
+    // under a bare window the top two levels are chrome whose frames say
+    // nothing about the text.
+    func walk(_ root: AXUIElement, pruneDepth: Int, seconds: Double) -> (parts: [String], budget: TextWalkBudget) {
+        let began = ProcessInfo.processInfo.systemUptime
+        var budget = TextWalkBudget(seconds: seconds, maxNodes: TextWalkBudget.nodeCap, maxCharacters: limit)
+        var parts = [String]()
+        func visit(_ node: AXUIElement, _ depth: Int, _ contained: Bool) {
+            guard depth < 60, budget.admit(elapsed: ProcessInfo.processInfo.systemUptime - began) else { return }
+            let role = attribute(node, kAXRoleAttribute) as? String ?? ""
+            if role == "AXStaticText" {
+                if let value = attribute(node, kAXValueAttribute) as? String, let bounded = budget.take(value) { parts.append(bounded) }
+                return
             }
-            below = 0
-            visit(child, depth + 1, inside)
+            // A secure field publishes no static text, and nothing under it is read either.
+            if role == "AXTextField", attribute(node, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole { return }
+            let children = (attribute(node, TextWalkBudget.childrenAttribute(role: role)) ?? attribute(node, kAXChildrenAttribute)) as? [AXUIElement] ?? []
+            var below = 0
+            for child in children.prefix(200) {
+                guard budget.truncated == nil else { return }
+                var inside = contained
+                if depth + 1 >= pruneDepth, !contained {
+                    switch TextWalkBudget.place(elementRect(child), in: visible) {
+                    case .visible(let whole): inside = whole
+                    case .above, .aside: below = 0; continue
+                    case .below: below += 1; if below >= TextWalkBudget.belowStreak { return }; continue
+                    }
+                }
+                below = 0
+                visit(child, depth + 1, inside)
+            }
         }
+        visit(root, 0, false)
+        return (parts, budget)
     }
-    visit(start.root, 0, false)
+    var result = walk(start.root, pruneDepth: start.web ? 1 : 3, seconds: seconds)
+    var which = "page"
+    // A page walk that finished small read a subtree that was not the page
+    // (a hit test that landed beside it): walk from the window root as before
+    // 091b033, within what is left of the budget, and keep the larger text.
+    if start.web, TextWalkBudget.fellShort(nodes: result.budget.nodes, characters: result.budget.characters, truncated: result.budget.truncated) {
+        let left = max(0.3, seconds - (ProcessInfo.processInfo.systemUptime - started))
+        let again = walk(window, pruneDepth: 3, seconds: left)
+        if again.budget.characters > result.budget.characters { result = again; which = "window" }
+    }
     let elapsed = ProcessInfo.processInfo.systemUptime - started
-    return WebText(text: budget.finish(parts), truncated: budget.truncated, nodes: budget.nodes, elapsedMs: Int((elapsed * 1000).rounded()), characters: budget.characters)
+    return WebText(text: result.budget.finish(result.parts), truncated: result.budget.truncated, nodes: result.budget.nodes, elapsedMs: Int((elapsed * 1000).rounded()), characters: result.budget.characters, walk: which)
 }
 /**
  Text read from the screenshot itself, inside the frontmost window, top to
@@ -1430,7 +1444,7 @@ func screenContext() -> [String:Any] {
         if page.text.count > (result["visibleText"] as? String ?? "").count {result["visibleText"]=String(page.text.prefix(4200))}
         // The walk's account, whichever text won: a cut page is a fact of the frame.
         if let truncated = page.truncated {result["visibleTextTruncated"]=truncated}
-        result["visibleTextNodes"]=page.nodes;result["visibleTextMs"]=page.elapsedMs
+        result["visibleTextNodes"]=page.nodes;result["visibleTextMs"]=page.elapsedMs;result["visibleTextWalk"]=page.walk
     }
     if let raw=attribute(element,kAXFocusedUIElementAttribute) {
         let focused=raw as! AXUIElement
@@ -3125,7 +3139,7 @@ func targetContext(_ bound: TargetBinding, state: WindowState, frame: CGRect, fa
         let page = webVisibleText(bound.window, display: frame)
         if page.text.count > text.count { text = String(page.text.prefix(4200)) }
         if let truncated = page.truncated { result["visibleTextTruncated"] = truncated }
-        result["visibleTextNodes"] = page.nodes; result["visibleTextMs"] = page.elapsedMs
+        result["visibleTextNodes"] = page.nodes; result["visibleTextMs"] = page.elapsedMs; result["visibleTextWalk"] = page.walk
     }
     result["visibleText"] = text
     // The field an accessibility write would go to is the surface's

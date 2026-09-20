@@ -997,6 +997,13 @@ export interface ScreenContext {
    */
   visibleTextNodes?: number;
   visibleTextMs?: number;
+  /**
+   * Which walk produced the page text: "page" from the page's root, or
+   * "window" when the page walk finished small and the window-root walk
+   * (the one before 091b033) read more. Diagnostics (FrameCaptured
+   * textWalk); left out of the model's copy.
+   */
+  visibleTextWalk?: "page" | "window";
   recentWindows?: { appName: string; title: string }[];
   recentFiles?: string[];
   recentTasks?: { task: string; status: string }[];

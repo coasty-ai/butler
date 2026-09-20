@@ -56,6 +56,8 @@ const fields = new Set([
   "textTruncated",
   "textNodes",
   "textMs",
+  // FrameCaptured: which walk produced the text (page | window).
+  "textWalk",
   "actionType",
   "targetRole",
   "focusedRole",
@@ -551,8 +553,10 @@ const codeFields = new Set([
   // travel as reasonCode (src/core/decision-codes.ts) and approvalCode.
   "reason",
   "reasonCode",
-  // FrameCaptured: why the page text was cut (time, nodes or chars).
+  // FrameCaptured: why the page text was cut (time, nodes or chars), and
+  // which walk read it (page or window).
   "textTruncated",
+  "textWalk",
   // A run's origin and privacy, a background rung step's from and to.
   "origin",
   "privacy",
@@ -714,7 +718,14 @@ const journalEvents = new Map<string, Set<string>>([
   ["UsageAdded", new Set(["usage"])],
   [
     "FrameCaptured",
-    new Set(["frameId", "geometry", "textTruncated", "textNodes", "textMs"]),
+    new Set([
+      "frameId",
+      "geometry",
+      "textTruncated",
+      "textNodes",
+      "textMs",
+      "textWalk",
+    ]),
   ],
   ["TransitionSettled", new Set(["kind"])],
   ["ModelRequestStarted", new Set(["screenshot", "screenshotReason", "early"])],
@@ -1219,6 +1230,7 @@ export class LocalDiagnostics {
           textTruncated: code(e.data.textTruncated),
           textNodes: count(e.data.textNodes),
           textMs: count(e.data.textMs),
+          textWalk: code(e.data.textWalk),
           synthetic: s.run.synthetic,
           actionType: e.data.actionType,
           appId: e.data.appId,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cleanScreenContext } from "../src/core/context";
+import { cleanScreenContext, trimScreenContext } from "../src/core/context";
 describe("bounded screen context", () => {
   it("retains references while removing detected credentials", () => {
     const result = cleanScreenContext({
@@ -51,6 +51,31 @@ describe("bounded screen context", () => {
       visibleTextNodes: 4000,
       visibleTextMs: 412,
     });
+    // Which walk read the text: page or window (the fallback after a page
+    // walk that finished small); another word is dropped, and the model's
+    // copy never carries it.
+    for (const walk of ["page", "window"])
+      expect(
+        cleanScreenContext({
+          appName: "x",
+          windowTitle: "x",
+          visibleTextWalk: walk,
+        })?.visibleTextWalk,
+      ).toBe(walk);
+    expect(
+      cleanScreenContext({
+        appName: "x",
+        windowTitle: "x",
+        visibleTextWalk: "root",
+      })?.visibleTextWalk,
+    ).toBeUndefined();
+    expect(
+      trimScreenContext({
+        appName: "x",
+        windowTitle: "x",
+        visibleTextWalk: "window",
+      }),
+    ).not.toHaveProperty("visibleTextWalk");
     for (const truncated of ["time", "nodes"])
       expect(
         cleanScreenContext({

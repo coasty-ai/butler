@@ -25,6 +25,7 @@ const contextSchema = z
     visibleTextTruncated: z.enum(["time", "nodes", "chars"]).optional(),
     visibleTextNodes: z.number().int().min(0).max(100000).optional(),
     visibleTextMs: z.number().int().min(0).max(600000).optional(),
+    visibleTextWalk: z.enum(["page", "window"]).optional(),
     recentWindows: z
       .array(z.object({ appName: short, title: short }).strict())
       .max(12)
@@ -122,6 +123,9 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
       visibleTextNodes: c.visibleTextNodes,
     }),
     ...(c.visibleTextMs !== undefined && { visibleTextMs: c.visibleTextMs }),
+    ...(c.visibleTextWalk !== undefined && {
+      visibleTextWalk: c.visibleTextWalk,
+    }),
     recentWindows: c.recentWindows?.map((w) => ({
       appName: clean(w.appName),
       title: clean(w.title),
@@ -247,6 +251,7 @@ export function trimScreenContext(
     recentWindows: _recentWindows,
     visibleTextNodes: _visibleTextNodes,
     visibleTextMs: _visibleTextMs,
+    visibleTextWalk: _visibleTextWalk,
     ...rest
   } = screen;
   return {

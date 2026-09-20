@@ -2401,6 +2401,45 @@ describe("the journal's content-free rows", () => {
       expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
     }));
 
+  it("keeps which walk read a frame's page text as a code and drops a sentence", () =>
+    fixture((log) => {
+      const s = journal([
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0a1",
+            sha256: "s",
+            geometry: {},
+            textWalk: "window",
+          },
+        },
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0a2",
+            sha256: "s",
+            geometry: {},
+            textWalk: "page",
+          },
+        },
+        {
+          type: "FrameCaptured",
+          data: {
+            frame_id: "0f3b2a1c-9d8e-4f7a-b6c5-d4e3f2a1b0a3",
+            sha256: "s",
+            geometry: {},
+            textWalk: `${MARK} the window root read more than the page`,
+          },
+        },
+      ]);
+      log.snapshot(s);
+      const written = rows(log).filter((r) => r.event === "FrameCaptured");
+      expect(written.map((r) => r.data.textWalk)).toEqual([
+        "window",
+        "page",
+        undefined,
+      ]);
+    }));
   it("drops the whole payload of a journal event its table does not know", () =>
     fixture((log) => {
       const s = journal([

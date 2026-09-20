@@ -42,6 +42,17 @@ struct TextWalkBudget {
     /// follows three below-fold blocks in the markup is the case this loses).
     static let belowStreak = 3
     static let nodeCap = 4000
+    /// A page walk that finished (no stop reason) with fewer nodes or
+    /// characters than this read a subtree that was not the page: probe
+    /// 20260919-2257 read 8–11 nodes a frame on the check-in fixture while
+    /// the page held the confirmation, and the model clicked on. Such a walk
+    /// is repeated from the window root (the walk before 091b033) and the
+    /// larger text wins.
+    static let fallbackNodes = 24
+    static let fallbackCharacters = 400
+    static func fellShort(nodes: Int, characters: Int, truncated: String?) -> Bool {
+        truncated == nil && (nodes < fallbackNodes || characters < fallbackCharacters)
+    }
     /// Characters kept of one static text: a wall of text is not the page.
     static let textCap = 600
     /// The roles whose AXVisibleChildren may be fewer than their children
@@ -121,5 +132,8 @@ struct WebText {
     let nodes: Int
     let elapsedMs: Int
     let characters: Int
-    static let empty = WebText(text: "", truncated: nil, nodes: 0, elapsedMs: 0, characters: 0)
+    /// Which walk produced the text: "page" (from the page's root) or
+    /// "window" (from the window root, after a page walk fell short).
+    let walk: String
+    static let empty = WebText(text: "", truncated: nil, nodes: 0, elapsedMs: 0, characters: 0, walk: "page")
 }
