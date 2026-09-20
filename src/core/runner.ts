@@ -2739,9 +2739,44 @@ export class Runner {
       return "continue";
     }
     if (action.finish && ok && outcome.verified && outcome.facts) {
-      run.summary = redactSecrets(
+      const summary = redactSecrets(
         toolDoneLine(outcome.facts, tools.clock(), this.userWords(run)),
       );
+      // A tool step marked finish is a done in all but name, so the
+      // objective's requirements are read once against the steps here too.
+      // Probe 20260919-2257-efdc2a8: two hotel runs ended on a verified
+      // append marked finish after five actions with the dates never
+      // searched, and eight of ten completed runs never proposed a done
+      // at all, so the audit at the done path saw one run in twenty-three.
+      if (
+        !this.doneAudited &&
+        auditApplies({
+          objective: run.task,
+          origin: run.origin,
+          synthetic: run.synthetic,
+          actions: run.actions,
+          hasText: typeof this.provider.text === "function",
+        })
+      ) {
+        this.doneAudited = true;
+        const audit = await this.auditDone(run, this.history, summary);
+        if (this.held || epoch !== this.epoch) return "continue";
+        if (audit?.unmet.length) {
+          this.event("ActionFailed", {
+            code: "DONE_CHALLENGED",
+            actionType: action.type,
+            reason: REQUIREMENT_UNMET,
+            unmet: audit.unmet.length,
+          });
+          this.history.push({
+            type: "rejected",
+            action: echoAction(action),
+            result: requirementChallenge(audit.unmet),
+          });
+          return "continue";
+        }
+      }
+      run.summary = summary;
       this.event("RunCompleted");
       this.status("completed", run.summary);
       return "completed";

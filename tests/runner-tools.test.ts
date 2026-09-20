@@ -24,6 +24,10 @@ import {
   type RunnerExtras,
 } from "../src/core/runner";
 import { TOOL_ALLOWED } from "../src/core/tool-policy";
+import {
+  REQUIREMENT_UNMET,
+  requirementChallenge,
+} from "../src/core/done-audit";
 import { TOOL_REFUSALS, TOOL_RESULT_TEXT } from "../src/core/tools";
 import {
   AGENT,
@@ -1052,5 +1056,90 @@ describe("a learned tool step", () => {
         },
       },
     ]);
+  });
+});
+
+describe("a tool step that finishes the run", () => {
+  const all = { autonomy: "all" as const, autonomyAllAcknowledged: true };
+  const look = act({ type: "capture" });
+  const finishing = call(CALENDAR_ADD.id, DENTIST, true);
+  const OBJECTIVE =
+    "Open the calendar page, then add the dentist appointment and tell me the time.";
+  const usage = { inputTokens: 300, outputTokens: 40, cost: 0.001 };
+  const auditing = (
+    h: ReturnType<typeof harness>,
+    requirements: { text: string; met: boolean; evidence: string | null }[],
+  ) => {
+    const text = vi.fn(async () => ({
+      text: JSON.stringify({ requirements }),
+      usage,
+      code: "ok" as const,
+    }));
+    (h.provider as { text?: typeof text }).text = text;
+    return text;
+  };
+  it("is audited like a done: an unmet requirement sends it back once, and the next finish stands", async () => {
+    // Probe 20260919-2257: a verified append marked finish completed the
+    // hotel runs with the search never made, and no audit had run because
+    // no done was ever proposed.
+    const h = harness({
+      replies: [look, look, finishing, finishing],
+      settings: all,
+    });
+    const text = auditing(h, [
+      { text: "open the calendar page", met: true, evidence: "step 1" },
+      { text: "add the dentist appointment", met: true, evidence: "step 3" },
+      { text: "tell me the time", met: false, evidence: null },
+    ]);
+    await h.runner.start(OBJECTIVE, voice);
+    expect(text).toHaveBeenCalledTimes(1);
+    const sent = h.m
+      .of("ActionFailed")
+      .filter((e) => e.data.reason === REQUIREMENT_UNMET);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].data).toEqual({
+      code: "DONE_CHALLENGED",
+      actionType: "tool_call",
+      reason: REQUIREMENT_UNMET,
+      unmet: 1,
+    });
+    // The model read the unmet requirement in the audit's words, then its
+    // second finishing call ended the run with the store's words.
+    const after = h.provider.observations.at(-1)!;
+    expect(after.history.at(-1)).toMatchObject({
+      type: "rejected",
+      result: requirementChallenge([
+        { text: "tell me the time", met: false, evidence: null },
+      ]),
+    });
+    expect(h.tools!.calls).toHaveLength(2);
+    expect(h.m.of("RunCompleted")).toHaveLength(1);
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.m.of("DoneAudited")).toHaveLength(1);
+    expect(h.m.of("DoneAudited")[0].data).toMatchObject({
+      requirements: 3,
+      unmet: 1,
+      code: "ok",
+    });
+  });
+  it("completes at once when the audit finds every requirement met, and audits no one-clause objective", async () => {
+    const met = harness({ replies: [look, look, finishing], settings: all });
+    const text = auditing(met, [
+      { text: "open the calendar page", met: true, evidence: "1" },
+      { text: "add the dentist appointment", met: true, evidence: "3" },
+    ]);
+    await met.runner.start(OBJECTIVE, voice);
+    expect(text).toHaveBeenCalledTimes(1);
+    expect(met.m.of("ActionFailed")).toHaveLength(0);
+    expect(met.m.of("RunCompleted")).toHaveLength(1);
+    expect(met.tools!.calls).toHaveLength(1);
+    const single = harness({
+      replies: [look, look, finishing],
+      settings: all,
+    });
+    const none = auditing(single, []);
+    await single.runner.start(DENTIST_WORDS, voice);
+    expect(none).not.toHaveBeenCalled();
+    expect(single.m.of("RunCompleted")).toHaveLength(1);
   });
 });
