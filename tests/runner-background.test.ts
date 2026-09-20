@@ -992,6 +992,8 @@ describe("policy and approvals on the bound window (design §4)", () => {
     await start(runnerWith(c, provider, m), "in Slack, reply");
     expect(c.executeTarget).not.toHaveBeenCalled();
     expect(m.of("UserDenied")).toHaveLength(1);
+    // The denial's reason as a code, so the trace never carries the window's name.
+    expect(m.of("UserDenied")[0].data.reasonCode).toBe("OUTSIDE_BOUND_WINDOW");
     expect(provider.observations[1].history.at(-1)?.result).toContain(
       "not the Slack window this run is bound to",
     );

@@ -29,6 +29,41 @@ function code(value: unknown): string | undefined {
  * of src/core/approval-codes.ts's codes as the runner stamped it on the event.
  */
 export const APPROVAL_DECLINED_PREFIX = "APPROVAL_DECLINED_";
+/**
+ * A step sent back, by the runner's reason code (src/core/decision-codes.ts
+ * retryCode, stamped on ActionRetargetRequested as reasonCode): the code
+ * rides beside the class as RETRY_CONTROL_COVERED, and a policy denial's by
+ * its code as POLICY_DENIED_CREDENTIAL.
+ */
+export const RETRY_PREFIX = "RETRY_";
+export const POLICY_DENIED_PREFIX = "POLICY_DENIED_";
+/**
+ * The retry codes that name a cause other than an unidentified target, and
+ * the class each is: a wait for the end of the user's sentence, an
+ * application that did not resolve or has no window, a refused address, a
+ * control or menu item that is not there as named, a refused tool call. Any
+ * other code (a target, field or key the policy could not identify) keeps
+ * the role-based class.
+ */
+const RETRY_CLASS: Record<string, string> = {
+  WAITING_FOR_SENTENCE: "RETRY_SPEAKING",
+  APP_ALREADY_FRONTMOST: "APP_ALREADY_FRONTMOST",
+  APP_UNRESOLVED: "APP_UNRESOLVED",
+  APP_AMBIGUOUS: "APP_AMBIGUOUS",
+  WINDOWLESS: "WINDOWLESS_APP",
+  WINDOWLESS_REPEAT: "WINDOWLESS_APP",
+  BAD_URL: "BAD_URL",
+  CONTROL_NOT_FOUND: "CONTROL_NOT_FOUND",
+  CONTROL_AMBIGUOUS: "CONTROL_NOT_FOUND",
+  CONTROL_DISABLED: "CONTROL_NOT_FOUND",
+  CONTROL_COVERED: "CONTROL_NOT_FOUND",
+  MENU_ITEM_MISSING: "CONTROL_NOT_FOUND",
+  MENU_ITEM_DISABLED: "CONTROL_NOT_FOUND",
+};
+/** The classes above that group several codes, so the code beside them says which. */
+const GROUPED_RETRY_CLASSES = new Set(
+  Object.values(RETRY_CLASS).filter((name, i, all) => all.indexOf(name) !== i),
+);
 /** An upper-snake approval code, so the pattern built from it stays one. */
 function approvalCodeOf(value: unknown): string | undefined {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{1,39}$/.test(value)
@@ -130,6 +165,20 @@ export function frictionCodes(line: DiagnosticLine): string[] {
     case "ActionRetargetRequested": {
       const launcher = code(d.launcherStatus);
       const action = code(d.actionType);
+      // The runner's reason code says why the step was sent back. A cause
+      // other than an unidentified target is its own class, and the code
+      // rides beside a class that groups several codes; the roles decide only
+      // when the code names a target the policy could not identify, or when
+      // an older trace carries no code. Only an upper-snake code counts: a
+      // sentence in the field, or OTHER, adds nothing.
+      const why = approvalCodeOf(d.reasonCode);
+      const named = why ? RETRY_CLASS[why] : undefined;
+      const beside = why && why !== "OTHER" ? [`${RETRY_PREFIX}${why}`] : [];
+      if (named)
+        return GROUPED_RETRY_CLASSES.has(named) && named !== why
+          ? [named, ...beside]
+          : [named];
+      if (why?.startsWith("TOOL_")) return ["TOOL_REFUSED", ...beside];
       if (launcher === "resolved" && action === "open_app")
         return ["APP_ALREADY_FRONTMOST"];
       if (launcher === "unresolved") return ["APP_UNRESOLVED"];
@@ -137,8 +186,11 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       if (launcher === "refused") return ["APP_REFUSED"];
       // No target and no focused role: the surface reported no accessibility
       // information at all, so the policy had nothing to identify.
-      if (!code(d.targetRole) && !code(d.focusedRole)) return ["BLIND_SURFACE"];
-      return ["UNIDENTIFIED_TARGET"];
+      const surface =
+        !code(d.targetRole) && !code(d.focusedRole)
+          ? "BLIND_SURFACE"
+          : "UNIDENTIFIED_TARGET";
+      return [surface, ...beside];
     }
     case "ActionFailed": {
       const failure = code(d.code);
@@ -182,7 +234,14 @@ export function frictionCodes(line: DiagnosticLine): string[] {
       // now voice, pill, typed, message or remote); a policy denial carries
       // only the reason. The question's code (src/core/approval-codes.ts)
       // splits the declines by what was asked, never by its text.
-      if (!code(d.source)) return ["POLICY_DENIED"];
+      if (!code(d.source)) {
+        // A policy denial's reason as the runner's code
+        // (src/core/decision-codes.ts deniedCode), never its sentence.
+        const why = approvalCodeOf(d.reasonCode);
+        return why && why !== "OTHER"
+          ? ["POLICY_DENIED", `${POLICY_DENIED_PREFIX}${why}`]
+          : ["POLICY_DENIED"];
+      }
       const asked = approvalCodeOf(d.approvalCode);
       return asked
         ? ["APPROVAL_DECLINED", `${APPROVAL_DECLINED_PREFIX}${asked}`]
@@ -193,9 +252,10 @@ export function frictionCodes(line: DiagnosticLine): string[] {
     case "UserTakeoverStarted": {
       const source = code(d.source);
       if (source === "manual_input") return ["MANUAL_TAKEOVER"];
-      // The default diagnostics allow-list does not carry this event's source,
-      // so a bare hand-off event is ambiguous and says so. NativeUserTakeover
-      // in the same run is what distinguishes real input from a hand-off.
+      // The diagnostics stream carries the hand-off's source as a code
+      // (handoff, policy, request_user); a trace from before it did leaves a
+      // bare event, which is ambiguous and says so. NativeUserTakeover in the
+      // same run is what distinguishes real input from a hand-off there.
       return source ? ["HANDOFF_TAKEOVER"] : ["TAKEOVER_STARTED"];
     }
     case "NativeUserTakeover":
@@ -397,6 +457,8 @@ export const OWNER: Record<string, string> = {
   EMERGENCY_STOP: "user",
   APPROVAL_DECLINED: "user",
   ACTION_REAIMED: "none",
+  // A step held until the user's sentence ended: nobody's failure.
+  RETRY_SPEAKING: "none",
   HELPER_UNAVAILABLE: "environment",
   HELPER_SLOW: "environment",
   NATIVE_ERROR: "environment",
@@ -467,6 +529,16 @@ const NOTE: Record<string, string> = {
     "The native helper rejected input because the target moved or the window changed.",
   UNIDENTIFIED_TARGET:
     "The policy could not identify what the pointer would hit, so no input was sent.",
+  CONTROL_NOT_FOUND:
+    "A control or menu item named by the model was not there as named (missing, several of that name, disabled or covered), so no input was sent; the RETRY_ pattern beside it says which.",
+  BAD_URL:
+    "The address the model gave was not a full http or https address without credentials, so nothing was loaded.",
+  WINDOWLESS_APP:
+    "The application the model opened has no window, and opening it again shows none; the route is its Window menu or File > New.",
+  RETRY_SPEAKING:
+    "The step was proposed while the user was still speaking and held for the end of the sentence; it is not a grounding problem.",
+  TOOL_REFUSED:
+    "A tool call the policy sent back (an unknown tool, bad arguments, a path the files tool may not touch); the RETRY_ pattern beside it says which.",
   BLIND_SURFACE:
     "The frontmost application reported no accessibility information, so every pointer step was refused.",
   APP_ALREADY_FRONTMOST:
@@ -549,6 +621,10 @@ const NOTE: Record<string, string> = {
 /** The authored note for a code, or the unclassified one. */
 export function noteFor(code: string): string {
   if (code in NOTE) return NOTE[code];
+  if (code.startsWith(RETRY_PREFIX))
+    return `A step was sent back; the suffix is the policy's reason as a code (src/core/decision-codes.ts retryCode), which tells a missing control from a refused address or a wait for the end of the sentence without the sentence.`;
+  if (code.startsWith(POLICY_DENIED_PREFIX))
+    return `A policy denial; the suffix is the policy's reason as a code (src/core/decision-codes.ts deniedCode): a protected application or site, a credential, a terminal, an installer.`;
   if (code.startsWith(APPROVAL_DECLINED_PREFIX))
     return `An approval was declined; the suffix is the policy's question as a code (src/core/approval-codes.ts). Declined on a task that lists no such approval, it is the task's design; asked and declined attempt after attempt for a control the policy should have classified (CLICK_CONTROL, ACTIVATE_CONTROL), it is a policy false positive.`;
   return NOTE.UNCLASSIFIED;

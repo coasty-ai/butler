@@ -11,6 +11,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { redactSecrets, sanitizeText, scanText } from "../src/core/sanitize";
+import { approvalCode } from "../src/core/approval-codes";
+import { allowedCode, deniedCode, retryCode } from "../src/core/decision-codes";
 import type { Snapshot } from "../src/core/schema";
 import type { DiagnosticSink } from "../src/core/diagnostics";
 
@@ -301,6 +303,19 @@ const fields = new Set([
   "imagesExpired",
   "on",
   "scope",
+  // Journal rows (snapshot below): a policy decision's reason as a code
+  // (src/core/decision-codes.ts) and the reason's length, never its text; a
+  // correction's position; a run's origin and privacy; a background rung
+  // step; a search route's depth; a capped foreground detour.
+  "reasonCode",
+  "reasonLength",
+  "after_action",
+  "origin",
+  "privacy",
+  "from",
+  "to",
+  "final",
+  "depth",
 ]);
 /** Allow-listed keys that only ever carry a count or position. */
 const countFields = new Set([
@@ -356,6 +371,9 @@ const countFields = new Set([
   "depthAtEnd",
   "leadingProse",
   "trailingProse",
+  // A correction's place in the run and a search route's length.
+  "after_action",
+  "depth",
 ]);
 /** Allow-listed keys that only ever carry a finite measurement. */
 const numberFields = new Set([
@@ -392,6 +410,8 @@ const numberFields = new Set([
   "waitedMs",
   "decideMs",
   "issueMs",
+  // How long a policy decision's reason or question was; never the words.
+  "reasonLength",
 ]);
 /** Allow-listed keys that only ever carry a boolean. */
 const flagFields = new Set([
@@ -423,6 +443,8 @@ const flagFields = new Set([
   "repaired",
   // BrowserQuit: whether the browser's process had gone.
   "quit",
+  // ForegroundRequested: the detour that releases the window for good.
+  "final",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -477,6 +499,17 @@ const codeFields = new Set([
   // ("routine-<hash>") is not a code by shape and is scrubbed as a string.
   "excluded",
   "scope",
+  // A reason is a code or nothing: the runner's fixed words (gone, pruned,
+  // deliverable_unchanged, minute_budget) pass; a policy's sentence, which
+  // quotes a label or an application, never does. The policy's decisions
+  // travel as reasonCode (src/core/decision-codes.ts) and approvalCode.
+  "reason",
+  "reasonCode",
+  // A run's origin and privacy, a background rung step's from and to.
+  "origin",
+  "privacy",
+  "from",
+  "to",
 ]);
 /**
  * The early step's own events keep only these keys, whatever else a caller
@@ -582,12 +615,195 @@ const toolEvents = new Set([
   "ToolCallFinished",
   "ToolUndo",
 ]);
+/** A proposed or executed action's content-free shape: positions and lengths. */
+const actionKeys = [
+  "actionType",
+  "x",
+  "y",
+  "start_x",
+  "start_y",
+  "end_x",
+  "end_y",
+  "delta_x",
+  "delta_y",
+  "textLength",
+  "nameLength",
+  "noteLength",
+  "siteKey",
+];
+/** Every journal row carries these, whatever the event. */
+const journalBase = new Set(["runId", "sequence", "synthetic"]);
+/**
+ * The run journal (src/core/runner.ts this.event, src/storage/vault.ts):
+ * what each event may put on its diagnostics row beside runId, sequence and
+ * synthetic, after the readers in snapshot() have reduced it to codes,
+ * counts, lengths and flags. An event not in this table writes the three
+ * keys alone, whatever its payload carries (a correction's words, a summary,
+ * a failure's message, a question); a key not in its set is dropped whatever
+ * its value. The payload itself (`data`) is written only under verbose
+ * debugging. docs/DEVELOPMENT.md "Diagnostics stream" has the same table.
+ */
+const journalEvents = new Map<string, Set<string>>([
+  ["RunStarted", new Set(["origin", "privacy"])],
+  ["RunCompleted", new Set()],
+  ["RunFailed", new Set(["code"])],
+  ["RunPaused", new Set(["reason"])],
+  ["RunCancelled", new Set()],
+  ["TaskAmended", new Set(["taskLength"])],
+  ["UsageAdded", new Set(["usage"])],
+  ["FrameCaptured", new Set(["frameId", "geometry"])],
+  ["TransitionSettled", new Set(["kind"])],
+  ["ModelRequestStarted", new Set(["screenshot", "screenshotReason", "early"])],
+  ["ModelResponseReceived", new Set(["usage"])],
+  ["ProviderUnavailable", new Set(["attempt"])],
+  ["ActionProposed", new Set([...actionKeys, "early"])],
+  ["ActionNormalized", new Set(["actionType"])],
+  [
+    "ActionExecuted",
+    new Set([
+      ...actionKeys,
+      "frameId",
+      "early",
+      "streamed",
+      "via",
+      "clauseIndex",
+      "outcome",
+      "launchedAppId",
+      "frontmost",
+      "wasRunning",
+      "launchedWindows",
+      "restoredWindow",
+      "openedKind",
+      "openedAppId",
+    ]),
+  ],
+  [
+    "ActionFailed",
+    new Set(["code", "change", "actionType", "reason", "problem"]),
+  ],
+  ["ActionInterrupted", new Set(["actionType"])],
+  ["ActionReaimed", new Set(["actionType"])],
+  [
+    "ActionRetargetRequested",
+    new Set([
+      "actionType",
+      "appId",
+      "targetRole",
+      "focusedRole",
+      "launcherStatus",
+      "reasonCode",
+      "reasonLength",
+    ]),
+  ],
+  ["ActionLoopDetected", new Set(["actionType", "period", "revisits"])],
+  ["ActionLoopBroken", new Set(["episode", "outcome"])],
+  ["NoProgressDetected", new Set(["actionType"])],
+  ["SearchRouteTaken", new Set(["appId", "depth"])],
+  ["PolicyAllowed", new Set(["actionType", "reasonCode", "reasonLength"])],
+  [
+    "PolicyConfirmationRequested",
+    new Set([
+      "actionType",
+      "appId",
+      "targetRole",
+      "focusedRole",
+      "approvalCode",
+      "questionKind",
+      "reasonLength",
+    ]),
+  ],
+  ["UserConfirmed", new Set(["source"])],
+  [
+    "UserDenied",
+    new Set([
+      "source",
+      "approvalCode",
+      "actionType",
+      "reasonCode",
+      "reasonLength",
+    ]),
+  ],
+  ["UserCorrectionRecorded", new Set(["textLength", "after_action"])],
+  ["UserTakeoverStarted", new Set(["source", "scope"])],
+  ["UserTakeoverEnded", new Set()],
+  ["TargetBound", new Set(["appId", "by"])],
+  ["TargetLeft", new Set(["reason", "code"])],
+  ["TargetSelfActivated", new Set()],
+  ["BackgroundRouteSkipped", new Set(["route"])],
+  ["RungStepped", new Set(["from", "to", "actionType"])],
+  ["ForegroundRequested", new Set(["reason", "actionType", "final"])],
+  ["MonitorStarted", new Set(["appId", "mode", "delayMs", "durationMs"])],
+  [
+    "MemoryRecalled",
+    new Set([
+      "preferences",
+      "episodes",
+      "apps",
+      "files",
+      "folders",
+      "skills",
+      "plan",
+      "mode",
+    ]),
+  ],
+  ["PlanStepProposed", new Set(["source", "index", "actionType"])],
+  ["PlanAbandoned", new Set(["index", "reason"])],
+  ["PlanCompleted", new Set(["source"])],
+  ["ToolsListed", new Set(["toolCount", "unavailableCount", "code"])],
+  ["ToolStepProposed", new Set(["source"])],
+  ["DictationStepProposed", new Set()],
+  [
+    "ToolCallProposed",
+    new Set([
+      "tool",
+      "server",
+      "toolTier",
+      "argsBytes",
+      "entityCount",
+      "questionKind",
+    ]),
+  ],
+  [
+    "ToolCallFinished",
+    new Set([
+      "tool",
+      "server",
+      "outcome",
+      "resultBytes",
+      "resultItems",
+      "durationMs",
+      "verified",
+      "finish",
+      "longRunning",
+    ]),
+  ],
+  ["ToolUndo", new Set(["tool", "server", "outcome"])],
+  ["StreamedStep", new Set(["kind", "siteKey", "clauseIndex", "outcome"])],
+  ["SpeculationAdopted", new Set(["kind", "leadMs", "savedMs", "frameAgeMs"])],
+  ["SpeculationDiscarded", new Set(["code", "kind", "usage"])],
+]);
 const code = (value: unknown) =>
   typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value)
     ? value
     : undefined;
 const count = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
+/**
+ * A policy decision's reason as a code: the runner's stamp when it is one,
+ * else the decision's own table by event (src/core/decision-codes.ts), so a
+ * journal written before the stamp, or a producer that forgot it, still
+ * yields a code and never the sentence. A person's decline carries no reason
+ * (its approvalCode names the question), so it yields nothing here.
+ */
+const reasonCodeOf = (type: string, data: Record<string, unknown>) => {
+  const stamped = code(data.reasonCode);
+  if (stamped) return stamped;
+  if (typeof data.reason !== "string") return undefined;
+  if (type === "PolicyAllowed") return allowedCode(data.reason);
+  if (type === "ActionRetargetRequested") return retryCode(data.reason);
+  if (type === "UserDenied") return deniedCode(data.reason);
+  return undefined;
+};
 
 export class LocalDiagnostics {
   readonly file: string;
@@ -684,6 +900,47 @@ export class LocalDiagnostics {
         .map(([key, v]) => [key, this.clean(v, depth + 1, key)]),
     );
   }
+  /**
+   * What a direct write keeps before the field allow-list: the early,
+   * speculation and keyed events their own keys, whatever else a caller
+   * passes; a proposed action (a ProviderResponse's, with its text, note,
+   * reason, summary, path or address) its type alone. Verbose debugging
+   * keeps everything.
+   */
+  private shape(event: string, data: Record<string, unknown>) {
+    if (this.verbose) return data;
+    const keep = earlyEvents.has(event)
+      ? earlyFields
+      : speculationEvents.has(event)
+        ? speculationFields
+        : keyedEvents.get(event);
+    const kept = keep
+      ? Object.fromEntries(
+          Object.entries(data).filter(([key]) => keep.has(key)),
+        )
+      : { ...data };
+    if ("action" in kept) {
+      const action = kept.action;
+      delete kept.action;
+      if (kept.actionType === undefined && action && typeof action === "object")
+        kept.actionType = code((action as Record<string, unknown>).type);
+    }
+    return kept;
+  }
+  /**
+   * A journal event's row keeps runId, sequence and synthetic and the keys
+   * its table entry names (journalEvents); an event off the table keeps the
+   * three alone. Verbose debugging keeps the whole row and the payload.
+   */
+  private journalRow(type: string, row: Record<string, unknown>) {
+    if (this.verbose) return row;
+    const allowed = journalEvents.get(type);
+    return Object.fromEntries(
+      Object.entries(row).filter(
+        ([key]) => journalBase.has(key) || allowed?.has(key) === true,
+      ),
+    );
+  }
   readonly write: DiagnosticSink = (event, data = {}) => {
     try {
       if (!/^[A-Za-z][A-Za-z0-9_.]{0,79}$/.test(event)) return;
@@ -693,25 +950,7 @@ export class LocalDiagnostics {
           pid: process.pid,
           sequence: ++this.sequence,
           event,
-          data: this.clean(
-            earlyEvents.has(event) && !this.verbose
-              ? Object.fromEntries(
-                  Object.entries(data).filter(([key]) => earlyFields.has(key)),
-                )
-              : speculationEvents.has(event) && !this.verbose
-                ? Object.fromEntries(
-                    Object.entries(data).filter(([key]) =>
-                      speculationFields.has(key),
-                    ),
-                  )
-                : keyedEvents.has(event) && !this.verbose
-                  ? Object.fromEntries(
-                      Object.entries(data).filter(([key]) =>
-                        keyedEvents.get(event)!.has(key),
-                      ),
-                    )
-                  : data,
-          ),
+          data: this.clean(this.shape(event, data)),
         }) + "\n";
       if (this.bytes + Buffer.byteLength(line) > this.maxBytes) {
         rmSync(this.file + ".3", { force: true });
@@ -778,158 +1017,224 @@ export class LocalDiagnostics {
       const action = e.data.action as Record<string, unknown> | undefined;
       const launched = e.data.launched as Record<string, unknown> | undefined;
       const opened = e.data.opened as Record<string, unknown> | undefined;
-      this.write(e.type, {
-        runId: s.run.id,
-        sequence: e.sequence_number,
-        // Full event payload (action text, corrections, summaries); dropped by
-        // the allow-list unless verbose debugging is on.
-        data: e.data,
-        code: e.data.code,
-        // ActionFailed for STATE_CHANGED: which kind of change, as a code.
-        change: e.data.change,
-        // ActionExecuted for a hotkey: pressed as its menu item or as keys.
-        via: e.data.via,
-        // A step taken before the run existed, while the user was speaking.
-        early: e.data.early,
-        // Its executed row, when the step was a fast action on a clause.
-        streamed: e.data.streamed,
-        // A fast action taken on a clause while the user spoke, journaled by
-        // the run it started (StreamedStep): its kind, site code, clause and
-        // outcome as codes and a count.
-        ...(e.type === "StreamedStep"
-          ? {
-              kind: code(e.data.kind),
-              siteKey: code(e.data.siteKey),
-              clauseIndex: count(e.data.clauseIndex),
-              outcome: code(e.data.outcome),
-            }
-          : {}),
-        // The first step prepared while the user spoke, adopted or let go by
-        // the run: its kind and timings (Speculation* events).
-        ...(speculationEvents.has(e.type)
-          ? {
-              kind: code(e.data.kind),
-              leadMs: count(e.data.leadMs),
-              savedMs: count(e.data.savedMs),
-              frameAgeMs: count(e.data.frameAgeMs),
-            }
-          : {}),
-        // A tool question names the item it would add; the question stays in
-        // the encrypted journal and only its kind is written here.
-        reason: e.data.actionType === "tool_call" ? undefined : e.data.reason,
-        questionKind: code(e.data.questionKind),
-        approvalCode: code(e.data.approvalCode),
-        usage: e.data.usage,
-        screenshot: e.data.screenshot,
-        screenshotReason: e.data.screenshotReason,
-        frameId: e.data.frame_id,
-        geometry: e.data.geometry,
-        synthetic: s.run.synthetic,
-        actionType: e.data.actionType,
-        appId: e.data.appId,
-        targetRole: e.data.targetRole,
-        focusedRole: e.data.focusedRole,
-        launcherStatus: e.data.launcherStatus,
-        normalized: e.data.normalized,
-        // The cycle length of a repeated action; ActionLoopDetected carries no
-        // content, and a REFUSED failure is logged by its code alone.
-        period: e.data.period,
-        revisits: e.data.revisits,
-        // The loop breaker's decision (ActionLoopBroken): which episode and
-        // whether the run got its reflection step or was failed as stuck.
-        ...(e.type === "ActionLoopBroken"
-          ? { episode: count(e.data.episode), outcome: code(e.data.outcome) }
-          : {}),
-        // The wait before a capture after a transition (TransitionSettled).
-        ...(e.type === "TransitionSettled" ? { kind: code(e.data.kind) } : {}),
-        // TaskAmended records only the new task's length, never its text.
-        taskLength: count(e.data.taskLength),
-        // Only the fixed, content-free problem description of a malformed reply.
-        problem:
-          e.data.code === "MALFORMED_RESPONSE" ? e.data.problem : undefined,
-        // Memory recall and replay plans: counts, positions and fixed codes.
-        // Preference, episode, skill and file text or paths never appear.
-        ...(memoryEvents.has(e.type)
-          ? {
-              preferences: count(e.data.preferences),
-              episodes: count(e.data.episodes),
-              apps: count(e.data.apps),
-              files: count(e.data.files),
-              folders: count(e.data.folders),
-              skills: count(e.data.skills),
-              index: count(e.data.index),
-              plan: code(e.data.plan),
-              mode: code(e.data.mode),
-              source: code(e.data.source),
-              reason: code(e.data.reason),
-            }
-          : {}),
-        ...(toolEvents.has(e.type)
-          ? {
-              tool: code(e.data.tool),
-              server: code(e.data.server),
-              toolTier: code(e.data.toolTier),
-              outcome: code(e.data.outcome),
-              source: code(e.data.source),
-              toolCount: count(e.data.toolCount),
-              unavailableCount: count(e.data.unavailableCount),
-              entityCount: count(e.data.entityCount),
-              argsBytes: count(e.data.argsBytes),
-              resultBytes: count(e.data.resultBytes),
-              resultItems: count(e.data.resultItems),
-              durationMs: count(e.data.durationMs),
-              verified: e.data.verified,
-              finish: e.data.finish,
-              longRunning: e.data.longRunning,
-            }
-          : {}),
-        // App names are user metadata; only the bundle id and flags are logged.
-        ...(e.type === "ActionExecuted" && launched
-          ? {
-              launchedAppId: launched.appId,
-              frontmost: launched.frontmost,
-              wasRunning: launched.wasRunning,
-              // A count and a flag: whether a running app came up windowless.
-              launchedWindows: launched.windows,
-              restoredWindow: launched.restoredWindow,
-            }
-          : {}),
-        // An opened file is logged by kind and handling app, never its path.
-        ...(e.type === "ActionExecuted" && opened
-          ? { openedKind: code(opened.kind), openedAppId: opened.appId }
-          : {}),
-        ...(action
-          ? {
-              actionType: action.type,
-              x: action.x,
-              y: action.y,
-              start_x: action.start_x,
-              start_y: action.start_y,
-              end_x: action.end_x,
-              end_y: action.end_y,
-              delta_x: action.delta_x,
-              delta_y: action.delta_y,
-              textLength:
-                typeof action.text === "string"
-                  ? action.text.length
-                  : undefined,
-              nameLength:
-                action.type === "open_app" && typeof action.name === "string"
-                  ? action.name.length
-                  : undefined,
-              // An open_url's site code (a recipe's key), never its address:
-              // a streamed row and a later model row of the same site read
-              // as a repeat (scripts/streaming-report.mjs).
-              siteKey:
-                action.type === "open_url" ? code(action.siteKey) : undefined,
-              // The model's note is a value it read on screen: its length only.
-              noteLength:
-                typeof action.note === "string"
-                  ? action.note.length
-                  : undefined,
-            }
-          : {}),
-      });
+      this.write(
+        e.type,
+        this.journalRow(e.type, {
+          runId: s.run.id,
+          sequence: e.sequence_number,
+          // The full payload (action text, a correction's words, summaries, a
+          // failure's message) is written only for opt-in verbose debugging;
+          // the content-free row is built from the readers below and reduced
+          // to its event's table entry by journalRow.
+          ...(this.verbose ? { data: e.data } : {}),
+          code: e.data.code,
+          // ActionFailed for STATE_CHANGED: which kind of change, as a code.
+          change: e.data.change,
+          // ActionExecuted for a hotkey: pressed as its menu item or as keys.
+          via: e.data.via,
+          // A step taken before the run existed, while the user was speaking.
+          early: e.data.early,
+          // Its executed row, when the step was a fast action on a clause.
+          streamed: e.data.streamed,
+          // A fast action taken on a clause while the user spoke, journaled by
+          // the run it started (StreamedStep): its kind, site code, clause and
+          // outcome as codes and a count.
+          ...(e.type === "StreamedStep"
+            ? {
+                kind: code(e.data.kind),
+                siteKey: code(e.data.siteKey),
+                clauseIndex: count(e.data.clauseIndex),
+                outcome: code(e.data.outcome),
+              }
+            : {}),
+          // The first step prepared while the user spoke, adopted or let go by
+          // the run: its kind and timings (Speculation* events).
+          ...(speculationEvents.has(e.type)
+            ? {
+                kind: code(e.data.kind),
+                leadMs: count(e.data.leadMs),
+                savedMs: count(e.data.savedMs),
+                frameAgeMs: count(e.data.frameAgeMs),
+              }
+            : {}),
+          // A decision's reason is the policy's sentence around a label, an
+          // application or a question (a tool question names the item it would
+          // add), so only its code and its length are written; a fixed word in
+          // the field (deliverable_unchanged, refused_step, gone, pruned) is a
+          // code itself and passes. The sentence stays in the encrypted journal.
+          reason: code(e.data.reason),
+          reasonCode: reasonCodeOf(e.type, e.data),
+          reasonLength:
+            typeof e.data.reason === "string"
+              ? e.data.reason.length
+              : undefined,
+          // RunStarted: how the run began and under which privacy, as codes.
+          origin: code(e.data.origin),
+          privacy: code(e.data.privacy),
+          // Who answered or caused it (a decline's pill or voice, a hand-off's
+          // manual_input, handoff or policy, a plan's intent or skill): a code.
+          source: code(e.data.source),
+          // UserCorrectionRecorded: the words' length and their place in the run.
+          ...(e.type === "UserCorrectionRecorded"
+            ? {
+                textLength:
+                  typeof e.data.text === "string"
+                    ? e.data.text.length
+                    : undefined,
+                after_action: count(e.data.after_action),
+              }
+            : {}),
+          // A background run's rung step, a foreground detour's cap and a
+          // search route's depth.
+          ...(e.type === "RungStepped"
+            ? { from: code(e.data.from), to: code(e.data.to) }
+            : {}),
+          ...(e.type === "ForegroundRequested" && e.data.final === true
+            ? { final: true }
+            : {}),
+          ...(e.type === "SearchRouteTaken"
+            ? { depth: count(e.data.depth) }
+            : {}),
+          ...(e.type === "UserTakeoverStarted"
+            ? { scope: code(e.data.scope) }
+            : {}),
+          ...(e.type === "TargetBound" ? { by: code(e.data.by) } : {}),
+          ...(e.type === "BackgroundRouteSkipped"
+            ? { route: code(e.data.route) }
+            : {}),
+          ...(e.type === "MonitorStarted"
+            ? {
+                mode: code(e.data.mode),
+                delayMs: count(e.data.delayMs),
+                durationMs: count(e.data.durationMs),
+              }
+            : {}),
+          ...(e.type === "ProviderUnavailable"
+            ? { attempt: count(e.data.attempt) }
+            : {}),
+          questionKind: code(e.data.questionKind),
+          // The question asked as a code (src/core/approval-codes.ts): the
+          // runner's stamp, else read off the question here.
+          approvalCode:
+            code(e.data.approvalCode) ??
+            (e.type === "PolicyConfirmationRequested" &&
+            typeof e.data.reason === "string"
+              ? approvalCode(e.data.reason)
+              : undefined),
+          usage: e.data.usage,
+          screenshot: e.data.screenshot,
+          screenshotReason: e.data.screenshotReason,
+          frameId: e.data.frame_id,
+          geometry: e.data.geometry,
+          synthetic: s.run.synthetic,
+          actionType: e.data.actionType,
+          appId: e.data.appId,
+          targetRole: e.data.targetRole,
+          focusedRole: e.data.focusedRole,
+          launcherStatus: e.data.launcherStatus,
+          normalized: e.data.normalized,
+          // The cycle length of a repeated action; ActionLoopDetected carries no
+          // content, and a REFUSED failure is logged by its code alone.
+          period: e.data.period,
+          revisits: e.data.revisits,
+          // The loop breaker's decision (ActionLoopBroken): which episode and
+          // whether the run got its reflection step or was failed as stuck.
+          ...(e.type === "ActionLoopBroken"
+            ? { episode: count(e.data.episode), outcome: code(e.data.outcome) }
+            : {}),
+          // The wait before a capture after a transition (TransitionSettled).
+          ...(e.type === "TransitionSettled"
+            ? { kind: code(e.data.kind) }
+            : {}),
+          // TaskAmended records only the new task's length, never its text.
+          taskLength: count(e.data.taskLength),
+          // Only the fixed, content-free problem description of a malformed reply.
+          problem:
+            e.data.code === "MALFORMED_RESPONSE" ? e.data.problem : undefined,
+          // Memory recall and replay plans: counts, positions and fixed codes.
+          // Preference, episode, skill and file text or paths never appear.
+          ...(memoryEvents.has(e.type)
+            ? {
+                preferences: count(e.data.preferences),
+                episodes: count(e.data.episodes),
+                apps: count(e.data.apps),
+                files: count(e.data.files),
+                folders: count(e.data.folders),
+                skills: count(e.data.skills),
+                index: count(e.data.index),
+                plan: code(e.data.plan),
+                mode: code(e.data.mode),
+                source: code(e.data.source),
+                reason: code(e.data.reason),
+              }
+            : {}),
+          ...(toolEvents.has(e.type)
+            ? {
+                tool: code(e.data.tool),
+                server: code(e.data.server),
+                toolTier: code(e.data.toolTier),
+                outcome: code(e.data.outcome),
+                source: code(e.data.source),
+                toolCount: count(e.data.toolCount),
+                unavailableCount: count(e.data.unavailableCount),
+                entityCount: count(e.data.entityCount),
+                argsBytes: count(e.data.argsBytes),
+                resultBytes: count(e.data.resultBytes),
+                resultItems: count(e.data.resultItems),
+                durationMs: count(e.data.durationMs),
+                verified: e.data.verified,
+                finish: e.data.finish,
+                longRunning: e.data.longRunning,
+              }
+            : {}),
+          // App names are user metadata; only the bundle id and flags are logged.
+          ...(e.type === "ActionExecuted" && launched
+            ? {
+                launchedAppId: launched.appId,
+                frontmost: launched.frontmost,
+                wasRunning: launched.wasRunning,
+                // A count and a flag: whether a running app came up windowless.
+                launchedWindows: launched.windows,
+                restoredWindow: launched.restoredWindow,
+              }
+            : {}),
+          // An opened file is logged by kind and handling app, never its path.
+          ...(e.type === "ActionExecuted" && opened
+            ? { openedKind: code(opened.kind), openedAppId: opened.appId }
+            : {}),
+          ...(action
+            ? {
+                actionType: action.type,
+                x: action.x,
+                y: action.y,
+                start_x: action.start_x,
+                start_y: action.start_y,
+                end_x: action.end_x,
+                end_y: action.end_y,
+                delta_x: action.delta_x,
+                delta_y: action.delta_y,
+                textLength:
+                  typeof action.text === "string"
+                    ? action.text.length
+                    : undefined,
+                nameLength:
+                  action.type === "open_app" && typeof action.name === "string"
+                    ? action.name.length
+                    : undefined,
+                // An open_url's site code (a recipe's key), never its address:
+                // a streamed row and a later model row of the same site read
+                // as a repeat (scripts/streaming-report.mjs).
+                siteKey:
+                  action.type === "open_url" ? code(action.siteKey) : undefined,
+                // The model's note is a value it read on screen: its length only.
+                noteLength:
+                  typeof action.note === "string"
+                    ? action.note.length
+                    : undefined,
+              }
+            : {}),
+        }),
+      );
     }
     if (this.lastStatus !== s.run.status) {
       this.lastStatus = s.run.status;
@@ -945,16 +1250,19 @@ export class LocalDiagnostics {
         appId: s.frame?.appId,
         toolCalls: count(s.run.tools?.calls),
         toolWrites: count(s.run.tools?.writes),
-        // Verbose-only fields (not in the allow-list).
-        task: s.run.task,
-        message: s.message,
-        summary: s.run.summary,
-        corrections: s.run.corrections,
-        pending: s.pending,
-        // A failed run's message can quote a tool result or the screen, so it
-        // is written only for opt-in debugging; RunFailed carries the code.
-        ...(s.run.status === "failed" && this.verbose
-          ? { error: s.message }
+        // The task, the pill's message, the summary, the corrections and the
+        // pending question are text and are handed over only for opt-in
+        // verbose debugging; a failed run's message can quote a tool result
+        // or the screen, so the same holds for it (RunFailed carries the code).
+        ...(this.verbose
+          ? {
+              task: s.run.task,
+              message: s.message,
+              summary: s.run.summary,
+              corrections: s.run.corrections,
+              pending: s.pending,
+              ...(s.run.status === "failed" ? { error: s.message } : {}),
+            }
           : {}),
       });
     }

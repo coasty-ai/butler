@@ -2044,6 +2044,89 @@ describe("run analyzer", () => {
     expect(
       frictionCodes({ event: "UserDenied", data: { source: "approval" } }),
     ).toEqual(["APPROVAL_DECLINED"]);
+    // The runner's reason code says why a step was sent back: a cause other
+    // than an unidentified target is its own class, with the code beside it
+    // as RETRY_<CODE> unless it is the class; a target the policy could not
+    // identify keeps the role-based class with the code beside it. A
+    // sentence in the field, or OTHER, adds nothing.
+    const retarget = (data: Record<string, unknown>) =>
+      frictionCodes({ event: "ActionRetargetRequested", data });
+    expect(
+      retarget({
+        actionType: "click_control",
+        focusedRole: "AXWebArea",
+        reasonCode: "CONTROL_NOT_FOUND",
+      }),
+    ).toEqual(["CONTROL_NOT_FOUND"]);
+    expect(
+      retarget({
+        actionType: "click_control",
+        focusedRole: "AXWebArea",
+        reasonCode: "CONTROL_COVERED",
+      }),
+    ).toEqual(["CONTROL_NOT_FOUND", "RETRY_CONTROL_COVERED"]);
+    expect(retarget({ actionType: "open_url", reasonCode: "BAD_URL" })).toEqual(
+      ["BAD_URL"],
+    );
+    expect(
+      retarget({
+        actionType: "click",
+        focusedRole: "AXWebArea",
+        reasonCode: "WAITING_FOR_SENTENCE",
+      }),
+    ).toEqual(["RETRY_SPEAKING"]);
+    expect(
+      retarget({ actionType: "open_app", reasonCode: "WINDOWLESS_REPEAT" }),
+    ).toEqual(["WINDOWLESS_APP", "RETRY_WINDOWLESS_REPEAT"]);
+    expect(
+      retarget({ actionType: "tool_call", reasonCode: "TOOL_BAD_PATH" }),
+    ).toEqual(["TOOL_REFUSED", "RETRY_TOOL_BAD_PATH"]);
+    expect(
+      retarget({
+        actionType: "click",
+        focusedRole: "AXWebArea",
+        reasonCode: "TARGET_UNIDENTIFIED",
+      }),
+    ).toEqual(["UNIDENTIFIED_TARGET", "RETRY_TARGET_UNIDENTIFIED"]);
+    expect(
+      retarget({ actionType: "type_text", reasonCode: "FIELD_UNIDENTIFIED" }),
+    ).toEqual(["BLIND_SURFACE", "RETRY_FIELD_UNIDENTIFIED"]);
+    expect(
+      retarget({
+        actionType: "open_app",
+        launcherStatus: "unresolved",
+        reasonCode: "APP_UNRESOLVED",
+      }),
+    ).toEqual(["APP_UNRESOLVED"]);
+    expect(
+      retarget({
+        actionType: "click",
+        focusedRole: "AXWebArea",
+        reasonCode: "OTHER",
+      }),
+    ).toEqual(["UNIDENTIFIED_TARGET"]);
+    expect(
+      retarget({
+        actionType: "click",
+        focusedRole: "AXWebArea",
+        reasonCode: "No input was sent. Nothing is named that now.",
+      }),
+    ).toEqual(["UNIDENTIFIED_TARGET"]);
+    // A policy denial by its code; a person's decline is unchanged.
+    expect(
+      frictionCodes({
+        event: "UserDenied",
+        data: { reasonCode: "CREDENTIAL" },
+      }),
+    ).toEqual(["POLICY_DENIED", "POLICY_DENIED_CREDENTIAL"]);
+    expect(
+      frictionCodes({ event: "UserDenied", data: { reasonCode: "OTHER" } }),
+    ).toEqual(["POLICY_DENIED"]);
+    expect(noteFor("RETRY_CONTROL_COVERED")).toContain("decision-codes");
+    expect(noteFor("POLICY_DENIED_CREDENTIAL")).toContain("decision-codes");
+    expect(noteFor("CONTROL_NOT_FOUND")).not.toBe(noteFor("UNCLASSIFIED"));
+    expect(ownerOf("RETRY_SPEAKING")).toBe("none");
+    expect(ownerOf("RETRY_CONTROL_COVERED")).toBe("agent");
     // The runner stamps the question's code on the decline, and the pattern
     // carries it beside the plain one. Only an upper-snake code: a question's
     // text or a lowercase kind never becomes a pattern.

@@ -233,6 +233,7 @@ describe("a run with a dictation", () => {
     expect(r.of("PolicyAllowed")[0].data.reason).toBe(
       "Write in the Notes document editor.",
     );
+    expect(r.of("PolicyAllowed")[0].data.reasonCode).toBe("NOTES_EDITOR");
     const finished = r.getRun();
     expect(finished.status).toBe("completed");
     expect(finished.summary).toBe("Typed it.");

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { LocalDiagnostics } from "../electron/diagnostics";
 import { errorDetails, trace } from "../src/core/diagnostics";
 import { ScreenChangedError } from "../src/core/errors";
-import type { Snapshot } from "../src/core/schema";
+import type { RunStatus, Snapshot } from "../src/core/schema";
 
 function fixture(
   run: (log: LocalDiagnostics, directory: string, output: string[]) => void,
@@ -1580,8 +1580,16 @@ describe("dialog and streamed-speech fields", () => {
         actionType: "tool_call",
         questionKind: "calendar_add",
         approvalCode: "TOOL_CALENDAR_ADD",
+        // The question's length, never the question.
+        reasonLength: hostile.length,
       });
+      // The reason of the allowed step travels as a code and a length; this
+      // fixture's reason is not one the policy states, so its code is OTHER.
       expect(byEvent.PolicyAllowed.reason).toBeUndefined();
+      expect(byEvent.PolicyAllowed).toMatchObject({
+        reasonCode: "OTHER",
+        reasonLength: hostile.length,
+      });
       expect(byEvent.ActionExecuted).toMatchObject({ actionType: "tool_call" });
       expect(byEvent.ToolCallFinished).toEqual({
         runId: id,
@@ -1607,7 +1615,8 @@ describe("dialog and streamed-speech fields", () => {
         toolWrites: 1,
         status: "completed",
       });
-      // A screen step's question is still written.
+      // A screen step's question is written as its code and length, never
+      // its text, even when the journal carries no approvalCode stamp.
       log.snapshot({
         run: {
           id,
@@ -1641,7 +1650,11 @@ describe("dialog and streamed-speech fields", () => {
       const last = JSON.parse(
         readFileSync(log.file, "utf8").trim().split("\n").at(-2)!,
       );
-      expect(last.data.reason).toBe("Send this message?");
+      expect(last.data.reason).toBeUndefined();
+      expect(last.data).toMatchObject({
+        approvalCode: "SEND_MESSAGE",
+        reasonLength: "Send this message?".length,
+      });
     }));
   it("keeps a policy question's code on the question and on its decline, and drops one that is not a code", () =>
     fixture((log) => {
@@ -2039,4 +2052,429 @@ describe("the benchmark harness's browser quit", () => {
         /benchnote|127\.0\.0\.1|password|would not go|Safari,/,
       );
     }));
+});
+
+/**
+ * The run journal's rows are built from a per-event table
+ * (electron/diagnostics.ts journalEvents): an event the table does not know
+ * writes runId, sequence and synthetic alone, a listed event only its listed
+ * keys, and a policy decision's reason travels as a code and a length. The
+ * live trace of 2026-09-19 carried a correction's words and a control's
+ * label because the app had been launched with COARENA_DIAGNOSTICS_VERBOSE=1,
+ * the opt-in that records text; these cases pin the content-free default.
+ */
+describe("the journal's content-free rows", () => {
+  const MARK = "ZEPHYRWORD";
+  const journal = (
+    events: { type: string; data: Record<string, unknown> }[],
+    status: RunStatus = "executing",
+  ): Snapshot => {
+    const id = crypto.randomUUID();
+    return {
+      run: {
+        id,
+        task: `${MARK} task`,
+        createdAt: new Date().toISOString(),
+        status,
+        privacy: "PRIVATE_LOCAL",
+        provider: "openai",
+        model: "fixture",
+        synthetic: false,
+        actions: 3,
+        frames: 3,
+        usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+        summary: `${MARK} summary`,
+      },
+      frame: null,
+      message: `${MARK} message`,
+      events: events.map((e, i) => ({
+        event_id: crypto.randomUUID(),
+        run_id: id,
+        sequence_number: i + 1,
+        monotonic_timestamp: 0,
+        wall_clock_timestamp: new Date().toISOString(),
+        schema_version: 1,
+        type: e.type,
+        data: e.data,
+      })),
+    };
+  };
+  const rows = (log: LocalDiagnostics) =>
+    readFileSync(log.file, "utf8")
+      .trim()
+      .split("\n")
+      .map((x) => JSON.parse(x));
+  const base = (s: Snapshot, sequence: number) => ({
+    runId: s.run!.id,
+    sequence,
+    synthetic: false,
+  });
+
+  it("writes a correction as its length and its place in the run, never its words or its clock", () =>
+    fixture((log) => {
+      const words = `${MARK} the other one, and stop after that please`;
+      const s = journal([
+        {
+          type: "UserCorrectionRecorded",
+          data: {
+            text: words,
+            after_action: 1,
+            timestamp: "2026-09-20T02:43:32.797Z",
+          },
+        },
+      ]);
+      log.snapshot(s);
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toContain(MARK);
+      expect(raw).not.toContain("02:43:32.797");
+      const [row] = rows(log);
+      expect(row.event).toBe("UserCorrectionRecorded");
+      expect(row.data).toEqual({
+        ...base(s, 1),
+        textLength: words.length,
+        after_action: 1,
+      });
+    }));
+
+  it("writes an allowed step's reason as a code and a length, whether the runner stamped the code or not", () =>
+    fixture((log) => {
+      const label = `“${MARK} Confirm”: done without asking, as you set. Reported when done.`;
+      const s = journal([
+        // No stamp: the stream reads the code off the reason itself.
+        { type: "PolicyAllowed", data: { reason: label, actionType: "click" } },
+        {
+          type: "PolicyAllowed",
+          data: {
+            reason: label,
+            reasonCode: "ALLOWED_AUTONOMY_ALL",
+            actionType: "click_control",
+          },
+        },
+        {
+          type: "PolicyAllowed",
+          data: {
+            reason: "Type in a known non-secure text field.",
+            reasonCode: "TYPE_TEXT_FIELD",
+          },
+        },
+        { type: "PolicyAllowed", data: { reason: "", reasonCode: "NONE" } },
+        // A stamp that is not a code is dropped and the table decides.
+        {
+          type: "PolicyAllowed",
+          data: { reason: label, reasonCode: `${MARK} is not a code` },
+        },
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        actionType: "click",
+        reasonCode: "ALLOWED_AUTONOMY_ALL",
+        reasonLength: label.length,
+      });
+      expect(r[1].data).toEqual({
+        ...base(s, 2),
+        actionType: "click_control",
+        reasonCode: "ALLOWED_AUTONOMY_ALL",
+        reasonLength: label.length,
+      });
+      expect(r[2].data).toEqual({
+        ...base(s, 3),
+        reasonCode: "TYPE_TEXT_FIELD",
+        reasonLength: 38,
+      });
+      expect(r[3].data).toEqual({
+        ...base(s, 4),
+        reasonCode: "NONE",
+        reasonLength: 0,
+      });
+      expect(r[4].data).toEqual({
+        ...base(s, 5),
+        reasonCode: "ALLOWED_AUTONOMY_ALL",
+        reasonLength: label.length,
+      });
+    }));
+
+  it("drops the whole payload of a journal event its table does not know", () =>
+    fixture((log) => {
+      const s = journal([
+        {
+          type: "SomethingNew",
+          data: {
+            text: MARK,
+            reason: "deliverable_unchanged",
+            code: "STATE_CHANGED",
+            actionType: "click",
+            count: 3,
+            textLength: 4,
+            nested: { code: "X", text: MARK },
+          },
+        },
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const [row] = rows(log);
+      expect(row.event).toBe("SomethingNew");
+      expect(row.data).toEqual(base(s, 1));
+    }));
+
+  it("keeps only the type of a ProviderResponse's action object", () =>
+    fixture((log) => {
+      log.write("ProviderResponse", {
+        attempt: 1,
+        action: { type: "fail", reason: `${MARK} cannot`, frame_id: "f1" },
+        durationMs: 12,
+        actionType: "fail",
+      });
+      log.write("ProviderResponse", {
+        attempt: 1,
+        action: {
+          type: "done",
+          summary: `${MARK} summary`,
+          note: `${MARK} note`,
+          frame_id: "f1",
+        },
+        durationMs: 12,
+      });
+      log.write("ProviderResponse", {
+        attempt: 1,
+        action: {
+          type: "open_url",
+          url: `https://${MARK}.example/x`,
+          path: `~/${MARK}.txt`,
+          text: MARK,
+          frame_id: "f1",
+        },
+        durationMs: 12,
+      });
+      // An action object without a type yields no type and nothing else.
+      log.write("ProviderResponse", {
+        attempt: 1,
+        action: { reason: MARK },
+        durationMs: 12,
+      });
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      expect(r[0].data).toEqual({
+        attempt: 1,
+        durationMs: 12,
+        actionType: "fail",
+      });
+      expect(r[1].data).toEqual({
+        attempt: 1,
+        durationMs: 12,
+        actionType: "done",
+      });
+      expect(r[2].data).toEqual({
+        attempt: 1,
+        durationMs: 12,
+        actionType: "open_url",
+      });
+      expect(r[3].data).toEqual({ attempt: 1, durationMs: 12 });
+    }));
+
+  it("writes a retarget's and a denial's reason as a code, never the sentence, and a person's decline as before", () =>
+    fixture((log) => {
+      const control = `No input was sent. Nothing in context.controls is named “${MARK}” now. If you can see it in the screenshot, click it by position with click(x,y) instead; otherwise take a fresh look. Do not repeat this name.`;
+      const url =
+        "No input was sent. Use a full http or https address without credentials.";
+      const bound = `No input was sent. The step's target is not the “${MARK}” window this run is bound to; input goes only to that window.`;
+      const credential = "Detected credentials cannot be typed by the agent.";
+      const s = journal([
+        {
+          type: "ActionRetargetRequested",
+          data: {
+            actionType: "click_control",
+            appId: "com.google.Chrome",
+            focusedRole: "AXWebArea",
+            reasonCode: "CONTROL_NOT_FOUND",
+            reason: control,
+          },
+        },
+        // No stamp: the code is read off the policy's sentence.
+        {
+          type: "ActionRetargetRequested",
+          data: {
+            actionType: "open_url",
+            appId: "com.google.Chrome",
+            reason: url,
+          },
+        },
+        {
+          type: "ActionRetargetRequested",
+          data: { actionType: "tool_call", reasonCode: "TOOL_BAD_PATH" },
+        },
+        // A stamp that is not a code, with no reason to read: no code.
+        {
+          type: "ActionRetargetRequested",
+          data: { actionType: "click", reasonCode: `${MARK} as a code` },
+        },
+        { type: "UserDenied", data: { reason: bound } },
+        {
+          type: "UserDenied",
+          data: {
+            reason: credential,
+            reasonCode: "CREDENTIAL",
+            actionType: "tool_call",
+          },
+        },
+        {
+          type: "UserDenied",
+          data: { source: "pill", approvalCode: "CLICK_CONTROL" },
+        },
+      ]);
+      log.snapshot(s);
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toContain(MARK);
+      expect(raw).not.toContain("No input was sent");
+      const r = rows(log);
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        actionType: "click_control",
+        appId: "com.google.Chrome",
+        focusedRole: "AXWebArea",
+        reasonCode: "CONTROL_NOT_FOUND",
+        reasonLength: control.length,
+      });
+      expect(r[1].data).toEqual({
+        ...base(s, 2),
+        actionType: "open_url",
+        appId: "com.google.Chrome",
+        reasonCode: "BAD_URL",
+        reasonLength: url.length,
+      });
+      expect(r[2].data).toEqual({
+        ...base(s, 3),
+        actionType: "tool_call",
+        reasonCode: "TOOL_BAD_PATH",
+      });
+      expect(r[3].data).toEqual({ ...base(s, 4), actionType: "click" });
+      expect(r[4].data).toEqual({
+        ...base(s, 5),
+        reasonCode: "OUTSIDE_BOUND_WINDOW",
+        reasonLength: bound.length,
+      });
+      expect(r[5].data).toEqual({
+        ...base(s, 6),
+        actionType: "tool_call",
+        reasonCode: "CREDENTIAL",
+        reasonLength: credential.length,
+      });
+      expect(r[6].data).toEqual({
+        ...base(s, 7),
+        source: "pill",
+        approvalCode: "CLICK_CONTROL",
+      });
+    }));
+
+  it("writes a run's start and ending, a step's failure, a proposed fail or done, a pause and a hand-off by their codes alone", () =>
+    fixture((log) => {
+      const s = journal(
+        [
+          {
+            type: "RunStarted",
+            data: {
+              origin: "voice",
+              privacy: "PRIVATE_BYOM",
+              synthetic: false,
+            },
+          },
+          {
+            type: "ActionProposed",
+            data: {
+              action: { type: "fail", reason: `${MARK} why`, frame_id: "f" },
+            },
+          },
+          {
+            type: "ActionProposed",
+            data: {
+              action: { type: "done", summary: `${MARK} what`, frame_id: "f" },
+            },
+          },
+          {
+            type: "ActionFailed",
+            data: {
+              code: "INVALID_ACTION",
+              cause: "SHAPE",
+              message: `${MARK} m`,
+            },
+          },
+          {
+            type: "RunPaused",
+            data: { reason: "control", message: `${MARK} paused` },
+          },
+          {
+            type: "UserTakeoverStarted",
+            data: {
+              source: "policy",
+              reason: `${MARK} take over`,
+              scope: "screen",
+            },
+          },
+          { type: "RunCompleted", data: { summary: `${MARK} done` } },
+          {
+            type: "RunFailed",
+            data: { code: "RUN_ERROR", message: `${MARK} failed`, error: MARK },
+          },
+        ],
+        "failed",
+      );
+      log.snapshot(s);
+      const raw = readFileSync(log.file, "utf8");
+      expect(raw).not.toContain(MARK);
+      const r = rows(log);
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        origin: "voice",
+        privacy: "PRIVATE_BYOM",
+      });
+      expect(r[1].data).toEqual({ ...base(s, 2), actionType: "fail" });
+      expect(r[2].data).toEqual({ ...base(s, 3), actionType: "done" });
+      expect(r[3].data).toEqual({ ...base(s, 4), code: "INVALID_ACTION" });
+      expect(r[4].data).toEqual({ ...base(s, 5), reason: "control" });
+      expect(r[5].data).toEqual({
+        ...base(s, 6),
+        source: "policy",
+        scope: "screen",
+      });
+      expect(r[6].data).toEqual(base(s, 7));
+      expect(r[7].data).toEqual({ ...base(s, 8), code: "RUN_ERROR" });
+      // The failed run's state carries no task, message, summary or error.
+      const state = r.at(-1)!;
+      expect(state.event).toBe("RunState");
+      expect(state.data.status).toBe("failed");
+      for (const key of ["task", "message", "summary", "error", "corrections"])
+        expect(state.data[key]).toBeUndefined();
+    }));
+
+  it("records a correction's words and a journal payload only under opt-in verbose debugging", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "assist-diagnostics-verbose-"),
+    );
+    try {
+      const output: string[] = [];
+      const log = new LocalDiagnostics(
+        directory,
+        () => [],
+        (line) => output.push(line),
+        undefined,
+        true,
+      );
+      const s = journal([
+        {
+          type: "UserCorrectionRecorded",
+          data: { text: `${MARK} words`, after_action: 1 },
+        },
+      ]);
+      log.snapshot(s);
+      const row = JSON.parse(output[0]);
+      expect(row.event).toBe("UserCorrectionRecorded");
+      // Verbose keeps the payload under data, as tonight's trace showed.
+      expect(row.data.data.text).toBe(`${MARK} words`);
+      expect(row.data.textLength).toBe(`${MARK} words`.length);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

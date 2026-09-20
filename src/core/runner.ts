@@ -83,6 +83,7 @@ import {
   type Decision,
 } from "./policy";
 import { approvalCode } from "./approval-codes";
+import { allowedCode, deniedCode, retryCode } from "./decision-codes";
 import { watchSpec, type WatchChain, type WatchSpec } from "./monitor";
 import {
   TOOL_LIMITS,
@@ -2407,6 +2408,9 @@ export class Runner {
     const title = bound(spec.title, 40);
     this.event("PolicyAllowed", {
       reason: decision.reason,
+      // The reason as a code (src/core/decision-codes.ts): the diagnostics
+      // stream carries the code and the reason's length, never its text.
+      reasonCode: allowedCode(decision.reason),
       actionType: action.type,
     });
     this.status(
@@ -3235,7 +3239,10 @@ export class Runner {
     const frame = this.recordFrame(p.frame);
     if (!frame) return;
     this.event("ActionProposed", { action: p.action, early: true });
-    this.event("PolicyAllowed", { reason: p.reason });
+    this.event("PolicyAllowed", {
+      reason: p.reason,
+      reasonCode: allowedCode(p.reason),
+    });
     this.attempted++;
     this.recordExecuted(p.action, frame, frame, p.surface, p.outcome, {
       early: true,
@@ -4350,7 +4357,10 @@ export class Runner {
         // A refused tool call has no target to hand over: it counts as an
         // invalid step, and four in a row pause the run as they do today.
         if (decision.kind === "RETRY" && action.type === "tool_call") {
-          this.event("ActionRetargetRequested", { actionType: action.type });
+          this.event("ActionRetargetRequested", {
+            actionType: action.type,
+            reasonCode: retryCode(decision.reason),
+          });
           history.push({
             type: action.type,
             action: echoAction(action),
@@ -4366,6 +4376,10 @@ export class Runner {
             targetRole: actionSurface.targetRole,
             focusedRole: actionSurface.focusedRole,
             launcherStatus: actionSurface.launcherStatus,
+            // Why the step was sent back, as a code: a missing control, a
+            // refused address or a wait for the end of the sentence read
+            // apart in the trace without the sentence.
+            reasonCode: retryCode(decision.reason),
           });
           const route = searchRoute(action, actionSurface);
           if (route && !this.searchRoutes.has(actionSurface.appId)) {
@@ -4413,6 +4427,7 @@ export class Runner {
         if (decision.kind === "DENY") {
           this.event("UserDenied", {
             reason: decision.reason,
+            reasonCode: deniedCode(decision.reason),
             ...(action.type === "tool_call" ? { actionType: action.type } : {}),
           });
           history.push({
@@ -4677,7 +4692,10 @@ export class Runner {
           if (state === "continue") continue;
           break;
         }
-        this.event("PolicyAllowed", { reason: decision.reason });
+        this.event("PolicyAllowed", {
+          reason: decision.reason,
+          reasonCode: allowedCode(decision.reason),
+        });
         // The first screen step after a tool that could not do it says so:
         // the words are spoken through the run's status like every step's.
         const fallback = this.toolFallback;

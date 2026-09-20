@@ -501,6 +501,9 @@ describe("runner policy counters", () => {
     expect(m.of("ActionRetargetRequested")[0].data.launcherStatus).toBe(
       "unresolved",
     );
+    // The reason as a code beside it (src/core/decision-codes.ts): this
+    // fixture's sentence is not one the policy states, so its code is OTHER.
+    expect(m.of("ActionRetargetRequested")[0].data.reasonCode).toBe("OTHER");
     expect(p.observations[2].history[0].action).toEqual({
       type: "open_app",
       name: "Notez",
@@ -1496,6 +1499,10 @@ describe("runner open_app execution", () => {
     );
     expect(opens(execute)).toBe(2);
     expect(m.of("ActionRetargetRequested")).toHaveLength(1);
+    // The runner's own refusal carries its reason as a code, never the name.
+    expect(m.of("ActionRetargetRequested")[0].data.reasonCode).toBe(
+      "WINDOWLESS_REPEAT",
+    );
   });
   it("hands over after four windowless repeats instead of looping", async () => {
     realOpenApp();
