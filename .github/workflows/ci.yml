@@ -1,0 +1,36 @@
+# The gate the maintainers run before every landing (CONTRIBUTING.md), on GitHub's
+# macOS runners so the pure Swift safety tests compile too. Nothing here launches
+# the app, drives a desktop or needs a key: the live benchmark and the paid
+# provider checks stay opt-in and local.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: typecheck, format, tests, native safety
+    runs-on: macos-14
+    timeout-minutes: 40
+    env:
+      ELECTRON_RUN_AS_NODE: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: npx prettier --check .
+      - name: Unit tests (the harness-cycle suite needs a live checkout and is run locally)
+        run: npx vitest run --exclude tests/harness-cycle.test.ts
+      - name: Native safety (compiles the pure Swift tests; builds and launches nothing)
+        run: npm run test:native-safety
+      - run: node scripts/bench.mjs --dry-run
