@@ -75,5 +75,6 @@ func revealChecks(_ check: (Bool, String) -> Void) {
     check(revealRoute(scrolled: false, route: .press) == .press && revealRoute(scrolled: false, route: nil) == nil, "with no scroll the route is the click's own, or none")
     check(ClickRoute.scrolled.rawValue == "scrolled", "the code is the runner's")
     let reveal = Reveal(point: nil, scrolled: false, clear: false)
-    check(reveal.point == nil && !reveal.scrolled && !reveal.clear, "a control with no frame reveals nothing, unscrolled and unclear")
+    check(reveal.point == nil && !reveal.scrolled && !reveal.clear && !reveal.visible, "a control with no frame reveals nothing, unscrolled, unclear and not visible")
+    check(Reveal(point: CGPoint(x: 1, y: 1), scrolled: false, clear: true, visible: true).visible, "a clear point is visible")
 }

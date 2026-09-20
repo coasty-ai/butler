@@ -4015,6 +4015,11 @@ export class Runner {
       // Whether a hotkey was pressed as its menu item or posted as keys; how a
       // click by name reached its control (press or pointer).
       ...(via ? { via } : {}),
+      // A click by name on a hit-invisible control (its point fell through to
+      // its own ancestor, native hitCover), pressed by its own action first.
+      ...(action.type === "click_control" && actionSurface.hitAncestor
+        ? { hitAncestor: true }
+        : {}),
       // The rung that reached a bound window and what its postcondition read
       // found; in front, what a click by name's reads found.
       ...(outcome?.rung ? { rung: outcome.rung } : {}),
@@ -5040,6 +5045,9 @@ export class Runner {
             // refused address or a wait for the end of the sentence read
             // apart in the trace without the sentence.
             reasonCode: retryCode(decision.reason),
+            // A named control whose point fell through to its own ancestor
+            // (native hitCover): the target fields are the control's own.
+            ...(actionSurface.hitAncestor ? { hitAncestor: true } : {}),
           });
           const route = searchRoute(action, actionSurface);
           if (route && !this.searchRoutes.has(actionSurface.appId)) {

@@ -1244,6 +1244,15 @@ export interface Surface {
    * uncover.
    */
   controlScrolled?: boolean;
+  /**
+   * The hit test at the resolved control's point found one of the control's
+   * own ancestors (the label's group, a cell, the web area) rather than
+   * something over it: the control is hit-invisible (a check box or radio
+   * drawn by its label), not covered, and the target fields describe the
+   * control itself (native hitCover, Reveal.swift). Execution presses it by
+   * its own action first.
+   */
+  hitAncestor?: boolean;
   /** The menu item a proposed shortcut invokes in this application, if any. */
   shortcutLabel?: string;
   /**

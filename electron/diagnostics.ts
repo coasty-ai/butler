@@ -234,6 +234,9 @@ const fields = new Set([
   "via",
   "effect",
   "rung",
+  // ActionExecuted and ActionRetargetRequested for a click by name: the
+  // control's point fell through to its own ancestor (a flag; native hitCover).
+  "hitAncestor",
   // ActionLoopDetected: the loop is a click by name repeated with no effect.
   "noEffect",
   // The opt-in Jev decider on a dialog turn: its time, the act it chose and
@@ -506,6 +509,9 @@ const flagFields = new Set([
   "noEffect",
   // ToolCallFinished: a read answered from the run's earlier result, the tool not called.
   "repeat",
+  // ActionExecuted, ActionRetargetRequested: a click by name whose control's
+  // point fell through to the control's own ancestor (native hitCover).
+  "hitAncestor",
 ]);
 /**
  * Allow-listed keys that only ever carry a short fixed code. A numeric value
@@ -831,6 +837,7 @@ const journalEvents = new Map<string, Set<string>>([
       "via",
       "effect",
       "rung",
+      "hitAncestor",
       "clauseIndex",
       "outcome",
       "launchedAppId",
@@ -873,6 +880,7 @@ const journalEvents = new Map<string, Set<string>>([
       "launcherStatus",
       "reasonCode",
       "reasonLength",
+      "hitAncestor",
       // A refused tool_call: the tool's fixed trace name and server.
       "tool",
       "server",
@@ -1228,6 +1236,10 @@ export class LocalDiagnostics {
           via: e.data.via,
           effect: e.data.effect,
           rung: e.data.rung,
+          // ActionExecuted and ActionRetargetRequested for a click by name: the
+          // control's point fell through to its own ancestor (native hitCover),
+          // a flag beside the route.
+          hitAncestor: e.data.hitAncestor,
           // A step taken before the run existed, while the user was speaking.
           early: e.data.early,
           // Its executed row, when the step was a fast action on a clause.

@@ -134,11 +134,49 @@ func clearPoint(frame: CGRect, clear: CGRect) -> CGPoint? {
 let revealSettleMs = 100
 
 /// What revealing a control found: the point to click (nil when the control
-/// has no frame), whether the page moved for it, and whether that point is
-/// clear now (inside the clear rectangle with this control under it).
-struct Reveal { let point: CGPoint?; let scrolled: Bool; let clear: Bool }
+/// has no frame), whether the page moved for it, whether that point is
+/// clear now (inside the clear rectangle with this control under it), and
+/// whether it is at least visible (inside the clear rectangle, whatever the
+/// hit test found there: a hit-invisible control's point is visible and not
+/// clear, HitCover.hitAncestor).
+struct Reveal { let point: CGPoint?; let scrolled: Bool; let clear: Bool; var visible = false }
 /// A click's route word once a reveal moved the page (ClickEffect.swift
 /// ClickRoute.scrolled), for the result and the diagnostics.
 func revealRoute(scrolled: Bool, route: ClickRoute?) -> ClickRoute? {
     scrolled ? .scrolled : route
+}
+
+// MARK: A control the hit test cannot see
+
+/**
+ Market shard 3/3 under autonomy all (cycle 20260920-0415-c8c9e10):
+ home-dashboard-lights #2 handed off after four click_control by name on the
+ home panel's light switches, each refused CONTROL_COVERED with the hit test
+ at the switch's centre landing on the AXWebArea; mail-triage-backlog #3
+ after four on the folder radios, each landing on an AXGroup (the <label>
+ wrapping the input). Neither is covered: a check box or radio drawn by its
+ label (the commonest switch on the web: settings pages, consent banners,
+ smart-home panels) is hit-invisible, and the point falls through to the
+ element that contains it. Something that contains the control cannot lie
+ over it. A modal overlay's group, a sticky header, another window or the
+ Dock is none of the control's own ancestors, and stays covered.
+ */
+/// What the hit test at a control's point found, relative to the control:
+/// the control itself (clear; a part of the control is the reveal's own
+/// hitMatches, decided before this), one of the control's own ancestors
+/// (hitAncestor: its label, a cell, a group, the web area, the window), or
+/// anything else, including nothing (covered).
+enum HitCover: String { case clear, hitAncestor, covered }
+/// How far up a control's ancestry the hit element is looked for: a web
+/// control sits under its label, a cell or a row, a group or two, the web
+/// area, a scroll area, a group, a window. Twelve reaches the window from
+/// any control a page lists; nothing above the window ever takes a hit.
+let hitAncestorDepth = 12
+/// The verdict over the hit element and the control's ancestors, nearest
+/// first, compared by the identity the caller supplies (CFEqual for live
+/// elements). Ancestors past hitAncestorDepth are not consulted.
+func coveredBy<Element>(hit: Element?, control: Element, ancestors: [Element], same: (Element, Element) -> Bool) -> HitCover {
+    guard let hit else { return .covered }
+    if same(hit, control) { return .clear }
+    return ancestors.prefix(hitAncestorDepth).contains(where: { same(hit, $0) }) ? .hitAncestor : .covered
 }

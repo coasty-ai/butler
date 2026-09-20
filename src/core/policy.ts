@@ -1379,7 +1379,11 @@ function namedControlRefusal(
   // When native already scrolled the page to reveal it (controlScrolled,
   // Reveal.swift) and it is covered still, its window in front would not
   // uncover it: the model scrolls the page itself or reaches it by keyboard.
-  if (!namedTargetUnderPointer(surface))
+  // A control whose point fell through to its own ancestor (hitAncestor: a
+  // check box or radio drawn by its label, the hit test on the label's group
+  // or the web area) has nothing over it; native reports the control itself
+  // as the target and presses it, so the covered check does not apply.
+  if (!surface.hitAncestor && !namedTargetUnderPointer(surface))
     return {
       kind: "RETRY",
       reason: surface.controlScrolled

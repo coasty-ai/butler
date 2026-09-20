@@ -2476,6 +2476,75 @@ describe("the journal's content-free rows", () => {
       expect(r[2].data).toEqual({ ...base(s, 3), ...row });
     }));
 
+  it("writes a click by name on a hit-invisible control as a hitAncestor flag on its executed and retarget rows, and drops anything else in the field", () =>
+    fixture((log) => {
+      // Market 3/3 (cycle 20260920-0415): the home panel's switches and the
+      // mail fixture's folder radios hit-test to their own ancestors (the
+      // web area, the label's group); native reports the control itself and
+      // the flag, and the runner writes the flag beside the route.
+      const executed = (extra: Record<string, unknown>) => ({
+        type: "ActionExecuted",
+        data: {
+          action: { type: "click_control", label: MARK, frame_id: "f" },
+          frame_id: "f",
+          via: "press",
+          effect: "changed",
+          ...extra,
+        },
+      });
+      const retarget = (extra: Record<string, unknown>) => ({
+        type: "ActionRetargetRequested",
+        data: {
+          actionType: "click_control",
+          appId: "com.apple.Safari",
+          targetRole: "AXRadioButton",
+          focusedRole: "AXWebArea",
+          reasonCode: "CONTROL_DISABLED",
+          reason: `No input was sent. ${MARK} is disabled. Choose an enabled control.`,
+          ...extra,
+        },
+      });
+      const s = journal([
+        executed({ hitAncestor: true }),
+        executed({ hitAncestor: `${MARK} yes` }),
+        executed({}),
+        retarget({ hitAncestor: true }),
+        retarget({ hitAncestor: 1 }),
+        retarget({}),
+      ]);
+      log.snapshot(s);
+      expect(readFileSync(log.file, "utf8")).not.toContain(MARK);
+      const r = rows(log);
+      const clicked = {
+        actionType: "click_control",
+        frameId: "f",
+        via: "press",
+        effect: "changed",
+      };
+      expect(r[0].data).toEqual({
+        ...base(s, 1),
+        ...clicked,
+        hitAncestor: true,
+      });
+      expect(r[1].data).toEqual({ ...base(s, 2), ...clicked });
+      expect(r[2].data).toEqual({ ...base(s, 3), ...clicked });
+      const refused = {
+        actionType: "click_control",
+        appId: "com.apple.Safari",
+        targetRole: "AXRadioButton",
+        focusedRole: "AXWebArea",
+        reasonCode: "CONTROL_DISABLED",
+        reasonLength: retarget({}).data.reason.length,
+      };
+      expect(r[3].data).toEqual({
+        ...base(s, 4),
+        ...refused,
+        hitAncestor: true,
+      });
+      expect(r[4].data).toEqual({ ...base(s, 5), ...refused });
+      expect(r[5].data).toEqual({ ...base(s, 6), ...refused });
+    }));
+
   it("writes a correction as its length and its place in the run, never its words or its clock", () =>
     fixture((log) => {
       const words = `${MARK} the other one, and stop after that please`;

@@ -12,6 +12,17 @@
 // click (native Reveal.swift) took: after `npm run build:native`, expect the
 // radios listed with their group and `covered` 0 on that page.
 //
+// Cycle 20260920-0415 (market 3/3): the home panel's light switches
+// hit-tested to the AXWebArea and the mail fixture's folder radios to the
+// AXGroup of the <label> wrapping each input, and every click by name on them
+// was refused CONTROL_COVERED. `hitAncestor` below counts the labelled
+// controls whose point falls through to one of their own ancestors (native
+// hitCover, Reveal.swift coveredBy): on the lights page expect it to count
+// the switches, `hitAncestorRoles` to name radio buttons or check boxes, and
+// the covered count to leave them out. The click_control surfaces that read
+// it are taken with the helper stopped, so the reveal only reads and no page
+// is scrolled.
+//
 // Written for the STOPPED_AFTER_HANDOFF lane of cycle 20260919-0739: market
 // tasks ran "In Safari" for the first time and three runs saw UNIDENTIFIED_TARGET
 // there. Chrome's web controls reached the model in earlier cycles; Safari's
@@ -107,6 +118,30 @@ try {
       covered: at.targetAppId !== frame.appId,
     });
   }
+  // The runner's own surface for a click by name on each labelled control:
+  // the reveal reads only while the helper is stopped (no scroll is posted),
+  // and `hitAncestor` says the element at the control's point is one of the
+  // control's own ancestors, so the control is hit-invisible, not covered.
+  await controller.stop("probe reads the named surfaces");
+  const named = [];
+  for (const control of controls.slice(0, 40)) {
+    if (typeof control.label !== "string" || !control.label) continue;
+    const at = await controller.surface({
+      type: "click_control",
+      frame_id: frame.id,
+      label: control.label,
+      role: control.role,
+      x: control.x,
+      y: control.y,
+    });
+    named.push({
+      listed: control.role,
+      status: at.controlStatus ?? "(none)",
+      hitAncestor: at.hitAncestor === true,
+      scrolled: at.controlScrolled === true,
+      hit: at.targetRole ?? "(none)",
+    });
+  }
   console.log(
     JSON.stringify({
       hitTested: hits.length,
@@ -116,6 +151,15 @@ try {
       coveredBy: tally(hits.filter((h) => h.covered).map((h) => h.hit)),
       named: hits.filter((h) => h.named).length,
       listedVsHit: tally(hits.map((h) => `${h.listed}→${h.hit}`)),
+      namedSurfaces: named.length,
+      namedStatus: tally(named.map((n) => n.status)),
+      hitAncestor: named.filter((n) => n.hitAncestor).length,
+      hitAncestorRoles: tally(
+        named.filter((n) => n.hitAncestor).map((n) => n.listed),
+      ),
+      // The named surface's target with the flag is the control itself; without
+      // it, what the hit walk settled on (a covered control's cover).
+      namedHitRoles: tally(named.map((n) => `${n.listed}→${n.hit}`)),
     }),
   );
 } finally {

@@ -49,6 +49,7 @@ const blocks = (text: string) =>
 
 type Row = [string, Action, Partial<Surface>, Decision["kind"]];
 const chrome = { appId: "com.google.Chrome" };
+const safari = { appId: "com.apple.Safari", focusedRole: "AXWebArea" };
 const spotlight = { appId: "com.apple.Spotlight", focusedRole: "AXTextField" };
 
 describe("everyday tasks run without approval", () => {
@@ -2398,6 +2399,99 @@ describe("named targets: menus and controls the agent can name", () => {
         targetLabel: "Keep draft",
       }).reason,
     ).not.toContain("covered");
+    // Market 3/3 (cycle 20260920-0415): the home panel's light switches
+    // hit-tested to the AXWebArea and the mail fixture's folder radios to
+    // the AXGroup of the <label> wrapping each input, four CONTROL_COVERED
+    // refusals apiece and a hand-off. Native now tells a control whose point
+    // falls through to its own ancestor (hitAncestor, Reveal.swift coveredBy)
+    // from one covered: it reports the control itself as the target, and the
+    // covered check does not apply, whatever the hit walk's names say.
+    // A light's Off radio and a folder radio: the setting question a radio
+    // under the pointer always gets, never the covered refusal.
+    expect(
+      decide(named("Off"), {
+        ...safari,
+        controlStatus: "resolved",
+        controlLabel: "Off",
+        hitAncestor: true,
+        targetRole: "AXRadioButton",
+        targetLabel: "Off",
+      }),
+    ).toEqual({ kind: "CONFIRM", reason: "Change this setting?" });
+    expect(
+      decide(named("Receipts"), {
+        ...safari,
+        controlStatus: "resolved",
+        controlLabel: "Receipts",
+        hitAncestor: true,
+        targetRole: "AXRadioButton",
+        targetLabel: "Receipts",
+        targetText: "Receipts · File under",
+      }),
+    ).toEqual({ kind: "CONFIRM", reason: "Change this setting?" });
+    // The flag alone decides: a hit label that disagrees with the name (the
+    // web area's, the label group's) is no longer contrary evidence, after a
+    // reveal that scrolled the page or without one.
+    for (const controlScrolled of [true, false]) {
+      const kitchen = decide(named("Kitchen"), {
+        ...safari,
+        controlStatus: "resolved",
+        controlLabel: "Kitchen",
+        hitAncestor: true,
+        controlScrolled,
+        targetRole: "AXWebArea",
+        targetLabel: "Home panel",
+      });
+      expect(kitchen.reason).not.toContain("covered");
+      expect(kitchen.reason).not.toContain("scrolled into view");
+    }
+    // Without the flag the same surface is covered, as before, in both
+    // sentences; anything but true is not the flag.
+    const disagreeing = {
+      ...safari,
+      controlStatus: "resolved" as const,
+      controlLabel: "Kitchen",
+      targetRole: "AXWebArea",
+      targetLabel: "Home panel",
+    };
+    for (const flag of [false, undefined]) {
+      const plain = decide(named("Kitchen"), {
+        ...disagreeing,
+        hitAncestor: flag,
+      });
+      expect(plain.kind).toBe("RETRY");
+      expect(plain.reason).toContain("covered by something else");
+      expect(plain.reason).toContain("Bring its window to the front");
+      const afterScroll = decide(named("Kitchen"), {
+        ...disagreeing,
+        hitAncestor: flag,
+        controlScrolled: true,
+      });
+      expect(afterScroll.kind).toBe("RETRY");
+      expect(afterScroll.reason).toContain(
+        "was scrolled into view and is still covered by something else",
+      );
+    }
+    // The flag skips the covered check alone: a missing, ambiguous or disabled
+    // control is still refused, and a hit-ancestor Send still asks.
+    expect(
+      decide(named("Kitchen"), { controlStatus: "missing", hitAncestor: true })
+        .kind,
+    ).toBe("RETRY");
+    expect(
+      decide(named("Kitchen"), { controlStatus: "disabled", hitAncestor: true })
+        .kind,
+    ).toBe("RETRY");
+    expect(
+      decide(named("Send"), {
+        ...safari,
+        controlStatus: "resolved",
+        controlLabel: "Send",
+        hitAncestor: true,
+        targetRole: "AXButton",
+        targetLabel: "Send",
+      }).kind,
+    ).toBe("CONFIRM");
     // The same control under the pointer, or text that contains its name.
     expect(
       decide(named("Midwest Safety"), {

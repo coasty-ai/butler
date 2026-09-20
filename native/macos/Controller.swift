@@ -504,6 +504,26 @@ func hitMatches(_ expected: AXUIElement, at point: CGPoint, application: AXUIEle
     }
     return false
 }
+/// A control's ancestors, nearest first, at most `depth` of them.
+func ancestors(of element: AXUIElement, depth: Int) -> [AXUIElement] {
+    var found = [AXUIElement](), node = attribute(element, kAXParentAttribute).map { $0 as! AXUIElement }
+    while let current = node, found.count < depth {
+        found.append(current)
+        node = attribute(current, kAXParentAttribute).map { $0 as! AXUIElement }
+    }
+    return found
+}
+/// What lies under a control's point once the reveal found it not clear
+/// (Reveal.swift coveredBy): the element the route's hit test finds there
+/// (system-wide in front, the application's own for a bound window) against
+/// the control and its ancestors up to hitAncestorDepth, by identity. A
+/// check box or radio drawn by its label hit-tests to the label's group or
+/// the web area, its own ancestors: hitAncestor, not covered. Reads only.
+func hitCover(_ control: AXUIElement, at point: CGPoint, application: AXUIElement) -> HitCover {
+    var hit: AXUIElement?
+    let found = AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &hit) == .success ? hit : nil
+    return coveredBy(hit: found, control: control, ancestors: ancestors(of: control, depth: hitAncestorDepth), same: { CFEqual($0, $1) })
+}
 // MARK: Revealing a covered control (Reveal.swift)
 
 /// The Dock's frame on the display (its list of tiles) when it is on screen:
@@ -587,7 +607,7 @@ func revealControl(_ element: AXUIElement, window: AXUIElement?, display: CGRect
     func isClear(_ point: CGPoint) -> Bool { pointClear(point, clear: clear) && hitMatches(element, at: point, application: application) }
     guard var frame = elementRect(element), frame.width > 0, frame.height > 0 else { return Reveal(point: nil, scrolled: false, clear: false) }
     var point = centre(frame), scrolled = false
-    if isClear(point) { return Reveal(point: point, scrolled: false, clear: true) }
+    if isClear(point) { return Reveal(point: point, scrolled: false, clear: true, visible: true) }
     func reread() {
         Thread.sleep(forTimeInterval: Double(revealSettleMs) / 1000)
         guard let now = elementRect(element), now.width > 0, now.height > 0 else { return }
@@ -603,17 +623,20 @@ func revealControl(_ element: AXUIElement, window: AXUIElement?, display: CGRect
         return false
     }
     if let routes {
-        if try scrollIntoView() { reread(); if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true) } }
+        if try scrollIntoView() { reread(); if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true, visible: true) } }
         let delta = revealDelta(frame: frame, clear: clear)
         if delta != 0 {
             try routes.scroll(delta, clear); reread()
-            if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true) }
+            if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true, visible: true) }
             // A page-sized scroll may have carried the control past the top: its own action brings it back.
-            if try scrollIntoView() { reread(); if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true) } }
+            if try scrollIntoView() { reread(); if isClear(point) { return Reveal(point: point, scrolled: scrolled, clear: true, visible: true) } }
         }
     }
-    if let part = clearPoint(frame: frame, clear: clear), isClear(part) { return Reveal(point: part, scrolled: scrolled, clear: true) }
-    return Reveal(point: point, scrolled: scrolled, clear: false)
+    if let part = clearPoint(frame: frame, clear: clear), isClear(part) { return Reveal(point: part, scrolled: scrolled, clear: true, visible: true) }
+    // Not clear: under the Dock or off the clear rectangle (not visible), or
+    // inside it with something else under the hit test (visible; hitCover
+    // says whether that something is the control's own ancestor).
+    return Reveal(point: point, scrolled: scrolled, clear: false, visible: pointClear(point, clear: clear))
 }
 /// A screen point as the fractions of the display the model and the runner use.
 func displayFraction(_ point: CGPoint, display: CGRect) -> (x: Double, y: Double) {
@@ -1147,7 +1170,7 @@ func readClickEffect(before: ClickSnapshot, control: AXUIElement, editable: Bool
  stop-latch check (mouse, ensureRunning) behind the protected-surface walk
  execute ran first.
  */
-func clickNamedControl(_ element: AXUIElement, at target: CGPoint, pointer: Bool = true, scrolled: Bool = false, mouse: (CGEventType, CGPoint) throws -> Void) throws -> [String:Any] {
+func clickNamedControl(_ element: AXUIElement, at target: CGPoint, pointer: Bool = true, scrolled: Bool = false, pressFirst: Bool = false, mouse: (CGEventType, CGPoint) throws -> Void) throws -> [String:Any] {
     let role = attribute(element, kAXRoleAttribute) as? String ?? "", subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
     let editable = focusRequested(role: role, subrole: subrole)
     let before = clickSnapshot(state: windowState(), control: element)
@@ -1158,17 +1181,32 @@ func clickNamedControl(_ element: AXUIElement, at target: CGPoint, pointer: Bool
         if !before.targetFocused { _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
         effect = readClickEffect(before: before, control: element, editable: true)
     }
-    if effect == .none, pointer {
+    func click() throws {
         via = .pointer
         try mouse(.leftMouseDown, target)
         postInput(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left))
         effect = readClickEffect(before: before, control: element, editable: editable)
     }
-    if effect == .none, actionNames(element).contains(kAXPressAction) {
+    func press() throws {
         try ensureRunning()
         via = .press
         _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
         effect = readClickEffect(before: before, control: element, editable: editable)
+    }
+    let pressable = actionNames(element).contains(kAXPressAction)
+    // A hit-invisible control (its point falls through to its own ancestor:
+    // a check box or radio drawn by its label, HitCover.hitAncestor) is
+    // pressed by its own action first (WebKit toggles a check box or radio
+    // and activates a button on AXPress); the pointer click at the point,
+    // which reaches the label and toggles it through its binding, is the
+    // route only when the control offers no press or the press read as
+    // nothing. Otherwise the pointer comes first, then the press.
+    if pressFirst {
+        if effect == .none, pressable { try press() }
+        if effect == .none, pointer { try click() }
+    } else {
+        if effect == .none, pointer { try click() }
+        if effect == .none, pressable { try press() }
     }
     return clickResult(effect: effect, via: revealRoute(scrolled: scrolled, route: via) ?? via)
 }
@@ -1206,7 +1244,12 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     // the Dock still (a short page cannot scroll), the application's own
     // element at the point is what the click reaches, by accessibility alone
     // (clickNamedControl posts no pointer there), so it is what policy reads.
-    var hitScope = AXUIElementCreateSystemWide(), controlScrolled = false
+    // A control whose point falls through to its own ancestor (a check box or
+    // radio drawn by its label: the hit test finds the label's group or the
+    // web area) is hit-invisible, not covered (hitCover, Reveal.swift): the
+    // control itself is reported as the target, with hitAncestor beside it,
+    // and execute presses it by its own action.
+    var hitScope = AXUIElementCreateSystemWide(), controlScrolled = false, hitAncestor: AXUIElement? = nil
     if requested?["type"] as? String == "click_control", let request = requested {
         let resolution = resolveNamedControlEntry(request)
         switch resolution.match {
@@ -1220,7 +1263,10 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
                         let fraction = displayFraction(point, display: b)
                         action?["x"] = fraction.x; action?["y"] = fraction.y
                         controlScrolled = reveal.scrolled
-                        if !reveal.clear, dockCovers(point) { hitScope = element }
+                        if !reveal.clear {
+                            if dockCovers(point) { hitScope = element }
+                            else if hitCover(entry.element, at: point, application: hitScope) == .hitAncestor { hitAncestor = entry.element }
+                        }
                     }
                 }
                 namedControl = (control.enabled ? "resolved" : "disabled", control.label)
@@ -1276,7 +1322,9 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
     result["addressBar"] = addressBar
     if addressBar {result["focusedValue"] = focusedValue}
     if app.bundleIdentifier == "com.apple.Spotlight" {result["launcher"] = spotlightState(element)}
-    if let a = action, let x = a["x"] as? Double,let y = a["y"] as? Double,x>=0,x<=1,y>=0,y<=1 {
+    if let control = hitAncestor {
+        for (key, value) in targetElementFacts(control, names: [elementText(control)] + targetNames(control)) { result[key] = value }
+    } else if let a = action, let x = a["x"] as? Double,let y = a["y"] as? Double,x>=0,x<=1,y>=0,y<=1 {
         let b = CGDisplayBounds(displayID)
         for (key, value) in hitTargetFacts(hitScope, at: CGPoint(x: b.minX+x*b.width, y: b.minY+y*b.height)) { result[key] = value }
     }
@@ -1334,6 +1382,7 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
         result["controlStatus"] = status.status
         if let label = status.label { result["controlLabel"] = utf16Prefix(label, 120) }
         if controlScrolled { result["controlScrolled"] = true }
+        if hitAncestor != nil { result["hitAncestor"] = true }
     }
     // Computed last: the hit test above is the pointer evidence that this
     // application publishes something at the requested position.
@@ -1346,8 +1395,8 @@ func surface(_ requested: [String:Any]? = nil) -> [String: Any] {
 // them for policy: hit-tested system-wide for the frontmost window, or within
 // one application for a bound window.
 func hitTargetFacts(_ application: AXUIElement, at point: CGPoint) -> [String:Any] {
-    var result = [String:Any](), target: AXUIElement?
-    guard AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &target) == .success, var target = target else { return result }
+    var target: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &target) == .success, var target = target else { return [:] }
     // Every visited element contributes its name, so a label on an
     // intermediate ancestor (an icon's aria-label) reaches policy.
     var names = [elementText(target)] + targetNames(target)
@@ -1372,6 +1421,12 @@ func hitTargetFacts(_ application: AXUIElement, at point: CGPoint) -> [String:An
             ancestor = attribute(current,kAXParentAttribute).map { $0 as! AXUIElement }
         }
     }
+    return targetElementFacts(target, names: names)
+}
+// The target facts of one element as surface reports them: the element the
+// hit walk settled on, or a hit-invisible control itself (hitCover).
+func targetElementFacts(_ target: AXUIElement, names: [String]) -> [String:Any] {
+    var result = [String:Any]()
     let joined = joinedTargetText(names)
     if !joined.isEmpty {result["targetText"] = joined}
     result["targetRole"] = attribute(target,kAXRoleAttribute) as? String ?? ""
@@ -2294,9 +2349,13 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> [Strin
         // gets no pointer click, only the control's own focus or press.
         let reveal = try revealControl(entry.element, window: savedWindow.window, display: b, application: AXUIElementCreateSystemWide(), routes: frontRevealRoutes())
         if let point = reveal.point { target = point }
+        // A hit-invisible control (its point falls through to its own
+        // ancestor, hitCover) is pressed by its own action first; the
+        // pointer click is its second route only while the point is visible.
+        let hitAncestor = !reveal.clear && reveal.point != nil && hitCover(entry.element, at: target, application: AXUIElementCreateSystemWide()) == .hitAncestor
         // Cycle 20260919-2044: five STUCK_LOOP runs were this click repeated on
         // an unchanged page, the step reported done with nothing read back.
-        return try clickNamedControl(entry.element, at: target, pointer: reveal.clear, scrolled: reveal.scrolled) { type, point in try mouse(type, point) }
+        return try clickNamedControl(entry.element, at: target, pointer: reveal.clear || (hitAncestor && reveal.visible), scrolled: reveal.scrolled, pressFirst: hitAncestor) { type, point in try mouse(type, point) }
     case "key", "hotkey":
         let names = action["keys"] as? [String] ?? [action["key"] as? String ?? ""]
         guard names.count<=4,names.allSatisfy({keys[$0] != nil}) else {throw ControlError("Unsupported key.")}
@@ -3460,7 +3519,7 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
     let state = targetState(bound), facts = targetFacts(bound), cover = targetCover(bound)
     var action = requested
     var namedControl: (status: String, label: String?)? = nil
-    var controlScrolled = false
+    var controlScrolled = false, hitAncestor: AXUIElement? = nil
     if requested?["type"] as? String == "click_control", let request = requested {
         let resolution = targetNamedControl(request, entries: targetControlEntries(bound, state: state, frame: frame))
         switch resolution.match {
@@ -3469,12 +3528,15 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
                 action?["x"] = control.x; action?["y"] = control.y
                 // Brought into the clear of the bound window first (Reveal.swift),
                 // so the hit test below reads the point the posted click lands on.
+                // A point that falls through to the control's own ancestor
+                // (hitCover) is the control's: the accessibility rung presses it.
                 if control.enabled, frame.width > 0, frame.height > 0,
                    let reveal = try? revealControl(entry.element, window: bound.window, display: frame, application: element, routes: isStopped() ? nil : targetRevealRoutes(bound)),
                    let point = reveal.point {
                     let fraction = displayFraction(point, display: frame)
                     action?["x"] = fraction.x; action?["y"] = fraction.y
                     controlScrolled = reveal.scrolled
+                    if !reveal.clear, hitCover(entry.element, at: point, application: element) == .hitAncestor { hitAncestor = entry.element }
                 }
                 namedControl = (control.enabled ? "resolved" : "disabled", control.label)
             }
@@ -3502,7 +3564,9 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
     if let domain = page.host { result["domain"] = domain }
     if pageHostUnknown(browser: browserAppIDs.contains(bound.appId), host: page.host, unreadableWebArea: page.unreadable) { result["hostUnknown"] = true }
     if modalContext(window: bound.window, element: state.focused) { result["modal"] = true }
-    if let a = action, let x = a["x"] as? Double, let y = a["y"] as? Double, let point = windowPoint(x: x, y: y, in: frame) {
+    if let control = hitAncestor {
+        for (key, value) in targetElementFacts(control, names: [elementText(control)] + targetNames(control)) { result[key] = value }
+    } else if let a = action, let x = a["x"] as? Double, let y = a["y"] as? Double, let point = windowPoint(x: x, y: y, in: frame) {
         for (key, value) in hitTargetFacts(element, at: point) { result[key] = value }
     }
     for (key, value) in commandFacts(element, pid: bound.pid, action: action) { result[key] = value }
@@ -3510,6 +3574,7 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
         result["controlStatus"] = status.status
         if let label = status.label { result["controlLabel"] = utf16Prefix(label, 120) }
         if controlScrolled { result["controlScrolled"] = true }
+        if hitAncestor != nil { result["hitAncestor"] = true }
     }
     if let level = accessibilityLevel(window: bound.window, focusedRole: focusedRole, hitTarget: result["targetRole"] != nil) { result["accessibility"] = level.rawValue }
     result["windowCount"] = min(onScreenWindowCount(bound.pid), 99)
