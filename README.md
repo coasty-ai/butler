@@ -1,5 +1,7 @@
 # Butler
 
+[![CI](https://github.com/coasty-ai/butler/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/coasty-ai/butler/actions/workflows/ci.yml)
+
 _Formerly Open Assist. Open source under the MIT license; see the status below before relying on it._
 
 **Press a key. Tell your computer what to do.**
