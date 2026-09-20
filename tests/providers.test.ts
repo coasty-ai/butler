@@ -471,7 +471,7 @@ describe("provider-neutral adapters", () => {
       "A sign-in, password or one-time-code wall is the user's: never type a guessed name or code into it and never press Sign in; request_user at once, saying what the site asks for.",
     );
   });
-  it("teaches the data-entry recipe: every value into the note first, the destination opened once, each field click_control by name and type_text from the note, then the submit button, never back to the source one value at a time", () => {
+  it("teaches the data-entry recipe in two halves: every value into the note first, never one at a time; a form opened once, each field click_control by name and type_text its value, then submit; a file written with append_text_file in one or a few calls, not in an app", () => {
     // Market cycles 20260920-0327-abc24ae, -0415-c8c9e10, -0514-55e4e83 and
     // -0553-f926928 (gpt-5.4-mini, autonomy all): ops-crm-data-entry failed
     // every attempt, bouncing between the leads list, the lead's page and
@@ -479,15 +479,35 @@ describe("provider-neutral adapters", () => {
     // typing at action ~40 or never, with the form's three fields listed and
     // named; the page-switch warning fired twice at f926928 and changed
     // nothing. ops-support-ticket-draft and research-compare-to-csv have the
-    // same shape: values on one page, a form or file on another.
+    // same shape: values on one page, a form or file on another (728742f).
+    // That sentence was form-shaped for both destinations ("open the
+    // destination once, click_control each field by name, type_text its
+    // value from the note, and click_control the submit button"): with a
+    // file for a destination there is nothing to click or type into, and
+    // market cycle 20260920-0817-9eae498 files-receipts-to-csv #2 called
+    // list_directory, then read_text_file 15 times (7 answered by the
+    // identical-read guard), captured 39 times and never called
+    // append_text_file (STUCK_LOOP at 55 actions, ROWS_MISSING); 0731-bad4c35
+    // #1 the same way at 22. The task passed 3/3 in the two market cycles
+    // before 728742f (0415, 0514) and 2/4 since (0631 2/2, then those two).
+    // So the recipe names the two destinations: a form is opened once, each
+    // field clicked by name and typed, then submit; a file is written with
+    // append_text_file (replace_file_text when told to replace) in one or a
+    // few calls and never opened in an app; reading all the values into the
+    // note first, never one at a time, is common to both.
     const text = buildRequest(s("anthropic"), "K", o).body.system[0].text;
     expect(text).toContain(
-      "To copy values into a form or file, read them all into your note first, then open the destination once, click_control each field by name, type_text its value from the note, and click_control the submit button; never return to the source one value at a time.",
+      "To copy values into a form or file, read them all into your note first, never one at a time. Open a form once, click_control each field by name, type_text its value, click_control submit; write a file with append_text_file in one or a few calls (replace_file_text if told to replace), not in an app.",
     );
     // It follows the sentence that a value read on one page is typed into a
-    // form from the note, in the working-method paragraph.
+    // form from the note, in the working-method paragraph, and precedes the
+    // files-tool sentence that spells out append_text_file and
+    // replace_file_text.
     expect(text.indexOf("To copy values into a form or file")).toBeGreaterThan(
       text.indexOf("A value read on one page goes into a form on another"),
+    );
+    expect(text.indexOf("To copy values into a form or file")).toBeLessThan(
+      text.indexOf("When the objective names a file to write, add to or read"),
     );
   });
   it("explains the playbook and the no-progress note in the instruction", () => {

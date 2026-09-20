@@ -485,7 +485,8 @@ describe("what one step costs", () => {
     // 8,280 with the web tool sentence (below); 8,334 with the sentence that
     // a value read on one page is typed into a form from the note (below);
     // 8,378 with the sign-in wall sentence; 8,442 with the data-entry recipe
-    // sentence (below);
+    // sentence (below); 8,453 once that sentence names a form and a file
+    // destination apart (below);
     // the bound moves with the instruction pin below, never ahead of it.
     expect(total(m.beforeJson)).toBeGreaterThan(5300);
     expect(total(m.beforeJson)).toBeLessThan(8500);
@@ -557,6 +558,15 @@ describe("what one step costs", () => {
     // destination once, click_control each field by name and type_text its
     // value from the note, then the submit button, never back to the source
     // one value at a time; 258 characters the pin moved for.
+    // 18,454 once that sentence separates the two destinations (market cycle
+    // 20260920-0817-9eae498, gpt-5.4-mini: files-receipts-to-csv #2 read the
+    // receipts with read_text_file 15 times, captured 39 times and never
+    // called append_text_file, STUCK_LOOP at 55 actions, since 728742f's
+    // recipe was form-shaped and a file has nothing to click or type into):
+    // a form is opened once, each field click_control by name and type_text
+    // its value, then submit; a file is written with append_text_file in one
+    // or a few calls, replace_file_text when told to replace, not in an app;
+    // 299 characters in place of 257 (+42), the bound holds.
     expect(instruction.length).toBeLessThan(18500);
     expect(instruction).toContain(
       "is read with the web tool, read_current_page for the page in front or read_page_text",
@@ -600,7 +610,8 @@ describe("what one step costs", () => {
     // 19,550 with the web tool sentence above (the pin moved with it).
     // 19,763 with the typing-from-the-note sentence above (the pin moved with it).
     // 19,940 with the sign-in wall sentence above; 20,198 with the data-entry
-    // recipe sentence above (the pin moved with it).
+    // recipe sentence above (the pin moved with it). 20,240 once that sentence
+    // names a form and a file destination apart (the bound holds).
     expect(instruction.length + paragraph.length).toBeLessThan(20300);
     expect(instruction.indexOf(" Return exactly one action")).toBeGreaterThan(
       15000,
