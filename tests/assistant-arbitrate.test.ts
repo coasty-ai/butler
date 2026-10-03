@@ -630,6 +630,24 @@ describe("grounding", () => {
 });
 
 describe("questions and fast starts", () => {
+  it("routes explicit file imperatives while retaining question and unresolved-reference guards", () => {
+    for (const text of [
+      "Rename ~/Documents/meeting-notes.txt to meeting-actions.txt in the same folder. Preserve its contents and leave other files alone.",
+      "Rename /Users/fixture/Meeting Notes/notes.txt to actions.txt in the same folder.",
+      "Append a fourth line to ~/Documents/meeting-notes.txt, preserving the existing lines.",
+    ])
+      expect(fastStart(start(text), text)).toBe(true);
+    for (const text of [
+      "How do I rename ~/Documents/notes.txt?",
+      "Rename that file in the same folder",
+      "Rename the same file again",
+      "Rename ~/Documents/notes.txt to that name",
+      "Append it to ~/Documents/notes.txt",
+    ])
+      expect(fastStart(start(text), text)).toBe(false);
+    const text = "Rename ~/Documents/notes.txt to actions.txt";
+    expect(fastStart({ kind: "revise", text }, text)).toBe(false);
+  });
   it("tells questions from requests", () => {
     for (const text of [
       "what's next?",

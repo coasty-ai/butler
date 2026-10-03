@@ -68,7 +68,7 @@ const POLITE = new Set(["can", "could", "would", "will"]);
  * show or get, which are often questions in disguise.
  */
 export const FAST_START_VERBS: ReadonlySet<string> = new Set(
-  "open launch start switch jump go play search find send email text message call write create make draft reply set remind add book schedule order type put check look".split(
+  "open launch start switch jump go play search find send email text message call write append rename create make draft reply set remind add book schedule order type put check look".split(
     " ",
   ),
 );
@@ -114,10 +114,22 @@ export function fastStart(plan: TurnPlan, text: string): boolean {
   if (consequentialVerb(text) && pointsElsewhere(text)) return false;
   const key = intentKey(text).split(" ").filter(Boolean);
   const verb = key.find((word) => !LEADING.has(word));
+  // In a rename with an explicit file path, "in the same folder" refers to
+  // that path's containing folder, rather than an earlier conversation.
+  const references =
+    verb === "rename" &&
+    /(?:^|[\s"'“])(?:~\/|\/Users\/)[^\n]+?\.(?:txt|md|csv|log|text|markdown|tsv)(?=[\s"'”]|$)/i.test(
+      text,
+    )
+      ? key
+          .join(" ")
+          .replace(/\bin the same folder\b/g, "")
+          .split(" ")
+      : key;
   return (
     !!verb &&
     FAST_START_VERBS.has(verb) &&
-    !key.some((word) => REFERS_BACK.has(word))
+    !references.some((word) => REFERS_BACK.has(word))
   );
 }
 
