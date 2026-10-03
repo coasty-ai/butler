@@ -376,6 +376,7 @@ export async function main(args = process.argv.slice(2)) {
       settings,
       key: () => store.keyForProvider(),
       fetch: modelFetch,
+      trace: providerTrace,
     }),
     modelReady: () =>
       settings().provider === "ollama" || !!store.keyForProvider(),
