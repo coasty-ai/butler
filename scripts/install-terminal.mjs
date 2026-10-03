@@ -66,6 +66,8 @@ run(["run", "build:terminal"]);
 run(["run", "build:native", "--", "--terminal"]);
 run(["prune", "--omit=dev", "--omit=optional", "--ignore-scripts"]);
 rmSync(join(root, "tmp/swift-cache"), { recursive: true, force: true });
+for (const cache of [".vite", ".vite-temp"])
+  rmSync(join(root, "node_modules", cache), { recursive: true, force: true });
 const dir = join(homedir(), ".local/bin");
 mkdirSync(dir, { recursive: true });
 const command = join(dir, "butler");
