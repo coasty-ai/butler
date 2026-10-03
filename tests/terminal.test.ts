@@ -226,6 +226,39 @@ test("Gmail uses only message reads and bounds its valid JSON", async () => {
   ).toHaveLength(1);
   expect(gmailTools.every((t) => t.annotations.readOnlyHint)).toBe(true);
 });
+test("Gmail search preserves all selected message identifiers ahead of a truncated metadata result", async () => {
+  const ids = ["a1", "a2", "a3", "a4", "a5"];
+  const request = vi.fn(async (address: string) => {
+    if (address.endsWith("/token"))
+      return Response.json({
+        access_token: "synthetic-token",
+        expires_in: 3600,
+      });
+    if (address.includes("messages?"))
+      return Response.json({
+        messages: ids.map((id) => ({ id })),
+        nextPageToken: "synthetic-more",
+      });
+    return Response.json({
+      id: address.match(/messages\/([a-f0-9]+)\?/)?.[1],
+      snippet: "x".repeat(500),
+      payload: { headers: [{ name: "Subject", value: "Synthetic message" }] },
+    });
+  });
+  const read = createGmailReader(
+    {
+      GMAIL_CLIENT_ID: "synthetic-client",
+      GMAIL_CLIENT_SECRET: "synthetic-secret",
+      GMAIL_REFRESH_TOKEN: "synthetic-refresh",
+    },
+    request as any,
+  );
+  const text = await read("gmail_search", { query: "is:unread", limit: 5 });
+  expect(JSON.parse(text).ids).toEqual(ids);
+  expect(text.indexOf('"ids"')).toBeLessThan(text.indexOf('"messages"'));
+  expect(text.slice(0, 640)).toContain('"a5"');
+  expect(text.length).toBeGreaterThan(1500);
+});
 test("large message bodies cannot expand unbounded output", () => {
   const text = messageText({
     id: "a",

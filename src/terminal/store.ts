@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { settingsSchema, defaultSettings, type Settings } from "../core/schema";
 import { seal, unseal, Vault } from "../storage/vault";
 import { providerDefaults } from "../providers/catalog";
+import { MemoryStore } from "../memory/store";
 
 export interface TerminalProfile {
   settings: Settings;
@@ -77,6 +78,7 @@ export function initialSettings(
 }
 export class TerminalStore {
   readonly vault: Vault;
+  readonly memory: MemoryStore;
   profile: TerminalProfile;
   constructor(
     readonly root = terminalHome(),
@@ -94,6 +96,7 @@ export class TerminalStore {
       };
     } else this.profile = { settings: initialSettings(), secrets: {} };
     this.vault = new Vault(join(root, "runs"), key);
+    this.memory = new MemoryStore(join(root, "memory"), key);
   }
   save() {
     const file = join(this.root, "profile.enc");

@@ -1675,6 +1675,9 @@ describe("provider-neutral adapters", () => {
     new TypeError("fetch failed SECRET", {
       cause: { code: "ERR_SSL_SSLV3_ALERT_BAD_RECORD_MAC" },
     }),
+    new TypeError("fetch failed SECRET", {
+      cause: { code: "ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC" },
+    }),
   ])("recovers from a transient transport failure", async (error) => {
     vi.useFakeTimers();
     const request = vi

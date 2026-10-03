@@ -6,9 +6,17 @@ import { randomBytes } from "node:crypto";
 import { importConnections } from "../src/terminal/connection-config";
 import { createSlackReader, slackTools } from "../src/terminal/slack";
 import { installedApps } from "../src/terminal/apps";
-import { TerminalConnections } from "../src/terminal/connections";
+import {
+  TerminalConnections,
+  connectionSettings,
+} from "../src/terminal/connections";
 import { TerminalStore } from "../src/terminal/store";
 import { McpOAuth } from "../src/terminal/mcp-oauth";
+import {
+  settingsSchema,
+  toolServerSchema,
+  defaultSettings,
+} from "../src/core/schema";
 
 const roots: string[] = [];
 const temp = () => {
@@ -21,6 +29,40 @@ afterEach(() => {
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true }));
   vi.restoreAllMocks();
+});
+test("passive briefings leave unused agent servers dormant without changing saved connections or consent", () => {
+  const settings = settingsSchema.parse({
+    ...defaultSettings,
+    tools: {
+      servers: ["gmail", "claude-code", "codex", "slack-bot"].map((id) =>
+        toolServerSchema.parse({
+          id,
+          name: id,
+          transport: "stdio",
+          addedAt: 0,
+          enabled: id !== "slack-bot",
+          consented: true,
+          approvedCommand: "synthetic-command-pin",
+        }),
+      ),
+    },
+    briefings: {
+      reads: [
+        { tool: "gmail__gmail_search", args: { query: "is:unread" } },
+        { tool: "slack-bot__slack_activity", args: {} },
+      ],
+    },
+  });
+  const scoped = connectionSettings(settings, true);
+  expect(
+    scoped.tools.servers.filter((row) => row.enabled).map((row) => row.id),
+  ).toEqual(["gmail"]);
+  expect(settings.tools.servers.filter((row) => row.enabled)).toHaveLength(3);
+  expect(scoped.tools.servers[1]).toMatchObject({
+    consented: true,
+    approvedCommand: "synthetic-command-pin",
+  });
+  expect(connectionSettings(settings, false)).toBe(settings);
 });
 test("imports local commands and HTTP headers with credentials separated from visible server rows", () => {
   const rows = importConnections(

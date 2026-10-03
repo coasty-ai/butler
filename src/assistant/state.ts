@@ -50,6 +50,7 @@ export interface DialogState {
   notifications?: string[];
   openApps?: string[];
   briefing?: { at: string; text: string };
+  memory?: { preferences: string[]; episodes: string[] };
 }
 
 export const DIALOG_TURNS = 8;
@@ -112,6 +113,7 @@ export interface DialogStateInput {
   notifications?: string[];
   openApps?: string[];
   briefing?: { at: number; text: string };
+  memory?: { preferences: string[]; episodes: string[] };
   /** The run is paused only because this activation interrupted it. */
   heldByVoice: boolean;
   now: Date;
@@ -158,6 +160,13 @@ export function buildDialogState(i: DialogStateInput): DialogState {
   if (notifications?.length) state.notifications = notifications;
   const openApps = list(i.openApps, LIMITS.openApps);
   if (openApps?.length) state.openApps = openApps;
+  if (i.memory) {
+    const preferences =
+      list(i.memory.preferences, { items: 5, chars: 200 }) ?? [];
+    const episodes = list(i.memory.episodes, { items: 3, chars: 500 }) ?? [];
+    if (preferences.length || episodes.length)
+      state.memory = { preferences, episodes };
+  }
   if (i.briefing && i.now.getTime() - i.briefing.at < 24 * 60 * 60_000)
     state.briefing = {
       at: new Date(i.briefing.at).toISOString(),
@@ -196,6 +205,7 @@ const KEY_ORDER: (keyof DialogState)[] = [
   "notifications",
   "openApps",
   "briefing",
+  "memory",
 ];
 /** What goes first when the state must shrink to fit. */
 const DROP_ORDER: (keyof DialogState)[] = [
@@ -203,6 +213,7 @@ const DROP_ORDER: (keyof DialogState)[] = [
   "openApps",
   "agenda",
   "briefing",
+  "memory",
 ];
 
 /**

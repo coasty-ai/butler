@@ -15,6 +15,13 @@ import { TerminalStore, terminalHome } from "./store";
 import { TerminalVoice, type SpokenInput } from "./voice";
 import { installedApps } from "./apps";
 import { providerDiagnostics, probeModel } from "./doctor";
+import { nativeModelFetch } from "./transport";
+import {
+  terminalMemory,
+  conversationMemory,
+  rememberPreference,
+  rememberRequest,
+} from "./memory";
 import { TerminalConnections } from "./connections";
 import { UrlOpener } from "../../electron/open-url";
 import { NativeController } from "../../electron/controller";
@@ -36,7 +43,11 @@ import {
 } from "../core/schema";
 import { fileFactsReader } from "../storage/files";
 import { deliverableTextReader } from "../tools/providers/files";
-import { planVoiceTurn, voiceIntent } from "../voice/turns";
+import {
+  APPROVAL_MIN_CONFIDENCE,
+  planVoiceTurn,
+  voiceIntent,
+} from "../voice/turns";
 import { leadingClause } from "../voice/early";
 import { redactSecrets } from "../core/sanitize";
 import type { RunView } from "../assistant/types";
@@ -68,11 +79,19 @@ const HELP = `Just type to converse. Butler uses connected tools before desktop 
 /listen on|off|status   'Hey Butler' and spoken commands; Option-Space if permitted
 /doctor       desktop and voice permission status
 /doctor model test the model connection with a generated image (uses API credits)
+/remember <preference>  save an encrypted preference; /memory on|off shows its switch
+/memory       saved memory counts and preferences; /forget <id>|all removes them
 /help /quit    help / quit
 /new           start a fresh conversation
 Ctrl-C interrupts work. Ctrl-D quits. Coding tools use this project folder.
 Run 'butler daemon start' to keep briefings running after closing your terminal.`;
 
+/** Exact generic requests use the existing batched read-only briefing path. */
+export function briefingRequest(text: string): boolean {
+  return /^(?:please\s+)?(?:brief me|give me (?:a|my) briefing|what needs my attention|catch me up)[.!?]*$/i.test(
+    text.trim(),
+  );
+}
 export async function main(args = process.argv.slice(2)) {
   if (args.includes("--help") || args[0] === "help") {
     console.log(
@@ -126,6 +145,10 @@ export async function main(args = process.argv.slice(2)) {
     } catch {}
   }
   const command = args[0];
+  const interactive =
+    process.stdin.isTTY &&
+    !args.includes("--daemon") &&
+    !args.includes("--ask");
   if (command === "daemon") {
     await daemon(args[1] || "status");
     return;
@@ -137,11 +160,25 @@ export async function main(args = process.argv.slice(2)) {
   if (!existsSync(project))
     throw new Error("The project folder does not exist.");
   const store = new TerminalStore();
+  const modelFetch = nativeModelFetch();
   const providerTrace = providerDiagnostics(
     join(store.root, "diagnostics"),
     () => [store.keyForProvider(), ...Object.values(store.profile.secrets)],
   );
   const connections = new TerminalConnections(store, project, ROOT);
+  const askText = args.includes("--ask")
+    ? args[args.indexOf("--ask") + 1] || ""
+    : "";
+  const passiveConnections =
+    command === "briefing" ||
+    args.includes("--daemon") ||
+    briefingRequest(askText) ||
+    askText === "/briefing";
+  let connectionsReady: Promise<void> | undefined;
+  const readyConnections = () =>
+    (connectionsReady ??= connections.start({
+      briefingsOnly: passiveConnections,
+    }));
   let native: NativeController | undefined;
   let nativeSetup: Promise<void> | undefined;
   let runner: Runner | undefined;
@@ -221,7 +258,9 @@ export async function main(args = process.argv.slice(2)) {
     voice.close();
     native?.close();
     screen.close();
+    await connectionsReady?.catch(() => {});
     await connections.registry.closeAll();
+    store.memory.flush();
     releaseLock();
     if (
       args.includes("--daemon") &&
@@ -293,10 +332,11 @@ export async function main(args = process.argv.slice(2)) {
   const dialog = new AssistantSession({
     settings,
     providerKey: () => store.keyForProvider(),
-    fetch,
+    fetch: modelFetch,
     view,
-    context: () => ({
+    context: (words) => ({
       briefing: briefings.status().latest || store.briefingContext(),
+      memory: conversationMemory(store, words),
     }),
     heldByVoice: () => heldByVoice,
   });
@@ -309,6 +349,7 @@ export async function main(args = process.argv.slice(2)) {
       return !!(p.locked || p.displayAsleep);
     },
     collect: async (since, signal) => {
+      await readyConnections();
       await connections.refreshCredentials();
       await getNative().configure(settings());
       return collectBriefing({
@@ -326,7 +367,7 @@ export async function main(args = process.argv.slice(2)) {
     summarize: createBriefingSummarizer({
       settings,
       key: () => store.keyForProvider(),
-      fetch,
+      fetch: modelFetch,
     }),
     modelReady: () =>
       settings().provider === "ollama" || !!store.keyForProvider(),
@@ -384,12 +425,13 @@ export async function main(args = process.argv.slice(2)) {
       throw new Error(
         "Build the macOS helpers with npm run build:native first.",
       );
+    if (toolsFirst) await readyConnections();
     runner = new Runner(
       lazy,
       new HttpProvider(
         settings(),
         store.keyForProvider(),
-        fetch,
+        modelFetch,
         providerTrace,
       ),
       store.vault,
@@ -421,7 +463,15 @@ export async function main(args = process.argv.slice(2)) {
         screen.draw();
       },
       [],
-      undefined,
+      settings().memory
+        ? terminalMemory(store, async (query) => {
+            try {
+              return await getNative().request("index", query ? { query } : {});
+            } catch {
+              return undefined;
+            }
+          })
+        : undefined,
       {
         tools: connections.registry.access({ synthetic: false }),
         deliverables: fileFactsReader(process.env.HOME || ""),
@@ -503,6 +553,7 @@ export async function main(args = process.argv.slice(2)) {
         "/fast",
         "/key",
         "/permissions",
+        "/forget",
       ].includes(text.split(/\s+/)[0])
     )
       throw new Error(
@@ -516,8 +567,51 @@ export async function main(args = process.argv.slice(2)) {
     try {
       const [word, ...parts] = text.split(/\s+/);
       const rest = text.slice(word.length).trim();
+      const preference = rememberRequest(text);
+      if (preference && spoken && spoken.confidence < APPROVAL_MIN_CONFIDENCE) {
+        announce("Please repeat that preference so I can save it accurately.");
+        return;
+      }
       if (word === "/help") show(HELP);
-      else if (word === "/new") {
+      else if (word === "/remember" || preference) {
+        rememberPreference(store, preference || rest);
+        announce("I'll remember that preference.");
+      } else if (word === "/memory") {
+        if (rest === "on" || rest === "off") {
+          settings().memory = rest === "on";
+          store.save();
+          dialog.reset();
+          show(`Memory ${rest}.`);
+        } else if (rest)
+          throw new Error("Use /memory, /memory on, or /memory off.");
+        else
+          show(
+            [
+              JSON.stringify({
+                enabled: settings().memory,
+                ...store.memory.summary(),
+              }),
+              ...store.memory
+                .data()
+                .preferences.filter((p) => !p.status || p.status === "approved")
+                .map((p) => `${p.id}: ${redactSecrets(p.text)}`),
+            ].join("\n"),
+          );
+      } else if (word === "/forget") {
+        if (rest === "all") store.memory.clear();
+        else {
+          if (!store.memory.data().preferences.some((p) => p.id === rest))
+            throw new Error(
+              "Use /forget with an ID shown by /memory, or /forget all.",
+            );
+          store.memory.update((data) => {
+            data.preferences = data.preferences.filter((p) => p.id !== rest);
+          });
+          store.memory.flush();
+        }
+        dialog.reset();
+        announce("That saved memory has been forgotten.");
+      } else if (word === "/new") {
         dialog.reset();
         screen.clearMessages();
         announce("A fresh conversation. What shall we attend to?");
@@ -540,7 +634,7 @@ export async function main(args = process.argv.slice(2)) {
                 settings(),
                 store.keyForProvider(),
                 providerTrace,
-                fetch,
+                modelFetch,
                 activeTurn.signal,
               ),
               null,
@@ -548,12 +642,14 @@ export async function main(args = process.argv.slice(2)) {
             ),
           );
       } else if (word === "/connections") {
+        await readyConnections();
         screen.state.connections = connections.labels();
         show(
           connections.labels().join("\n") ||
             "No servers connected. Use /connect github, then the other services you use.",
         );
       } else if (word === "/connect") {
+        await readyConnections();
         await connections.connectCommand(
           rest,
           screen.ask.bind(screen),
@@ -563,12 +659,14 @@ export async function main(args = process.argv.slice(2)) {
         briefings.apply();
         screen.state.connections = connections.labels();
       } else if (word === "/disconnect") {
+        await readyConnections();
         if (!rest) throw new Error("Name the connection after /disconnect.");
         await connections.disconnect(rest);
         briefings.apply();
         screen.state.connections = connections.labels();
         show(`${rest} disconnected.`);
       } else if (word === "/tools") {
+        await readyConnections();
         const access = connections.registry.access({ synthetic: false });
         if (!access) throw new Error("Connected tools are disabled.");
         const listed = await access.list("", activeTurn.signal);
@@ -681,7 +779,13 @@ export async function main(args = process.argv.slice(2)) {
             reportError,
           );
         else await task(rest, "user_words", false, word !== "/cua");
-      } else if (word === "/briefing") {
+      } else if (word === "/briefing" || briefingRequest(text)) {
+        if (spoken && spoken.confidence < APPROVAL_MIN_CONFIDENCE) {
+          announce("Please repeat that if you'd like a fresh briefing.");
+          return;
+        }
+        if (word !== "/briefing") show(text, "You");
+        await voice.interruptOutput();
         busy = false;
         const report = await briefings.checkNow();
         if (report.error) show(report.error);
@@ -945,7 +1049,7 @@ export async function main(args = process.argv.slice(2)) {
   process.once("SIGTERM", () => void quit());
   process.once("SIGINT", () => void quit());
   if (command === "status") {
-    await connections.start();
+    await readyConnections();
     console.log(
       JSON.stringify(
         {
@@ -973,7 +1077,12 @@ export async function main(args = process.argv.slice(2)) {
     if (args.includes("--model"))
       console.log(
         JSON.stringify(
-          await probeModel(settings(), store.keyForProvider(), providerTrace),
+          await probeModel(
+            settings(),
+            store.keyForProvider(),
+            providerTrace,
+            modelFetch,
+          ),
           null,
           2,
         ),
@@ -1002,15 +1111,17 @@ export async function main(args = process.argv.slice(2)) {
     await quit();
     return;
   }
-  const interactive =
-    process.stdin.isTTY &&
-    !args.includes("--daemon") &&
-    !args.includes("--ask");
   if (interactive || args.includes("--daemon"))
     releaseLock = claimEngine(store.root);
   if (interactive) screen.start();
-  await connections.start();
-  for (const warning of connections.connectionWarnings()) show(warning);
+  if (interactive)
+    void readyConnections()
+      .then(() => {
+        for (const warning of connections.connectionWarnings()) show(warning);
+      })
+      .catch(reportError);
+  else if (args.includes("--daemon") || command === "connect")
+    await readyConnections();
   screen.state.connections = connections.labels();
   healthTimer = setInterval(() => {
     screen.state.connections = connections.labels();

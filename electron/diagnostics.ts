@@ -1041,7 +1041,9 @@ const journalEvents = new Map<string, Set<string>>([
   ["SpeculationDiscarded", new Set(["code", "kind", "usage"])],
 ]);
 const code = (value: unknown) =>
-  typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value)
+  typeof value === "string" &&
+  (value === "ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC" ||
+    /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value))
     ? value
     : undefined;
 const count = (value: unknown) =>

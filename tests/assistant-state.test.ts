@@ -40,6 +40,27 @@ const input = (over: Partial<DialogStateInput> = {}): DialogStateInput => ({
 });
 
 describe("briefing conversation context", () => {
+  it("bounds and sanitizes recalled memory and drops it before the current user request", () => {
+    const state = buildDialogState(
+      input({
+        memory: {
+          preferences: [
+            "My API key is sk-" + "a".repeat(48),
+            ...Array(10).fill("x".repeat(400)),
+          ],
+          episodes: Array(6).fill("y".repeat(900)),
+        },
+      }),
+    );
+    expect(state.memory?.preferences).toHaveLength(5);
+    expect(state.memory?.episodes).toHaveLength(3);
+    expect(state.memory?.preferences.every((p) => p.length <= 200)).toBe(true);
+    expect(state.memory?.episodes.every((p) => p.length <= 500)).toBe(true);
+    expect(JSON.stringify(state.memory)).not.toContain("sk-" + "a".repeat(48));
+    const small = JSON.parse(dialogStateJson(state, 500));
+    expect(small.memory).toBeUndefined();
+    expect(small.user).toBe("how's it going?");
+  });
   it("carries the selected personality and a bounded recap, with verification codes removed", () => {
     const state = buildDialogState(
       input({

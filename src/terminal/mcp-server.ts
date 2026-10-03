@@ -188,11 +188,16 @@ export function createGmailReader(
       }),
     );
     let more = !!list.nextPageToken;
-    while (JSON.stringify({ messages, more }).length > 18_000) {
+    const ids = messages
+      .map((message) => message.id)
+      .filter((id) => typeof id === "string" && /^[a-f0-9]{1,40}$/.test(id));
+    while (JSON.stringify({ ids, more, messages }).length > 18_000) {
       messages.pop();
       more = true;
     }
-    return redactSecrets(JSON.stringify({ messages, more }));
+    // Keep every returned identifier before snippets: downstream result limits
+    // must not hide which messages remain to be read in a bounded inbox task.
+    return redactSecrets(JSON.stringify({ ids, more, messages }));
   };
 }
 export async function codexTask(

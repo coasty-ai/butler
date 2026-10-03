@@ -16,7 +16,11 @@ import { createSlackReader } from "./slack";
 import { McpOAuth } from "./mcp-oauth";
 import type { AppleConsent } from "../core/tools";
 import { TOOL_LIMITS } from "../core/tools";
-import { toolServerSchema, type ToolServer } from "../core/schema";
+import {
+  toolServerSchema,
+  type ToolServer,
+  type Settings,
+} from "../core/schema";
 import type { ServerRecipe } from "../core/tools";
 import { authorize, type OAuthClient } from "./oauth";
 import type { TerminalStore } from "./store";
@@ -33,11 +37,33 @@ export const CONNECTIONS = [
 ] as const;
 export type ConnectionId = (typeof CONNECTIONS)[number];
 export type Ask = (label: string, secret?: boolean) => Promise<string>;
+/** Passive checks start only the servers used by saved read queries. Never edits consent. */
+export function connectionSettings(
+  settings: Settings,
+  briefingsOnly: boolean,
+): Settings {
+  if (!briefingsOnly) return settings;
+  return {
+    ...settings,
+    tools: {
+      ...settings.tools,
+      servers: settings.tools.servers.map((server) => ({
+        ...server,
+        enabled:
+          server.enabled &&
+          settings.briefings.reads.some((read) =>
+            read.tool.startsWith(`${server.id}__`),
+          ),
+      })),
+    },
+  };
+}
 export class TerminalConnections {
   readonly registry: ToolRegistry;
   readonly recipes: readonly ServerRecipe[];
   private githubToken = "";
   private warnings: string[] = [];
+  private briefingsOnly = false;
   constructor(
     private store: TerminalStore,
     readonly project: string,
@@ -98,7 +124,8 @@ export class TerminalConnections {
     ];
     this.registry = createToolRegistry({
       recipes: this.recipes,
-      settings: () => store.profile.settings,
+      settings: () =>
+        connectionSettings(store.profile.settings, this.briefingsOnly),
       credentials: (
         id,
       ): { env: Record<string, string>; headers: Record<string, string> } => {
@@ -175,7 +202,8 @@ export class TerminalConnections {
       this.githubToken = this.store.profile.secrets["github:token"] || "";
     }
   }
-  async start() {
+  async start(options: { briefingsOnly?: boolean } = {}) {
+    this.briefingsOnly = !!options.briefingsOnly;
     this.githubToken = this.store.profile.secrets["github:token"] || "";
     if (!this.githubToken) this.readGithubToken();
     await this.refreshCredentials();

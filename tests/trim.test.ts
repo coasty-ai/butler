@@ -812,6 +812,23 @@ describe("screen context the model sees", () => {
 });
 
 describe("history the model sees", () => {
+  it("retains facts from six small app reads until the final summary without retaining multiple large pages", () => {
+    const reads = Array.from({ length: 6 }, (_, i) => ({
+      type: "tool_call",
+      action: {
+        type: "tool_call",
+        tool: "gmail__gmail_read",
+        args: { id: String(i) },
+      },
+      result: `Tool gmail__gmail_read: ok. ${"x".repeat(1300)} marker-${i}`,
+    }));
+    const seen = modelHistory(reads);
+    expect(seen).toHaveLength(6);
+    for (let i = 0; i < 6; i++) expect(seen[i].result).toContain(`marker-${i}`);
+    expect(
+      seen.reduce((sum, entry) => sum + entry.result.length, 0),
+    ).toBeLessThan(6 * 2048);
+  });
   it("keeps the last six entries whole behind one line for the earlier steps", () => {
     const seen = modelHistory(notesHistory);
     expect(seen).toHaveLength(MODEL_HISTORY_FULL + 1);

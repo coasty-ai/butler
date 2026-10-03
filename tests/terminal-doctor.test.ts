@@ -43,12 +43,17 @@ test("CLI provider diagnostics retain transport and HTTP codes, never tasks, ima
     model: "gpt-6.1-sol",
     provider: "openai",
   });
+  trace("ProviderTransportError", {
+    code: "ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC",
+    error: "private TLS error fixture",
+  });
   trace("ProviderFailed", {
     code: "PRIVATE_BODY_FIXTURE",
     error: "private response fixture",
   });
   const text = readFileSync(join(root, "current.jsonl"), "utf8");
   expect(text).toContain("ECONNRESET");
+  expect(text).toContain("ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC");
   expect(text).toContain('"httpStatus":503');
   for (const value of [
     "private",

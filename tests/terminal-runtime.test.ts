@@ -12,6 +12,9 @@ const f = vi.hoisted(() => ({
   approval: false,
   speak: vi.fn(async () => {}),
   decide: vi.fn(),
+  memory: undefined as any,
+  connectionsStart: vi.fn(async () => {}),
+  briefingCheck: vi.fn(async () => ({ on: true, state: "waiting" })),
 }));
 vi.mock("node:fs", async (load) => {
   const fs = await load<typeof import("node:fs")>();
@@ -44,7 +47,7 @@ vi.mock("../src/terminal/connections", () => ({
       configure: async () => {},
       closeAll: async () => {},
     };
-    start = async () => {};
+    start = f.connectionsStart;
     labels = () => [];
     connectionWarnings = () => [];
   },
@@ -99,6 +102,16 @@ vi.mock("../electron/assistant", () => ({
     decide = f.decide;
   },
 }));
+vi.mock("../electron/briefings", async (load) => {
+  const original = await load<typeof import("../electron/briefings")>();
+  return {
+    ...original,
+    createBriefings: (options: any) => ({
+      ...original.createBriefings(options),
+      checkNow: f.briefingCheck,
+    }),
+  };
+});
 vi.mock("../electron/controller", () => ({
   NativeController: class {
     configure = async () => {};
@@ -120,8 +133,11 @@ vi.mock("../src/core/runner", async (load) => {
         _vault: any,
         _settings: any,
         notify: any,
+        _watches: any,
+        memory: any,
       ) {
         this.notify = notify;
+        f.memory = memory;
       }
       start = async (task: string, options: any) => {
         f.tasks.push({ task, options });
@@ -162,7 +178,7 @@ vi.mock("../src/core/runner", async (load) => {
     },
   };
 });
-import { main } from "../src/terminal/main";
+import { main, briefingRequest } from "../src/terminal/main";
 let tty: PropertyDescriptor | undefined;
 let root: string;
 let listeners: Map<string, Set<Function>>;
@@ -172,6 +188,9 @@ beforeEach(() => {
   f.tasks = [];
   f.confirmations = [];
   f.approval = false;
+  f.memory = undefined;
+  f.connectionsStart.mockClear();
+  f.briefingCheck.mockClear();
   f.speak.mockClear();
   f.decide.mockReset().mockImplementation(async (input: any) => ({
     acting: true,
@@ -211,11 +230,62 @@ test("direct desktop tasks bypass MCP selection, preserve typed provenance, and 
     taskSource: "user_words",
     initialApp: "Slack",
   });
+  expect(f.memory).toMatchObject({
+    recall: expect.any(Function),
+    learn: expect.any(Function),
+  });
   expect(f.speak).toHaveBeenCalledWith(
     "The fixture task is complete.",
     false,
     true,
   );
+});
+test("an explicit personal preference is saved locally without a model or desktop task", async () => {
+  await main([]);
+  f.ui.submit("Remember that I prefer concise briefings");
+  await vi.waitFor(() =>
+    expect(f.store.instance.memory.data().preferences).toHaveLength(1),
+  );
+  expect(f.tasks).toEqual([]);
+  expect(f.decide).not.toHaveBeenCalled();
+  expect(f.speak).toHaveBeenCalledWith(
+    "I'll remember that preference.",
+    false,
+    true,
+  );
+});
+test("one-shot preference saving does not start connected MCP processes", async () => {
+  await main(["--ask", "/remember I prefer concise briefings"]);
+  expect(f.store.instance.memory.data().preferences).toHaveLength(1);
+  expect(f.connectionsStart).not.toHaveBeenCalled();
+  expect(f.tasks).toEqual([]);
+});
+test("natural briefing requests use one batched read instead of the action model loop", async () => {
+  await main([]);
+  f.ui.submit("What needs my attention?");
+  await vi.waitFor(() => expect(f.briefingCheck).toHaveBeenCalledOnce());
+  expect(f.tasks).toEqual([]);
+  expect(f.decide).not.toHaveBeenCalled();
+  expect(briefingRequest("Brief me on the GitHub pull requests")).toBe(false);
+});
+test("low-confidence spoken preferences are repeated rather than stored or sent to a model", async () => {
+  await main([]);
+  f.voice.receive({
+    text: "Remember that I prefer concise briefings",
+    confidence: 0.3,
+    source: "wake",
+    segments: 1,
+  });
+  await vi.waitFor(() =>
+    expect(f.speak).toHaveBeenCalledWith(
+      "Please repeat that preference so I can save it accurately.",
+      false,
+      true,
+    ),
+  );
+  expect(f.store.instance.memory.data().preferences).toHaveLength(0);
+  expect(f.tasks).toEqual([]);
+  expect(f.decide).not.toHaveBeenCalled();
 });
 test("voice becomes a spoken dialog turn and task rather than impersonating typed input", async () => {
   await main([]);

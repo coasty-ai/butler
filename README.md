@@ -94,6 +94,8 @@ Inside Butler, choose the interval in minutes:
 
 Each check uses available app/window context, observed notification banners and configured, trusted MCP reads. Butler suggests priorities, speaks the result with macOS’s British voice, and saves an encrypted readable copy. It reports missing coverage. It cannot inspect every app’s entire history or the complete Notification Center database.
 
+Once briefings are enabled, say “Brief me”, “Catch me up”, or “What needs my attention?” for a fresh check. These requests use batched reads and one summary call.
+
 Use `/briefing-reads` to see the current queries and `/briefing-read server__tool {"query":"..."}` to add a trusted read tool. Gmail adds a bounded unread-mail query; Slack bot setup adds a bounded recent-activity query. Use `/briefings off` to disable scheduled checks. Checks wait during tasks, speech or while the Mac is locked.
 
 To keep briefings running after leaving the interactive terminal, first quit Butler with `/quit`, then:
@@ -106,6 +108,12 @@ butler daemon stop
 ```
 
 The background process keeps running after the terminal closes, until stopped or the Mac restarts. It delivers briefings without activating the microphone. It does not install a login service. Only one interactive/background engine runs at a time.
+
+Background briefings start only the MCP servers used by your saved read queries, leaving unused coding agents and browser bridges off. Interactive sessions load all enabled connections. One-shot conversation with `butler --ask "..."` does not start MCP servers unless it needs tools.
+
+## Memory
+
+Tell Butler `Remember that I prefer concise briefings`, or use `/remember <preference>`. Preferences and completed task history persist encrypted locally and are recalled when relevant. `/memory` lists preferences and their IDs; `/memory off` stops recall and learning; `/memory on` restores them. `/forget <ID>` removes a preference and `/forget all` clears saved memory. Keep credentials in `/key` or `/connect`.
 
 ## Controls and macOS permissions
 

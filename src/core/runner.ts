@@ -303,9 +303,12 @@ export const MODEL_RESULT_CHARS = 640;
  * prefix) reaches the model on the step that asked for it. On the step
  * after, the same entry is cut at MODEL_RESULT_CHARS like every other: the
  * values the model needs travel in its note, as the instruction says, and
- * the prompt never carries two pages.
+ * the prompt never carries two large pages. Small app results retain their
+ * facts within the existing six-entry window for inbox and comparison tasks.
  */
 export const MODEL_TOOL_RESULT_CHARS = 31_000;
+/** Six small app results must retain their identifiers and facts for a final summary. */
+export const MODEL_COMPACT_TOOL_RESULT_CHARS = 2048;
 /**
  * The model's copy of the history: the last MODEL_HISTORY_FULL entries whole
  * (rejections with their echoed actions, refusals, the loop and no-progress
@@ -322,7 +325,10 @@ export function modelHistory(history: History): History {
       entry.result,
       i === all.length - 1 && entry.type === "tool_call"
         ? MODEL_TOOL_RESULT_CHARS
-        : MODEL_RESULT_CHARS,
+        : entry.type === "tool_call" &&
+            entry.result.length <= MODEL_COMPACT_TOOL_RESULT_CHARS
+          ? MODEL_COMPACT_TOOL_RESULT_CHARS
+          : MODEL_RESULT_CHARS,
     ),
   }));
   if (history.length <= MODEL_HISTORY_FULL) return whole;

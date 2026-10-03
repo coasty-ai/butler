@@ -10,7 +10,12 @@
  * and arbitrate() maps whatever it says onto plans the router could have
  * produced itself. Every spoken sentence goes through speakableSentence.
  */
-import type { Settings, TaskSource, Usage } from "../src/core/schema";
+import type {
+  Settings,
+  TaskSource,
+  Usage,
+  MemoryContext,
+} from "../src/core/schema";
 import { validateProviderEndpoint } from "../src/core/privacy";
 import { trace, type DiagnosticSink } from "../src/core/diagnostics";
 import { scanText } from "../src/core/sanitize";
@@ -121,11 +126,12 @@ export interface AssistantOptions {
   fetch: typeof fetch;
   view: () => RunView;
   /** Optional context, already gated by settings; never a helper call. */
-  context: () => {
+  context: (userText: string) => {
     agenda?: string[];
     notifications?: string[];
     openApps?: string[];
     briefing?: { at: number; text: string };
+    memory?: Pick<MemoryContext, "preferences" | "episodes">;
   };
   /** main.ts voiceHoldResumable(): the only hold a model resume may end. */
   heldByVoice: () => boolean;
@@ -689,7 +695,7 @@ export class AssistantSession implements AssistantSessionApi {
     const s = this.options.settings();
     let context: ReturnType<AssistantOptions["context"]> = {};
     try {
-      context = this.options.context() ?? {};
+      context = this.options.context(text) ?? {};
     } catch {}
     return buildDialogState({
       channel,
@@ -703,6 +709,7 @@ export class AssistantSession implements AssistantSessionApi {
       notifications: context.notifications,
       openApps: context.openApps,
       briefing: context.briefing,
+      memory: context.memory,
       heldByVoice: this.options.heldByVoice(),
       now: new Date(this.now()),
     });
