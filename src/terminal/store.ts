@@ -15,6 +15,7 @@ import { seal, unseal, Vault } from "../storage/vault";
 import { providerDefaults } from "../providers/catalog";
 import { MemoryStore } from "../memory/store";
 import { McpCatalogues } from "./catalogues";
+import { TerminalBriefingBudget } from "./briefing-budget";
 
 export interface TerminalProfile {
   settings: Settings;
@@ -81,6 +82,7 @@ export class TerminalStore {
   readonly vault: Vault;
   readonly memory: MemoryStore;
   readonly catalogues: McpCatalogues;
+  readonly briefingBudget: TerminalBriefingBudget;
   profile: TerminalProfile;
   constructor(
     readonly root = terminalHome(),
@@ -100,6 +102,10 @@ export class TerminalStore {
     this.vault = new Vault(join(root, "runs"), key);
     this.memory = new MemoryStore(join(root, "memory"), key);
     this.catalogues = new McpCatalogues(join(root, "catalogues"), key);
+    this.briefingBudget = new TerminalBriefingBudget(
+      join(root, "briefing-budget.enc"),
+      key,
+    );
   }
   save() {
     const file = join(this.root, "profile.enc");

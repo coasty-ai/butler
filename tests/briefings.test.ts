@@ -295,6 +295,152 @@ describe("periodic briefing service", () => {
     expect(t.deliver).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
+  it("persists reservations before requests and keeps failed requests charged across a restart", async () => {
+    let saved: import("../src/briefings/types").BriefingBudget | undefined;
+    const budget = {
+      load: () => saved,
+      save: (book: NonNullable<typeof saved>) => {
+        saved = structuredClone(book);
+      },
+    };
+    const first = setup({ budget });
+    first.settings((s) => {
+      s.briefings.dailyTokenBudget = 2500;
+    });
+    first.summarize.mockImplementationOnce(async () => {
+      expect(saved?.tokens).toBeGreaterThanOrEqual(900);
+      throw Error("Synthetic model failure");
+    });
+    await first.service.checkNow();
+    const reserved = saved!.tokens;
+    first.service.close();
+    const next = setup({ budget });
+    next.settings((s) => {
+      s.briefings.dailyTokenBudget = reserved;
+    });
+    expect(next.service.status().tokensToday).toBe(reserved);
+    await next.service.checkNow();
+    expect(next.summarize).not.toHaveBeenCalled();
+    expect(next.service.status().latest?.mode).toBe("local");
+  });
+  it("reloads actual usage after a restart and renews the allowance on the next local day", async () => {
+    let saved: import("../src/briefings/types").BriefingBudget | undefined;
+    const budget = {
+      load: () => saved,
+      save: (book: NonNullable<typeof saved>) => {
+        saved = structuredClone(book);
+      },
+    };
+    const first = setup({ budget });
+    first.settings((s) => {
+      s.briefings.dailyTokenBudget = 2500;
+    });
+    first.summarize.mockResolvedValue({
+      text: "Review the deck.",
+      usage: { ...usage, inputTokens: 3000 },
+    });
+    await first.service.checkNow();
+    expect(saved!.tokens).toBeGreaterThanOrEqual(3000);
+    const oldDay = saved!.day;
+    first.service.close();
+    const next = setup({ budget });
+    next.settings((s) => {
+      s.briefings.dailyTokenBudget = 2500;
+    });
+    await next.service.checkNow();
+    expect(next.summarize).not.toHaveBeenCalled();
+    next.advance(24 * 60 * 60_000);
+    await next.service.checkNow();
+    expect(next.summarize).toHaveBeenCalledOnce();
+    expect(saved!.day).not.toBe(oldDay);
+  });
+  it("keeps local recaps useful without making a request when stored usage is unreadable", async () => {
+    const budget = {
+      load: () => {
+        throw Error("Synthetic unreadable quota");
+      },
+      save: vi.fn(),
+    };
+    const t = setup({ budget });
+    await t.service.checkNow();
+    expect(t.summarize).not.toHaveBeenCalled();
+    expect(budget.save).not.toHaveBeenCalled();
+    expect(t.service.status().latest).toMatchObject({
+      mode: "local",
+      note: "The daily model allowance is unavailable; showing a local recap.",
+    });
+    expect(t.deliver).toHaveBeenCalledOnce();
+  });
+  it("does not request a model until a durable reservation succeeds", async () => {
+    let writable = false;
+    const budget = {
+      load: () => undefined,
+      save: vi.fn(() => {
+        if (!writable) throw Error("Synthetic storage failure");
+      }),
+    };
+    const t = setup({ budget });
+    await t.service.checkNow();
+    expect(t.summarize).not.toHaveBeenCalled();
+    expect(t.service.status().tokensToday).toBe(0);
+    writable = true;
+    await t.service.checkNow();
+    expect(t.summarize).toHaveBeenCalledOnce();
+    expect(t.service.status().tokensToday).toBeGreaterThanOrEqual(900);
+  });
+  it("reloads a reservation made by an earlier engine during startup", async () => {
+    let saved: import("../src/briefings/types").BriefingBudget | undefined;
+    const budget = {
+      load: () => saved,
+      save: (book: NonNullable<typeof saved>) => {
+        saved = structuredClone(book);
+      },
+    };
+    const t = setup({ budget });
+    t.settings((s) => {
+      s.briefings.dailyTokenBudget = 2500;
+    });
+    const date = new Date(at);
+    saved = {
+      day: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
+      tokens: 2500,
+    };
+    await t.service.checkNow();
+    expect(t.summarize).not.toHaveBeenCalled();
+    expect(t.service.status().tokensToday).toBe(2500);
+    expect(t.service.status().latest?.mode).toBe("local");
+  });
+  it("accounts a request against its reserved day when a status read crosses midnight", async () => {
+    let saved: import("../src/briefings/types").BriefingBudget | undefined;
+    const budget = {
+      load: () => saved,
+      save: (book: NonNullable<typeof saved>) => {
+        saved = structuredClone(book);
+      },
+    };
+    const t = setup({ budget });
+    let finish:
+      ((result: { text: string; usage: typeof usage }) => void) | undefined;
+    t.summarize.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          finish = r;
+        }),
+    );
+    const pending = t.service.checkNow();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const oldDay = saved!.day;
+    t.advance(24 * 60 * 60_000);
+    expect(t.service.status().tokensToday).toBe(0);
+    finish!({
+      text: "Review the deck.",
+      usage: { ...usage, inputTokens: 3000 },
+    });
+    await pending;
+    expect(saved!.day).toBe(oldDay);
+    expect(saved!.tokens).toBeGreaterThanOrEqual(3000);
+    expect(t.service.status().tokensToday).toBe(0);
+  });
   it("disabling or quitting cancels pending speech and clears the interval", async () => {
     vi.useFakeTimers();
     const t = setup();

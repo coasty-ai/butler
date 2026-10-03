@@ -5,6 +5,8 @@ import type {
   Briefing,
   BriefingFacts,
   BriefingStatus,
+  BriefingBudget,
+  BriefingBudgetStore,
 } from "../src/briefings/types";
 import { completeText, textSettings } from "../src/providers/text";
 import type { DiagnosticSink } from "../src/core/diagnostics";
@@ -131,6 +133,7 @@ export function createBriefings(o: {
   onChange?: () => void;
   now?: () => number;
   trace?: DiagnosticSink;
+  budget?: BriefingBudgetStore;
 }): BriefingService {
   const now = o.now ?? Date.now;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -146,10 +149,32 @@ export function createBriefings(o: {
   let closed = false;
   let tokens = 0;
   let day = "";
+  let budgetLoaded = true;
+  const loadBudget = () => {
+    try {
+      const saved = o.budget?.load();
+      if (saved && (saved.day !== day || saved.tokens > tokens)) {
+        day = saved.day;
+        tokens = saved.tokens;
+      }
+    } catch {
+      budgetLoaded = false;
+    }
+  };
+  loadBudget();
+  const persist = (budget: BriefingBudget) => {
+    if (!budgetLoaded) return false;
+    try {
+      o.budget?.save(budget);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const change = () => o.onChange?.();
   const resetDay = () => {
     const date = new Date(now());
-    const today = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
     if (day !== today) {
       day = today;
       tokens = 0;
@@ -264,44 +289,68 @@ export function createBriefings(o: {
         12_000,
       );
       if (abort.signal.aborted) return;
+      // The CLI acquires its engine lock before checking. Reload here because
+      // another short-lived engine may have reserved usage during startup.
+      if (budgetLoaded) loadBudget();
       resetDay();
       const estimate = Math.ceil(briefingInput(facts).length / 3) + 900;
       let text = localBriefing(facts),
         mode: Briefing["mode"] = "local";
       let note =
         "Using a local recap; configure a text model for prioritized suggestions.";
-      if (
+      if (o.modelReady() && !budgetLoaded) {
+        note =
+          "The daily model allowance is unavailable; showing a local recap.";
+      } else if (
         o.modelReady() &&
         tokens + estimate <= o.settings().briefings.dailyTokenBudget &&
         facts.sources.some((s) => s.state === "ok" && s.text.trim())
       ) {
         // Reserve before the request, so failures and concurrent state reads
-        // cannot silently reset the session's daily model allowance.
-        tokens += estimate;
-        try {
-          const result = await bounded(
-            (signal) => o.summarize(facts, signal),
-            abort.signal,
-            17_000,
-          );
-          tokens += Math.max(
-            0,
-            (result.usage.inputTokens ?? 0) +
-              (result.usage.outputTokens ?? 0) -
-              estimate,
-          );
-          text = result.text;
-          mode = "model";
-          note = "";
-        } catch {
-          note = "The model did not answer; showing a local recap.";
+        // cannot silently reset the daily model allowance. A durable CLI
+        // reservation must succeed before any paid request starts.
+        const reservation = { day, tokens: tokens + estimate };
+        if (!persist(reservation)) {
+          note =
+            "The daily model allowance is unavailable; showing a local recap.";
+        } else {
+          tokens = reservation.tokens;
+          try {
+            const result = await bounded(
+              (signal) => o.summarize(facts, signal),
+              abort.signal,
+              17_000,
+            );
+            const extra = Math.max(
+              0,
+              (result.usage.inputTokens ?? 0) +
+                (result.usage.outputTokens ?? 0) -
+                estimate,
+            );
+            const accounted = {
+              day: reservation.day,
+              tokens: reservation.tokens + extra,
+            };
+            // A status read can roll the clock while a request is in flight;
+            // its usage belongs to the day it reserved, never the new day.
+            if (day === reservation.day) tokens = accounted.tokens;
+            const saved = extra === 0 || persist(accounted);
+            text = result.text;
+            mode = "model";
+            note = saved
+              ? ""
+              : "The updated model allowance could not be saved; Butler will retry before another summary.";
+          } catch {
+            note = "The model did not answer; showing a local recap.";
+          }
         }
       } else if (
         o.modelReady() &&
         tokens + estimate > o.settings().briefings.dailyTokenBudget
       )
-        note =
-          "The daily model allowance for this session is used; showing a local recap.";
+        note = o.budget
+          ? "The daily model allowance is used; showing a local recap."
+          : "The daily model allowance for this session is used; showing a local recap.";
       if (closed || abort.signal.aborted || fingerprint !== version || !on)
         return;
       latest = {

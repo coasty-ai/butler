@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -354,6 +360,27 @@ test("natural briefing requests use one batched read instead of the action model
   expect(f.tasks).toEqual([]);
   expect(f.decide).not.toHaveBeenCalled();
   expect(briefingRequest("Brief me on the GitHub pull requests")).toBe(false);
+});
+test.each([["--ask", "/briefing"], ["--ask", "Brief me"], ["briefing"]])(
+  "one-shot briefing %j holds the engine lock through collection and releases it on exit",
+  async (...args) => {
+    const file = join(root, "engine.pid");
+    f.briefingCheck.mockImplementationOnce(async () => {
+      expect(readFileSync(file, "utf8")).toBe(String(process.pid));
+      return { on: true, state: "waiting" };
+    });
+    await main(args);
+    expect(f.briefingCheck).toHaveBeenCalledOnce();
+    expect(existsSync(file)).toBe(false);
+  },
+);
+test("a competing engine cannot perform a one-shot briefing or remove the existing lock", async () => {
+  const file = join(root, "engine.pid");
+  writeFileSync(file, String(process.pid));
+  await expect(main(["--ask", "/briefing"])).rejects.toThrow("already running");
+  expect(f.briefingCheck).not.toHaveBeenCalled();
+  await f.ui.quit();
+  expect(readFileSync(file, "utf8")).toBe(String(process.pid));
 });
 test.each([
   {

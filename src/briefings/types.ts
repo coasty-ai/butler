@@ -31,6 +31,14 @@ export interface BriefingStatus {
   error?: string;
   tokensToday: number;
 }
+export interface BriefingBudget {
+  day: string;
+  tokens: number;
+}
+export interface BriefingBudgetStore {
+  load(): BriefingBudget | undefined;
+  save(budget: BriefingBudget): void;
+}
 export interface BriefingTool {
   id: string;
   title: string;

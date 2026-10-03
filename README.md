@@ -121,6 +121,8 @@ The background process keeps running after the terminal closes, until stopped or
 
 Background briefings start only the MCP servers used by your saved read queries, leaving unused coding agents and browser bridges off. Interactive sessions load all enabled connections. One-shot conversation with `butler --ask "..."` does not start MCP servers unless it needs tools.
 
+The daily briefing token allowance persists encrypted across restarts. Butler reserves estimated usage before requesting a summary and accounts for larger reported usage afterward. Once the allowance is used, checks continue with a local recap and readable copy. If the allowance record cannot be read or saved, Butler uses a local recap. The allowance covers briefing summaries; conversations and tasks have separate model usage.
+
 ## Memory
 
 Tell Butler `Remember that I prefer concise briefings`, or use `/remember <preference>`. Preferences and completed task history persist encrypted locally and are recalled when relevant. `/memory` lists preferences and their IDs; `/memory off` stops recall and learning; `/memory on` restores them. `/forget <ID>` removes a preference and `/forget all` clears saved memory. Keep credentials in `/key` or `/connect`.

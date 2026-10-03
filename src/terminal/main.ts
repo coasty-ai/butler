@@ -279,6 +279,12 @@ export async function main(args = process.argv.slice(2)) {
     }
   };
   let releaseLock = () => {};
+  let engineClaimed = false;
+  const ownEngine = () => {
+    if (engineClaimed) return;
+    releaseLock = claimEngine(store.root);
+    engineClaimed = true;
+  };
   cleanup = quit;
   const screen = new TerminalScreen(
     (text) => void dispatch(text).catch((error) => reportError(error)),
@@ -350,6 +356,7 @@ export async function main(args = process.argv.slice(2)) {
   });
   const briefings = createBriefings({
     settings,
+    budget: store.briefingBudget,
     busy: () =>
       busy || !!isRunning() || voice.speaking || voice.listeningToTurn,
     locked: async () => {
@@ -811,6 +818,7 @@ export async function main(args = process.argv.slice(2)) {
           return;
         }
         if (word !== "/briefing") show(text, "You");
+        ownEngine();
         await voice.interruptOutput();
         busy = false;
         const report = await briefings.checkNow();
@@ -1197,8 +1205,7 @@ export async function main(args = process.argv.slice(2)) {
     await quit();
     return;
   }
-  if (interactive || args.includes("--daemon"))
-    releaseLock = claimEngine(store.root);
+  if (interactive || args.includes("--daemon")) ownEngine();
   if (interactive) screen.start();
   if (interactive)
     void readyConnections()
