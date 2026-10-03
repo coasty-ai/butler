@@ -97,6 +97,8 @@ export interface RegistryOptions {
    */
   loopbackOrigins?: readonly string[];
   recipes?: readonly ServerRecipe[];
+  /** Known unused coding servers whose process may be released after discovery. */
+  onDemand?: readonly string[];
 }
 /** The install step of a preview or an approval: whether it ran, and how it went. */
 export interface InstallStep {
@@ -357,7 +359,10 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
       setTimer: o.setTimer,
       clearTimer: o.clearTimer,
       ...(src.kind === "server"
-        ? { ticks: () => row(src.row.id)?.tools ?? {} }
+        ? {
+            ticks: () => row(src.row.id)?.tools ?? {},
+            onDemand: o.onDemand?.includes(src.row.id),
+          }
         : { consents }),
       ...extra,
     });

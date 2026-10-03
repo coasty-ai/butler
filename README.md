@@ -44,6 +44,8 @@ Replies stream into the conversation. Page Up/Down scrolls the transcript, Up/Do
 
 Simple questions such as “check my reminders” (items due today) or “what’s on my calendar tomorrow?” use the connected Apple read tool directly, without a model call. More involved requests use your chosen model and available tools.
 
+Unused Claude Code and Codex connections keep their approved tool catalogue available while releasing their processes after discovery. The first task reconnects and checks the tool pins again; a connection stays running once used so its background work can continue.
+
 For spoken replies and voice input:
 
 ```text

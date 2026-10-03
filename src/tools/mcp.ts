@@ -82,6 +82,8 @@ export interface McpProviderOptions {
   consents?: () => ReadonlySet<AppleConsent>;
   /** Fires once the server is on and listed, so first-start ticks can be saved. */
   onStarted?: () => void;
+  /** Release an unused stdio process after discovery; the first call reconnects and rechecks pins. */
+  onDemand?: boolean;
   connectTimeoutMs?: number;
   fs?: ResolveFs;
   now?: () => number;
@@ -327,6 +329,12 @@ export function createMcpProvider(
   let restarts: number[] = [];
   let exhausted = false;
   let timer: unknown;
+  let starting: Promise<void> | undefined;
+  let called = false;
+  const onDemand =
+    !!o.onDemand &&
+    source.kind === "server" &&
+    source.row.transport === "stdio";
   const compiled = new Map<
     string,
     ((input: unknown) => { valid: boolean }) | null
@@ -447,7 +455,7 @@ export function createMcpProvider(
     restarts.push(at);
     timer = setTimer(() => void start(), delay);
   };
-  const start = async () => {
+  const connect = async () => {
     if (closing || client || exhausted) return;
     const startedAt = now();
     state = "starting";
@@ -480,8 +488,15 @@ export function createMcpProvider(
       wire = createTransport();
       countStderr(wire);
       await next.connect(wire, { timeout: connectTimeoutMs });
+      if (client !== next || closing) {
+        await next.close().catch(() => {});
+        return;
+      }
       await refresh();
-      if (client !== next) return;
+      if (client !== next || closing) {
+        await next.close().catch(() => {});
+        return;
+      }
       state = "on";
       trace("ToolServerStarted", {
         durationMs: now() - startedAt,
@@ -489,13 +504,43 @@ export function createMcpProvider(
         stderrBytes: stderr,
       });
       o.onStarted?.();
+      // Keep the consented catalogue in this process, but release an unused
+      // coding server. Once any call uses it, keep it alive: a returned call
+      // can still own background work. Detach before close to avoid restart.
+      if (onDemand && !called && client === next && !closing) {
+        client = undefined;
+        state = "starting";
+        // An unused server need not spend the SDK's stdin/TERM grace period
+        // in memory. Signal only this owned transport; the launcher forwards
+        // TERM while retaining its TCC disclaim and network sandbox.
+        if (wire instanceof StdioClientTransport && wire.pid !== null)
+          try {
+            process.kill(wire.pid, "SIGTERM");
+          } catch {}
+        await next.close().catch(() => {});
+        if (!closing) {
+          state = "on";
+          code = "ON_DEMAND";
+        }
+      }
     } catch (error) {
       if (client === next) client = undefined;
       await wire?.close().catch(() => {});
+      if (closing) {
+        state = "off";
+        return;
+      }
       state = launchCode === "LAUNCH_NO_SANDBOX" ? "blocked_local" : "failed";
       code = launchCode ?? errorCode(error);
       trace("ToolServerFailed", { code, durationMs: now() - startedAt });
     }
+  };
+  const start = () => {
+    if (starting) return starting;
+    starting = connect().finally(() => {
+      starting = undefined;
+    });
+    return starting;
   };
 
   const specOf = (tool: Tool): ToolSpec | undefined => {
@@ -677,8 +722,8 @@ export function createMcpProvider(
       });
     },
     async tools() {
-      if (!on() || !client) return [];
-      if (stale) await refresh().catch(() => {});
+      if (!on() || (!client && code !== "ON_DEMAND")) return [];
+      if (stale && client) await refresh().catch(() => {});
       const specs: ToolSpec[] = [];
       let changed = false;
       for (const tool of listed) {
@@ -724,6 +769,39 @@ export function createMcpProvider(
           return { code: "unavailable", raw: "", items: 0 };
       }
       try {
+        if (options.signal.aborted)
+          return { code: "interrupted", raw: "", items: 0 };
+        const waking = onDemand && !client && code === "ON_DEMAND";
+        const expectedPin = onDemand ? pinOf(spec.name) : undefined;
+        called = true;
+        await starting;
+        if (waking) {
+          await start();
+        }
+        if (onDemand) {
+          if (!client || !on() || closing)
+            return { code: "unavailable", raw: "", items: 0 };
+          // Discovery is fresh after reconnect. A cached spec cannot execute
+          // a changed, unticked, removed or denylisted tool.
+          const tool = listedTool(spec.name);
+          const tick = o.ticks?.()[spec.name];
+          if (
+            !tool ||
+            !offered(tool) ||
+            !specOf(tool) ||
+            !tick?.on ||
+            tick.pin !== expectedPin ||
+            tick.pin !== toolPin(tool)
+          )
+            return { code: "pin_mismatch", raw: "", items: 0 };
+          const check = validator(tool);
+          if (!check || !check(args).valid)
+            return {
+              code: "error",
+              raw: "Tool arguments do not match the approved schema.",
+              items: 0,
+            };
+        }
         return fromResult(spec, await callTool(spec.name, args, options));
       } catch (error) {
         return {
@@ -759,6 +837,8 @@ export function createMcpProvider(
       client = undefined;
       state = "off";
       await current?.close().catch(() => {});
+      await starting;
+      state = "off";
     },
   };
 }

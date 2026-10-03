@@ -76,6 +76,7 @@ async function started(
     trace?: (event: string, data: Record<string, unknown>) => void;
     timers?: { fn: () => void; ms: number }[];
     now?: () => number;
+    onDemand?: boolean;
   } = {},
 ) {
   const ticks: ToolServer["tools"] = {};
@@ -93,6 +94,7 @@ async function started(
       ticks: () => ticks,
       trace: o.trace,
       now: o.now,
+      onDemand: o.onDemand,
       ...(o.timers
         ? {
             setTimer: (fn: () => void, ms: number) =>
@@ -467,6 +469,149 @@ describe("MCP client: calls", () => {
 });
 
 describe("MCP client: lifecycle", () => {
+  it("reaps a connection that finishes discovery after shutdown has begun", async () => {
+    const provider = createMcpProvider(
+      {
+        kind: "server",
+        row: row(),
+        launch: launcher,
+        secrets: { env: {}, headers: {} },
+      },
+      { home, version: "0.1.0-test", onDemand: true },
+    );
+    providers.push(provider);
+    const starting = provider.start();
+    await provider.close();
+    await starting;
+    const pids = readdirSync(scratch).flatMap((name) => {
+      const match = /^fake-launch-(\d+)\.json$/.exec(name);
+      return match ? [Number(match[1])] : [];
+    });
+    try {
+      expect(provider.state().state).toBe("off");
+      for (const pid of pids) {
+        let live = false;
+        try {
+          process.kill(pid, 0);
+          live = true;
+        } catch {}
+        expect(
+          live,
+          "a late connection must not leave its owned launcher running",
+        ).toBe(false);
+      }
+    } finally {
+      for (const pid of pids)
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {}
+    }
+  });
+
+  it("retains the approved catalogue after releasing an unused process, wakes once and keeps used servers alive", async () => {
+    const timers: { fn: () => void; ms: number }[] = [];
+    const { provider } = await started({ onDemand: true, timers });
+    expect(provider.state()).toMatchObject({
+      state: "on",
+      code: "ON_DEMAND",
+      restarts: 0,
+    });
+    const read = named(await provider.tools(signal.signal), "read_note");
+    expect(provider.prepare(read, { name: "todo" }).ok).toBe(true);
+    const initialLaunches = records().length;
+    expect(initialLaunches).toBeGreaterThan(0);
+    expect(timers).toEqual([]);
+    const results = await Promise.all([
+      provider.call(read, { name: "todo" }, { ...signal, timeoutMs: 2000 }),
+      provider.call(read, { name: "next" }, { ...signal, timeoutMs: 2000 }),
+    ]);
+    expect(results.map((r) => r.code)).toEqual(["ok", "ok"]);
+    expect(records()).toHaveLength(2 * initialLaunches);
+    expect(provider.state()).toMatchObject({
+      state: "on",
+      code: undefined,
+      restarts: 0,
+    });
+    await provider.start();
+    expect(records()).toHaveLength(2 * initialLaunches);
+    expect(timers).toEqual([]);
+  });
+
+  it("refuses a changed tool after waking before calling it", async () => {
+    const marker = join(scratch, "on-demand-shift");
+    rmSync(marker, { force: true });
+    try {
+      const { provider } = await started({
+        onDemand: true,
+        row: { args: [fixture, "--signal", marker] },
+      });
+      const spec = named(await provider.tools(signal.signal), "shifting");
+      writeFileSync(marker, "");
+      const result = await provider.call(
+        spec,
+        {},
+        { ...signal, timeoutMs: 2000 },
+      );
+      expect(result).toEqual({ code: "pin_mismatch", raw: "", items: 0 });
+      expect(
+        (await provider.tools(signal.signal)).some(
+          (s) => s.name === "shifting",
+        ),
+      ).toBe(false);
+      expect(provider.state().state).toBe("changed");
+    } finally {
+      rmSync(marker, { force: true });
+    }
+  });
+
+  it("revalidates arguments and live tool ticks after waking", async () => {
+    const { provider, ticks } = await started({ onDemand: true });
+    const read = named(await provider.tools(signal.signal), "read_note");
+    expect(
+      (await provider.call(read, { name: 5 }, { ...signal, timeoutMs: 2000 }))
+        .code,
+    ).toBe("error");
+    ticks.read_note.on = false;
+    expect(
+      (
+        await provider.call(
+          read,
+          { name: "todo" },
+          { ...signal, timeoutMs: 2000 },
+        )
+      ).code,
+    ).toBe("pin_mismatch");
+  });
+
+  it("never wakes a closed or already-cancelled on-demand server", async () => {
+    const { provider } = await started({ onDemand: true });
+    const initialLaunches = records().length;
+    const read = named(await provider.tools(signal.signal), "read_note");
+    const cancelled = AbortSignal.abort();
+    expect(
+      (
+        await provider.call(
+          read,
+          { name: "todo" },
+          { signal: cancelled, timeoutMs: 2000 },
+        )
+      ).code,
+    ).toBe("interrupted");
+    expect(records()).toHaveLength(initialLaunches);
+    await provider.close();
+    expect(
+      (
+        await provider.call(
+          read,
+          { name: "todo" },
+          { ...signal, timeoutMs: 2000 },
+        )
+      ).code,
+    ).toBe("unavailable");
+    expect(provider.state().state).toBe("off");
+    expect(records()).toHaveLength(initialLaunches);
+  });
+
   it("restarts an exited server with the helpers' backoff, then gives up until Retry", async () => {
     const timers: { fn: () => void; ms: number }[] = [];
     let now = 1_000_000;

@@ -127,6 +127,7 @@ export class TerminalConnections {
     ];
     this.registry = createToolRegistry({
       recipes: this.recipes,
+      onDemand: ["claude-code", "codex"],
       settings: () =>
         connectionSettings(
           store.profile.settings,
@@ -244,6 +245,7 @@ export class TerminalConnections {
     ];
     const labels = ids.map((id) => {
       const s = servers.find((r) => r.id === id);
+      if (s?.code === "ON_DEMAND") return `${s.name}: ready on demand`;
       return s
         ? `${s.name}: ${s.state}${s.code ? ` (${s.code})` : ""}`
         : `${id}: not connected`;
