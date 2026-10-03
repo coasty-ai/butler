@@ -107,6 +107,11 @@ export const DIALOG_LIMITS = {
   maxOutputTokens: 300,
 } as const;
 
+const pureGreeting = (text: string) =>
+  /^(?:(?:hello|hi|hey)(?: butler)? )?(?:how are you(?: doing| today)?|hows your day|how is your day|hows it going|how is it going)$|^(?:hello|hi|hey)(?: butler)?$|^good (?:morning|afternoon|evening)$/.test(
+    intentKey(text),
+  );
+
 export interface AssistantOptions {
   settings: () => Settings;
   /** The run provider's key: the dialog shares its credential scope. */
@@ -304,6 +309,10 @@ export class AssistantSession implements AssistantSessionApi {
   preempt(partial: string, channel: Channel): void {
     const text = partial.trim();
     if (!text || !this.available(channel)) return;
+    if (!this.options.view().running && pureGreeting(text)) {
+      this.dropEarly();
+      return;
+    }
     // A credential never leaves the machine, not even in a partial.
     if (carriesCredential(text)) return;
     if (
@@ -383,6 +392,31 @@ export class AssistantSession implements AssistantSessionApi {
     this.live = undefined;
     this.epoch++;
     if (i.signal.aborted) return settled("interrupted");
+    if (
+      !this.options.view().running &&
+      dialogEligible(base) &&
+      pureGreeting(i.text)
+    ) {
+      this.dropEarly();
+      this.noteUser(i.text, i.channel);
+      this.log("decided", {
+        code: "local_greeting",
+        channel: i.channel,
+        actMs: 0,
+        preempt: false,
+      });
+      return {
+        plan: { kind: "reply", act: "answer", resume: true },
+        acting: false,
+        code: "off",
+        sentences: this.fixedLine(
+          this.options.settings().persona === "jarvis"
+            ? "Very well, thank you. What shall we attend to?"
+            : "Hello! I'm here and ready to help.",
+          i.channel,
+        ),
+      };
+    }
     const ready = this.availability(i.channel);
     if (ready !== "ok" || !dialogEligible(base)) {
       this.dropEarly();

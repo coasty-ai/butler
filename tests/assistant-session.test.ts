@@ -324,6 +324,61 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("assistant session: deciding a turn", () => {
+  it.each([
+    "Hello",
+    "Hi Butler!",
+    "Hello, how are you?",
+    "How are you doing?",
+    "How are you today?",
+    "Good morning",
+  ])(
+    "a pure greeting %s cannot become a task when the model is unavailable",
+    async (text) => {
+      const t = setup({ settings: { persona: "jarvis" } });
+      t.session.preempt(text, "voice");
+      const decision = await t.decided(text, start(text));
+      expect(decision).toMatchObject({
+        plan: { kind: "reply" },
+        acting: false,
+        code: "off",
+      });
+      expect(await t.collect(decision)).toEqual([
+        "Very well, thank you. What shall we attend to?",
+      ]);
+      expect(t.fetch).not.toHaveBeenCalled();
+    },
+  );
+  it("a local greeting stays in the thread for the next model answer", async () => {
+    const t = setup({
+      settings: { persona: "friendly" },
+      bodies: [answer("We can review your agenda.")],
+    });
+    await t.collect(
+      await t.decided("Hello", start("Hello"), { channel: "app" }),
+    );
+    const request = "What could we do next?";
+    const decision = await t.decided(request, start(request), {
+      channel: "app",
+    });
+    expect(await t.collect(decision)).toEqual(["We can review your agenda."]);
+    expect(t.requests).toHaveLength(1);
+    expect(t.stateOf().turns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", text: "Hello" }),
+        expect.objectContaining({
+          role: "assistant",
+          text: expect.stringContaining("ready to help"),
+        }),
+      ]),
+    );
+  });
+  it("a greeting attached to a task still reaches the model", async () => {
+    const t = setup({ bodies: [answer("I can help with that.")] });
+    const text = "Hello, could you prepare a draft note?";
+    const decision = await t.decided(text, start(text));
+    expect(t.requests).toHaveLength(1);
+    expect(decision.code).toBe("model");
+  });
   it("discusses its latest briefing in the selected British persona without starting a desktop task", async () => {
     const t = setup({
       settings: { persona: "jarvis" },
