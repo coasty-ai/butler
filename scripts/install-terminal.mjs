@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
 } from "node:fs";
@@ -60,15 +61,11 @@ if (
     }),
   ]);
 run(["run", "build:terminal"]);
-if (
-  [
-    "coarena-controller",
-    "coarena-launch",
-    "coarena-voice",
-    "coarena-apple",
-  ].some((name) => !existsSync(join(root, "native/bin", name)))
-)
-  run(["run", "build:native"]);
+// The native builder checks source and binary fingerprints, so upgrades also
+// refresh stale helpers while repeated installs reuse unchanged builds.
+run(["run", "build:native", "--", "--terminal"]);
+run(["prune", "--omit=dev", "--omit=optional", "--ignore-scripts"]);
+rmSync(join(root, "tmp/swift-cache"), { recursive: true, force: true });
 const dir = join(homedir(), ".local/bin");
 mkdirSync(dir, { recursive: true });
 const command = join(dir, "butler");

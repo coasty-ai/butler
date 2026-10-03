@@ -15,7 +15,7 @@ npm run install:terminal
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The installer builds Butler, builds any missing native helpers, and installs `~/.local/bin/butler`. It skips the Electron binary download and the optional legacy voice inference runtime; the CLI uses macOS speech. Add the PATH line to `~/.zshrc` to keep the command available in new terminals.
+The installer builds Butler, refreshes stale native helpers, and installs `~/.local/bin/butler`. It removes development and renderer packages after building, skips the Electron binary download and optional legacy voice runtime, and uses macOS speech. Repeated installs reuse unchanged native builds. Add the PATH line to `~/.zshrc` to keep the command available in new terminals.
 
 Already have this checkout? Run `npm run install:terminal` in its folder.
 

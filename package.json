@@ -34,14 +34,11 @@
     "install:terminal": "node scripts/install-terminal.mjs"
   },
   "dependencies": {
-    "@fontsource-variable/space-grotesk": "^5.3.0",
     "@modelcontextprotocol/client": "2.0.0",
-    "lucide-react": "^1.46.0",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@fontsource-variable/space-grotesk": "^5.3.0",
     "@playwright/test": "^1.63.0",
     "@types/node": "^24.13.5",
     "@types/react": "^19.3.0",
@@ -50,8 +47,11 @@
     "ajv": "^8.20.0",
     "electron": "^41.10.7",
     "esbuild": "^0.28.2",
+    "lucide-react": "^1.46.0",
     "onnxruntime-common": "1.30.0",
     "prettier": "^3.9.6",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",
