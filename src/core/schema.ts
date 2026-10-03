@@ -743,6 +743,8 @@ export const settingsSchema = z
     autonomyAllAcknowledged: z.boolean().default(false),
     /** Text model for dialog and summaries; "" means the run model. */
     dialogModel: z.string().max(100).default(""),
+    /** OpenAI Fast mode is an explicitly selected, higher-priced tier. */
+    openaiServiceTier: z.enum(["auto", "fast"]).default("auto"),
     /** Hourly ceiling for dialog and summary calls, in estimated dollars. */
     dialogHourlyCost: z.number().min(0.05).max(10).default(0.5),
     /**
@@ -922,6 +924,7 @@ export const defaultSettings: Settings = {
   autonomy: "task",
   autonomyAllAcknowledged: false,
   dialogModel: "",
+  openaiServiceTier: "auto",
   dialogHourlyCost: 0.5,
   decisions: "auto",
   decisionsChosen: false,

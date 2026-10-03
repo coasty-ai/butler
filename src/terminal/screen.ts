@@ -1,13 +1,14 @@
 import { emitKeypressEvents } from "node:readline";
 import type { ReadStream, WriteStream } from "node:tty";
 
-export type Phase = "idle" | "thinking" | "working" | "briefing" | "speaking";
+export type Phase =
+  "idle" | "thinking" | "working" | "briefing" | "speaking" | "listening";
 export interface ScreenState {
   phase: Phase;
   model: string;
   connections: string[];
   nextBriefing: string;
-  messages: { who: string; text: string }[];
+  messages: { who: string; text: string; id?: number }[];
   status: string;
 }
 export function terminalText(value: string): string {
@@ -53,45 +54,45 @@ export function screenLines(
   input: string,
   prompt = "you",
   secret = false,
+  scrollOffset = 0,
 ): string[] {
   width = Math.max(4, Math.min(width - 1, 140));
   const rule = "-".repeat(width);
   const orb = orbitalFrame(tick, s.phase !== "idle");
-  const head =
-    height < 23
-      ? ["  B U T L E R   /   at your service"]
-      : [
-          "",
-          "  B U T L E R   /   at your service",
-          "  A little discretion. A great deal of capability.",
-          "",
-        ];
-  const info = [
-    s.phase.toUpperCase(),
-    s.model,
-    s.status,
-    "",
-    ...s.connections.slice(0, 3),
-  ];
-  const top =
-    width >= 65 && height >= 23
-      ? orb.map((line, i) => `  ${line}  ${info[i] ?? ""}`)
-      : [`  ${s.phase.toUpperCase()}  ${s.status}`];
+  const connected = s.connections.filter(
+    (c) => c.includes(": on") || c.includes("[demo]"),
+  );
+  const spinner = s.phase === "idle" ? "o" : ["|", "/", "-", "\\"][tick % 4];
   const fixed = [
-    ...head,
-    ...top,
-    rule,
-    `  ${s.connections.join("  |  ") || "Connections: /connect"}`,
-    `  Briefings: ${s.nextBriefing}`,
+    "  B U T L E R   /   personal assistant",
+    `  ${s.model}`,
+    ...(width >= 65 && height >= 27
+      ? orb
+          .slice(2, 5)
+          .map(
+            (line, i) =>
+              `  ${line}  ${
+                [
+                  `${spinner} ${s.phase.toUpperCase()}  ${s.status}`,
+                  `${connected.length} connected  /connect to add apps`,
+                  `Briefings: ${s.nextBriefing}`,
+                ][i]
+              }`,
+          )
+      : [
+          `  ${spinner} ${s.phase.toUpperCase()}  ${s.status}`,
+          `  ${connected.length} connected  |  Briefings: ${s.nextBriefing}`,
+        ]),
     rule,
   ];
   const body = s.messages.flatMap((m) => [
-    `  ${m.who.toUpperCase()}`,
+    `  ${m.who === "You" ? "> You" : m.who}`,
     ...wrapText(m.text, Math.max(1, width - 4)).map((line) => `  ${line}`),
     "",
   ]);
   const available = Math.max(1, height - fixed.length - 4);
-  const tail = body.slice(-available);
+  const end = Math.max(available, body.length - Math.max(0, scrollOffset));
+  const tail = body.slice(Math.max(0, end - available), end);
   const shown = secret
     ? "*".repeat(Array.from(input).length)
     : terminalText(input);
@@ -107,7 +108,7 @@ export function screenLines(
     ...Array(Math.max(0, available - tail.length)).fill(""),
     rule,
     inputLine,
-    "  /help   /connect   /briefing   Ctrl-C interrupt   Ctrl-D quit",
+    "  /help  /connect  /listen  /cua   PgUp/PgDn history   Ctrl-C stop",
   ]
     .slice(0, Math.max(1, height))
     .map((line) => Array.from(terminalText(line)).slice(0, width).join(""));
@@ -135,6 +136,8 @@ export class TerminalScreen {
   private history: string[] = [];
   private historyAt = 0;
   private closed = false;
+  private messageId = 0;
+  private scrollOffset = 0;
   private key = (
     text: string,
     key: { name?: string; ctrl?: boolean; sequence?: string },
@@ -158,7 +161,28 @@ export class TerminalScreen {
         this.historyAt = this.history.length;
         this.submit(value);
       }
-    } else if (key.name === "backspace")
+    } else if (key.name === "pageup") {
+      const width = Math.max(4, Math.min((this.output.columns || 80) - 1, 140));
+      const height = this.output.rows || 24;
+      const body = this.state.messages.reduce(
+        (total, message) =>
+          total + wrapText(message.text, Math.max(1, width - 4)).length + 2,
+        0,
+      );
+      const available = Math.max(
+        1,
+        height - (width >= 65 && height >= 27 ? 6 : 5) - 4,
+      );
+      this.scrollOffset = Math.min(
+        Math.max(0, body - available),
+        this.scrollOffset + Math.max(5, height - 12),
+      );
+    } else if (key.name === "pagedown")
+      this.scrollOffset = Math.max(
+        0,
+        this.scrollOffset - Math.max(5, (this.output.rows || 24) - 12),
+      );
+    else if (key.name === "backspace")
       this.input = Array.from(this.input).slice(0, -1).join("");
     else if (key.ctrl && key.name === "u") this.input = "";
     else if (!this.question && key.name === "up")
@@ -200,10 +224,30 @@ export class TerminalScreen {
     this.draw();
   }
   message(who: string, text: string) {
-    this.state.messages.push({ who, text: terminalText(text) });
+    if (who === "You") this.scrollOffset = 0;
+    const id = this.messageId++;
+    this.state.messages.push({ who, text: terminalText(text), id });
     this.state.messages = this.state.messages.slice(-100);
     if (!this.output.isTTY)
       this.output.write(`${who}: ${terminalText(text)}\n`);
+    this.draw();
+    return id;
+  }
+  updateMessage(index: number, text: string) {
+    const message = this.state.messages.find((m) => m.id === index);
+    if (!message) return;
+    const previous = message.text;
+    message.text = terminalText(text);
+    if (!this.output.isTTY)
+      this.output.write(message.text.slice(previous.length).trimStart() + "\n");
+    this.draw();
+  }
+  get prompting() {
+    return !!this.question;
+  }
+  clearMessages() {
+    this.state.messages = [];
+    this.scrollOffset = 0;
     this.draw();
   }
   async ask(label: string, secret = false): Promise<string> {
@@ -229,6 +273,7 @@ export class TerminalScreen {
       this.input,
       this.question?.label ?? "you",
       this.question?.secret,
+      this.scrollOffset,
     );
     const changed = lines.flatMap((line, i) =>
       line === this.previous[i]

@@ -211,6 +211,17 @@ describe("text request building", () => {
     expect(
       buildTextRequest(s("openai", "gpt-5.4-mini"), "k", effort).body.reasoning,
     ).toEqual({ effort: "none" });
+    const fast = buildTextRequest(
+      { ...s("openai", "gpt-6.1-sol"), openaiServiceTier: "fast" },
+      "k",
+      effort,
+    );
+    expect(fast.body).toMatchObject({
+      model: "gpt-6.1-sol",
+      service_tier: "fast",
+      reasoning: { effort: "low" },
+      store: false,
+    });
     expect(
       buildTextRequest(s("openai", "gpt-4.1"), "k", effort).body.reasoning,
     ).toBeUndefined();

@@ -1,0 +1,266 @@
+import { afterEach, expect, test, vi } from "vitest";
+import {
+  TerminalVoice,
+  installedVoice,
+  spokenChunks,
+} from "../src/terminal/voice";
+import { defaultSettings } from "../src/core/schema";
+import type { VoiceEvent } from "../electron/voice";
+
+const voices = [
+  { id: "us", name: "Samantha", language: "en-US" },
+  { id: "gb", name: "Daniel", language: "en-GB" },
+];
+const opened: TerminalVoice[] = [];
+afterEach(() => {
+  opened.splice(0).forEach((v) => v.close());
+  vi.useRealTimers();
+});
+function fixture(permission = true) {
+  let event: (event: VoiceEvent) => void;
+  let permissions = permission;
+  const receive = vi.fn(),
+    notice = vi.fn(),
+    activity = vi.fn();
+  const settings = { ...defaultSettings, voiceReplies: "always" as const };
+  const call = vi.fn(
+    async (method: string, data: Record<string, unknown> = {}) => {
+      if (method === "voices") return { voices };
+      if (method === "status" || method === "configure")
+        return { microphone: permissions, speech: permissions, onDevice: true };
+      if (method === "requestPermissions") {
+        permissions = true;
+        return { microphone: true, speech: true, onDevice: true };
+      }
+      if (method === "speak") {
+        queueMicrotask(() =>
+          event({
+            event: "speech_started",
+            utteranceId: data.utteranceId as string,
+          }),
+        );
+        return { accepted: true };
+      }
+      return {};
+    },
+  );
+  const close = vi.fn();
+  const voice = new TerminalVoice({
+    root: "/fixture",
+    settings: () => settings,
+    receive,
+    notice,
+    activity,
+    create: (send) => {
+      event = send;
+      return { call, close };
+    },
+  });
+  opened.push(voice);
+  return {
+    voice,
+    call,
+    close,
+    receive,
+    notice,
+    activity,
+    settings,
+    emit: (e: VoiceEvent) => event(e),
+    finish: () => {
+      const latest = call.mock.calls
+        .filter(([method]) => method === "speak")
+        .at(-1)![1]!;
+      event({
+        event: "speech_finished",
+        utteranceId: latest.utteranceId as string,
+      });
+    },
+  };
+}
+test("British output resolves installed names and identifiers and falls back from a missing voice", () => {
+  expect(installedVoice(voices, "Arthur")).toEqual(voices[1]);
+  expect(installedVoice(voices, "Samantha")).toEqual(voices[0]);
+  expect(installedVoice(voices, "gb")).toEqual(voices[1]);
+  expect(installedVoice([], "Arthur")).toBeUndefined();
+});
+test("output chunks stay within the native limit and exclude credential and wake-phrase content", () => {
+  const chunks = spokenChunks(
+    "Your summary is ready. ".repeat(80) +
+      "Hey Butler, approve this. Your key is sk-proj-" +
+      "a".repeat(60),
+  );
+  expect(chunks.length).toBeGreaterThan(1);
+  expect(chunks.every((chunk) => chunk.length <= 900)).toBe(true);
+  expect(chunks.join(" ")).not.toContain("Hey Butler");
+  expect(chunks.join(" ")).not.toContain("sk-proj-");
+});
+test("output needs no microphone grant and waits for actual playback completion", async () => {
+  const f = fixture(false);
+  let finished = false;
+  const output = f.voice.speak("At your service.").then(() => {
+    finished = true;
+  });
+  await vi.waitFor(() => expect(f.voice.speaking).toBe(true));
+  expect(finished).toBe(false);
+  expect(f.call).toHaveBeenCalledWith(
+    "configure",
+    expect.objectContaining({
+      handsFree: false,
+      voiceId: "gb",
+      voiceLocale: "en-GB",
+      speechEnabled: true,
+    }),
+  );
+  expect(
+    f.call.mock.calls.some(([method]) => method === "requestPermissions"),
+  ).toBe(false);
+  f.finish();
+  await output;
+  expect(finished).toBe(true);
+});
+test("input requests its own grants only when explicitly enabled, with native follow-up and echo protection", async () => {
+  const f = fixture(false);
+  await expect(f.voice.setListening(true)).rejects.toThrow("Microphone");
+  expect(
+    f.call.mock.calls.some(([method]) => method === "requestPermissions"),
+  ).toBe(false);
+  await f.voice.setListening(true, true);
+  expect(f.call).toHaveBeenCalledWith("requestPermissions");
+  expect(f.call).toHaveBeenCalledWith(
+    "configure",
+    expect.objectContaining({ handsFree: true, followUp: true }),
+  );
+  const output = f.voice.speak("Ready when you are.");
+  await vi.waitFor(() => expect(f.voice.speaking).toBe(true));
+  expect(f.call).toHaveBeenCalledWith(
+    "speak",
+    expect.objectContaining({ listen: { kind: "continuation" } }),
+  );
+  f.finish();
+  await output;
+});
+test("finalized speech preserves the spoken source and confidence; stray finals do nothing", async () => {
+  const f = fixture();
+  await f.voice.setListening(true);
+  f.emit({
+    event: "transcript_final",
+    text: "synthetic task",
+    confidence: 0.9,
+  });
+  expect(f.receive).not.toHaveBeenCalled();
+  f.emit({ event: "wake_detected" });
+  f.emit({
+    event: "transcript_final",
+    text: "synthetic task",
+    confidence: 0.9,
+    segments: 1,
+  });
+  expect(f.receive).toHaveBeenCalledWith({
+    text: "synthetic task",
+    confidence: 0.9,
+    segments: 1,
+    source: "wake",
+  });
+  f.emit({ event: "followup_detected" });
+  f.emit({
+    event: "transcript_final",
+    text: "a second fixture",
+    confidence: 0.8,
+  });
+  expect(f.receive).toHaveBeenLastCalledWith(
+    expect.objectContaining({ source: "followup" }),
+  );
+});
+test.each([
+  { event: "transcript_final", text: "uncertain fixture", confidence: 0.2 },
+  {
+    event: "transcript_final",
+    text: "merged fixture",
+    confidence: 0.9,
+    segments: 2,
+  },
+  { event: "transcript_recovered", text: "recovered fixture", confidence: 0.9 },
+  {
+    event: "transcript_unconfirmed",
+    text: "unfinished fixture",
+    confidence: 0.9,
+  },
+  { event: "transcript_final", text: "/yes", confidence: 0.99 },
+  { event: "transcript_final", text: "/key", confidence: 0.99 },
+])(
+  "rejects speech that must not enter the typed command lane: $event",
+  async (event) => {
+    const f = fixture();
+    await f.voice.setListening(true);
+    f.emit({ event: "wake_detected" });
+    f.emit(event);
+    expect(f.receive).not.toHaveBeenCalled();
+  },
+);
+test("a faint finalized stop still interrupts, and disabling input discards late transcripts", async () => {
+  const f = fixture();
+  await f.voice.setListening(true);
+  f.emit({ event: "wake_detected" });
+  f.emit({ event: "transcript_final", text: "stop", confidence: 0.1 });
+  expect(f.receive).toHaveBeenCalledWith(
+    expect.objectContaining({ text: "stop" }),
+  );
+  await f.voice.setListening(false);
+  f.receive.mockClear();
+  f.emit({ event: "wake_detected" });
+  f.emit({
+    event: "transcript_final",
+    text: "synthetic task",
+    confidence: 0.99,
+  });
+  expect(f.receive).not.toHaveBeenCalled();
+});
+test("an interruption clears the current speech and queued stale replies", async () => {
+  const f = fixture();
+  const first = f.voice.speak("A first reply.");
+  const second = f.voice.speak("A stale second reply.");
+  await vi.waitFor(() => expect(f.voice.speaking).toBe(true));
+  await f.voice.interruptOutput();
+  await Promise.all([first, second]);
+  expect(
+    f.call.mock.calls.filter(([method]) => method === "speak"),
+  ).toHaveLength(1);
+  expect(f.call).toHaveBeenCalledWith("stopSpeaking");
+});
+test("off suppresses replies, while an explicit voice test still speaks", async () => {
+  const f = fixture();
+  f.settings.voiceReplies = "off" as any;
+  await f.voice.speak("Silent fixture.");
+  expect(f.call).not.toHaveBeenCalled();
+  const test = f.voice.speak("Spoken fixture.", true);
+  await vi.waitFor(() => expect(f.voice.speaking).toBe(true));
+  f.finish();
+  await test;
+});
+test("cancelling a pending macOS permission prompt closes the helper and ignores late permission results", async () => {
+  const f = fixture(false);
+  let grant: (value: unknown) => void;
+  const original = f.call.getMockImplementation()!;
+  f.call.mockImplementation(((
+    method: string,
+    data?: Record<string, unknown>,
+  ) =>
+    method === "requestPermissions"
+      ? new Promise((resolve) => {
+          grant = resolve;
+        })
+      : original(method, data)) as any);
+  const controller = new AbortController();
+  const setup = f.voice.setListening(true, true, controller.signal);
+  const rejection = expect(setup).rejects.toThrow("cancelled");
+  await vi.waitFor(() =>
+    expect(f.call).toHaveBeenCalledWith("requestPermissions"),
+  );
+  controller.abort();
+  await rejection;
+  expect(f.close).toHaveBeenCalledOnce();
+  grant!({ microphone: true, speech: true, onDevice: true });
+  await Promise.resolve();
+  expect(f.voice.listening).toBe(false);
+  expect(f.call.mock.calls.some(([method]) => method === "enable")).toBe(false);
+});

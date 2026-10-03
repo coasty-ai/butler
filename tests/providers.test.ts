@@ -1639,6 +1639,13 @@ describe("provider-neutral adapters", () => {
   });
   it.each([
     new TypeError("fetch failed SECRET", { cause: { code: "ECONNRESET" } }),
+    new TypeError("fetch failed"),
+    new TypeError("fetch failed", {
+      cause: new AggregateError([
+        { code: "ETIMEDOUT" },
+        { code: "ECONNRESET" },
+      ]),
+    }),
     new Error("net::ERR_NETWORK_CHANGED SECRET"),
     new Error("net::ERR_SSL_BAD_RECORD_MAC_ALERT SECRET"),
     new TypeError("fetch failed SECRET", {
@@ -1681,6 +1688,15 @@ describe("provider-neutral adapters", () => {
   });
   it.each([
     [{ code: "ENOTFOUND" }, "Cannot resolve"],
+    [
+      new TypeError("fetch failed", {
+        cause: new AggregateError([
+          { code: "ECONNRESET" },
+          { code: "CERT_HAS_EXPIRED" },
+        ]),
+      }),
+      "secure connection",
+    ],
     [{ code: "CERT_HAS_EXPIRED" }, "secure connection"],
     [new Error("net::ERR_CERT_AUTHORITY_INVALID SECRET"), "secure connection"],
     [new Error("net::ERR_PROXY_CONNECTION_FAILED SECRET"), "network proxy"],

@@ -63,6 +63,61 @@ test("narrow layouts keep input visible and mask secrets", () => {
   expect(lines.join("\n")).not.toContain("secret-value");
   expect(lines.join("\n")).toContain("key>");
 });
+test("history paging preserves the input and returns to new conversation messages", () => {
+  const source = Object.assign(new EventEmitter(), {
+    isTTY: true,
+    setRawMode: vi.fn(),
+    resume: vi.fn(),
+    pause: vi.fn(),
+  });
+  const output = { isTTY: true, columns: 80, rows: 24, write: vi.fn() };
+  const screen = new TerminalScreen(
+    () => {},
+    () => {},
+    () => {},
+    output as any,
+    source as any,
+  );
+  try {
+    screen.start();
+    for (let i = 0; i < 20; i++)
+      screen.message("Butler", `Fixture conversation ${i}`);
+    source.emit("keypress", "", { name: "pageup" });
+    expect(output.write.mock.calls.at(-1)![0]).toContain(
+      "Fixture conversation 12",
+    );
+    for (let i = 0; i < 50; i++)
+      source.emit("keypress", "", { name: "pageup" });
+    for (let i = 0; i < 5; i++)
+      source.emit("keypress", "", { name: "pagedown" });
+    expect(
+      output.write.mock.calls.filter(([text]) => text).at(-1)![0],
+    ).toContain("Fixture conversation 19");
+    screen.clearMessages();
+    screen.message("You", "New fixture conversation");
+    expect(output.write.mock.calls.at(-1)![0]).toContain(
+      "New fixture conversation",
+    );
+  } finally {
+    screen.close();
+  }
+});
+test("streamed message identifiers survive transcript trimming without replacing another message", () => {
+  const output = { isTTY: false, write: vi.fn() };
+  const screen = new TerminalScreen(
+    () => {},
+    () => {},
+    () => {},
+    output as any,
+  );
+  const old = screen.message("Butler", "Old fixture");
+  for (let i = 0; i < 100; i++) screen.message("You", `Fixture ${i}`);
+  screen.updateMessage(old, "Must not replace another message");
+  expect(screen.state.messages[0].text).toBe("Fixture 0");
+  const current = screen.message("Butler", "Stream start.");
+  screen.updateMessage(current, "Stream start. Stream end.");
+  expect(screen.state.messages.at(-1)?.text).toBe("Stream start. Stream end.");
+});
 test("closing the animated screen restores the terminal and rejects a credential prompt", async () => {
   const source = Object.assign(new EventEmitter(), {
     isTTY: true,

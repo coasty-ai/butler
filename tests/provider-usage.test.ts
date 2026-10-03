@@ -293,8 +293,11 @@ describe("cached prompt tokens", () => {
     for (const provider of ["openai", "google"] as const)
       for (const [model, entry] of Object.entries(modelPrices[provider]))
         if (entry.cachedInput !== undefined)
-          // Every checked GPT-5.x and Gemini cached rate is a tenth.
-          expect(cachedInputShare(provider, model), model).toBe(0.1);
+          // GPT-6.1 Sol lists $0.10 cached input against $2 standard input;
+          // the checked GPT-5.x and Gemini rates are a tenth.
+          expect(cachedInputShare(provider, model), model).toBe(
+            model === "gpt-6.1-sol" ? 0.05 : 0.1,
+          );
     // Anthropic's cache rates are the same for every model and live in
     // http.ts; a share here would be silently ignored.
     for (const entry of Object.values(modelPrices.anthropic))

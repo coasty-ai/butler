@@ -581,6 +581,9 @@ export function buildRequest(
           // instruction, the tools and the workspace part; one fixed key
           // routes every step to the same cache.
           prompt_cache_key: "butler-action",
+          ...(settings.openaiServiceTier === "fast"
+            ? { service_tier: "fast" }
+            : {}),
           input: [
             {
               role: "user",
@@ -613,7 +616,7 @@ export function buildRequest(
           parallel_tool_calls: false,
           // Reasoning models spend output tokens before the call. A low effort
           // with room to finish keeps the loop fast without truncation.
-          ...(/^(gpt-5|o[1-9])/.test(settings.model)
+          ...(/^(gpt-[56]|o[1-9])/.test(settings.model)
             ? { reasoning: { effort: "low" }, max_output_tokens: 4096 }
             : { max_output_tokens: 1024 }),
         },

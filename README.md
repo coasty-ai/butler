@@ -1,6 +1,6 @@
 # Butler
 
-A macOS terminal assistant with a British butler’s manner, animated character graphics, MCP-first tools, and spoken briefings with an encrypted readable copy. Type naturally, ask it to work, or leave it running in the background.
+A macOS personal assistant with a Codex-style chat transcript, animated character graphics, a British butler’s manner, and MCP-first tools with desktop control as a fallback. Chat naturally, ask it to work, or receive regular spoken briefings with an encrypted readable copy.
 
 Butler runs in Node.js. Its terminal interface does not launch Electron or a browser. Desktop control uses the existing native macOS helper when a connected tool cannot handle the task.
 
@@ -34,28 +34,52 @@ butler --demo
 Choose a model in Butler and enter its API key at the masked prompt:
 
 ```text
-/model openai
+/model openai gpt-6.1-sol fast
 /key
 ```
 
-Anthropic, Google and Ollama also work. A repository `.env` containing an existing provider key is loaded locally. Keys and account tokens are encrypted with a master key stored in macOS Keychain.
+New OpenAI profiles default to GPT-6.1 Sol in Fast mode with low reasoning effort. Existing profiles keep their saved model until you run `/model`. [Fast mode](https://developers.openai.com/api/docs/guides/fast-mode) costs twice the standard token rates; `/fast off` switches back. Anthropic, Google and Ollama also work. A repository `.env` containing an existing provider key is loaded locally. Keys and account tokens are encrypted with a master key stored in macOS Keychain.
+
+Replies stream into the conversation. Page Up/Down scrolls the transcript, Up/Down recalls typed inputs, and `/new` starts a fresh conversation. Natural requests can start tasks; `/run <task>` makes that explicit.
+
+For spoken replies and voice input:
+
+```text
+/voice on
+/voice test
+/listen on
+```
+
+Approve Microphone and Speech Recognition for Butler's standalone voice helper when macOS asks. Say **Hey Butler**, then your request; follow-up listening continues the conversation after a reply. Option-Space offers push-to-talk when the helper has Accessibility access. Start with `butler --listen` to enable voice setup immediately. `/listen off` disables input, `/voice off` disables replies, and `/doctor` checks the model, voice and desktop permissions. Output uses an installed British voice, preferring Daniel; `/voice list` and `/voice <name>` select another.
 
 ## Connect your apps
 
 In Butler:
 
 ```text
+/connect
+/connect all
 /connect github
 /connect claude-code
 /connect codex
-/connect slack
+/connect slack bot
 /connect gmail
+/connect apple
+/connect filesystem
+/connect playwright
+/connect mcp
+/connect import /path/to/mcp-config.json
 /connections
+/apps
 ```
 
 GitHub reuses `gh auth login` when available and connects in read-only mode. Claude Code uses `claude mcp serve`. Codex uses Butler’s local MCP bridge to the installed, signed-in Codex CLI. Coding tasks ask for approval and run in the project folder chosen when connecting; use `butler --cwd /path/to/project` for a different project.
 
-Slack requires an internal or Marketplace Slack app approved for its MCP server, PKCE enabled, its Client ID, and your account approval. Gmail requires a Google Desktop OAuth client JSON with Gmail API enabled, then your account approval. Their terminal wizards explain each step. Gmail access is read only; neither connection enables automatic sending. See the [connection guide](docs/TERMINAL.md).
+Slack can use a **bot token (`xoxb-…`)** for reads from conversations the bot has joined. An app token (`xapp-…`) is unnecessary for scheduled reads. `/connect slack oauth` instead uses Slack's official MCP user authorization. Gmail needs a Google Desktop OAuth client JSON with Gmail API enabled, then your account approval. Their wizards explain setup; the built-in Gmail and Slack bot bridges provide reads.
+
+Connect Calendar, Reminders, Notes and Mail through `/connect apple` or their individual names. The custom wizard supports local stdio or remote Streamable HTTP MCP servers, OAuth, bearer tokens, custom headers, environment variables and no authentication. Import Claude/Cursor/VS Code MCP JSON to reuse configurations. `/tools`, `/tool server__tool on|off`, `/trust server reads|ask` and `/disconnect server` manage access. Credentials are entered at masked prompts and stored encrypted. See the [connection guide](docs/TERMINAL.md).
+
+`/apps` lists installed applications and connection paths. Each account still needs its own authorization; apps without an API or MCP can use desktop control.
 
 ## Regular briefings
 
@@ -70,7 +94,7 @@ Inside Butler, choose the interval in minutes:
 
 Each check uses available app/window context, observed notification banners and configured, trusted MCP reads. Butler suggests priorities, speaks the result with macOS’s British voice, and saves an encrypted readable copy. It reports missing coverage. It cannot inspect every app’s entire history or the complete Notification Center database.
 
-Use `/briefing-reads` to see the current queries and `/briefing-read server__tool {"query":"..."}` to add a trusted read tool. Gmail adds a bounded unread-mail query when connected. Use `/briefings off` to disable scheduled checks. Checks wait during tasks or while the Mac is locked.
+Use `/briefing-reads` to see the current queries and `/briefing-read server__tool {"query":"..."}` to add a trusted read tool. Gmail adds a bounded unread-mail query; Slack bot setup adds a bounded recent-activity query. Use `/briefings off` to disable scheduled checks. Checks wait during tasks, speech or while the Mac is locked.
 
 To keep briefings running after leaving the interactive terminal, first quit Butler with `/quit`, then:
 
@@ -81,13 +105,13 @@ butler daemon status
 butler daemon stop
 ```
 
-The background process keeps running after the terminal closes, until stopped or the Mac restarts. It does not install a login service. Only one interactive/background engine runs at a time.
+The background process keeps running after the terminal closes, until stopped or the Mac restarts. It delivers briefings without activating the microphone. It does not install a login service. Only one interactive/background engine runs at a time.
 
 ## Controls and macOS permissions
 
-Type to converse. `/run <task>` explicitly starts work. `/yes` and `/no` answer task approvals; `/stop`, `/pause`, `/resume` and Ctrl-C control work. Ctrl-D or `/quit` exits. `/voice off` disables spoken conversation replies. `/help` lists commands. Butler accepts text input and can speak its replies and briefings.
+`/yes` and `/no` answer task approvals; `/stop`, `/pause`, `/resume` and Ctrl-C control work. Spoken approval never authorizes an action requiring a click or typed confirmation. Ctrl-D or `/quit` exits. `/help` lists commands.
 
-For desktop control, name an already open app in your task (for example, `/run Summarize the visible note in Notes`). Butler can bind that window while its terminal stays in front. Terminal windows remain protected.
+For desktop control, name an already open app in your task (for example, `/run Summarize the visible note in Notes`). Butler can bind that window while its terminal stays in front. `/cua Summarize the visible note in Notes` explicitly selects desktop control without trying MCP first. Opening requests also bind an existing named window. Terminal windows remain protected; a closed app or task needing foreground interaction may require you to open the app or take over.
 
 MCP-only tasks do not need screen recording. For desktop control, use `/permissions` to check and request Screen Recording and Accessibility. Grant access to the terminal host macOS identifies, then fully quit and reopen that host if requested. `butler permissions` checks access without requesting it.
 

@@ -18,6 +18,19 @@ Current Codex versions removed `codex mcp-server`. Butler’s local `codex_task`
 
 ## Slack
 
+### Bot token: the simplest setup
+
+Use `/connect slack bot` and enter the **Bot User OAuth Token** (`xoxb-…`) at the masked prompt. The local Slack MCP bridge uses Slack's Web API for periodic reads; it does not need a Socket Mode **App-Level Token** (`xapp-…`). [Slack token types](https://docs.slack.dev/authentication/tokens/).
+
+1. Create a Slack app at [Your Apps](https://api.slack.com/apps) and select your workspace.
+2. In **OAuth & Permissions → Bot Token Scopes**, add `channels:read` and `channels:history` for public channels. Add `groups:read` and `groups:history` for private channels, `im:read` and `im:history` for bot direct messages, and `mpim:read` and `mpim:history` for group messages if those are needed.
+3. Install/reinstall the app to your workspace after changing scopes. Copy the **Bot User OAuth Token**.
+4. Invite the bot to channels you want covered, then run `/connect slack bot`. Workspace policy may require administrator approval.
+
+The bridge exposes `slack_channels`, `slack_history`, `slack_thread` and `slack_activity`, all read-only. Its default briefing checks at most five joined conversations over the past 24 hours and reports partial coverage. A bot cannot read your entire personal Slack inbox. Slack restricts some thread reads to user tokens; the bridge reports that limitation. [Conversation history](https://docs.slack.dev/reference/methods/conversations.history/).
+
+### Official MCP with user OAuth
+
 Slack’s official MCP server requires an internal or Marketplace Slack app with OAuth configured; it does not offer arbitrary dynamic client registration. Create/configure the app at [Slack’s app dashboard](https://api.slack.com/apps), then follow [Slack’s harness connection guide](https://docs.slack.dev/ai/slack-mcp-server/connect-to-harnesses/).
 
 To create the dedicated Butler integration:
@@ -36,7 +49,7 @@ To create the dedicated Butler integration:
 
 5. Install/approve the app for your workspace. If app approval is restricted, your Slack administrator must approve it and permit MCP access.
 6. Open **Basic Information → App Credentials** and copy its **Client ID**. Butler's PKCE desktop flow does not ask for a Client Secret.
-7. Start `butler`, run `/connect slack`, enter that Client ID, open the displayed authorization URL, and approve the workspace/account.
+7. Start `butler`, run `/connect slack oauth`, enter that Client ID, open the displayed authorization URL, and approve the workspace/account. `/connect slack` lets you choose bot or OAuth setup.
 
 Butler uses Slack’s MCP user authorization and token endpoints, with a fresh PKCE verifier and random state on each attempt. It requests public/private channel search and history; it does not request sending or direct-message scopes. Access/refresh tokens are stored encrypted. Rotating refresh tokens can expire, so reconnect if Slack requests it.
 
@@ -54,6 +67,28 @@ What Butler needs: the downloaded JSON file for a **Desktop app OAuth client**, 
 Butler’s built-in MCP bridge exposes only `gmail_search` and `gmail_read`. It uses `gmail.readonly`, bounds message bodies and query results, and never calls send, delete or modify endpoints. Google test-mode grants can expire; reconnect when needed.
 
 [Google Desktop OAuth](https://developers.google.com/identity/protocols/oauth2/native-app), [Gmail API message reads](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list).
+
+## Apple apps
+
+`/connect apple` offers the native Calendar, Reminders, Notes and Mail bridges; their individual names also work. macOS requests calendar/reminder or Automation access for each selected app. Available built-in reads can be added to briefing queries. Writes continue through action approvals. `/disconnect apple` disables these bridges.
+
+## Custom MCP servers and imports
+
+`/connect mcp` guides you through a local executable with a JSON argument array and working folder, or an HTTPS Streamable HTTP endpoint (HTTP is allowed only on loopback). Choose OAuth, bearer token, custom headers or no authentication for a remote server; local servers can use masked environment variables. Butler displays the command, folder and requested network scope before your typed approval. Server credentials are stored encrypted and never passed to the chat model.
+
+OAuth uses discovery and PKCE with `http://127.0.0.1:53684/callback`, plus your browser account approval. Leave the client ID empty for a server supporting automatic registration; otherwise enter its registered client ID and, if required, client secret. `/connect oauth <server-id>` completes or renews sign-in. Servers requiring a different vendor flow can use their authenticated stdio proxy or supported token/header.
+
+`/connect import /path/to/config.json` accepts Claude/Cursor `mcpServers` and VS Code `servers` or `mcp.servers` configurations. `${ENVIRONMENT_VARIABLE}` values resolve locally; interactive `${input:...}` placeholders must be resolved before import. Credentials belong in environment variables or headers. Older SSE endpoints need a local stdio proxy or an updated Streamable HTTP endpoint.
+
+`/connect filesystem` scopes a filesystem MCP to the selected project folder; `/connect playwright` offers a separate browser MCP. Their wizards show what will run before consent. `/tools` lists tools, `/tool server__tool on|off` selects them, and `/trust <server> reads|ask` controls unattended reads. Custom servers initially require confirmation; unknown write tools need explicit selection and action approval. `/disconnect <server-id>` removes a custom server and its stored credentials.
+
+`/apps` inventories installed Mac apps and suggests available connection paths. Desktop control handles suitable UI tasks in apps without MCPs; it does not import account data automatically.
+
+## Voice and desktop troubleshooting
+
+`/doctor` checks the selected model/key presence, Screen Recording, Accessibility, installed voice and Microphone/Speech Recognition grants. `/voice test` speaks without requiring microphone access. `/listen on` explicitly asks for microphone and on-device speech access for the standalone helper. `/listen off` stops voice input. The briefing daemon does not activate the microphone.
+
+`/cua <task in an already open app>` selects desktop control directly. An opening request can bind an existing named window before capturing, even while Terminal is in front. Terminal and other protected apps remain blocked. `/run` and natural requests use MCP first. Transient inference transport failures retry within the existing bound and pause for retry if exhausted; actions are not replayed.
 
 ## Briefing reads
 

@@ -16,6 +16,7 @@ export const providerDefaults = {
     outputPrice: 0,
   },
   openai: {
+    // Checked 2026-10-02: https://developers.openai.com/api/docs/models/gpt-6.1-sol
     endpoint: "https://api.openai.com",
     model: "gpt-5.4-mini",
     inputPrice: 0.75,
@@ -85,6 +86,7 @@ export const modelPrices: Record<ProviderKind, Record<string, ModelRates>> = {
   // https://developers.openai.com/api/docs/pricing (standard tier, 2026-09-18).
   // Every GPT-5.x cached input is a tenth of its input rate.
   openai: {
+    "gpt-6.1-sol": { inputPrice: 2, outputPrice: 10, cachedInput: 0.05 },
     "gpt-5.5": { inputPrice: 5, outputPrice: 30, cachedInput: 0.1 },
     "gpt-5.4": { inputPrice: 2.5, outputPrice: 15, cachedInput: 0.1 },
     "gpt-5.4-mini": { inputPrice: 0.75, outputPrice: 4.5, cachedInput: 0.1 },

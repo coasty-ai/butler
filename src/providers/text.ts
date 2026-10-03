@@ -90,7 +90,7 @@ export interface TextRequest {
 
 // Same model families as src/providers/http.ts: OpenAI reasoning models take
 // a reasoning effort, and these Claude models take output_config.effort.
-const openaiReasoningModel = /^(gpt-5|o[1-9])/;
+const openaiReasoningModel = /^(gpt-[56]|o[1-9])/;
 const anthropicEffortModel =
   /claude-(opus|sonnet)-(4-6|4-7|4-8|5)|claude-(fable|mythos)-5/;
 
@@ -218,6 +218,9 @@ export function buildTextRequest(
           model: settings.model,
           store: false,
           stream: true,
+          ...(settings.openaiServiceTier === "fast"
+            ? { service_tier: "fast" }
+            : {}),
           instructions: call.system,
           input: [
             {
@@ -227,7 +230,15 @@ export function buildTextRequest(
           ],
           max_output_tokens: maxTokens,
           ...(call.effort && openaiReasoningModel.test(settings.model)
-            ? option("reasoning", { reasoning: { effort: call.effort } })
+            ? option("reasoning", {
+                reasoning: {
+                  effort:
+                    settings.model === "gpt-6.1-sol" &&
+                    ["none", "minimal"].includes(call.effort)
+                      ? "low"
+                      : call.effort,
+                },
+              })
             : {}),
         },
       };

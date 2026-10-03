@@ -683,6 +683,7 @@ describe("assistant session: deciding a turn", () => {
     expect(local.session.available("voice")).toBe(true);
     const t = setup({ settings: { conversation: "off" } });
     expect(dialogEffort("gpt-5.4-mini")).toBe("none");
+    expect(dialogEffort("gpt-6.1-sol")).toBe("low");
     expect(dialogEffort("gpt-5-mini")).toBe("minimal");
     expect(dialogEffort("o3-mini")).toBe("low");
     expect(dialogEffort("claude-sonnet-4-6")).toBeUndefined();

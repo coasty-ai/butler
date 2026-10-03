@@ -326,6 +326,47 @@ const start = (runner: Runner, task: string, extra: object = {}) =>
   });
 
 describe("binding the window (design §2.2)", () => {
+  it("a typed CLI opening clause binds the named existing window before capture", async () => {
+    const c = desktop();
+    const m = journal();
+    const p = scripted();
+    await start(runnerWith(c, p, m), "Open Slack and check recent activity", {
+      origin: "typed",
+      initialApp: "Slack",
+    });
+    expect(c.bindTarget).toHaveBeenCalledWith({ app: "Slack" });
+    expect(c.capture).not.toHaveBeenCalled();
+    expect(c.captureTarget).toHaveBeenCalled();
+    expect(m.of("TargetBound")[0].data).toMatchObject({ by: "words" });
+  });
+  it("a protected CLI target cannot fall back to input on another bound app", async () => {
+    const c = desktop({
+      bind: async () => {
+        throw new TargetError("TARGET_PROTECTED", "A protected app is active.");
+      },
+    });
+    c.surface.mockResolvedValue({
+      appId: "com.apple.Terminal",
+      pid: 9,
+      secureInput: false,
+      unknown: false,
+    });
+    const m = journal(),
+      p = scripted();
+    const runner = runnerWith(c, p, m);
+    const work = start(runner, "Open Terminal and run a fixture command", {
+      origin: "typed",
+      initialApp: "Terminal",
+    });
+    await until(() => m.getRun().status === "takeover");
+    expect(c.bindTarget).toHaveBeenCalledTimes(1);
+    expect(c.capture).not.toHaveBeenCalled();
+    expect(p.next).not.toHaveBeenCalled();
+    expect(c.execute).not.toHaveBeenCalled();
+    expect(m.getRun().status).toBe("takeover");
+    runner.stop();
+    await work;
+  });
   it("binds the window the words name and works there, never on the screen", async () => {
     const c = desktop();
     const m = journal();

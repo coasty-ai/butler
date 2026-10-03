@@ -60,6 +60,15 @@ export function initialSettings(
     provider,
     privacy: provider === "ollama" ? "PRIVATE_LOCAL" : "PRIVATE_BYOM",
     model: env.BUTLER_MODEL || providerDefaults[provider].model,
+    ...(provider === "openai" && !env.BUTLER_MODEL
+      ? {
+          model: "gpt-6.1-sol",
+          dialogModel: "gpt-6.1-sol",
+          openaiServiceTier: "fast",
+          inputPrice: 4,
+          outputPrice: 20,
+        }
+      : {}),
     decisions: "off",
     decisionsChosen: true,
     persona: "jarvis",

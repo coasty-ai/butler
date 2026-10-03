@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createSlackReader, slackTools } from "./slack";
 import { redactSecrets } from "../core/sanitize";
 
 export const gmailTools = [
@@ -296,9 +297,12 @@ export async function codexTask(
   });
 }
 export async function serveMcp(mode: string) {
-  if (mode !== "gmail" && mode !== "codex")
-    throw new Error("Expected gmail or codex bridge mode.");
+  if (!["gmail", "codex", "slack"].includes(mode))
+    throw new Error("Expected gmail, codex or slack bridge mode.");
   const gmail = createGmailReader();
+  const slack = createSlackReader();
+  const tools =
+    mode === "gmail" ? gmailTools : mode === "slack" ? slackTools : codexTools;
   const output = (value: unknown) => {
     if (!process.stdout.destroyed)
       process.stdout.write(JSON.stringify(value) + "\n");
@@ -341,16 +345,11 @@ export async function serveMcp(mode: string) {
             serverInfo: { name: `butler-${mode}`, version: "0.1.0" },
           };
         else if (input.method === "ping") result = {};
-        else if (input.method === "tools/list")
-          result = { tools: mode === "gmail" ? gmailTools : codexTools };
+        else if (input.method === "tools/list") result = { tools };
         else if (input.method === "tools/call") {
           const name = input.params?.name;
           const args = input.params?.arguments ?? {};
-          if (
-            !(mode === "gmail" ? gmailTools : codexTools).some(
-              (t) => t.name === name,
-            )
-          )
+          if (!tools.some((t) => t.name === name))
             throw new Error("Unknown tool.");
           if (pending.size > 1)
             throw new Error(
@@ -365,7 +364,9 @@ export async function serveMcp(mode: string) {
           const text =
             mode === "gmail"
               ? await gmail(name, args, controller.signal)
-              : await codexTask(args.task, controller.signal);
+              : mode === "slack"
+                ? await slack(name, args, controller.signal)
+                : await codexTask(args.task, controller.signal);
           result = { content: [{ type: "text", text }], isError: false };
         } else {
           output({

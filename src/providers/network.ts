@@ -60,17 +60,26 @@ export function networkFailure(error: unknown): {
   message: string;
   code?: string;
 } {
-  let current = error;
-  for (
-    let depth = 0;
-    current && typeof current === "object" && depth < 5;
-    depth++
-  ) {
+  const queue: unknown[] = [error];
+  const seen = new Set<unknown>();
+  let recovered: ReturnType<typeof networkFailure> | undefined;
+  let fetchFailed = false;
+  // Node may wrap multiple connection attempts in AggregateError.errors,
+  // rather than the single cause chain used by Chromium and older Node.
+  for (let depth = 0; queue.length && depth < 32; depth++) {
+    const current = queue.shift();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
     const value = current as {
       code?: unknown;
       message?: unknown;
       cause?: unknown;
+      errors?: unknown;
     };
+    if (value.cause) queue.push(value.cause);
+    if (Array.isArray(value.errors)) queue.push(...value.errors.slice(0, 16));
+    fetchFailed ||=
+      current instanceof TypeError && value.message === "fetch failed";
     const code =
       typeof value.code === "string"
         ? value.code
@@ -79,7 +88,7 @@ export function networkFailure(error: unknown): {
           : undefined;
     if (code) {
       if (transient.has(code))
-        return {
+        recovered = {
           code,
           retryable: true,
           message: `Connection to the provider was interrupted (${code}). Try again.`,
@@ -122,10 +131,10 @@ export function networkFailure(error: unknown): {
             "The provider tried to redirect the request. Check the configured endpoint.",
         };
     }
-    current = value.cause;
   }
+  if (recovered) return recovered;
   return {
-    retryable: false,
+    retryable: fetchFailed,
     message:
       "Provider connection failed. Try again; if it persists, check your network or proxy settings.",
   };

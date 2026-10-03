@@ -29,9 +29,12 @@ if (!existsSync(join(root, "node_modules/.bin/esbuild")))
   run(["ci", "--ignore-scripts"]);
 run(["run", "build:terminal"]);
 if (
-  ["coarena-controller", "coarena-launch"].some(
-    (name) => !existsSync(join(root, "native/bin", name)),
-  )
+  [
+    "coarena-controller",
+    "coarena-launch",
+    "coarena-voice",
+    "coarena-apple",
+  ].some((name) => !existsSync(join(root, "native/bin", name)))
 )
   run(["run", "build:native"]);
 const dir = join(homedir(), ".local/bin");

@@ -1604,6 +1604,8 @@ const taskWords = (text: string) =>
     .trim();
 /** What Runner.start is told about the run it begins. */
 export interface StartOptions {
+  /** An opening app clause parsed by the CLI; binds an existing window only. */
+  initialApp?: string;
   /** Try connected tools without reading the desktop; capture hands off to the normal screen loop. */
   toolsFirst?: boolean;
   origin?: RunOrigin;
@@ -4032,20 +4034,28 @@ export class Runner {
    * window than the one asked for: it takes the screen, saying so for a
    * missing window.
    */
-  private async bindTarget(run: Run, prelude?: RunPrelude) {
+  private async bindTarget(
+    run: Run,
+    prelude?: RunPrelude,
+    initialApp?: string,
+  ) {
     const opened =
       prelude?.outcome?.launched?.name ||
       (prelude?.action.type === "open_app" ? prelude.action.name : undefined);
     const atMac = run.origin === "voice" || run.origin === "typed";
+    const words = spokenTargets(run.task);
     const candidates: {
       spec: TargetSpec;
       by: "words" | "prelude" | "focus";
     }[] = [
-      ...spokenTargets(run.task).map((spec) => ({
+      ...words.map((spec) => ({
         spec,
         by: "words" as const,
       })),
       ...(opened ? [{ spec: { app: opened }, by: "prelude" as const }] : []),
+      ...(atMac && !opened && !words.length && initialApp
+        ? [{ spec: { app: initialApp }, by: "words" as const }]
+        : []),
       ...(atMac ? [{ spec: {}, by: "focus" as const }] : []),
     ];
     let message: string | undefined;
@@ -5230,7 +5240,7 @@ export class Runner {
           !run.synthetic &&
           this.controller.bindTarget
         )
-          await this.bindTarget(run, options.prelude);
+          await this.bindTarget(run, options.prelude, options.initialApp);
       }
       // Recall and the tool list overlap the first capture (the helper
       // answers the index off its queue); both are awaited before anything
@@ -5634,7 +5644,7 @@ export class Runner {
               this.settings.workInBackground &&
               this.controller.bindTarget
             )
-              await this.bindTarget(run);
+              await this.bindTarget(run, undefined, options.initialApp);
             if (!this.active() || this.held || epoch !== this.epoch) continue;
             await this.controller.resume();
           } catch (error) {

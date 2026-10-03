@@ -139,6 +139,7 @@ export interface AssistantOptions {
 export function dialogEffort(
   model: string,
 ): "none" | "minimal" | "low" | undefined {
+  if (/^gpt-6/.test(model)) return "low";
   if (/^gpt-5\.[1-9]/.test(model)) return "none";
   if (/^gpt-5(?:-|$)/.test(model)) return "minimal";
   if (/^o[1-9]/.test(model)) return "low";
@@ -1016,7 +1017,9 @@ export class AssistantSession implements AssistantSessionApi {
                 ? DIALOG_LIMITS.localStateChars
                 : DIALOG_LIMITS.stateChars,
             ),
-            maxOutputTokens: DIALOG_LIMITS.maxOutputTokens,
+            maxOutputTokens: /^gpt-6/.test(s.model)
+              ? 2048
+              : DIALOG_LIMITS.maxOutputTokens,
             effort: dialogEffort(s.model),
           },
           this.options.fetch,

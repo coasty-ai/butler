@@ -1,5 +1,60 @@
 # Validation record
 
+## Conversational CLI, voice and connection setup (October 2, 2026)
+
+Owner runs `1b8668d2-0f05-45ac-9034-384fae6c1198` and
+`b1186537-a7e2-419e-a638-1f3863fda09a` captured frames before failing with
+`RUN_ERROR` and the fixed provider-connection message. Their original transport
+exceptions were not retained, so the exact network cause is unknown. The Node
+classifier now handles `AggregateError.errors` and a plain `TypeError: fetch
+failed` within the existing bounded retries, without replaying actions or
+changing TLS checks. CLI opening clauses can select an existing named window
+before capture; protected targets still produce a takeover without capture.
+
+The old `/usr/bin/say -v Arthur` path failed on this Mac because that command's
+voice inventory lacked Arthur. The standalone native speech helper now resolves
+installed voices and selects Daniel as its default British fallback. A live
+spoken fixture and the installed `butler voice test` both reported actual
+playback completion. Input has explicit `/listen on` setup, wake/follow-up and
+optional push-to-talk events. This Mac reports on-device recognition available
+but Microphone and Speech Recognition permission missing; live spoken-command
+recognition remains unverified until the owner grants them.
+
+The terminal provides streamed chat, compact animated status, transcript paging,
+fresh conversations, typed task approvals, direct `/cua` and MCP-first tasks.
+New OpenAI profiles use GPT-6.1 Sol Fast with low effort. The owner profile was
+updated after stopping its verified idle old engine. A live text fixture
+completed in 1,569 ms; a generated blank-image tool-call fixture completed in
+1,988 ms and the API reported `service_tier: fast`. The installed CLI completed
+a synthetic greeting with readable and spoken delivery. These fixtures measure
+the tested requests, not general desktop-task latency.
+
+Connection setup includes Slack bot reads, the existing Slack/Gmail OAuth flows,
+Apple permissions, filesystem/browser recipes, generic stdio/Streamable HTTP
+servers, masked headers/environment credentials, MCP JSON imports and discovery
+with PKCE for remote OAuth. Tests cover callback state, issuer-scoped encrypted
+credentials, cancellation, private error bodies, read coverage and retained
+action-approval rules. No new owner account credentials were supplied or
+connected during validation.
+
+All 142 unit files passed: 4,858 tests passed and two skipped with
+`--maxWorkers=2`. The first four-worker run found a cache-price assertion that
+assumed every model used a tenth-rate cache; GPT-6.1 Sol uses one twentieth and
+the assertion was corrected. Its timing-sensitive module-conformance check
+also failed under host load and passed alone before the complete two-worker
+run. Type checking, terminal installation, the executable's help route and the
+benchmark dry run passed. No native Swift source changed.
+
+The final OAuth-token handoff fix reconnects transports when their saved
+authorization header changes. All 103 focused connection, callback, CLI, MCP,
+registry, boundary and identity regressions passed before the final full run;
+the terminal bundle was rebuilt and its installed permission check passed.
+
+No live desktop clicks or screenshots were performed in this session. The
+Computer Use skill requires its Node REPL surface, which was unavailable;
+desktop targeting and refusal behavior were tested with the real runner and
+synthetic controllers. The image fixture exercised provider inference only.
+
 ## CLI-only local installation (October 2, 2026)
 
 A GUI instance was observed running again from `release/mac-arm64/Butler.app`

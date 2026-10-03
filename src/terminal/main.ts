@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -12,11 +12,9 @@ import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { TerminalScreen, screenLines } from "./screen";
 import { TerminalStore, terminalHome } from "./store";
-import {
-  TerminalConnections,
-  CONNECTIONS,
-  type ConnectionId,
-} from "./connections";
+import { TerminalVoice, type SpokenInput } from "./voice";
+import { installedApps } from "./apps";
+import { TerminalConnections } from "./connections";
 import { UrlOpener } from "../../electron/open-url";
 import { NativeController } from "../../electron/controller";
 import { AssistantSession } from "../../electron/assistant";
@@ -27,25 +25,34 @@ import {
 import { collectBriefing } from "../briefings/collect";
 import { Runner, terminal } from "../core/runner";
 import { HttpProvider } from "../providers/http";
-import { providerDefaults } from "../providers/catalog";
+import { providerDefaults, modelPrice } from "../providers/catalog";
 import {
   settingsSchema,
   type Controller,
   type Snapshot,
   type ProviderKind,
+  type TaskSource,
 } from "../core/schema";
 import { fileFactsReader } from "../storage/files";
 import { deliverableTextReader } from "../tools/providers/files";
-import { planVoiceTurn } from "../voice/turns";
+import { planVoiceTurn, voiceIntent } from "../voice/turns";
+import { leadingClause } from "../voice/early";
 import { redactSecrets } from "../core/sanitize";
 import type { RunView } from "../assistant/types";
 
-const ROOT = resolve(__dirname, "..");
+const ROOT =
+  typeof __dirname === "string" ? resolve(__dirname, "..") : process.cwd();
 let cleanup: () => Promise<void> = async () => {};
 const HELP = `Just type to converse. Butler uses connected tools before desktop control.
-/connect github|slack|claude-code|codex|gmail   connect an account
+/connect [name]|all|mcp|import <path>   connection catalog and setup
+/connect slack bot|oauth   bot token or account OAuth
 /connections   connection status
+/apps          installed Mac apps and connection paths
+/disconnect <name>   remove a connection
+/tools /tool <server__tool> on|off   discover and select tools
+/trust <server> reads|ask   choose background read access
 /run <task>    explicitly start a computer task
+/cua <task>    use desktop control directly (name the app, e.g. 'in Notes')
 /yes /no       answer the current task approval
 /stop /pause /resume   control a task
 /briefings <minutes>|off   scheduled spoken + readable briefings
@@ -53,17 +60,21 @@ const HELP = `Just type to converse. Butler uses connected tools before desktop 
 /briefing      check now; /latest shows the readable copy
 /permissions   check or request macOS screen/control access
 /notifications on|off    observe notification banners
-/model openai|anthropic|google|ollama [model]   choose provider
+/model openai|anthropic|google|ollama [model] [fast]   choose provider
+/fast on|off   OpenAI Fast mode (twice the standard token price)
 /key           store a provider key securely (masked input)
-/voice on|off  speak conversation replies
+/voice on|off|test|list|<name>   spoken replies and installed voices
+/listen on|off|status   'Hey Butler' and spoken commands; Option-Space if permitted
+/doctor       desktop and voice permission status
 /help /quit    help / quit
+/new           start a fresh conversation
 Ctrl-C interrupts work. Ctrl-D quits. Coding tools use this project folder.
 Run 'butler daemon start' to keep briefings running after closing your terminal.`;
 
 export async function main(args = process.argv.slice(2)) {
   if (args.includes("--help") || args[0] === "help") {
     console.log(
-      `Butler — a macOS terminal assistant\n\nUsage: butler [--cwd folder] [--ask text] [--demo]\n       butler status | connect <name> | briefing | daemon start|stop|status\n\n${HELP}`,
+      `Butler — a macOS terminal assistant\n\nUsage: butler [--cwd folder] [--ask text] [--listen] [--demo]\n       butler status | connect <name> | briefing | daemon start|stop|status\n\n${HELP}`,
     );
     return;
   }
@@ -131,7 +142,6 @@ export async function main(args = process.argv.slice(2)) {
   let runningWork: Promise<void> | undefined;
   let healthTimer: ReturnType<typeof setInterval> | undefined;
   let activeTurn: AbortController | undefined;
-  let speech: ChildProcess | undefined;
   let stopped = false;
   let busy = false;
   let snapshot: Snapshot = {
@@ -147,7 +157,8 @@ export async function main(args = process.argv.slice(2)) {
     !terminal(snapshot.run.status);
   const settings = () => store.profile.settings;
   const show = (text: string, who = "Butler") => {
-    if (!args.includes("--daemon")) screen.message(who, redactSecrets(text));
+    if (!args.includes("--daemon"))
+      return screen.message(who, redactSecrets(text));
   };
   const urls = new UrlOpener();
   const getNative = () => {
@@ -189,7 +200,7 @@ export async function main(args = process.argv.slice(2)) {
     activeTurn?.abort();
     runner?.stop();
     briefings.interrupt();
-    speech?.kill("SIGTERM");
+    void voice.interruptOutput();
     screen.state.phase = "idle";
     screen.state.status = "Interrupted. Ready when you are.";
     screen.draw();
@@ -201,6 +212,7 @@ export async function main(args = process.argv.slice(2)) {
     dialog.reset();
     briefings.close();
     clearInterval(healthTimer);
+    voice.close();
     native?.close();
     screen.close();
     await connections.registry.closeAll();
@@ -217,42 +229,60 @@ export async function main(args = process.argv.slice(2)) {
   let releaseLock = () => {};
   cleanup = quit;
   const screen = new TerminalScreen(
-    (text) => void dispatch(text).catch((error) => show(safeError(error))),
+    (text) => void dispatch(text).catch((error) => reportError(error)),
     interrupt,
     () => void quit(),
   );
   screen.state.model = `${settings().provider} / ${settings().model}`;
-  const speak = async (text: string, force = false) => {
-    if (!force && settings().voiceReplies === "off") return;
-    speech?.kill("SIGTERM");
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(
-        "/usr/bin/say",
-        ["-v", settings().voiceId || "Arthur"],
-        { stdio: ["pipe", "ignore", "ignore"] },
-      );
-      speech = child;
-      child.stdin?.on("error", () => {});
-      child.stdin?.end(redactSecrets(text));
-      child.once("error", () =>
-        reject(
-          new Error(
-            "The system voice could not start. Select an installed voice with BUTLER_VOICE or /voice off.",
-          ),
-        ),
-      );
-      child.once("exit", (code) => {
-        if (speech === child) speech = undefined;
-        code === 0
-          ? resolve()
-          : reject(
-              new Error(
-                "Spoken delivery did not finish; the readable copy remains available.",
-              ),
-            );
-      });
-    });
+  let heldByVoice = false;
+  const voice = new TerminalVoice({
+    root: ROOT,
+    settings,
+    receive: (input) => void dispatch(input.text, input).catch(reportError),
+    notice: show,
+    activity: (phase) => {
+      if (stopped) return;
+      if (phase === "listening" && screen.prompting) return;
+      if (phase === "listening") {
+        activeTurn?.abort();
+        void voice.interruptOutput();
+      }
+      if (phase === "listening" && isRunning() && view().status === "working") {
+        heldByVoice = true;
+        runner?.interruptForVoice("control");
+      }
+      screen.state.phase =
+        phase === "idle"
+          ? busy
+            ? "thinking"
+            : isRunning()
+              ? "working"
+              : "idle"
+          : phase;
+      screen.state.status =
+        phase === "listening"
+          ? "Listening to you."
+          : phase === "speaking"
+            ? "Speaking."
+            : snapshot.message;
+      screen.draw();
+    },
+  });
+  const speak = (text: string, force = false, followUp = true) =>
+    voice.speak(text, force, followUp);
+  const announce = (text: string, spoken = text) => {
+    show(text);
+    void speak(spoken).catch((error) => show(safeError(error)));
   };
+  const reportError = (error: unknown) => announce(safeError(error));
+  const doctor = async () => ({
+    desktop: await getNative().request("permissions"),
+    voice: await voice.status(),
+    selectedVoice: settings().voiceId || "automatic British voice",
+    spokenReplies: settings().voiceReplies !== "off",
+    model: settings().model,
+    providerKeyPresent: !!store.keyForProvider(),
+  });
   if (process.env.BUTLER_VOICE) settings().voiceId = process.env.BUTLER_VOICE;
   const dialog = new AssistantSession({
     settings,
@@ -262,17 +292,18 @@ export async function main(args = process.argv.slice(2)) {
     context: () => ({
       briefing: briefings.status().latest || store.briefingContext(),
     }),
-    heldByVoice: () => false,
+    heldByVoice: () => heldByVoice,
   });
   const briefings = createBriefings({
     settings,
-    busy: () => busy || !!isRunning() || !!speech,
+    busy: () =>
+      busy || !!isRunning() || voice.speaking || voice.listeningToTurn,
     locked: async () => {
       const p = await getNative().request("presence");
       return !!(p.locked || p.displayAsleep);
     },
     collect: async (since, signal) => {
-      await connections.refreshSlack();
+      await connections.refreshCredentials();
       await getNative().configure(settings());
       return collectBriefing({
         settings: settings(),
@@ -303,7 +334,7 @@ export async function main(args = process.argv.slice(2)) {
       );
       show(briefing.text, "Briefing");
       if (settings().briefings.delivery !== "notification")
-        await speak(briefing.text, true);
+        await speak(briefing.text, true, false);
     },
     onChange: () => {
       const status = briefings.status();
@@ -331,7 +362,12 @@ export async function main(args = process.argv.slice(2)) {
       },
     },
   ) as Controller;
-  const task = async (text: string, taskSource = "user_words") => {
+  const task = async (
+    text: string,
+    taskSource: TaskSource = "user_words",
+    spoken = false,
+    toolsFirst = true,
+  ) => {
     if (isRunning())
       throw new Error("A task is active. Use /stop, /pause or /resume first.");
     if (runner && !runner.settled) await runningWork;
@@ -360,13 +396,16 @@ export async function main(args = process.argv.slice(2)) {
         if (state.message !== lastStatus) {
           lastStatus = state.message;
           if (state.run?.status === "confirming")
-            show(`${state.message}\nType /yes to approve or /no to decline.`);
+            announce(
+              `${state.message}\nType /yes to approve or /no to decline.`,
+              `${state.message} Please approve or decline in the terminal.`,
+            );
           else if (
             ["completed", "failed", "cancelled", "paused", "takeover"].includes(
               state.run?.status || "",
             )
           )
-            show(state.message);
+            announce(state.message);
         }
         screen.draw();
       },
@@ -379,15 +418,45 @@ export async function main(args = process.argv.slice(2)) {
       },
     );
     briefings.interrupt();
+    const opening = leadingClause(text);
     runningWork = runner.start(text, {
-      toolsFirst: true,
-      background: true,
-      origin: "typed",
-      taskSource: taskSource as "user_words" | "model_rewrite" | "proposal",
+      ...(opening?.target === "app" &&
+      ["boundary", "end"].includes(opening.next)
+        ? { initialApp: opening.name }
+        : {}),
+      toolsFirst,
+      background: settings().workInBackground,
+      origin: spoken ? "voice" : "typed",
+      taskSource,
     });
     await runningWork;
   };
-  async function dispatch(text: string) {
+  async function dispatch(text: string, spoken?: SpokenInput) {
+    // Voice never enters the slash-command or credential/approval lane.
+    if (spoken) {
+      if (text.startsWith("/")) return;
+      const intent = voiceIntent(text);
+      if (intent.kind === "stop") {
+        interrupt();
+        return;
+      }
+      if (intent.kind === "pause") {
+        runner?.interruptForVoice("control");
+        return;
+      }
+      if (snapshot.run?.status === "confirming") {
+        announce(
+          "This action is waiting for typed approval. Use /yes or /no.",
+          "Please approve or decline this action in the terminal.",
+        );
+        return;
+      }
+      if (screen.prompting) {
+        show("Please finish the terminal prompt first.");
+        return;
+      }
+    }
+    await voice.interruptOutput();
     if (text === "/quit") return quit();
     if (text === "/stop") {
       interrupt();
@@ -404,6 +473,7 @@ export async function main(args = process.argv.slice(2)) {
       return;
     }
     if (text === "/resume") {
+      heldByVoice = false;
       await runner?.resume();
       return;
     }
@@ -413,9 +483,16 @@ export async function main(args = process.argv.slice(2)) {
       );
     if (
       isRunning() &&
-      ["/connect", "/model", "/key", "/permissions"].includes(
-        text.split(/\s+/)[0],
-      )
+      [
+        "/connect",
+        "/disconnect",
+        "/tool",
+        "/trust",
+        "/model",
+        "/fast",
+        "/key",
+        "/permissions",
+      ].includes(text.split(/\s+/)[0])
     )
       throw new Error(
         "Stop the active task before changing its configuration.",
@@ -429,6 +506,22 @@ export async function main(args = process.argv.slice(2)) {
       const [word, ...parts] = text.split(/\s+/);
       const rest = text.slice(word.length).trim();
       if (word === "/help") show(HELP);
+      else if (word === "/new") {
+        dialog.reset();
+        screen.clearMessages();
+        announce("A fresh conversation. What shall we attend to?");
+      } else if (word === "/apps")
+        show(
+          installedApps()
+            .map(
+              (app) =>
+                `${app.name}: ${app.connection}; desktop: ${app.desktop}`,
+            )
+            .join("\n") ||
+            "No app bundles found in the standard Applications folders.",
+        );
+      else if (word === "/doctor")
+        show(JSON.stringify(await doctor(), null, 2));
       else if (word === "/connections") {
         screen.state.connections = connections.labels();
         show(
@@ -436,16 +529,70 @@ export async function main(args = process.argv.slice(2)) {
             "No servers connected. Use /connect github, then the other services you use.",
         );
       } else if (word === "/connect") {
-        if (!CONNECTIONS.includes(rest as ConnectionId))
-          throw new Error("Choose github, slack, claude-code, codex or gmail.");
-        await connections.connect(
-          rest as ConnectionId,
+        await connections.connectCommand(
+          rest,
           screen.ask.bind(screen),
           show,
           activeTurn.signal,
         );
         briefings.apply();
         screen.state.connections = connections.labels();
+      } else if (word === "/disconnect") {
+        if (!rest) throw new Error("Name the connection after /disconnect.");
+        await connections.disconnect(rest);
+        briefings.apply();
+        screen.state.connections = connections.labels();
+        show(`${rest} disconnected.`);
+      } else if (word === "/tools") {
+        const access = connections.registry.access({ synthetic: false });
+        if (!access) throw new Error("Connected tools are disabled.");
+        const listed = await access.list("", activeTurn.signal);
+        show(
+          listed.tools
+            .map(
+              (t) => `${t.id} [${t.tier}${t.trusted ? ", trusted reads" : ""}]`,
+            )
+            .join("\n") || "No selected tools. Connect a server first.",
+        );
+        for (const server of connections.registry.status().servers)
+          show(
+            `${server.name}: ` +
+              server.tools
+                .map(
+                  (t) =>
+                    `${server.id}__${t.name} [${t.tier}${t.denied ? ", blocked" : ""}]`,
+                )
+                .join(", "),
+          );
+      } else if (word === "/tool") {
+        const [id, setting] = parts;
+        const at = id?.indexOf("__") ?? -1;
+        if (at < 1 || !["on", "off"].includes(setting))
+          throw new Error("Use /tool server__tool on or off.");
+        const row = settings().tools.servers.find(
+          (r) => r.id === id.slice(0, at),
+        );
+        if (!row)
+          throw new Error(
+            "Select a configured MCP server's tool. Apple tools follow /connect apple permissions.",
+          );
+        row.tools = connections.registry.tick(
+          row.id,
+          id.slice(at + 2),
+          setting === "on",
+        );
+        store.save();
+        show(`${id} is ${setting}.`);
+      } else if (word === "/trust") {
+        const [id, setting] = parts;
+        const row = settings().tools.servers.find((r) => r.id === id);
+        if (!row || !["reads", "ask"].includes(setting))
+          throw new Error("Use /trust <server> reads or ask.");
+        row.trust = setting === "reads" ? "reads_unattended" : "ask";
+        store.save();
+        show(
+          `${row.name}: ${setting === "reads" ? "trusted read tools can run in briefings" : "tools ask for approval"}.`,
+        );
       } else if (word === "/permissions") {
         const p = await getNative().request("permissions");
         show(
@@ -500,12 +647,15 @@ export async function main(args = process.argv.slice(2)) {
         store.save();
         briefings.apply();
         show("Read query saved for the next briefing.");
-      } else if (word === "/run") {
+      } else if (word === "/run" || word === "/cua") {
         if (!rest) throw new Error("Tell me the task after /run.");
         show(rest, "You");
+        announce("Certainly. I'll attend to that.");
         if (process.stdin.isTTY)
-          void task(rest).catch((error) => show(safeError(error)));
-        else await task(rest);
+          void task(rest, "user_words", false, word !== "/cua").catch(
+            reportError,
+          );
+        else await task(rest, "user_words", false, word !== "/cua");
       } else if (word === "/briefing") {
         busy = false;
         const report = await briefings.checkNow();
@@ -546,13 +696,54 @@ export async function main(args = process.argv.slice(2)) {
           `Notification banner observation is ${rest}. macOS Accessibility access is required.`,
         );
       } else if (word === "/voice") {
-        if (rest !== "on" && rest !== "off")
-          throw new Error("Use /voice on or off.");
-        settings().voiceReplies = rest === "on" ? "voice" : "off";
-        store.save();
-        show(
-          `Conversational speech is ${rest}. Spoken briefings have their own delivery setting.`,
-        );
+        if (rest === "off" || rest === "on") {
+          settings().voiceReplies = rest === "on" ? "always" : "off";
+          store.save();
+          announce(`Spoken replies are ${rest}.`);
+        } else if (rest === "test") {
+          const line =
+            "Good evening. Butler at your service. Your voice output is working.";
+          show(line);
+          await speak(line, true);
+        } else if (rest === "list") {
+          show(
+            (await voice.voices())
+              .map((v) => `${v.name} (${v.language})`)
+              .join("\n"),
+          );
+        } else {
+          const chosen = (await voice.voices()).find(
+            (v) => v.id === rest || v.name.toLowerCase() === rest.toLowerCase(),
+          );
+          if (!chosen)
+            throw new Error(
+              "Use /voice on, off, test, list, or an installed voice name.",
+            );
+          settings().voiceId = chosen.id;
+          store.save();
+          announce(`Voice selected: ${chosen.name}.`);
+        }
+      } else if (word === "/listen") {
+        if (rest === "status")
+          show(JSON.stringify(await voice.status(), null, 2));
+        else if (rest === "on" || rest === "off") {
+          if (rest === "on")
+            show(
+              "Requesting Microphone and Speech Recognition access for Butler's standalone voice helper.",
+            );
+          const status = await voice.setListening(
+            rest === "on",
+            true,
+            activeTurn.signal,
+          );
+          settings().handsFree = rest === "on";
+          store.save();
+          announce(
+            rest === "on"
+              ? `Listening enabled. Say “Hey Butler” followed by your request.${status.shortcut ? " You can also hold Option-Space." : " Option-Space needs Accessibility access for the voice helper."}`
+              : "Voice input is off.",
+          );
+        } else throw new Error("Use /listen on, off or status.");
       } else if (word === "/key") {
         const key = await screen.ask("Provider API key", true);
         if (!key) throw new Error("No key supplied.");
@@ -564,12 +755,29 @@ export async function main(args = process.argv.slice(2)) {
         const provider = parts[0] as ProviderKind;
         if (!["openai", "anthropic", "google", "ollama"].includes(provider))
           throw new Error("Choose openai, anthropic, google or ollama.");
+        const model =
+          parts[1] ||
+          (provider === "openai"
+            ? "gpt-6.1-sol"
+            : providerDefaults[provider].model);
+        const fast =
+          provider === "openai" &&
+          (parts[2] === "fast" || (!parts[1] && model === "gpt-6.1-sol"));
+        const rates = modelPrice(provider, model);
         store.profile.settings = settingsSchema.parse({
           ...settings(),
           ...providerDefaults[provider],
           provider,
           privacy: provider === "ollama" ? "PRIVATE_LOCAL" : "PRIVATE_BYOM",
-          model: parts[1] || providerDefaults[provider].model,
+          model,
+          dialogModel: "",
+          openaiServiceTier: fast ? "fast" : "auto",
+          ...(rates
+            ? {
+                inputPrice: rates.inputPrice * (fast ? 2 : 1),
+                outputPrice: rates.outputPrice * (fast ? 2 : 1),
+              }
+            : {}),
         });
         store.save();
         dialog.reset();
@@ -577,7 +785,23 @@ export async function main(args = process.argv.slice(2)) {
         await connections.registry.configure();
         screen.state.model = `${provider} / ${settings().model}`;
         show(
-          `Model selected: ${settings().model}. Use /key if it needs an API key.`,
+          `Model selected: ${settings().model}${fast ? " / Fast mode (2× standard token price)" : ""}. Use /key if it needs an API key.`,
+        );
+      } else if (word === "/fast") {
+        if (settings().provider !== "openai" || !["on", "off"].includes(rest))
+          throw new Error("Select an OpenAI model, then use /fast on or off.");
+        const rates = modelPrice("openai", settings().model);
+        if (!rates)
+          throw new Error(
+            "Known model rates are required before changing the processing tier.",
+          );
+        settings().openaiServiceTier = rest === "on" ? "fast" : "auto";
+        settings().inputPrice = rates.inputPrice * (rest === "on" ? 2 : 1);
+        settings().outputPrice = rates.outputPrice * (rest === "on" ? 2 : 1);
+        store.save();
+        dialog.reset();
+        show(
+          `Fast mode is ${rest}${rest === "on" ? "; token prices are twice Standard" : ""}.`,
         );
       } else if (word.startsWith("/"))
         throw new Error(
@@ -587,8 +811,10 @@ export async function main(args = process.argv.slice(2)) {
         show(text, "You");
         const base = planVoiceTurn({
           text,
-          source: "text",
-          confidence: 1,
+          source: spoken?.source || "text",
+          confidence: spoken?.confidence ?? 1,
+          segments: spoken?.segments,
+          followUpWindow: settings().followUpWindow,
           gateMatches: false,
           now: Date.now(),
           proposal: dialog.proposal(),
@@ -600,6 +826,7 @@ export async function main(args = process.argv.slice(2)) {
                   task: snapshot.run.task,
                   actions: snapshot.events.length,
                   held: ["paused", "takeover"].includes(snapshot.run.status),
+                  pendingReason: snapshot.pending?.reason,
                 }
               : undefined,
         });
@@ -612,7 +839,20 @@ export async function main(args = process.argv.slice(2)) {
           return;
         }
         if (base.kind === "resume") {
+          heldByVoice = false;
           await runner?.resume();
+          return;
+        }
+        if (base.kind === "endConversation") {
+          await voice.endFollowUp();
+          return;
+        }
+        if (
+          ["needClick", "confirmAgain", "nothingToApprove"].includes(base.kind)
+        ) {
+          announce(
+            "Please use /yes or /no for a pending task approval, or tell me the next task.",
+          );
           return;
         }
         const decision = await dialog.decide({
@@ -620,8 +860,8 @@ export async function main(args = process.argv.slice(2)) {
           text,
           base,
           view: view(),
-          channel: "app",
-          confidence: 1,
+          channel: spoken ? "voice" : "app",
+          confidence: spoken?.confidence ?? 1,
           signal: activeTurn.signal,
         });
         if (activeTurn.signal.aborted) return;
@@ -630,6 +870,7 @@ export async function main(args = process.argv.slice(2)) {
           (decision.plan.kind === "start" || decision.plan.kind === "replace")
         ) {
           if (decision.plan.kind === "replace") runner?.stop();
+          announce("Certainly. I’ll attend to that.");
           const work = task(
             decision.plan.text,
             decision.taskSource ||
@@ -637,26 +878,30 @@ export async function main(args = process.argv.slice(2)) {
                 ? decision.plan.taskSource
                 : undefined) ||
               "user_words",
+            !!spoken,
           );
-          if (process.stdin.isTTY)
-            void work.catch((error) => show(safeError(error)));
+          if (process.stdin.isTTY) void work.catch(reportError);
           else await work;
         } else if (decision.plan.kind === "clarify")
-          show(decision.plan.question);
+          announce(decision.plan.question);
         else if (decision.acting)
           show(
             "Use /run to start that task or /stop, /pause and /resume to control it.",
           );
         else if (decision.sentences) {
           let reply = "";
+          let replyIndex: number | undefined;
+          const spokenReplies: Promise<void>[] = [];
           for await (const sentence of decision.sentences) {
             if (activeTurn.signal.aborted) break;
             reply += (reply ? " " : "") + sentence;
+            if (replyIndex === undefined) replyIndex = show(reply);
+            else screen.updateMessage(replyIndex, redactSecrets(reply));
+            const delivery = speak(sentence);
+            void delivery.catch(() => {});
+            spokenReplies.push(delivery);
           }
-          if (reply && !activeTurn.signal.aborted) {
-            show(reply);
-            await speak(reply);
-          }
+          await Promise.all(spokenReplies);
         } else if (!activeTurn.signal.aborted)
           show(
             "I'm ready. Use /run for a computer task, or configure a model with /model to converse.",
@@ -698,6 +943,21 @@ export async function main(args = process.argv.slice(2)) {
     await quit();
     return;
   }
+  if (command === "doctor") {
+    console.log(JSON.stringify(await doctor(), null, 2));
+    await quit();
+    return;
+  }
+  if (command === "apps") {
+    console.log(JSON.stringify(installedApps(), null, 2));
+    await quit();
+    return;
+  }
+  if (command === "voice" && args[1] === "test") {
+    await dispatch("/voice test");
+    await quit();
+    return;
+  }
   if (command === "permissions") {
     const p = await getNative().request("permissions");
     console.log(JSON.stringify(p, null, 2));
@@ -717,6 +977,7 @@ export async function main(args = process.argv.slice(2)) {
     releaseLock = claimEngine(store.root);
   if (interactive) screen.start();
   await connections.start();
+  for (const warning of connections.connectionWarnings()) show(warning);
   screen.state.connections = connections.labels();
   healthTimer = setInterval(() => {
     screen.state.connections = connections.labels();
@@ -736,7 +997,7 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command === "connect") {
-    await dispatch(`/connect ${args[1] || ""}`);
+    await dispatch(`/connect ${args.slice(1).join(" ")}`);
     await quit();
     return;
   }
@@ -755,6 +1016,7 @@ export async function main(args = process.argv.slice(2)) {
       runner?.stop();
       process.exitCode = 1;
     }
+    await voice.flush();
     await quit();
     return;
   }
@@ -766,6 +1028,25 @@ export async function main(args = process.argv.slice(2)) {
   show(
     "At your service. /connect adds your apps; /briefings 30 enables spoken and readable updates. /help shows the controls.",
   );
+  await speak("At your service. What shall we attend to?", false, false).catch(
+    reportError,
+  );
+  if (settings().handsFree || args.includes("--listen")) {
+    busy = true;
+    activeTurn = new AbortController();
+    try {
+      await voice.setListening(
+        true,
+        args.includes("--listen"),
+        activeTurn.signal,
+      );
+    } catch (error) {
+      show(safeError(error));
+    } finally {
+      busy = false;
+      activeTurn = undefined;
+    }
+  }
   briefings.start();
 }
 function safeError(error: unknown) {
@@ -877,8 +1158,13 @@ function claimEngine(root: string): () => void {
     } catch {}
   };
 }
-void main().catch(async (error) => {
-  process.stderr.write(safeError(error) + "\n");
-  await cleanup();
-  process.exitCode = 1;
-});
+if (
+  typeof require !== "undefined" &&
+  typeof module !== "undefined" &&
+  require.main === module
+)
+  void main().catch(async (error) => {
+    process.stderr.write(safeError(error) + "\n");
+    await cleanup();
+    process.exitCode = 1;
+  });
