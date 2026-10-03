@@ -137,6 +137,36 @@ const properties = (schema: unknown): Record<string, Schema> =>
         ),
       )
     : {};
+/** GitHub's pinned HTTPS search contract uses order only for asc/desc sorting.
+ * Keep the general destructive vocabulary for every other source and key.
+ * https://github.com/github/github-mcp-server/blob/main/pkg/github/search.go
+ */
+export function mcpToolTier(source: ProviderSource, tool: Tool) {
+  const props = properties(tool.inputSchema);
+  let keys = Object.keys(props);
+  const order = props.order;
+  if (
+    source.kind === "server" &&
+    source.row.transport === "http" &&
+    source.row.url === "https://api.githubcopilot.com/mcp/" &&
+    source.recipe?.id === "github" &&
+    ["search_repositories", "search_issues"].includes(tool.name) &&
+    tool.annotations?.readOnlyHint === true &&
+    tool.annotations.destructiveHint !== true &&
+    order?.type === "string" &&
+    Array.isArray(order.enum) &&
+    order.enum.length === 2 &&
+    order.enum.includes("asc") &&
+    order.enum.includes("desc")
+  )
+    keys = keys.filter((key) => key !== "order");
+  return tierFromAnnotations({
+    name: tool.name,
+    title: tool.title,
+    argKeys: keys,
+    annotations: tool.annotations,
+  });
+}
 const required = (schema: unknown): Set<string> =>
   new Set(
     isObject(schema) && Array.isArray(schema.required)
@@ -580,14 +610,7 @@ export function createMcpProvider(
       title: row.name,
       does: describe(tool),
       params: paramsLine(schema),
-      tier:
-        recipe?.tierOverrides?.[tool.name] ??
-        tierFromAnnotations({
-          name: tool.name,
-          title: tool.title,
-          argKeys: Object.keys(properties(schema)),
-          annotations: tool.annotations,
-        }),
+      tier: recipe?.tierOverrides?.[tool.name] ?? mcpToolTier(source, tool),
       trusted: row.trust === "reads_unattended",
       local: row.transport === "stdio" && row.network === "none" && sandboxed,
       openWorld: tool.annotations?.openWorldHint !== false,

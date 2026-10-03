@@ -6,6 +6,22 @@ import CoreGraphics
 // coordinate maths, the cover of a window and the user's hit test against it,
 // the target's activations, and the binding's validity.
 func backgroundInputChecks(_ check: (Bool, String) -> Void) {
+    check(targetTextInsertion(existing: "draft", text: "new", selection: NSRange(location: 0, length: 5), replacing: false)?.value == "new", "select-all typing replaces rather than duplicates a field")
+    check(targetTextInsertion(existing: "draft", text: "new", selection: NSRange(location: 0, length: 2), replacing: false)?.value == "newaft", "a partial selection preserves its surrounding text")
+    check(targetTextInsertion(existing: "draft", text: "x", selection: NSRange(location: 2, length: 0), replacing: false)?.value == "drxaft", "typing inserts at the caret")
+    check(targetTextInsertion(existing: "draft", text: "x", selection: nil, replacing: false)?.value == "draftx", "an unreported selection retains the append fallback")
+    check(targetTextInsertion(existing: "draft", text: "query", selection: NSRange(location: 2, length: 0), replacing: true)?.value == "query", "query fields still replace their complete value")
+    check(targetTextInsertion(existing: "a🙂b", text: "x", selection: NSRange(location: 1, length: 2), replacing: false)?.value == "axb", "UTF-16 selection replaces an emoji without corrupting adjacent text")
+    for range in [NSRange(location: -1, length: 0), NSRange(location: 1, length: -1), NSRange(location: 6, length: 0), NSRange(location: 4, length: Int.max)] {
+        check(targetTextInsertion(existing: "draft", text: "x", selection: range, replacing: false) == nil, "invalid selection offsets refuse without overflow")
+    }
+    check(targetTextInsertion(existing: "a🙂b", text: "x", selection: NSRange(location: 2, length: 1), replacing: false) == nil, "a range splitting a surrogate pair refuses")
+    check(targetFieldText(role: "AXTextField", subrole: "", label: "Title", value: "Draft") == "Title: Draft", "a named single-line field reports its current state")
+    check(targetFieldText(role: "AXComboBox", subrole: "", label: "Room", value: "Four") == "Room: Four", "a named combo reports its current value")
+    check(targetFieldText(role: "AXTextField", subrole: "AXSecureTextField", label: "Password", value: "fixture") == nil, "secure field values never enter the context readback")
+    check(targetFieldText(role: "AXTextArea", subrole: "", label: "Document", value: "fixture") == nil, "document bodies are not copied into the field readback")
+    check(targetFieldText(role: "AXTextField", subrole: "", label: "", value: "fixture") == nil && targetFieldText(role: "AXTextField", subrole: "", label: "Title", value: "") == nil, "empty or unnamed fields add no readback")
+    check(targetFieldText(role: "AXTextField", subrole: "", label: String(repeating: "a", count: 200), value: String(repeating: "b", count: 1000))?.count == 282, "field readback bounds both label and value")
     check(Set(TargetRefusal.allCases.map { $0.rawValue }) == ["TARGET_GONE", "TARGET_PROTECTED", "TARGET_MINIMIZED", "TARGET_OFF_SPACE", "TARGET_COVERED_STALE", "RUNG_NO_EFFECT", "RUNG_UNAVAILABLE", "KEYBOARD_AMBIGUOUS"], "the refusal codes are exactly the design's eight")
     check(Rung.allCases.map { $0.rawValue } == ["ax", "post", "foreground"], "the rungs are ax, post and foreground in ladder order")
 

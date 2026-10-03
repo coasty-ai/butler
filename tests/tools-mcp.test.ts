@@ -21,8 +21,72 @@ import {
   createMcpProvider,
   failureCode,
   refusalCode,
+  mcpToolTier,
   type McpProvider,
 } from "../src/tools/mcp";
+import { RECIPES } from "../src/tools/providers";
+
+describe("verified GitHub search sorting", () => {
+  const source = () => ({
+    kind: "server" as const,
+    row: row({
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      recipe: "github",
+    }),
+    recipe: RECIPES.find((r) => r.id === "github"),
+    secrets: { env: {}, headers: {} },
+  });
+  const tool = () => ({
+    name: "search_repositories",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string" },
+        order: { type: "string", enum: ["asc", "desc"] },
+      },
+    },
+    annotations: { readOnlyHint: true },
+  });
+  it("classifies only the verified GitHub search sort parameter as read-only", () => {
+    expect(mcpToolTier(source(), tool())).toBe("read");
+    expect(mcpToolTier(source(), { ...tool(), name: "search_issues" })).toBe(
+      "read",
+    );
+    expect(mcpToolTier(source(), { ...tool(), name: "place_order" })).toBe(
+      "destructive",
+    );
+  });
+  it("keeps unknown endpoints, missing contracts, ambiguous order values and other write arguments at their original tier", () => {
+    const unknown = source();
+    unknown.row.url = "https://fixture.example.test/mcp/";
+    expect(mcpToolTier(unknown, tool())).toBe("destructive");
+    expect(mcpToolTier({ ...source(), recipe: undefined }, tool())).toBe(
+      "destructive",
+    );
+    const ambiguous = tool();
+    ambiguous.inputSchema.properties.order.enum.push("purchase");
+    expect(mcpToolTier(source(), ambiguous)).toBe("destructive");
+    expect(
+      mcpToolTier(source(), {
+        ...tool(),
+        annotations: { readOnlyHint: true, destructiveHint: true },
+      }),
+    ).toBe("destructive");
+    expect(
+      mcpToolTier(source(), {
+        ...tool(),
+        inputSchema: {
+          ...tool().inputSchema,
+          properties: {
+            ...tool().inputSchema.properties,
+            delete: { type: "boolean" },
+          },
+        },
+      }),
+    ).toBe("destructive");
+  });
+});
 
 /**
  * The MCP client against tests/fixtures/mcp-fixture-server.mjs, spawned the

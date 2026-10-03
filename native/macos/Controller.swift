@@ -1877,13 +1877,15 @@ func guardSurface() throws {
     if s["hostUnknown"] as? Bool == true, watchDomainRefused(domain: nil, browser: true, protectedDomains: protectedDomains) { throw ControlError("The page's address could not be read. Take over manually.", code: "SURFACE_BLOCKED") }
 }
 // The text a window shows, shallow and bounded, never a secure field's.
-func windowVisibleText(_ window: AXUIElement) -> String {
+func windowVisibleText(_ window: AXUIElement, fieldValues: Bool = false) -> String {
     var text=[String](),nodes=0,characters=0
     func visit(_ node:AXUIElement,_ depth:Int) {
         guard depth<6,nodes<120,characters<4000 else{return};nodes+=1
         if attribute(node,"AXHidden") as? Bool == true || attribute(node,kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole{return}
         let role=attribute(node,kAXRoleAttribute) as? String ?? ""
-        let value=(role == "AXStaticText" ? attribute(node,kAXValueAttribute) : attribute(node,kAXTitleAttribute)) as? String ?? ""
+        var value=(role == "AXStaticText" ? attribute(node,kAXValueAttribute) : attribute(node,kAXTitleAttribute)) as? String ?? ""
+        if fieldValues, ["AXTextField", "AXComboBox"].contains(role),
+           let shown = targetFieldText(role: role, subrole: attribute(node,kAXSubroleAttribute) as? String ?? "", label: fieldLabel(node), value: attribute(node,kAXValueAttribute) as? String ?? "") { value = shown }
         if !value.isEmpty {let bounded=String(value.prefix(min(300,4000-characters)));text.append(bounded);characters+=bounded.count}
         let children=(attribute(node,"AXVisibleChildren") ?? attribute(node,kAXChildrenAttribute)) as? [AXUIElement] ?? []
         for child in children.prefix(30){visit(child,depth+1)}
@@ -3418,10 +3420,18 @@ func replacesField(_ field: AXUIElement) -> Bool {
 // expectation is what the read-back must equal.
 func writeText(_ text: String, into field: AXUIElement, replacing: Bool, bound: TargetBinding) throws -> TargetDelivery {
     let existing = attribute(field, kAXValueAttribute) as? String ?? ""
-    let expected = replacing ? text : existing + text
+    var selection: NSRange? = nil
+    if let value = attribute(field, kAXSelectedTextRangeAttribute), CFGetTypeID(value) == AXValueGetTypeID() {
+        var range = CFRange()
+        if AXValueGetValue(value as! AXValue, .cfRange, &range) { selection = NSRange(location: range.location, length: range.length) }
+    }
+    guard let insertion = targetTextInsertion(existing: existing, text: text, selection: selection, replacing: replacing) else {
+        throw changedScreen("The input target changed.")
+    }
+    let expected = insertion.value
     var settable = DarwinBoolean(false)
     if AXUIElementIsAttributeSettable(field, kAXSelectedTextAttribute as CFString, &settable) == .success, settable.boolValue {
-        var range = replacing ? CFRange(location: 0, length: (existing as NSString).length) : CFRange(location: (existing as NSString).length, length: 0)
+        var range = CFRange(location: insertion.range.location, length: insertion.range.length)
         if let value = AXValueCreate(.cfRange, &range) { try setTargetAttribute(field, kAXSelectedTextRangeAttribute, value, bound: bound) }
         try setTargetAttribute(field, kAXSelectedTextAttribute, text as CFString, bound: bound)
         return .wrote(expected)
@@ -3650,7 +3660,7 @@ func targetContext(_ bound: TargetBinding, state: WindowState, frame: CGRect, fa
     let title = String((attribute(bound.window, kAXTitleAttribute) as? String ?? "").prefix(300))
     var result: [String:Any] = ["appName": bound.appName, "windowTitle": title]
     if let document = attribute(bound.window, "AXDocument") as? String, let url = URL(string: document), url.isFileURL { result["documentName"] = String(url.lastPathComponent.prefix(300)) }
-    var text = windowVisibleText(bound.window)
+    var text = windowVisibleText(bound.window, fieldValues: true)
     if bound.appClass.web {
         let page = webVisibleText(bound.window, display: frame)
         if page.text.count > text.count { text = String(page.text.prefix(4200)) }

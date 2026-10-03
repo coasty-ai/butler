@@ -70,6 +70,32 @@ let backgroundUnavailableActions: Set<String> = ["drag", "move", "open_app", "op
 private let pointerActions: Set<String> = ["click", "double_click", "right_click", "click_control", "scroll"]
 private let keyboardActions: Set<String> = ["type_text", "key", "hotkey"]
 
+/// AX selections use UTF-16 offsets. Preserve the text outside the selected
+/// range; a missing selection keeps the append fallback, while invalid ranges
+/// refuse rather than guessing where to edit.
+struct TargetTextInsertion: Equatable {
+    let range: NSRange
+    let value: String
+}
+func targetTextInsertion(existing: String, text: String, selection: NSRange?, replacing: Bool) -> TargetTextInsertion? {
+    let units = Array(existing.utf16), length = units.count
+    let range = replacing ? NSRange(location: 0, length: length) : selection ?? NSRange(location: length, length: 0)
+    guard range.location >= 0, range.length >= 0, range.location <= length,
+          range.length <= length - range.location else { return nil }
+    func boundary(_ offset: Int) -> Bool {
+        offset == 0 || offset == length || !((0xD800...0xDBFF).contains(units[offset - 1]) && (0xDC00...0xDFFF).contains(units[offset]))
+    }
+    guard boundary(range.location), boundary(range.location + range.length), let selected = Range(range, in: existing) else { return nil }
+    return TargetTextInsertion(range: range, value: existing.replacingCharacters(in: selected, with: text))
+}
+
+/// Bounded field state for the bound window's model context, never diagnostics.
+/// Secure, unnamed and document fields stay outside this readback.
+func targetFieldText(role: String, subrole: String, label: String, value: String) -> String? {
+    guard ["AXTextField", "AXComboBox"].contains(role), subrole != "AXSecureTextField", !label.isEmpty, !value.isEmpty else { return nil }
+    return String(label.prefix(80)) + ": " + String(value.prefix(200))
+}
+
 /**
  The rungs a step tries, in order, among those the runner allowed, and the
  code when none is left (design §2.5).
