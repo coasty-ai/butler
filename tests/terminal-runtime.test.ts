@@ -10,6 +10,11 @@ const f = vi.hoisted(() => ({
   tasks: [] as any[],
   confirmations: [] as boolean[],
   approval: false,
+  handoff: undefined as "paused" | "takeover" | undefined,
+  stops: 0,
+  toolAnswer: vi.fn(async () => undefined as any),
+  noteUser: vi.fn(),
+  noteAssistant: vi.fn(),
   speak: vi.fn(async () => {}),
   decide: vi.fn(),
   memory: undefined as any,
@@ -43,6 +48,10 @@ vi.mock("../src/terminal/connections", () => ({
   TerminalConnections: class {
     registry = {
       access: () => undefined,
+      clock: () => ({
+        now: new Date("2026-10-03T08:00:00Z"),
+        zone: "America/Los_Angeles",
+      }),
       status: () => ({ servers: [], apple: { state: "off" } }),
       configure: async () => {},
       closeAll: async () => {},
@@ -52,6 +61,7 @@ vi.mock("../src/terminal/connections", () => ({
     connectionWarnings = () => [];
   },
 }));
+vi.mock("../electron/tools", () => ({ answerByTool: f.toolAnswer }));
 vi.mock("../src/terminal/voice", () => ({
   TerminalVoice: class {
     constructor(options: any) {
@@ -100,6 +110,8 @@ vi.mock("../electron/assistant", () => ({
     reset = () => {};
     proposal = () => undefined;
     decide = f.decide;
+    noteUser = f.noteUser;
+    noteAssistant = f.noteAssistant;
   },
 }));
 vi.mock("../electron/briefings", async (load) => {
@@ -127,6 +139,7 @@ vi.mock("../src/core/runner", async (load) => {
       settled = false;
       private notify: any;
       private release?: () => void;
+      private latest: any;
       constructor(
         _controller: any,
         _provider: any,
@@ -141,11 +154,11 @@ vi.mock("../src/core/runner", async (load) => {
       }
       start = async (task: string, options: any) => {
         f.tasks.push({ task, options });
-        this.notify({
+        this.latest = {
           run: {
             id: "fixture-run",
             task,
-            status: f.approval ? "confirming" : "completed",
+            status: f.handoff || (f.approval ? "confirming" : "completed"),
           },
           events: [],
           frame: null,
@@ -160,8 +173,9 @@ vi.mock("../src/core/runner", async (load) => {
                 },
               }
             : {}),
-        });
-        if (f.approval)
+        };
+        this.notify(this.latest);
+        if (f.approval || f.handoff)
           await new Promise<void>((resolve) => {
             this.release = resolve;
           });
@@ -172,8 +186,15 @@ vi.mock("../src/core/runner", async (load) => {
         this.release?.();
       };
       stop = () => {
+        if (this.settled) return;
+        f.stops++;
         this.release?.();
         this.settled = true;
+        if (this.latest)
+          this.notify({
+            ...this.latest,
+            run: { ...this.latest.run, status: "cancelled" },
+          });
       };
     },
   };
@@ -182,12 +203,19 @@ import { main, briefingRequest } from "../src/terminal/main";
 let tty: PropertyDescriptor | undefined;
 let root: string;
 let listeners: Map<string, Set<Function>>;
+let exitCode: typeof process.exitCode;
 beforeEach(() => {
+  exitCode = process.exitCode;
   root = mkdtempSync(join(tmpdir(), "butler-runtime-test-"));
   f.store = { root, key: randomBytes(32) };
   f.tasks = [];
   f.confirmations = [];
   f.approval = false;
+  f.handoff = undefined;
+  f.stops = 0;
+  f.toolAnswer.mockReset().mockResolvedValue(undefined);
+  f.noteUser.mockClear();
+  f.noteAssistant.mockClear();
   f.memory = undefined;
   f.connectionsStart.mockClear();
   f.briefingCheck.mockClear();
@@ -218,6 +246,60 @@ afterEach(async () => {
     for (const listener of process.listeners(event as NodeJS.Signals))
       if (!old.has(listener)) process.removeListener(event, listener as any);
   rmSync(root, { recursive: true, force: true });
+  process.exitCode = exitCode;
+});
+test.each(["paused", "takeover"] as const)(
+  "one-shot %s ends with an interactive-session message instead of hanging",
+  async (status) => {
+    f.handoff = status;
+    Object.defineProperty(process.stdin, "isTTY", {
+      value: false,
+      configurable: true,
+    });
+    await main(["--ask", "/run synthetic fixture task"]);
+    expect(f.stops).toBe(1);
+    expect(process.exitCode).toBe(1);
+    expect(f.ui.screen.message).toHaveBeenCalledWith(
+      "Butler",
+      "This task needs your input. Run butler in a terminal to continue.",
+    );
+  },
+);
+test("interactive handoffs continue waiting for the owner's input", async () => {
+  f.handoff = "takeover";
+  await main([]);
+  f.ui.submit("/run synthetic fixture task");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  expect(f.stops).toBe(0);
+  f.ui.submit("/stop");
+  await vi.waitFor(() => expect(f.stops).toBe(1));
+});
+test("simple reminder reads bypass the model and retain their result as untrusted conversation data", async () => {
+  f.toolAnswer.mockResolvedValue({ said: "Nothing’s due today.", outcome: {} });
+  await main(["--ask", "check my reminders"]);
+  expect(f.connectionsStart).toHaveBeenCalledWith(
+    expect.objectContaining({ firstPartyOnly: true }),
+  );
+  expect(f.toolAnswer).toHaveBeenCalledOnce();
+  expect(f.noteUser).toHaveBeenCalledWith("check my reminders", "app");
+  expect(f.noteAssistant).toHaveBeenCalledWith("Nothing’s due today.", "app", {
+    untrusted: true,
+  });
+  expect(f.tasks).toEqual([]);
+  expect(f.decide).not.toHaveBeenCalled();
+});
+test("a failed direct read retains normal model routing", async () => {
+  await main(["--ask", "check my reminders"]);
+  expect(f.toolAnswer).toHaveBeenCalledOnce();
+  expect(f.decide).toHaveBeenCalledOnce();
+});
+test("compound requests keep the full tool catalogue and normal model routing", async () => {
+  await main(["--ask", "check my reminders and then check my email"]);
+  expect(f.toolAnswer).not.toHaveBeenCalled();
+  expect(f.connectionsStart).toHaveBeenCalledWith(
+    expect.objectContaining({ firstPartyOnly: false }),
+  );
+  expect(f.decide).toHaveBeenCalledOnce();
 });
 test("direct desktop tasks bypass MCP selection, preserve typed provenance, and speak completion", async () => {
   await main([]);

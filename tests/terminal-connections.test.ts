@@ -29,6 +29,25 @@ afterEach(() => {
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true }));
   vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+test("startup waits for the Apple bridge even when no external servers are enabled", async () => {
+  vi.useFakeTimers();
+  const store = new TerminalStore(temp(), randomBytes(32));
+  store.profile.secrets["github:token"] = "synthetic-token";
+  const connections = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(connections.registry, "configure").mockResolvedValue();
+  const status = connections.registry.status();
+  status.apple.state = "starting";
+  vi.spyOn(connections.registry, "status").mockImplementation(() => status);
+  let settled = false;
+  const startup = connections.start().then(() => (settled = true));
+  await vi.advanceTimersByTimeAsync(300);
+  expect(settled).toBe(false);
+  status.apple.state = "on";
+  await vi.advanceTimersByTimeAsync(100);
+  await startup;
+  expect(settled).toBe(true);
 });
 test("passive briefings leave unused agent servers dormant without changing saved connections or consent", () => {
   const settings = settingsSchema.parse({
@@ -63,6 +82,10 @@ test("passive briefings leave unused agent servers dormant without changing save
     approvedCommand: "synthetic-command-pin",
   });
   expect(connectionSettings(settings, false)).toBe(settings);
+  const firstParty = connectionSettings(settings, false, true);
+  expect(firstParty.tools.servers.every((row) => !row.enabled)).toBe(true);
+  expect(firstParty.tools.apple).toBe(settings.tools.apple);
+  expect(settings.tools.servers.filter((row) => row.enabled)).toHaveLength(3);
 });
 test("imports local commands and HTTP headers with credentials separated from visible server rows", () => {
   const rows = importConnections(

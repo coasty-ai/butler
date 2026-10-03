@@ -26,6 +26,8 @@ import { TerminalConnections } from "./connections";
 import { UrlOpener } from "../../electron/open-url";
 import { NativeController } from "../../electron/controller";
 import { AssistantSession } from "../../electron/assistant";
+import { answerByTool } from "../../electron/tools";
+import { toolFastPath } from "../assistant/tool-answers";
 import {
   createBriefings,
   createBriefingSummarizer,
@@ -174,10 +176,13 @@ export async function main(args = process.argv.slice(2)) {
     args.includes("--daemon") ||
     briefingRequest(askText) ||
     askText === "/briefing";
+  const firstPartyConnections =
+    toolFastPath(askText, connections.registry.clock())?.kind === "answer";
   let connectionsReady: Promise<void> | undefined;
   const readyConnections = () =>
     (connectionsReady ??= connections.start({
       briefingsOnly: passiveConnections,
+      firstPartyOnly: firstPartyConnections,
     }));
   let native: NativeController | undefined;
   let nativeSetup: Promise<void> | undefined;
@@ -333,6 +338,7 @@ export async function main(args = process.argv.slice(2)) {
     settings,
     providerKey: () => store.keyForProvider(),
     fetch: modelFetch,
+    trace: providerTrace,
     view,
     context: (words) => ({
       briefing: briefings.status().latest || store.briefingContext(),
@@ -442,6 +448,18 @@ export async function main(args = process.argv.slice(2)) {
           queueMicrotask(() => runner?.confirm(false));
           show(
             "That action needs your approval in an interactive Butler terminal.",
+          );
+        }
+        if (
+          ["paused", "takeover"].includes(state.run?.status || "") &&
+          !process.stdin.isTTY
+        ) {
+          process.exitCode = 1;
+          queueMicrotask(() =>
+            runner?.stop("This task needs an interactive Butler terminal."),
+          );
+          show(
+            "This task needs your input. Run butler in a terminal to continue.",
           );
         }
         screen.state.phase = isRunning() ? "working" : "idle";
@@ -942,6 +960,27 @@ export async function main(args = process.argv.slice(2)) {
         );
       else {
         show(text, "You");
+        const fast = toolFastPath(text, connections.registry.clock());
+        if (
+          !isRunning() &&
+          fast?.kind === "answer" &&
+          (!spoken || spoken.confidence >= APPROVAL_MIN_CONFIDENCE)
+        ) {
+          await readyConnections();
+          const answered = await answerByTool(
+            connections.registry,
+            fast,
+            text,
+            activeTurn.signal,
+          ).catch(() => undefined);
+          if (answered && !activeTurn.signal.aborted) {
+            const channel = spoken ? "voice" : "app";
+            dialog.noteUser(text, channel);
+            dialog.noteAssistant(answered.said, channel, { untrusted: true });
+            announce(answered.said);
+            return;
+          }
+        }
         const base = planVoiceTurn({
           text,
           source: spoken?.source || "text",

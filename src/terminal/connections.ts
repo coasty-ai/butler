@@ -37,12 +37,13 @@ export const CONNECTIONS = [
 ] as const;
 export type ConnectionId = (typeof CONNECTIONS)[number];
 export type Ask = (label: string, secret?: boolean) => Promise<string>;
-/** Passive checks start only the servers used by saved read queries. Never edits consent. */
+/** Scope a direct Apple read or a passive check without editing saved consent. */
 export function connectionSettings(
   settings: Settings,
   briefingsOnly: boolean,
+  firstPartyOnly = false,
 ): Settings {
-  if (!briefingsOnly) return settings;
+  if (!briefingsOnly && !firstPartyOnly) return settings;
   return {
     ...settings,
     tools: {
@@ -51,6 +52,7 @@ export function connectionSettings(
         ...server,
         enabled:
           server.enabled &&
+          !firstPartyOnly &&
           settings.briefings.reads.some((read) =>
             read.tool.startsWith(`${server.id}__`),
           ),
@@ -64,6 +66,7 @@ export class TerminalConnections {
   private githubToken = "";
   private warnings: string[] = [];
   private briefingsOnly = false;
+  private firstPartyOnly = false;
   constructor(
     private store: TerminalStore,
     readonly project: string,
@@ -125,7 +128,11 @@ export class TerminalConnections {
     this.registry = createToolRegistry({
       recipes: this.recipes,
       settings: () =>
-        connectionSettings(store.profile.settings, this.briefingsOnly),
+        connectionSettings(
+          store.profile.settings,
+          this.briefingsOnly,
+          this.firstPartyOnly,
+        ),
       credentials: (
         id,
       ): { env: Record<string, string>; headers: Record<string, string> } => {
@@ -202,8 +209,11 @@ export class TerminalConnections {
       this.githubToken = this.store.profile.secrets["github:token"] || "";
     }
   }
-  async start(options: { briefingsOnly?: boolean } = {}) {
+  async start(
+    options: { briefingsOnly?: boolean; firstPartyOnly?: boolean } = {},
+  ) {
     this.briefingsOnly = !!options.briefingsOnly;
+    this.firstPartyOnly = !!options.firstPartyOnly;
     this.githubToken = this.store.profile.secrets["github:token"] || "";
     if (!this.githubToken) this.readGithubToken();
     await this.refreshCredentials();
@@ -212,12 +222,16 @@ export class TerminalConnections {
   }
   private async ready(id?: string) {
     const deadline = Date.now() + 15_000;
-    while (
-      Date.now() < deadline &&
-      this.registry
-        .status()
-        .servers.some((s) => (!id || s.id === id) && s.state === "starting")
-    )
+    const starting = () => {
+      const status = this.registry.status();
+      return (
+        (!id && status.apple.state === "starting") ||
+        status.servers.some(
+          (server) => (!id || server.id === id) && server.state === "starting",
+        )
+      );
+    };
+    while (Date.now() < deadline && starting())
       await new Promise((resolve) => setTimeout(resolve, 100));
   }
   labels() {

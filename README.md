@@ -42,6 +42,8 @@ New OpenAI profiles default to GPT-6.1 Sol in Fast mode with low reasoning effor
 
 Replies stream into the conversation. Page Up/Down scrolls the transcript, Up/Down recalls typed inputs, and `/new` starts a fresh conversation. Natural requests can start tasks; `/run <task>` makes that explicit.
 
+Simple questions such as “check my reminders” (items due today) or “what’s on my calendar tomorrow?” use the connected Apple read tool directly, without a model call. More involved requests use your chosen model and available tools.
+
 For spoken replies and voice input:
 
 ```text
