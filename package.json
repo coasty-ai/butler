@@ -2,16 +2,16 @@
   "name": "coarena-open-assist",
   "version": "0.1.0",
   "private": true,
-  "description": "Hold a key. Tell your computer what to do. A private macOS voice assistant.",
+  "description": "Butler: a lightweight macOS terminal assistant with MCP tools, British conversation and proactive briefings.",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
-    "dev": "node scripts/dev.mjs",
+    "dev": "npm run build:terminal && node dist-terminal/main.cjs",
     "dev:ui": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build && node scripts/build-electron.mjs",
+    "build": "npm run build:terminal",
     "build:native": "node scripts/build-native.mjs",
-    "start": "electron .",
-    "start:local": "node scripts/start-local.mjs",
+    "start": "node dist-terminal/main.cjs",
+    "start:local": "node dist-terminal/main.cjs",
     "debug:local": "node scripts/debug-local.mjs",
     "logs:live": "tail -n 40 -F .data/diagnostics/current.jsonl",
     "test": "vitest run",
@@ -20,8 +20,8 @@
     "ingest": "tsx services/ingest/server.ts",
     "gym": "tsx src/gym/cli.ts",
     "build:icon": "node scripts/build-icon.mjs",
-    "package:mac": "npm run build:icon && npm run build:native && npm run build && electron-builder --mac dir",
-    "package:mac:release": "npm run build:icon && npm run build:native && npm run build && electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false -c.directories.output=release-dist",
+    "package:mac": "npm run build:icon && npm run build:native && npm run build:desktop && electron-builder --mac dir",
+    "package:mac:release": "npm run build:icon && npm run build:native && npm run build:desktop && electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false -c.directories.output=release-dist",
     "format": "prettier --write src electron services tests scripts *.ts *.json",
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "test:provider": "node --import tsx scripts/provider-smoke.mjs",
@@ -38,7 +38,13 @@
     "analyze-runs": "node scripts/analyze-runs.mjs",
     "modules:check": "node scripts/modules-check.mjs",
     "observer:report": "node scripts/observer-report.mjs",
-    "observer:eval": "node --import tsx scripts/observer-eval.mjs"
+    "observer:eval": "node --import tsx scripts/observer-eval.mjs",
+    "dev:desktop": "node scripts/dev.mjs",
+    "build:desktop": "tsc --noEmit && vite build && node scripts/build-electron.mjs",
+    "start:desktop": "electron .",
+    "start:desktop:local": "node scripts/start-local.mjs",
+    "build:terminal": "tsc --noEmit && node scripts/build-terminal.mjs",
+    "install:terminal": "node scripts/install-terminal.mjs"
   },
   "build": {
     "appId": "ai.coarena.openassist",
@@ -128,5 +134,8 @@
   "engines": {
     "node": ">=22.12.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "bin": {
+    "butler": "dist-terminal/main.cjs"
+  }
 }

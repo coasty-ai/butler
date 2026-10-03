@@ -16,6 +16,7 @@ import {
   Notification,
 } from "electron";
 import { homedir } from "node:os";
+import { screenAccess } from "./screen-access";
 import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
@@ -866,24 +867,6 @@ async function useNaturalVoice() {
   }
   debug("NaturalVoiceSelected");
   warmKokoro();
-}
-/**
- * First run (docs/MODULARITY.md §6). macOS applies a Screen Recording grant
- * only to a process started after it: this process keeps the decision it was
- * launched with for its whole life. Remember that decision so the checklist
- * says "restart needed" instead of showing a tick over a build that cannot
- * capture. `screenSeenDenied` also catches a revoke-and-regrant while running.
- */
-let screenSeenDenied = false;
-function readScreenAtLaunch() {
-  if (process.platform !== "darwin") return;
-  try {
-    screenSeenDenied =
-      systemPreferences.getMediaAccessStatus("screen") !== "granted";
-  } catch {
-    // Unknown is not "denied": never invent a restart the user does not need.
-    screenSeenDenied = false;
-  }
 }
 /** The last local Ollama probe, reused by the polled setup status. */
 let ollamaProbe: { at: number; status: OllamaStatus } | undefined;
@@ -5119,9 +5102,14 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         permissions = await getNative().request("permissions");
         read = true;
       } catch {}
-      // Only an answer counts. A helper that could not be reached is not a
-      // denial, and inventing one would ask for a restart nobody needs.
-      if (read && !permissions.screen) screenSeenDenied = true;
+      let osScreen = "unknown";
+      try {
+        osScreen = systemPreferences.getMediaAccessStatus("screen");
+      } catch {}
+      const captureAccess = screenAccess(
+        read ? permissions.screen : undefined,
+        osScreen,
+      );
       let voiceStatus = {
         microphone: false,
         speech: false,
@@ -5134,10 +5122,7 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       } catch {}
       const status: SetupStatus = {
         supported: permissions.supported,
-        screen: permissions.screen,
-        // Granted in the OS, but this process was launched under the old
-        // decision, so capture would still fail. Never a tick.
-        screenNeedsRelaunch: permissions.screen && screenSeenDenied,
+        ...captureAccess,
         accessibility: permissions.accessibility,
         microphone: voiceStatus.microphone,
         speech: voiceStatus.speech,
@@ -5551,7 +5536,6 @@ app
   .whenReady()
   .then(async () => {
     if (!ownsInstance) return;
-    readScreenAtLaunch();
     root =
       process.env.COARENA_TEST_DATA_DIR ??
       join(app.getPath("userData"), "private");

@@ -1,0 +1,3 @@
+#!/bin/sh
+BUTLER_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec node "$BUTLER_ROOT/dist-terminal/main.cjs" "$@"
