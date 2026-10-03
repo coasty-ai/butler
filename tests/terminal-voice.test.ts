@@ -241,6 +241,64 @@ test("a stable Apple empty final routes a recovered turn without claiming final 
   expect(f.notice).not.toHaveBeenCalled();
   expect(f.voice.listeningToTurn).toBe(false);
 });
+test("wake failures invalidate a capture and report recovery once, without repeating native error content", async () => {
+  const f = fixture();
+  await f.voice.setListening(true);
+  f.emit({ event: "wake_detected" });
+  expect(f.voice.listeningToTurn).toBe(true);
+  f.emit({
+    event: "wake_error",
+    code: "unavailable",
+    message: "private synthetic detail",
+  });
+  expect(f.voice.listeningToTurn).toBe(false);
+  f.emit({
+    event: "wake_error",
+    code: "mic",
+    message: "another private detail",
+  });
+  expect(f.notice).toHaveBeenCalledTimes(1);
+  expect(f.notice.mock.calls[0][0]).toContain("retry automatically");
+  expect(f.notice.mock.calls[0][0]).not.toContain("private");
+  f.emit({
+    event: "transcript_final",
+    text: "stale synthetic command",
+    confidence: 0.99,
+  });
+  expect(f.receive).not.toHaveBeenCalled();
+  f.emit({ event: "wake_status", enabled: true, listening: false });
+  f.emit({ event: "wake_status", enabled: false, listening: true });
+  expect(f.notice).toHaveBeenCalledTimes(1);
+  f.emit({ event: "wake_status", enabled: true, listening: true });
+  f.emit({ event: "wake_status", enabled: true, listening: true });
+  expect(f.notice).toHaveBeenCalledTimes(2);
+  expect(f.notice).toHaveBeenLastCalledWith("Wake listening has resumed.");
+  // Recovery still needs a fresh activation and normal confidence checks.
+  f.emit({
+    event: "transcript_final",
+    text: "stray synthetic command",
+    confidence: 0.99,
+  });
+  expect(f.receive).not.toHaveBeenCalled();
+});
+test("late wake events cannot revive disabled or closed voice input", async () => {
+  const f = fixture();
+  await f.voice.setListening(true);
+  f.emit({ event: "wake_error", code: "mic" });
+  await f.voice.setListening(false);
+  f.emit({ event: "wake_status", enabled: true, listening: true });
+  f.emit({ event: "wake_error", code: "mic" });
+  expect(f.notice).toHaveBeenCalledTimes(1);
+  expect(f.voice.listening).toBe(false);
+  f.voice.close();
+  f.emit({ event: "wake_detected" });
+  f.emit({
+    event: "transcript_final",
+    text: "late synthetic command",
+    confidence: 0.99,
+  });
+  expect(f.receive).not.toHaveBeenCalled();
+});
 test("a recovered stop still halts when Apple supplies no stable task hypothesis", async () => {
   const f = fixture();
   await f.voice.setListening(true);

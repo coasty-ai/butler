@@ -69,6 +69,7 @@ export class TerminalVoice {
   private queue = Promise.resolve();
   private generation = 0;
   private input = false;
+  private wakeUnavailable = false;
   private capturing = false;
   private source: VoiceSource = "wake";
   private closed = false;
@@ -175,6 +176,7 @@ export class TerminalVoice {
     signal?.throwIfAborted();
     if (!enabled) {
       this.input = false;
+      this.wakeUnavailable = false;
       this.capturing = false;
       if (this.helper) await this.configure();
       return this.helper ? this.status() : { handsFree: false };
@@ -322,6 +324,26 @@ export class TerminalVoice {
         );
     }
     if (!this.input) return;
+    if (event.event === "wake_error") {
+      this.capturing = false;
+      if (!this.speaking) this.options.activity("idle");
+      if (!this.wakeUnavailable)
+        this.options.notice(
+          "Wake listening is unavailable. Butler will retry automatically; /listen status checks it and /listen on retries setup.",
+        );
+      this.wakeUnavailable = true;
+      return;
+    }
+    if (
+      event.event === "wake_status" &&
+      event.enabled === true &&
+      event.listening === true &&
+      this.wakeUnavailable
+    ) {
+      this.wakeUnavailable = false;
+      this.options.notice("Wake listening has resumed.");
+      return;
+    }
     if (
       ["wake_detected", "followup_detected", "shortcut_down"].includes(
         event.event,
