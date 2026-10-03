@@ -11,7 +11,7 @@
  * echoes the text. Errors are fixed codes.
  */
 import { readFile } from "node:fs/promises";
-import type * as Ort from "onnxruntime-node";
+import type * as Ort from "onnxruntime-common";
 import { trimSilence, toInt16 } from "../../src/voice/kokoro/audio";
 import { BartG2P, parseSafetensors } from "../../src/voice/kokoro/bart";
 import { KokoroG2P } from "../../src/voice/kokoro/g2p";

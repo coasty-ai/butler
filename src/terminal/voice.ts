@@ -6,6 +6,7 @@ import type { Settings } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
 import { speakableText, splitSentences } from "../voice/speakable";
 import { type VoiceSource, voiceIntent } from "../voice/turns";
+import { voiceCommandConfidence } from "../voice/router";
 
 export interface InstalledVoice {
   id: string;
@@ -18,6 +19,8 @@ export interface SpokenInput {
   confidence: number;
   source: VoiceSource;
   segments: number;
+  /** An Apple empty final recovered from a stable hypothesis; never approves. */
+  recovered?: boolean;
 }
 interface Options {
   root: string;
@@ -334,20 +337,19 @@ export class TerminalVoice {
       this.options.activity("listening");
     }
     if (
-      event.event === "transcript_final" &&
+      ["transcript_final", "transcript_recovered"].includes(event.event) &&
       this.capturing &&
       typeof event.text === "string"
     ) {
       this.capturing = false;
       this.options.activity("idle");
       const text = event.text.trim();
-      const confidence = Number.isFinite(event.confidence)
-        ? event.confidence!
-        : 0;
+      const confidence = voiceCommandConfidence(event);
       const segments = event.segments ?? 1;
       const intent = voiceIntent(text);
-      // Stop/pause can always halt input. Other speech must be finalized,
-      // heard clearly, and never interpreted as a typed slash command.
+      // Stop/pause can always halt input. Other speech must be finalized or
+      // recovered from Apple's stable empty final, and clearly heard. It
+      // never enters the typed command lane or approves a pending action.
       if (
         !text ||
         text.length > 8192 ||
@@ -358,15 +360,19 @@ export class TerminalVoice {
         this.options.notice("I didn't catch that clearly. Please try again.");
         return;
       }
-      this.options.receive({ text, confidence, source: this.source, segments });
+      this.options.receive({
+        text,
+        confidence,
+        source: this.source,
+        segments,
+        ...(event.event === "transcript_recovered" ? { recovered: true } : {}),
+      });
+      return;
     }
     if (
-      [
-        "voice_cancelled",
-        "voice_error",
-        "transcript_unconfirmed",
-        "transcript_recovered",
-      ].includes(event.event)
+      ["voice_cancelled", "voice_error", "transcript_unconfirmed"].includes(
+        event.event,
+      )
     ) {
       this.capturing = false;
       this.options.activity("idle");

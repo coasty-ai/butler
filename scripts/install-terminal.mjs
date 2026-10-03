@@ -3,6 +3,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readlinkSync,
   symlinkSync,
   unlinkSync,
@@ -25,8 +26,39 @@ const run = (args) => {
   });
   if (result.status !== 0) process.exit(result.status ?? 1);
 };
-if (!existsSync(join(root, "node_modules/.bin/esbuild")))
-  run(["ci", "--ignore-scripts"]);
+if (!existsSync(join(root, "node_modules/.bin/esbuild"))) {
+  run(["ci", "--ignore-scripts", "--omit=optional"]);
+}
+if (existsSync(join(root, "node_modules/onnxruntime-node")))
+  run(["uninstall", "--no-save", "--ignore-scripts", "onnxruntime-node"]);
+// Both compilers use optional platform packages. Keep their exact installed
+// versions while omitting the legacy voice runtime and all lifecycle scripts.
+const compilers = [
+  ["typescript", "bin/tsc", "@typescript/typescript-"],
+  ["esbuild", "bin/esbuild", "@esbuild/"],
+];
+if (
+  compilers.some(
+    ([name, binary]) =>
+      spawnSync(
+        process.execPath,
+        [join(root, "node_modules", name, binary), "--version"],
+        { stdio: "ignore", timeout: 5000 },
+      ).status !== 0,
+  )
+)
+  run([
+    "install",
+    "--no-save",
+    "--ignore-scripts",
+    "--omit=optional",
+    ...compilers.map(([name, , prefix]) => {
+      const { version } = JSON.parse(
+        readFileSync(join(root, "node_modules", name, "package.json"), "utf8"),
+      );
+      return `${prefix}${process.platform}-${process.arch}@${version}`;
+    }),
+  ]);
 run(["run", "build:terminal"]);
 if (
   [

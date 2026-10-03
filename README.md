@@ -15,7 +15,7 @@ npm run install:terminal
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The installer builds Butler, builds any missing native helpers, and installs `~/.local/bin/butler`. It skips the Electron binary download. Add the PATH line to `~/.zshrc` to keep the command available in new terminals.
+The installer builds Butler, builds any missing native helpers, and installs `~/.local/bin/butler`. It skips the Electron binary download and the optional legacy voice inference runtime; the CLI uses macOS speech. Add the PATH line to `~/.zshrc` to keep the command available in new terminals.
 
 Already have this checkout? Run `npm run install:terminal` in its folder.
 
@@ -137,7 +137,10 @@ credentials or raw error bodies.
 
 ## Development
 
+Restore the full development dependencies before running the test suite:
+
 ```sh
+npm ci --ignore-scripts
 npm run build:terminal
 npm start
 npm run check

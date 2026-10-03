@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type * as Ort from "onnxruntime-node";
+import type * as Ort from "onnxruntime-common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadEngine, type SynthesisSink } from "../electron/kokoro/engine";
 import {

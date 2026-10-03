@@ -181,6 +181,27 @@ test.each([
   },
   { event: "transcript_recovered", text: "recovered fixture", confidence: 0.9 },
   {
+    event: "transcript_recovered",
+    text: "unstable fixture",
+    source: "empty_final_after_endpoint",
+    confidence: 0.99,
+    partialConfidence: 0,
+    stableMs: 1499,
+  },
+  {
+    event: "transcript_recovered",
+    text: "/yes",
+    source: "empty_final_after_endpoint",
+    stableMs: 2000,
+  },
+  {
+    event: "transcript_recovered",
+    text: "merged fixture",
+    source: "empty_final_after_endpoint",
+    stableMs: 2000,
+    segments: 2,
+  },
+  {
     event: "transcript_unconfirmed",
     text: "unfinished fixture",
     confidence: 0.9,
@@ -197,6 +218,43 @@ test.each([
     expect(f.receive).not.toHaveBeenCalled();
   },
 );
+test("a stable Apple empty final routes a recovered turn without claiming final confidence", async () => {
+  const f = fixture();
+  await f.voice.setListening(true);
+  f.emit({ event: "wake_detected" });
+  f.emit({
+    event: "transcript_recovered",
+    text: "Open Calculator",
+    confidence: 0,
+    source: "empty_final_after_endpoint",
+    stableMs: 2000,
+    partialConfidence: 0,
+    segments: 1,
+  });
+  expect(f.receive).toHaveBeenCalledWith({
+    text: "Open Calculator",
+    confidence: 0.7,
+    source: "wake",
+    segments: 1,
+    recovered: true,
+  });
+  expect(f.notice).not.toHaveBeenCalled();
+  expect(f.voice.listeningToTurn).toBe(false);
+});
+test("a recovered stop still halts when Apple supplies no stable task hypothesis", async () => {
+  const f = fixture();
+  await f.voice.setListening(true);
+  f.emit({ event: "wake_detected" });
+  f.emit({
+    event: "transcript_recovered",
+    text: "stop",
+    confidence: 0,
+    source: "control_phrase_after_endpoint",
+  });
+  expect(f.receive).toHaveBeenCalledWith(
+    expect.objectContaining({ text: "stop", confidence: 0, recovered: true }),
+  );
+});
 test("a faint finalized stop still interrupts, and disabling input discards late transcripts", async () => {
   const f = fixture();
   await f.voice.setListening(true);

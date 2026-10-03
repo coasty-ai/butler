@@ -568,7 +568,11 @@ export async function main(args = process.argv.slice(2)) {
       const [word, ...parts] = text.split(/\s+/);
       const rest = text.slice(word.length).trim();
       const preference = rememberRequest(text);
-      if (preference && spoken && spoken.confidence < APPROVAL_MIN_CONFIDENCE) {
+      if (
+        preference &&
+        spoken &&
+        (spoken.recovered || spoken.confidence < APPROVAL_MIN_CONFIDENCE)
+      ) {
         announce("Please repeat that preference so I can save it accurately.");
         return;
       }
@@ -943,6 +947,7 @@ export async function main(args = process.argv.slice(2)) {
           source: spoken?.source || "text",
           confidence: spoken?.confidence ?? 1,
           segments: spoken?.segments,
+          recovered: spoken?.recovered,
           followUpWindow: settings().followUpWindow,
           gateMatches: false,
           now: Date.now(),

@@ -268,25 +268,28 @@ test("natural briefing requests use one batched read instead of the action model
   expect(f.decide).not.toHaveBeenCalled();
   expect(briefingRequest("Brief me on the GitHub pull requests")).toBe(false);
 });
-test("low-confidence spoken preferences are repeated rather than stored or sent to a model", async () => {
-  await main([]);
-  f.voice.receive({
-    text: "Remember that I prefer concise briefings",
-    confidence: 0.3,
-    source: "wake",
-    segments: 1,
-  });
-  await vi.waitFor(() =>
-    expect(f.speak).toHaveBeenCalledWith(
-      "Please repeat that preference so I can save it accurately.",
-      false,
-      true,
-    ),
-  );
-  expect(f.store.instance.memory.data().preferences).toHaveLength(0);
-  expect(f.tasks).toEqual([]);
-  expect(f.decide).not.toHaveBeenCalled();
-});
+test.each([{ confidence: 0.3 }, { confidence: 0.7, recovered: true }])(
+  "uncertain spoken preferences are repeated rather than stored or sent to a model: %j",
+  async (heard) => {
+    await main([]);
+    f.voice.receive({
+      text: "Remember that I prefer concise briefings",
+      ...heard,
+      source: "wake",
+      segments: 1,
+    });
+    await vi.waitFor(() =>
+      expect(f.speak).toHaveBeenCalledWith(
+        "Please repeat that preference so I can save it accurately.",
+        false,
+        true,
+      ),
+    );
+    expect(f.store.instance.memory.data().preferences).toHaveLength(0);
+    expect(f.tasks).toEqual([]);
+    expect(f.decide).not.toHaveBeenCalled();
+  },
+);
 test("voice becomes a spoken dialog turn and task rather than impersonating typed input", async () => {
   await main([]);
   f.voice.receive({
@@ -304,28 +307,32 @@ test("voice becomes a spoken dialog turn and task rather than impersonating type
     toolsFirst: true,
   });
 });
-test("spoken yes never approves a task; explicit typed approval still works", async () => {
-  f.approval = true;
-  await main([]);
-  f.ui.submit("/run synthetic fixture task");
-  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
-  f.voice.receive({
-    text: "yes",
-    confidence: 0.99,
-    source: "followup",
-    segments: 1,
-  });
-  await vi.waitFor(() =>
-    expect(f.speak).toHaveBeenCalledWith(
-      "Please approve or decline this action in the terminal.",
-      false,
-      true,
-    ),
-  );
-  expect(f.confirmations).toEqual([]);
-  f.ui.submit("/yes");
-  await vi.waitFor(() => expect(f.confirmations).toEqual([true]));
-});
+test.each([false, true])(
+  "spoken yes never approves a task, including recovered=%s; explicit typed approval still works",
+  async (recovered) => {
+    f.approval = true;
+    await main([]);
+    f.ui.submit("/run synthetic fixture task");
+    await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+    f.voice.receive({
+      text: "yes",
+      confidence: 0.99,
+      source: "followup",
+      segments: 1,
+      recovered,
+    });
+    await vi.waitFor(() =>
+      expect(f.speak).toHaveBeenCalledWith(
+        "Please approve or decline this action in the terminal.",
+        false,
+        true,
+      ),
+    );
+    expect(f.confirmations).toEqual([]);
+    f.ui.submit("/yes");
+    await vi.waitFor(() => expect(f.confirmations).toEqual([true]));
+  },
+);
 test("conversation streams into one message and never starts a task", async () => {
   f.decide.mockResolvedValue({
     acting: false,
