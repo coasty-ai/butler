@@ -28,6 +28,7 @@ import { NativeController } from "../../electron/controller";
 import { AssistantSession } from "../../electron/assistant";
 import { answerByTool } from "../../electron/tools";
 import { toolFastPath } from "../assistant/tool-answers";
+import { inboxRequest, readInbox, summarizeInbox } from "./inbox";
 import {
   createBriefings,
   createBriefingSummarizer,
@@ -183,6 +184,7 @@ export async function main(args = process.argv.slice(2)) {
     (connectionsReady ??= connections.start({
       briefingsOnly: passiveConnections,
       firstPartyOnly: firstPartyConnections,
+      ...(inboxRequest(askText) && { onlyServers: ["gmail"] }),
     }));
   let native: NativeController | undefined;
   let nativeSetup: Promise<void> | undefined;
@@ -960,6 +962,44 @@ export async function main(args = process.argv.slice(2)) {
         );
       else {
         show(text, "You");
+        const inbox = inboxRequest(text);
+        if (
+          !isRunning() &&
+          inbox &&
+          (!spoken || spoken.confidence >= APPROVAL_MIN_CONFIDENCE)
+        ) {
+          await readyConnections();
+          const tools = connections.registry.access({ synthetic: false });
+          const reading =
+            tools &&
+            (await readInbox({
+              tools,
+              settings,
+              request: inbox,
+              words: text,
+              signal: activeTurn.signal,
+            }));
+          if (activeTurn.signal.aborted) return;
+          if (reading && !activeTurn.signal.aborted) {
+            const clock = connections.registry.clock();
+            const answered = await summarizeInbox({
+              reading,
+              settings: settings(),
+              key: store.keyForProvider(),
+              fetch: modelFetch,
+              signal: activeTurn.signal,
+              now: clock.now,
+              zone: clock.zone,
+              trace: providerTrace,
+            });
+            if (activeTurn.signal.aborted) return;
+            const channel = spoken ? "voice" : "app";
+            dialog.noteUser(text, channel);
+            dialog.noteAssistant(answered.said, channel, { untrusted: true });
+            announce(answered.said);
+            return;
+          }
+        }
         const fast = toolFastPath(text, connections.registry.clock());
         if (
           !isRunning() &&

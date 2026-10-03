@@ -86,6 +86,15 @@ test("passive briefings leave unused agent servers dormant without changing save
   expect(firstParty.tools.servers.every((row) => !row.enabled)).toBe(true);
   expect(firstParty.tools.apple).toBe(settings.tools.apple);
   expect(settings.tools.servers.filter((row) => row.enabled)).toHaveLength(3);
+  const inbox = connectionSettings(settings, false, false, ["gmail"]);
+  expect(
+    inbox.tools.servers.filter((row) => row.enabled).map((row) => row.id),
+  ).toEqual(["gmail"]);
+  expect(settings.tools.servers.filter((row) => row.enabled)).toHaveLength(3);
+  expect(inbox.tools.servers[1]).toMatchObject({
+    consented: true,
+    approvedCommand: "synthetic-command-pin",
+  });
 });
 test("imports local commands and HTTP headers with credentials separated from visible server rows", () => {
   const rows = importConnections(
@@ -320,4 +329,30 @@ test("rotating an OAuth token reconnects transports before the next read", async
   expect(configure).toHaveBeenCalledOnce();
   await c.refreshCredentials();
   expect(configure).toHaveBeenCalledOnce();
+});
+test("an inbox-only session does not refresh unrelated OAuth accounts or change their approvals", async () => {
+  const store = new TerminalStore(temp(), randomBytes(32));
+  store.profile.settings.tools.servers = ["gmail", "slack", "fixture"].map(
+    (id) =>
+      toolServerSchema.parse({
+        id,
+        name: id,
+        transport: id === "fixture" ? "http" : "stdio",
+        url: "https://mcp.example.test/mcp",
+        addedAt: 0,
+        enabled: true,
+        consented: true,
+        approvedCommand: "synthetic-command-pin",
+      }),
+  );
+  const saved = structuredClone(store.profile.settings.tools.servers);
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  const slack = vi.spyOn(c, "refreshSlack").mockResolvedValue();
+  const oauth = vi.spyOn(McpOAuth.prototype, "refresh").mockResolvedValue();
+  await c.start({ onlyServers: ["gmail"] });
+  await c.refreshCredentials();
+  expect(slack).not.toHaveBeenCalled();
+  expect(oauth).not.toHaveBeenCalled();
+  expect(store.profile.settings.tools.servers).toEqual(saved);
 });

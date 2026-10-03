@@ -44,6 +44,12 @@ Replies stream into the conversation. Page Up/Down scrolls the transcript, Up/Do
 
 Simple questions such as “check my reminders” (items due today) or “what’s on my calendar tomorrow?” use the connected Apple read tool directly, without a model call. More involved requests use your chosen model and available tools.
 
+“Check my inbox” or “Read my five newest unread Gmail messages and tell me which need attention” uses one Gmail search, parallel message reads and one summary call when those read tools are trusted. Each reported passage is checked against its message, with suggestions labelled separately and incomplete coverage stated. One-shot inbox checks start only the Gmail connection:
+
+```sh
+butler --ask "Check my inbox"
+```
+
 Unused Claude Code and Codex connections keep their approved tool catalogue available while releasing their processes after discovery. The first task reconnects and checks the tool pins again; a connection stays running once used so its background work can continue.
 
 For spoken replies and voice input:

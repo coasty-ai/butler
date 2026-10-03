@@ -42,8 +42,9 @@ export function connectionSettings(
   settings: Settings,
   briefingsOnly: boolean,
   firstPartyOnly = false,
+  onlyServers?: readonly string[],
 ): Settings {
-  if (!briefingsOnly && !firstPartyOnly) return settings;
+  if (!briefingsOnly && !firstPartyOnly && !onlyServers) return settings;
   return {
     ...settings,
     tools: {
@@ -53,9 +54,11 @@ export function connectionSettings(
         enabled:
           server.enabled &&
           !firstPartyOnly &&
-          settings.briefings.reads.some((read) =>
-            read.tool.startsWith(`${server.id}__`),
-          ),
+          (!onlyServers || onlyServers.includes(server.id)) &&
+          (!briefingsOnly ||
+            settings.briefings.reads.some((read) =>
+              read.tool.startsWith(`${server.id}__`),
+            )),
       })),
     },
   };
@@ -67,6 +70,15 @@ export class TerminalConnections {
   private warnings: string[] = [];
   private briefingsOnly = false;
   private firstPartyOnly = false;
+  private onlyServers?: readonly string[];
+  private scopedSettings() {
+    return connectionSettings(
+      this.store.profile.settings,
+      this.briefingsOnly,
+      this.firstPartyOnly,
+      this.onlyServers,
+    );
+  }
   constructor(
     private store: TerminalStore,
     readonly project: string,
@@ -128,12 +140,7 @@ export class TerminalConnections {
     this.registry = createToolRegistry({
       recipes: this.recipes,
       onDemand: ["claude-code", "codex"],
-      settings: () =>
-        connectionSettings(
-          store.profile.settings,
-          this.briefingsOnly,
-          this.firstPartyOnly,
-        ),
+      settings: () => this.scopedSettings(),
       credentials: (
         id,
       ): { env: Record<string, string>; headers: Record<string, string> } => {
@@ -211,12 +218,23 @@ export class TerminalConnections {
     }
   }
   async start(
-    options: { briefingsOnly?: boolean; firstPartyOnly?: boolean } = {},
+    options: {
+      briefingsOnly?: boolean;
+      firstPartyOnly?: boolean;
+      onlyServers?: readonly string[];
+    } = {},
   ) {
     this.briefingsOnly = !!options.briefingsOnly;
     this.firstPartyOnly = !!options.firstPartyOnly;
+    this.onlyServers = options.onlyServers;
     this.githubToken = this.store.profile.secrets["github:token"] || "";
-    if (!this.githubToken) this.readGithubToken();
+    if (
+      !this.githubToken &&
+      this.scopedSettings().tools.servers.some(
+        (row) => row.id === "github" && row.enabled,
+      )
+    )
+      this.readGithubToken();
     await this.refreshCredentials();
     await this.registry.configure();
     await this.ready();
@@ -802,14 +820,19 @@ export class TerminalConnections {
     const before = headers();
     this.warnings = [];
     try {
-      await this.refreshSlack();
+      if (
+        this.scopedSettings().tools.servers.some(
+          (row) => row.id === "slack" && row.enabled,
+        )
+      )
+        await this.refreshSlack();
     } catch {
       this.warnings.push(
         "Slack account sign-in needs attention. Use /connect slack oauth.",
       );
     }
     const oauth = new McpOAuth(this.store);
-    for (const row of this.store.profile.settings.tools.servers.filter(
+    for (const row of this.scopedSettings().tools.servers.filter(
       (r) => r.enabled && r.transport === "http" && !r.recipe,
     )) {
       try {
