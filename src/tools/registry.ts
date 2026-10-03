@@ -97,7 +97,7 @@ export interface RegistryOptions {
    */
   loopbackOrigins?: readonly string[];
   recipes?: readonly ServerRecipe[];
-  /** Known unused coding servers whose process may be released after discovery. */
+  /** Known unused servers whose process may be released after discovery. */
   onDemand?: readonly string[];
 }
 /** The install step of a preview or an approval: whether it ran, and how it went. */

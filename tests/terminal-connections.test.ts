@@ -356,3 +356,53 @@ test("an inbox-only session does not refresh unrelated OAuth accounts or change 
   expect(oauth).not.toHaveBeenCalled();
   expect(store.profile.settings.tools.servers).toEqual(saved);
 });
+test("a dormant Playwright connection keeps its approved read available and reconnects before using it", async () => {
+  const store = new TerminalStore(temp(), randomBytes(32));
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  store.profile.settings.tools.apple = {
+    calendar: false,
+    reminders: false,
+    notes: false,
+    mail: false,
+  };
+  const row = toolServerSchema.parse({
+    id: "playwright",
+    name: "Synthetic browser bridge",
+    transport: "stdio",
+    command: process.execPath,
+    args: [join(process.cwd(), "tests/fixtures/mcp-fixture-server.mjs")],
+    cwd: process.cwd(),
+    network: "none",
+    addedAt: 0,
+    enabled: true,
+    consented: true,
+    trust: "reads_unattended",
+  });
+  store.profile.settings.tools.servers = [row];
+  const c = new TerminalConnections(store, "/fixture", process.cwd());
+  row.approvedCommand = c.registry.approval(row);
+  try {
+    await c.start();
+    expect(c.registry.status().servers[0]).toMatchObject({
+      state: "on",
+      code: "ON_DEMAND",
+    });
+    row.tools = c.registry.tick(row.id, "read_note", true);
+    await c.registry.configure();
+    const access = c.registry.access({ synthetic: false })!;
+    const signal = AbortSignal.timeout(3000);
+    const list = await access.list("Read the synthetic note", signal);
+    const read = list.tools.find((t) => t.name === "read_note")!;
+    expect(read.trusted).toBe(true);
+    expect(access.prepare(read, { name: "synthetic" }).ok).toBe(true);
+    expect((await access.call(read, { name: "synthetic" }, signal)).code).toBe(
+      "ok",
+    );
+    expect(c.registry.status().servers[0]).toMatchObject({
+      state: "on",
+      code: undefined,
+    });
+  } finally {
+    await c.registry.closeAll();
+  }
+});

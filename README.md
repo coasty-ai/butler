@@ -50,7 +50,7 @@ Simple questions such as “check my reminders” (items due today) or “what�
 butler --ask "Check my inbox"
 ```
 
-Unused Claude Code and Codex connections keep their approved tool catalogue available while releasing their processes after discovery. The first task reconnects and checks the tool pins again; a connection stays running once used so its background work can continue.
+Unused Claude Code, Codex and Playwright connections keep their approved tool catalogue available while releasing their processes after discovery. The first task reconnects and checks the tool pins again; a connection stays running once used so its background work can continue.
 
 For spoken replies and voice input:
 

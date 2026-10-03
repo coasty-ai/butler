@@ -139,7 +139,7 @@ export class TerminalConnections {
     ];
     this.registry = createToolRegistry({
       recipes: this.recipes,
-      onDemand: ["claude-code", "codex"],
+      onDemand: ["claude-code", "codex", "playwright"],
       settings: () => this.scopedSettings(),
       credentials: (
         id,
