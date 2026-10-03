@@ -1402,7 +1402,13 @@ export interface ScreenshotUse {
 export interface Observation {
   task: string;
   frame: Frame;
-  history: { type: string; action?: Record<string, unknown>; result: string }[];
+  history: {
+    type: string;
+    action?: Record<string, unknown>;
+    result: string;
+    /** Butler's readback confirmation, never taken from a tool's result text. */
+    verified?: true;
+  }[];
   /** Task-relevant memory and system index context (bounded; see docs/MEMORY.md). */
   memory?: MemoryContext;
   /** The tools this run may call, on the model's copy only; never persisted. */

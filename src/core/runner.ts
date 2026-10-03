@@ -3570,6 +3570,9 @@ export class Runner {
     this.history.push({
       type: action.type,
       action: shown,
+      ...(ok && !readTool && outcome.verified === true
+        ? { verified: true as const }
+        : {}),
       result:
         outcome.text +
         this.readsWithoutWriteNote(readTool) +
