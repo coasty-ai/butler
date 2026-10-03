@@ -39,6 +39,7 @@ import {
   NativeActionError,
   NativeStoppedError,
   ProviderTransientError,
+  providerUnavailableMessage,
   ScreenChangedError,
   SurfaceBlockedError,
 } from "../src/core/errors";
@@ -385,6 +386,96 @@ describe("runner recovery from model output", () => {
 });
 
 describe("runner recovery from provider outages", () => {
+  it.each(["rate_limit", "service"] as const)(
+    "keeps native input and model calls paused during a %s cooldown, then resumes",
+    async (kind) => {
+      const originalNow = Date.now.bind(Date);
+      let offset = 0;
+      const clock = vi
+        .spyOn(Date, "now")
+        .mockImplementation(() => originalNow() + offset);
+      const c = controller();
+      const m = memory();
+      const p = scripted([
+        () =>
+          new ProviderTransientError("private response fixture", {
+            kind,
+            httpStatus: kind === "rate_limit" ? 429 : 503,
+            retryAfterMs: 90_000,
+          }),
+      ]);
+      const runner = new Runner(c, p, m.recorder, settings, () => {});
+      const running = runner.start("test");
+      try {
+        await until(() => runner.snapshot.run?.status === "paused");
+        expect(runner.snapshot.message).toContain("Wait 90 seconds");
+        expect(p.next).toHaveBeenCalledOnce();
+        const resumeCalls = vi.mocked(c.resume).mock.calls.length;
+        expect(await runner.resume()).toBe(false);
+        expect(runner.snapshot.message).toContain(
+          "more seconds before retrying",
+        );
+        expect(vi.mocked(c.resume).mock.calls.length).toBe(resumeCalls);
+        expect(p.next).toHaveBeenCalledOnce();
+        offset = 90_001;
+        expect(await runner.resume()).toBe(true);
+        await running;
+        expect(runner.snapshot.run?.status).toBe("completed");
+        expect(p.next).toHaveBeenCalledTimes(2);
+      } finally {
+        runner.stop();
+        clock.mockRestore();
+        await running;
+      }
+    },
+  );
+  it.each([
+    [{ kind: "network" }, "network connection"],
+    [{ kind: "timeout" }, "60 seconds"],
+    [{ kind: "service", httpStatus: 503 }, "HTTP 503"],
+    [
+      { kind: "rate_limit", httpStatus: 429, retryAfterMs: 90_000 },
+      "Wait 90 seconds",
+    ],
+  ])(
+    "shows the specific failure when retries are exhausted: %j",
+    async (failure, expected) => {
+      const m = memory();
+      const error = () =>
+        new ProviderTransientError("private response fixture", failure as any);
+      const p = scripted([error, error]);
+      const runner = new Runner(
+        controller(),
+        p,
+        m.recorder,
+        settings,
+        () => {},
+      );
+      const running = runner.start("test");
+      await until(() => runner.snapshot.run?.status === "paused");
+      expect(runner.snapshot.message).toContain(expected);
+      expect(runner.snapshot.message).not.toContain("private response fixture");
+      runner.stop();
+      await running;
+    },
+  );
+  it("does not display malformed adapter details or arbitrary exception messages", () => {
+    for (const failure of [
+      { kind: "private response fixture" },
+      { kind: "service", httpStatus: "private response fixture" },
+      { kind: "service", httpStatus: 503.5 },
+    ])
+      expect(
+        providerUnavailableMessage(
+          new ProviderTransientError(
+            "private response fixture",
+            failure as any,
+          ),
+        ),
+      ).toBe(
+        "I can’t reach the model service right now. Say continue to try again.",
+      );
+  });
   it("retries a transient outage once on a fresh capture", async () => {
     const m = memory();
     const p = scripted([() => new ProviderTransientError("Connection reset.")]);

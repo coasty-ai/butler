@@ -50,6 +50,15 @@ const redirect = new Set([
   "ERR_FAILED_REDIRECT",
 ]);
 
+/** Only these transport codes belong in content-free diagnostics. */
+export const providerTransportCode = (value: unknown): string | undefined =>
+  typeof value === "string" &&
+  [transient, dns, offline, refused, certificate, proxy, redirect].some((set) =>
+    set.has(value),
+  )
+    ? value
+    : undefined;
+
 /**
  * The allow-listed failure for a transport error: a fixed message, and the
  * transport code it matched (absent for an unrecognised error), which is safe

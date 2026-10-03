@@ -1,5 +1,39 @@
 # Validation record
 
+## CLI provider failure explanations and connection check (October 2, 2026)
+
+Owner run `7ffb19ee-38d8-4357-b627-af7660524cbc` captured four frames and
+recorded four `ProviderUnavailable` events across the initial request and its
+continuation. It remains paused with zero executed actions. The old CLI kept
+only the retry count, so the original exception and exact cause are unknown.
+A provider-only replay of its saved request subsequently returned HTTP 200
+and an action proposal in 2,642 ms; the proposal was not executed. A generated
+1440-by-919 PNG request of comparable size also returned HTTP 200 in 2,776 ms.
+These results establish current request availability, not the cause of the
+earlier outage or successful completion of the owner's desktop task.
+
+Transient errors now carry a fixed category, HTTP status and requested wait
+time. The runner displays a specific explanation and keeps both native input
+and model requests paused when `continue` arrives before a provider cooldown
+ends. Updated permanent credit, usage and spend-limit codes stop without
+retries. CLI provider diagnostics retain only allow-listed codes, identifiers,
+statuses and measurements; raw messages, prompts, images and credentials are
+excluded. `/doctor model` and `butler doctor --model` test the configured
+vision/tool transport with a generated image and a 20-second deadline.
+
+The installed CLI's new model check reported `reachable: true`,
+`usableReply: true` in 1,740 ms with the owner's saved configuration after the
+final terminal installation. Its native
+permission check reports Screen Recording, Accessibility, Microphone and
+Speech Recognition granted and on-device recognition available. Live voice
+recognition and desktop input were not exercised during this fix. No new UI
+captures were made; the replay read a previously saved encrypted frame.
+
+All 300 focused provider, runner-recovery, diagnostics, boundary and identity
+tests passed. The full suite passed 4,873 tests with two skips across 143 files
+using `--maxWorkers=2`. Type checking, formatting and terminal installation passed. No native Swift
+source changed.
+
 ## Conversational CLI, voice and connection setup (October 2, 2026)
 
 Owner runs `1b8668d2-0f05-45ac-9034-384fae6c1198` and

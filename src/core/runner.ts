@@ -141,6 +141,7 @@ import {
   NativeActionError,
   NativeStoppedError,
   ProviderTransientError,
+  providerUnavailableMessage,
   ScreenChangedError,
   SurfaceBlockedError,
   TargetError,
@@ -1773,6 +1774,7 @@ export class Runner {
   private searchRoutes = new Set<string>();
   private stateChanges = 0;
   private providerFailures = 0;
+  private providerRetryAt = 0;
   private epoch = 0;
   /** Bumped by amendTask; lets an in-flight recall see the task changed. */
   private amendments = 0;
@@ -2578,6 +2580,7 @@ export class Runner {
     this.targetingRetries = 0;
     this.stateChanges = 0;
     this.providerFailures = 0;
+    this.providerRetryAt = 0;
     this.searchRoutes.clear();
   }
   private check() {
@@ -2730,6 +2733,13 @@ export class Runner {
       return false;
     }
     if (!this.held) return false;
+    if (this.providerRetryAt > Date.now()) {
+      this.status(
+        "paused",
+        `The model service asked to wait ${Math.ceil((this.providerRetryAt - Date.now()) / 1000)} more seconds before retrying. Say continue after that.`,
+      );
+      return false;
+    }
     const epoch = this.epoch;
     if (!this.toolsOnly) await this.controller.resume();
     // A pause, takeover or stop that landed during the native round-trip wins.
@@ -5524,12 +5534,17 @@ export class Runner {
             this.event("ProviderUnavailable", {
               attempt: ++this.providerFailures,
             });
-            if (this.providerFailures >= 2) {
+            const retryAfterMs = e.failure?.retryAfterMs;
+            const coolingDown =
+              typeof retryAfterMs === "number" &&
+              Number.isFinite(retryAfterMs) &&
+              retryAfterMs > 0;
+            if (this.providerFailures >= 2 || coolingDown) {
               this.providerFailures = 0;
-              this.pause(
-                "I can’t reach the model service right now. Say continue to try again.",
-                "system",
-              );
+              this.providerRetryAt = coolingDown
+                ? Date.now() + retryAfterMs
+                : 0;
+              this.pause(providerUnavailableMessage(e), "system");
               continue;
             }
             this.status("thinking", "Reconnecting to the model service.");

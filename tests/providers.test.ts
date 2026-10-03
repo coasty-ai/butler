@@ -1495,6 +1495,26 @@ describe("provider-neutral adapters", () => {
     ["openai type", { error: { type: "insufficient_quota" } }],
     ["openai billing", { error: { code: "billing_hard_limit_reached" } }],
     [
+      "openai credits",
+      { error: { code: "credit_balance_exhausted", message: "SECRET" } },
+    ],
+    [
+      "openai organization spend",
+      {
+        error: { code: "organization_spend_limit_exceeded", message: "SECRET" },
+      },
+    ],
+    [
+      "openai project spend",
+      { error: { code: "project_spend_limit_exceeded", message: "SECRET" } },
+    ],
+    [
+      "openai organization usage",
+      {
+        error: { code: "organization_usage_limit_exceeded", message: "SECRET" },
+      },
+    ],
+    [
       "anthropic billing",
       { type: "error", error: { type: "billing_error", message: "SECRET" } },
     ],
@@ -1615,6 +1635,10 @@ describe("provider-neutral adapters", () => {
     const rateError = await rate;
     expect(rateError).toBeInstanceOf(ProviderTransientError);
     expect(rateError.message).toContain("429");
+    expect(rateError.failure).toMatchObject({
+      kind: "rate_limit",
+      httpStatus: 429,
+    });
     expect(limited).toHaveBeenCalledTimes(4);
     const failing = vi
       .fn()

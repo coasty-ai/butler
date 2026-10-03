@@ -14,6 +14,7 @@ import { TerminalScreen, screenLines } from "./screen";
 import { TerminalStore, terminalHome } from "./store";
 import { TerminalVoice, type SpokenInput } from "./voice";
 import { installedApps } from "./apps";
+import { providerDiagnostics, probeModel } from "./doctor";
 import { TerminalConnections } from "./connections";
 import { UrlOpener } from "../../electron/open-url";
 import { NativeController } from "../../electron/controller";
@@ -66,6 +67,7 @@ const HELP = `Just type to converse. Butler uses connected tools before desktop 
 /voice on|off|test|list|<name>   spoken replies and installed voices
 /listen on|off|status   'Hey Butler' and spoken commands; Option-Space if permitted
 /doctor       desktop and voice permission status
+/doctor model test the model connection with a generated image (uses API credits)
 /help /quit    help / quit
 /new           start a fresh conversation
 Ctrl-C interrupts work. Ctrl-D quits. Coding tools use this project folder.
@@ -135,6 +137,10 @@ export async function main(args = process.argv.slice(2)) {
   if (!existsSync(project))
     throw new Error("The project folder does not exist.");
   const store = new TerminalStore();
+  const providerTrace = providerDiagnostics(
+    join(store.root, "diagnostics"),
+    () => [store.keyForProvider(), ...Object.values(store.profile.secrets)],
+  );
   const connections = new TerminalConnections(store, project, ROOT);
   let native: NativeController | undefined;
   let nativeSetup: Promise<void> | undefined;
@@ -380,7 +386,12 @@ export async function main(args = process.argv.slice(2)) {
       );
     runner = new Runner(
       lazy,
-      new HttpProvider(settings(), store.keyForProvider()),
+      new HttpProvider(
+        settings(),
+        store.keyForProvider(),
+        fetch,
+        providerTrace,
+      ),
       store.vault,
       settings(),
       (state) => {
@@ -520,9 +531,23 @@ export async function main(args = process.argv.slice(2)) {
             .join("\n") ||
             "No app bundles found in the standard Applications folders.",
         );
-      else if (word === "/doctor")
+      else if (word === "/doctor") {
         show(JSON.stringify(await doctor(), null, 2));
-      else if (word === "/connections") {
+        if (rest === "model")
+          show(
+            JSON.stringify(
+              await probeModel(
+                settings(),
+                store.keyForProvider(),
+                providerTrace,
+                fetch,
+                activeTurn.signal,
+              ),
+              null,
+              2,
+            ),
+          );
+      } else if (word === "/connections") {
         screen.state.connections = connections.labels();
         show(
           connections.labels().join("\n") ||
@@ -945,6 +970,14 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (command === "doctor") {
     console.log(JSON.stringify(await doctor(), null, 2));
+    if (args.includes("--model"))
+      console.log(
+        JSON.stringify(
+          await probeModel(settings(), store.keyForProvider(), providerTrace),
+          null,
+          2,
+        ),
+      );
     await quit();
     return;
   }

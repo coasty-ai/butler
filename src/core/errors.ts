@@ -38,10 +38,43 @@ export class ScreenChangedError extends Error {
  */
 export class ProviderTransientError extends Error {
   readonly retryable = true;
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly failure?: {
+      kind: "network" | "rate_limit" | "service" | "timeout";
+      httpStatus?: number;
+      retryAfterMs?: number;
+    },
+  ) {
     super(message);
     this.name = "ProviderTransientError";
   }
+}
+
+/** Fixed, content-free explanations; never display an adapter's raw exception. */
+export function providerUnavailableMessage(error: ProviderTransientError) {
+  const failure = error.failure;
+  const status = failure?.httpStatus;
+  const retry = "Say continue to try again.";
+  if (failure?.kind === "rate_limit" && status === 429) {
+    const delay = failure.retryAfterMs;
+    return `The model service is rate limiting requests (HTTP 429). ${typeof delay === "number" && Number.isFinite(delay) && delay > 0 ? `Wait ${Math.ceil(delay / 1000)} seconds, then say continue.` : "Wait a little, then say continue."}`;
+  }
+  if (
+    failure?.kind === "service" &&
+    typeof status === "number" &&
+    Number.isInteger(status) &&
+    status >= 500 &&
+    status <= 599
+  ) {
+    const delay = failure.retryAfterMs;
+    return `The model service is temporarily unavailable (HTTP ${status}). ${typeof delay === "number" && Number.isFinite(delay) && delay > 0 ? `Wait ${Math.ceil(delay / 1000)} seconds, then say continue.` : retry}`;
+  }
+  if (failure?.kind === "timeout")
+    return `The model request timed out after 60 seconds. ${retry}`;
+  if (failure?.kind === "network")
+    return `The network connection to the model service failed. Check your connection or proxy, then say continue.`;
+  return `I can’t reach the model service right now. ${retry}`;
 }
 
 /**

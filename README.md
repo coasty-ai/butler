@@ -117,6 +117,16 @@ MCP-only tasks do not need screen recording. For desktop control, use `/permissi
 
 Permission checks use the native helper’s current access status. After granting access, reopen the terminal host if macOS requires it.
 
+If a task reports a model connection failure, run `/doctor model` inside Butler
+or `butler doctor --model` from your shell. This makes a small paid request using
+your selected model and a generated image, and reports connection and response
+status. Network failures, request timeouts, HTTP rate limits and service outages
+have specific messages. When the service requests a wait, `continue` stays paused
+until that wait ends. Billing and spend limits require updating the account.
+Local diagnostics in `~/.config/butler/diagnostics/current.jsonl` retain HTTP
+statuses, known transport codes and timings, without prompts, screenshots,
+credentials or raw error bodies.
+
 ## Development
 
 ```sh

@@ -985,7 +985,14 @@ export function quotaExhausted(text: string): boolean {
   if (Array.isArray(data)) data = data[0];
   const error = isObject(data) ? data.error : undefined;
   if (!isObject(error)) return false;
-  const permanent = ["insufficient_quota", "billing_hard_limit_reached"];
+  const permanent = [
+    "insufficient_quota",
+    "billing_hard_limit_reached",
+    "credit_balance_exhausted",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "organization_usage_limit_exceeded",
+  ];
   if (permanent.includes(error.code) || permanent.includes(error.type))
     return true;
   if (error.type === "billing_error") return true;
@@ -1115,6 +1122,11 @@ export class HttpProvider implements Provider {
                 response.status === 429
                   ? "The provider is rate limiting requests (HTTP 429). Try again shortly."
                   : `The provider is temporarily unavailable (HTTP ${response.status}). Try again shortly.`,
+                {
+                  kind: response.status === 429 ? "rate_limit" : "service",
+                  httpStatus: response.status,
+                  retryAfterMs: retryAfter(response.headers.get("retry-after")),
+                },
               );
             const limit = response.status === 429 ? 4 : 3;
             if (attempt >= limit) throw transient();
@@ -1255,9 +1267,13 @@ export class HttpProvider implements Provider {
             durationMs: Math.round(performance.now() - attemptStarted),
             retryable: failure.retryable,
             ...errorDetails(error),
+            code: failure.code,
           });
           if (!failure.retryable) throw new Error(failure.message);
-          if (attempt >= 3) throw new ProviderTransientError(failure.message);
+          if (attempt >= 3)
+            throw new ProviderTransientError(failure.message, {
+              kind: "network",
+            });
           // Only inference is retried. No partial response reaches the runner,
           // so no computer action or approval is replayed by a transport retry.
           log("ProviderRetry", { attempt, delayMs: 500 * 2 ** (attempt - 1) });
@@ -1272,7 +1288,8 @@ export class HttpProvider implements Provider {
         ...errorDetails(error),
       });
       if (signal.aborted) throw new Error("Cancelled.");
-      if (timedOut) throw new ProviderTransientError(deadlineMessage);
+      if (timedOut)
+        throw new ProviderTransientError(deadlineMessage, { kind: "timeout" });
       throw error;
     } finally {
       clearTimeout(timeout);

@@ -88,6 +88,19 @@ OAuth uses discovery and PKCE with `http://127.0.0.1:53684/callback`, plus your 
 
 `/doctor` checks the selected model/key presence, Screen Recording, Accessibility, installed voice and Microphone/Speech Recognition grants. `/voice test` speaks without requiring microphone access. `/listen on` explicitly asks for microphone and on-device speech access for the standalone helper. `/listen off` stops voice input. The briefing daemon does not activate the microphone.
 
+`/doctor model` (or `butler doctor --model` from the shell) additionally sends a
+small paid connection check through the selected model's vision/tool transport.
+It uses a generated image and a synthetic instruction; it does not capture or
+operate your desktop. The check reports reachability, whether the reply is usable,
+and elapsed time, or a fixed failure explanation. It cancels after 20 seconds.
+Provider diagnostics are written to `~/.config/butler/diagnostics/current.jsonl`
+(under `BUTLER_DATA_DIR` when configured). Logs contain statuses, known transport
+codes, request identifiers and timings; prompts, images, credentials and raw
+exception messages are excluded. Logs rotate at 5 MB with three older copies.
+Rate limits and service outages show HTTP status and any requested wait time.
+During that wait, `continue` keeps input paused and sends no new model request.
+Permanent billing/spend limits stop with an account-action message.
+
 `/cua <task in an already open app>` selects desktop control directly. An opening request can bind an existing named window before capturing, even while Terminal is in front. Terminal and other protected apps remain blocked. `/run` and natural requests use MCP first. Transient inference transport failures retry within the existing bound and pause for retry if exhausted; actions are not replayed.
 
 ## Briefing reads
