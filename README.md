@@ -167,4 +167,6 @@ Butler ships as a CLI. `npm start`, `npm run dev`, and `npm run build` all targe
 
 This is a development alpha. Offline tests validate policies, terminal behavior and mocked services; they do not establish arbitrary desktop reliability or live speech/model accuracy. See [validation](docs/VALIDATION.md) and [privacy](docs/PRIVACY.md).
 
+Measured improvements and live-test limits are recorded in [the 3 October overnight evaluation](docs/OVERNIGHT_EVALUATION_2026-10-03.md).
+
 Open source under the [MIT license](LICENSE).
