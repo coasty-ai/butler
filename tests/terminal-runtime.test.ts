@@ -20,6 +20,7 @@ const f = vi.hoisted(() => ({
   memory: undefined as any,
   connectionsStart: vi.fn(async () => {}),
   briefingCheck: vi.fn(async () => ({ on: true, state: "waiting" })),
+  briefingOptions: undefined as any,
 }));
 vi.mock("node:fs", async (load) => {
   const fs = await load<typeof import("node:fs")>();
@@ -118,10 +119,13 @@ vi.mock("../electron/briefings", async (load) => {
   const original = await load<typeof import("../electron/briefings")>();
   return {
     ...original,
-    createBriefings: (options: any) => ({
-      ...original.createBriefings(options),
-      checkNow: f.briefingCheck,
-    }),
+    createBriefings: (options: any) => {
+      f.briefingOptions = options;
+      return {
+        ...original.createBriefings(options),
+        checkNow: f.briefingCheck,
+      };
+    },
   };
 });
 vi.mock("../electron/controller", () => ({
@@ -219,6 +223,7 @@ beforeEach(() => {
   f.memory = undefined;
   f.connectionsStart.mockClear();
   f.briefingCheck.mockClear();
+  f.briefingOptions = undefined;
   f.speak.mockClear();
   f.decide.mockReset().mockImplementation(async (input: any) => ({
     acting: true,
@@ -350,6 +355,43 @@ test("natural briefing requests use one batched read instead of the action model
   expect(f.decide).not.toHaveBeenCalled();
   expect(briefingRequest("Brief me on the GitHub pull requests")).toBe(false);
 });
+test.each([
+  {
+    mode: "local",
+    note: "The model allowance is used; showing a local recap.",
+  },
+  { mode: "local", note: "The model did not answer; showing a local recap." },
+  { mode: "model", note: undefined },
+] as const)(
+  "briefing delivery preserves the fallback explanation in the saved copy, display and speech: %j",
+  async ({ mode, note }) => {
+    await main([]);
+    const briefing = {
+      at: Date.now(),
+      since: Date.now(),
+      mode,
+      text: "A synthetic meeting begins in an hour.",
+      ...(note ? { note } : {}),
+      sources: [
+        { id: "fixture", title: "Calendar", state: "ok", detail: "Read only" },
+      ],
+    };
+    const spoken = [note, briefing.text].filter(Boolean).join("\n\n");
+    f.store.instance.profile.settings.briefings.delivery = "both";
+    await f.briefingOptions.deliver(briefing);
+    expect(f.store.instance.latestBriefing()).toBe(
+      spoken + "\n\nCoverage: Calendar: ok (Read only)",
+    );
+    expect(f.ui.screen.message).toHaveBeenLastCalledWith("Briefing", spoken);
+    expect(f.speak).toHaveBeenLastCalledWith(spoken, true, false);
+    f.speak.mockClear();
+    f.store.instance.profile.settings.briefings.delivery = "notification";
+    await f.briefingOptions.deliver(briefing);
+    expect(f.store.instance.latestBriefing()).toContain(spoken);
+    expect(f.speak).not.toHaveBeenCalled();
+    expect(f.tasks).toEqual([]);
+  },
+);
 test.each([{ confidence: 0.3 }, { confidence: 0.7, recovered: true }])(
   "uncertain spoken preferences are repeated rather than stored or sent to a model: %j",
   async (heard) => {

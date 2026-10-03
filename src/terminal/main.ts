@@ -380,16 +380,17 @@ export async function main(args = process.argv.slice(2)) {
     modelReady: () =>
       settings().provider === "ollama" || !!store.keyForProvider(),
     deliver: async (briefing) => {
+      const text = [briefing.note, briefing.text].filter(Boolean).join("\n\n");
       store.saveBriefing(
-        briefing.text +
+        text +
           "\n\nCoverage: " +
           briefing.sources
             .map((s) => `${s.title}: ${s.state} (${s.detail})`)
             .join("; "),
       );
-      show(briefing.text, "Briefing");
+      show(text, "Briefing");
       if (settings().briefings.delivery !== "notification")
-        await speak(briefing.text, true, false);
+        await speak(text, true, false);
     },
     onChange: () => {
       const status = briefings.status();
