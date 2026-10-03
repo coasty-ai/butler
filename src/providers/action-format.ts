@@ -112,7 +112,14 @@ export const strictActionParameters = {
           delta_x: integer(-1000, 1000),
           delta_y: integer(-1000, 1000),
         }),
-        variant("type_text", { text: string }),
+        variant("type_text", {
+          text: string,
+          label: nullable({
+            type: "string",
+            description:
+              "In a background window, the field's exact label from context.controls; otherwise null.",
+          }),
+        }),
         variant("key", { key }),
         variant("hotkey", {
           keys: { type: "array", items: key, minItems: 1, maxItems: 4 },

@@ -352,6 +352,14 @@ const RETRY: Table<RetryCode> = {
       "CONTROL_UNRESOLVED",
     ],
     [
+      "No input was sent. Named typing needs a bound background window. Use click_control on the field, then type_text without a label.",
+      "FIELD_UNIDENTIFIED",
+    ],
+    [
+      "No input was sent. That named control is not an enabled, readable text field. Choose a field from context.controls.",
+      "FIELD_UNIDENTIFIED",
+    ],
+    [
       "No input was sent. Dragging has no route to a background window. Use a listed control, the menu or the keyboard, or scroll.",
       "BACKGROUND_NO_DRAG",
     ],
@@ -448,6 +456,10 @@ const RETRY: Table<RetryCode> = {
     ],
     [
       /^No input was sent\. Several controls are named .+\. Add the x and y of the one you mean from context\.controls, or name a different control\.$/su,
+      "CONTROL_AMBIGUOUS",
+    ],
+    [
+      /^No input was sent\. Several fields are named .+\. Use click_control with the x and y from context\.controls, then type_text without a label\.$/su,
       "CONTROL_AMBIGUOUS",
     ],
     [

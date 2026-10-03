@@ -156,6 +156,7 @@ export const actionSchema = z.discriminatedUnion("type", [
       ...base,
       type: z.literal("type_text"),
       text: z.string().min(1).max(2000),
+      label: z.string().trim().min(1).max(120).optional(),
     })
     .strict(),
   z.object({ ...base, type: z.literal("key"), key }).strict(),

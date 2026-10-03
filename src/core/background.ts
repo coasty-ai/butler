@@ -104,8 +104,11 @@ export function backgroundLadder(
     case "right_click":
     case "scroll":
     case "key":
-    case "type_text":
       return all(["ax", "post"], true);
+    case "type_text":
+      // Named typing is resolved inside the bound window. It must never
+      // fall through to HID typing at an unrelated foreground focus.
+      return all(["ax", "post"], !action.label);
     case "double_click":
       return all(["post"], true);
     case "menu_item":

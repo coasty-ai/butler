@@ -673,6 +673,32 @@ describe("the ladder and what it remembers (design §2.5, §2.7, §5)", () => {
 });
 
 describe("rung 3: the announced foreground hand-off (design §2.8)", () => {
+  it.each(["noop", "unavailable"])(
+    "keeps named typing inside its bound window when the route is %s",
+    async (failure) => {
+      const c = desktop({
+        surface: {
+          controlStatus: "resolved",
+          controlLabel: "Message",
+          focusedRole: "AXTextArea",
+        },
+        deliver: () => {
+          if (failure === "unavailable")
+            throw new TargetError("RUNG_UNAVAILABLE", "No route is available.");
+          return { rung: "post", effect: "none" };
+        },
+      });
+      const m = journal();
+      const provider = scripted([
+        step({ type: "type_text", text: "hello", label: "Message" }),
+        step({ type: "fail", reason: "Use a different field route." }),
+      ]);
+      await start(runnerWith(c, provider, m), "in Slack, draft a message");
+      expect(c.executeTarget).toHaveBeenCalledTimes(1);
+      expect(c.foregroundTarget).not.toHaveBeenCalled();
+      expect(c.execute).not.toHaveBeenCalled();
+    },
+  );
   const missesThenFront: Deliver = (_a, rungs) =>
     rungs[0] === "foreground"
       ? { rung: "foreground", effect: "changed" }

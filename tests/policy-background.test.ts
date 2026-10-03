@@ -188,6 +188,95 @@ describe("policy parity in the background (design §4)", () => {
 });
 
 describe("what a bound run cannot do in its window (design §2.5)", () => {
+  it("types only into a uniquely resolved editable field in its bound process", () => {
+    const action = act({ type: "type_text", text: "hello", label: "Message" });
+    const destination: Surface = {
+      ...bound,
+      focusedRole: "AXTextArea",
+      focusedLabel: "Message",
+      controlStatus: "resolved",
+      controlLabel: "Message",
+      targetEnabled: true,
+    };
+    expect(evaluate(action, destination, settings, false, context).kind).toBe(
+      "ALLOW",
+    );
+    for (const extra of [
+      { controlStatus: "missing" as const },
+      { controlStatus: "ambiguous" as const },
+      { controlStatus: "disabled" as const },
+      { controlStatus: undefined },
+      { targetEnabled: false },
+      { unknown: true },
+      { focusedRole: "AXButton" },
+      { target: undefined },
+    ])
+      expect(
+        evaluate(action, { ...destination, ...extra }, settings, false, context)
+          .kind,
+      ).toBe("RETRY");
+    expect(evaluate(action, destination, settings, false, {}).kind).toBe(
+      "RETRY",
+    );
+    expect(
+      evaluate(action, { ...destination, pid: 999 }, settings, false, context)
+        .kind,
+    ).toBe("DENY");
+  });
+  it("keeps secure, credential, terminal and newline rules on a named destination", () => {
+    const action = act({ type: "type_text", text: "hello", label: "Message" });
+    const destination: Surface = {
+      ...bound,
+      focusedRole: "AXTextArea",
+      controlStatus: "resolved",
+    };
+    for (const all of [false, true]) {
+      const s: Settings = {
+        ...settings,
+        ...(all ? { autonomy: "all", autonomyAllAcknowledged: true } : {}),
+      };
+      expect(
+        evaluate(
+          action,
+          { ...destination, secureInput: true },
+          s,
+          false,
+          context,
+        ).kind,
+      ).toBe("USER_TAKEOVER");
+      expect(
+        evaluate(
+          action,
+          { ...destination, terminalFocus: true },
+          s,
+          false,
+          context,
+        ).kind,
+      ).toBe("DENY");
+      expect(
+        evaluate(
+          act({
+            type: "type_text",
+            text: "password: hunter2xyz",
+            label: "Message",
+          }),
+          destination,
+          s,
+          false,
+          context,
+        ).kind,
+      ).toBe("DENY");
+    }
+    expect(
+      evaluate(
+        act({ type: "type_text", text: "hello\nthere", label: "Message" }),
+        destination,
+        settings,
+        false,
+        context,
+      ).kind,
+    ).toBe("CONFIRM");
+  });
   it("refuses opening or switching: the target is the window", () => {
     const open = evaluate(
       act({ type: "open_app", name: "Notes" }),

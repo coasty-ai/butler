@@ -60,6 +60,8 @@ describe("action boundary", () => {
     { type: "click", x: NaN, y: 0 },
     { type: "key", key: "UNSUPPORTED" },
     { type: "type_text", text: "x".repeat(2001) },
+    { type: "type_text", text: "hello", label: " " },
+    { type: "type_text", text: "hello", label: "x".repeat(121) },
     { type: "click", x: 0, y: 0, script: "malicious" },
     { type: "hotkey", keys: ["CMD", "A", "B", "C", "D"] },
   ])("rejects invalid input %j", (a) =>
@@ -111,6 +113,7 @@ describe("action boundary", () => {
       },
       { type: "scroll", delta_x: 0, delta_y: 100 },
       { type: "type_text", text: "hello" },
+      { type: "type_text", text: "hello", label: "Meeting title" },
       { type: "key", key: "ENTER" },
       { type: "hotkey", keys: ["CMD", "A"] },
       { type: "wait", milliseconds: 10 },

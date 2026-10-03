@@ -1351,21 +1351,28 @@ function namedControlRefusal(
   action: Action,
   surface: Surface,
 ): Decision | undefined {
-  if (action.type !== "click_control") return undefined;
+  if (
+    action.type !== "click_control" &&
+    !(action.type === "type_text" && action.label)
+  )
+    return undefined;
   if (surface.controlStatus === "missing")
     return {
       kind: "RETRY",
-      reason: `No input was sent. Nothing in context.controls is named ${quote(action.label)} now. If you can see it in the screenshot, click it by position with click(x,y) instead; otherwise take a fresh look. Do not repeat this name.`,
+      reason: `No input was sent. Nothing in context.controls is named ${quote(action.label ?? "")} now. If you can see it in the screenshot, click it by position with click(x,y) instead; otherwise take a fresh look. Do not repeat this name.`,
     };
   if (surface.controlStatus === "ambiguous")
     return {
       kind: "RETRY",
-      reason: `No input was sent. Several controls are named ${quote(action.label)}. Add the x and y of the one you mean from context.controls, or name a different control.`,
+      reason:
+        action.type === "type_text"
+          ? `No input was sent. Several fields are named ${quote(action.label ?? "")}. Use click_control with the x and y from context.controls, then type_text without a label.`
+          : `No input was sent. Several controls are named ${quote(action.label ?? "")}. Add the x and y of the one you mean from context.controls, or name a different control.`,
     };
   if (surface.controlStatus === "disabled")
     return {
       kind: "RETRY",
-      reason: `No input was sent. ${quote(action.label)} is disabled. Choose an enabled control.`,
+      reason: `No input was sent. ${quote(action.label ?? "")} is disabled. Choose an enabled control.`,
     };
   if (surface.controlStatus !== "resolved")
     return {
@@ -1373,6 +1380,10 @@ function namedControlRefusal(
       reason:
         "No input was sent. That control could not be resolved. Name a control from context.controls.",
     };
+  // Direct AX typing has no pointer hit test. The native surface describes
+  // the resolved destination as focusedRole/Label, and execution checks its
+  // identity, value and selection against the captured field again.
+  if (action.type === "type_text") return undefined;
   // The named control was found, but the element under its centre is
   // something else (live: a Chrome tab's centre landed in a ChatGPT window in
   // front of it). Clicking there would act on whatever covers the control.
@@ -1387,8 +1398,8 @@ function namedControlRefusal(
     return {
       kind: "RETRY",
       reason: surface.controlScrolled
-        ? `No input was sent. ${quote(action.label)} was scrolled into view and is still covered by something else. Scroll the page yourself until it sits in the middle of the window, or reach it with the keyboard (TAB to it, then SPACE or ENTER).`
-        : `No input was sent. ${quote(action.label)} is covered by something else right now. Bring its window to the front first, or choose another route.`,
+        ? `No input was sent. ${quote(action.label ?? "")} was scrolled into view and is still covered by something else. Scroll the page yourself until it sits in the middle of the window, or reach it with the keyboard (TAB to it, then SPACE or ENTER).`
+        : `No input was sent. ${quote(action.label ?? "")} is covered by something else right now. Bring its window to the front first, or choose another route.`,
     };
   return undefined;
 }
@@ -1637,6 +1648,26 @@ function decideAction(
       kind: "DENY",
       reason: `No input was sent. The step's target is not the ${quote(context.target.appName)} window this run is bound to; input goes only to that window.`,
     };
+  if (action.type === "type_text" && action.label) {
+    if (!context.target || !surface.target?.bound)
+      return {
+        kind: "RETRY",
+        reason:
+          "No input was sent. Named typing needs a bound background window. Use click_control on the field, then type_text without a label.",
+      };
+    const namedRefusal = namedControlRefusal(action, surface);
+    if (namedRefusal) return namedRefusal;
+    if (
+      surface.targetEnabled === false ||
+      surface.unknown ||
+      !editableRoles.includes(surface.focusedRole ?? "")
+    )
+      return {
+        kind: "RETRY",
+        reason:
+          "No input was sent. That named control is not an enabled, readable text field. Choose a field from context.controls.",
+      };
+  }
   // Watching reads the frontmost window and sends nothing; the protected
   // checks above already refused a window that must not be read.
   if (action.type === "monitor")

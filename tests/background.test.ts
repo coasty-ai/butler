@@ -140,6 +140,17 @@ describe("the actuation ladder (design §2.5)", () => {
       backgroundRoute(act({ type: "menu_item", path: ["File", "Save"] }), "ax"),
     );
   });
+  it("never sends named field typing through a foreground focus, even after pruning", () => {
+    const action = act({ type: "type_text", text: "hello", label: "Message" });
+    expect(backgroundLadder(action, undefined, never)).toEqual({
+      rungs: ["ax", "post"],
+      foreground: false,
+    });
+    expect(backgroundLadder(action, undefined, () => true)).toEqual({
+      rungs: [],
+      foreground: false,
+    });
+  });
   it("names the memory route of each rung", () => {
     const typing = act({ type: "type_text", text: "hello" });
     expect(backgroundRoute(typing, "ax")).toBe("write");

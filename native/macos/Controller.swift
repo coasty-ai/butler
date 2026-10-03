@@ -195,12 +195,12 @@ func controlSignature(_ element:AXUIElement) -> String {
     let fields=[kAXRoleAttribute,kAXSubroleAttribute,kAXValueAttribute,kAXEnabledAttribute,"AXURL"].map {String(describing:attribute(element,$0) ?? "" as CFString)}
     return SHA256.hash(data:Data((fields + [controlLabel(element),String(describing:elementRect(element))]).joined(separator:"\u{0}").utf8)).map{String(format:"%02x",$0)}.joined()
 }
-func focusSignature(_ element:AXUIElement) -> String {
+func focusSignature(_ element:AXUIElement, signature:String? = nil) -> String {
     var selection=""
     if let value=attribute(element,kAXSelectedTextRangeAttribute),CFGetTypeID(value) == AXValueGetTypeID() {
         var range=CFRange();if AXValueGetValue(value as! AXValue,.cfRange,&range){selection="\(range.location):\(range.length)"}
     }
-    return controlSignature(element) + ":" + selection
+    return (signature ?? controlSignature(element)) + ":" + selection
 }
 func browserAddressField(_ element:AXUIElement, appId:String) -> Bool {
     guard browserAppIDs.contains(appId), ["AXTextField","AXComboBox"].contains(attribute(element,kAXRoleAttribute) as? String ?? "") else{return false}
@@ -214,7 +214,7 @@ func browserAddressField(_ element:AXUIElement, appId:String) -> Bool {
     }
     return false
 }
-struct TrackedControl { let element: AXUIElement; let bounds: CGRect; let signature:String; var role:String = ""; var name:String = ""; var enabled:Bool = true }
+struct TrackedControl { let element: AXUIElement; let bounds: CGRect; let signature:String; var role:String = ""; var name:String = ""; var enabled:Bool = true; var typingSignature:String = "" }
 // Names shown to the model for grounding. Editable fields expose their title,
 // description or placeholder, never their contents.
 func modelControlName(_ element:AXUIElement, role:String) -> String {
@@ -577,7 +577,9 @@ func windowState(pid: pid_t, appId: String, window: AXUIElement?, focused: AXUIE
             let valueDigest = SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
             controls.append([role, label, valueDigest, String(describing: elementRect(node)), String(describing: attribute(node, kAXEnabledAttribute))].joined(separator: "\u{0}"))
             if !secure, (!label.isEmpty || ["AXTextField", "AXTextArea", "AXComboBox"].contains(role)), let bounds = elementRect(node), !bounds.isNull, !bounds.isInfinite {
-                tracked.append(TrackedControl(element: node, bounds: bounds,signature:controlSignature(node),role:role,name:modelControlName(node, role:role),enabled:attribute(node, kAXEnabledAttribute) as? Bool ?? true))
+                let signature = controlSignature(node)
+                tracked.append(TrackedControl(element: node, bounds: bounds,signature:signature,role:role,name:modelControlName(node, role:role),enabled:attribute(node, kAXEnabledAttribute) as? Bool ?? true,
+                                               typingSignature:editableControlRoles.contains(role) ? focusSignature(node, signature:signature) : ""))
             }
         }
         let children = (attribute(node, "AXVisibleChildren") ?? attribute(node, kAXChildrenAttribute)) as? [AXUIElement] ?? []
@@ -588,7 +590,7 @@ func windowState(pid: pid_t, appId: String, window: AXUIElement?, focused: AXUIE
     return WindowState(pid: pid, appId: appId, window: window, bounds: window.flatMap(elementRect),
         document: window.map { String(describing: attribute($0, "AXDocument") ?? attribute($0, "AXURL") ?? "" as CFString) } ?? "",
         focused: focused, focusedValue: focused.map { String(describing: attribute($0, kAXValueAttribute) ?? "" as CFString) } ?? "",
-        focusedSignature:focused.map(focusSignature) ?? "",addressBar:focused.map{browserAddressField($0,appId:appId)} ?? false,
+        focusedSignature:focused.map{focusSignature($0)} ?? "",addressBar:focused.map{browserAddressField($0,appId:appId)} ?? false,
         controls: SHA256.hash(data: Data(controls.joined(separator: "\u{1}").utf8)).map { String(format: "%02x", $0) }.joined(), tracked: tracked)
 }
 func sameElement(_ a: AXUIElement?, _ b: AXUIElement?) -> Bool {
@@ -2507,6 +2509,9 @@ func execute(_ action:[String:Any], menuRoute: [String]? = nil) throws -> [Strin
         guard let dx = action["delta_x"] as? Int,let dy = action["delta_y"] as? Int,abs(dx)<=1000,abs(dy)<=1000 else {throw ControlError("Invalid scroll.")}
         postScroll(dx:dx,dy:dy)
     case "type_text":
+        // A label belongs to a bound window's field resolution, never to
+        // the HID route's current focus. Fail closed if a caller falls back.
+        guard action["label"] == nil else { throw ControlError(noFieldFocusedMessage, code: noFieldFocusedCode) }
         guard let text = action["text"] as? String,text.count<=2000 else {throw ControlError("Invalid text.")}
         // The stop latch, secure input and the exact focused element are checked
         // per character; the full protected-surface walk is throttled so long
@@ -3399,15 +3404,36 @@ func rowAncestor(_ element: AXUIElement) -> AXUIElement? {
 // named, else the bound window's focused element when it is a text role. A
 // secure field is refused: the floor hands it to the user.
 func typingField(_ bound: TargetBinding, action: [String:Any], state: WindowState, entries: [ControlEntry]) throws -> AXUIElement? {
+    guard state.focused.map({ attribute($0, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole }) != true else {
+        throw ControlError("Sensitive input is active; capture and input are blocked.", code: "SURFACE_BLOCKED")
+    }
     var field = state.focused
     if action["type"] as? String == "type_text", action["label"] as? String != nil {
         let resolution = targetNamedControl(action, entries: entries)
-        guard case .matched = resolution.match, let entry = resolution.entry else { throw ControlError("No control named that is on screen now. Choose one from the context list.", code: "TARGET_MISSING") }
+        guard case .matched = resolution.match, let entry = resolution.entry, let control = resolution.control else {
+            if case .ambiguous = resolution.match { throw ControlError("Several controls are named that. Choose a unique field from the context list.", code: "TARGET_AMBIGUOUS") }
+            throw ControlError("No control named that is on screen now. Choose one from the context list.", code: "TARGET_MISSING")
+        }
+        guard control.enabled else { throw ControlError("That control is disabled.", code: "TARGET_DISABLED") }
         field = entry.element
     }
     guard let field else { return nil }
     guard attribute(field, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole else { throw ControlError("Sensitive input is active; capture and input are blocked.", code: "SURFACE_BLOCKED") }
+    if terminalFocusEvidence(roleDescription: attribute(field, kAXRoleDescriptionAttribute) as? String ?? "", label: fieldLabel(field),
+                             domClasses: attribute(field, "AXDOMClassList") as? [String] ?? [], ide: ideFamily(bound.appId) != nil) {
+        throw ControlError("Terminal input is left to the user.", code: "TARGET_REFUSED")
+    }
     return ["AXTextField", "AXTextArea", "AXComboBox"].contains(attribute(field, kAXRoleAttribute) as? String ?? "") ? field : nil
+}
+// Direct named typing retains the focused-typing observation contract: the
+// same field, value, enabled state and selection must survive from capture
+// until input. A name alone cannot authorize a replacement field. Deep web
+// fields absent from the bounded safety walk use click then ordinary typing.
+func validateNamedTyping(_ bound: TargetBinding, action: [String:Any], observed: WindowState, state: WindowState, frame: CGRect) throws {
+    guard action["type"] as? String == "type_text", action["label"] as? String != nil else { return }
+    guard let field = try typingField(bound, action: action, state: state, entries: targetControlEntries(bound, state: state, frame: frame)),
+          let old = observed.tracked.first(where: { CFEqual($0.element, field) }),
+          !old.typingSignature.isEmpty, old.typingSignature == focusSignature(field) else { throw changedScreen("The input target changed.") }
 }
 // A query field that already holds text is replaced, not appended to, as type_text does today.
 func replacesField(_ field: AXUIElement) -> Bool {
@@ -3784,6 +3810,8 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
     let state = targetState(bound), facts = targetFacts(bound), cover = targetCover(bound)
     var action = requested
     var namedControl: (status: String, label: String?)? = nil
+    let namedTyping = requested?["type"] as? String == "type_text" && requested?["label"] as? String != nil
+    var policyField = namedTyping ? nil : state.focused
     var controlScrolled = false, hitAncestor: AXUIElement? = nil
     if requested?["type"] as? String == "click_control", let request = requested {
         let resolution = targetNamedControl(request, entries: targetControlEntries(bound, state: state, frame: frame))
@@ -3809,9 +3837,24 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
         case .missing: namedControl = ("missing", nil)
         }
     }
-    var secure = IsSecureEventInputEnabled(), focusedRole = ""
-    var result: [String:Any] = ["appId": bound.appId, "pid": Int(bound.pid), "appName": bound.appName, "unknown": !AXIsProcessTrusted(), "addressBar": state.addressBar]
-    if let focused = state.focused {
+    if namedTyping, let request = requested {
+        let resolution = targetNamedControl(request, entries: targetControlEntries(bound, state: state, frame: frame))
+        switch resolution.match {
+        case .matched:
+            if let control = resolution.control, let entry = resolution.entry {
+                policyField = entry.element
+                namedControl = (control.enabled ? "resolved" : "disabled", control.label)
+            }
+        case .ambiguous: namedControl = ("ambiguous", nil)
+        case .missing: namedControl = ("missing", nil)
+        }
+    }
+    // Secure focus still pauses every text carrier, even when it names some
+    // other field. The destination's own secure subrole is checked as well.
+    var secure = IsSecureEventInputEnabled() || state.focused.map { attribute($0, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole } == true, focusedRole = ""
+    let addressBar = policyField.map { browserAddressField($0, appId: bound.appId) } ?? false
+    var result: [String:Any] = ["appId": bound.appId, "pid": Int(bound.pid), "appName": bound.appName, "unknown": !AXIsProcessTrusted(), "addressBar": addressBar]
+    if let focused = policyField {
         focusedRole = attribute(focused, kAXRoleAttribute) as? String ?? ""
         let subrole = attribute(focused, kAXSubroleAttribute) as? String ?? ""
         let secureField = subrole == kAXSecureTextFieldSubrole
@@ -3820,7 +3863,7 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
         if !subrole.isEmpty { result["focusedSubrole"] = subrole }
         // Describes the field (e.g. "Search"), never its contents.
         if !secureField { let label = fieldLabel(focused); if !label.isEmpty { result["focusedLabel"] = label } }
-        if state.addressBar { result["focusedValue"] = String(state.focusedValue.prefix(2000)) }
+        if addressBar, !secureField { result["focusedValue"] = String((attribute(focused, kAXValueAttribute) as? String ?? "").prefix(2000)) }
         if terminalFocusEvidence(roleDescription: attribute(focused, kAXRoleDescriptionAttribute) as? String ?? "", label: fieldLabel(focused),
                                  domClasses: attribute(focused, "AXDOMClassList") as? [String] ?? [], ide: ideFamily(bound.appId) != nil) { result["terminalFocus"] = true }
     }
@@ -3829,7 +3872,9 @@ func surfaceTarget(token: String, action requested: [String:Any]?) throws -> [St
     if let domain = page.host { result["domain"] = domain }
     if pageHostUnknown(browser: browserAppIDs.contains(bound.appId), host: page.host, unreadableWebArea: page.unreadable) { result["hostUnknown"] = true }
     if modalContext(window: bound.window, element: state.focused) { result["modal"] = true }
-    if let control = hitAncestor {
+    if namedTyping, let field = policyField {
+        for (key, value) in targetElementFacts(field, names: targetNames(field)) { result[key] = value }
+    } else if let control = hitAncestor {
         for (key, value) in targetElementFacts(control, names: [elementText(control)] + targetNames(control)) { result[key] = value }
     } else if let a = action, let x = a["x"] as? Double, let y = a["y"] as? Double, let point = windowPoint(x: x, y: y, in: frame) {
         for (key, value) in hitTargetFacts(element, at: point) { result[key] = value }
@@ -3865,6 +3910,12 @@ func revalidateTarget(token: String, action: [String:Any]) async throws -> [Stri
           action["frame_id"] as? String == previous["id"] as? String, let oldWindow = saved["window"] as? WindowState,
           let oldPixels = saved["pixels"] as? ScreenPixels, let oldFrame = saved["windowFrame"] as? CGRect else { throw changedScreen("The observation is no longer current.") }
     guard sameWindow(oldWindow, targetState(bound), ignoringBounds: true) else { throw changedScreen("The active window moved or changed.") }
+    let namedTyping = type == "type_text" && action["label"] as? String != nil
+    if namedTyping {
+        guard let bounds = windowInfo(bound.windowID)?.bounds else { throw targetGone(bound) }
+        try validateNamedTyping(bound, action: action, observed: oldWindow, state: targetState(bound), frame: bounds)
+        if action["approved"] as? Bool != true, ProcessInfo.processInfo.systemUptime * 1000 - (previous["capturedAt"] as? Double ?? 0) < 20000 { return previous }
+    }
     let menuRoute = type == "hotkey" ? (action["keys"] as? [String]).flatMap { hotkeyRoute(keys: $0, shortcuts: menuMap(AXUIElementCreateApplication(bound.pid), pid: bound.pid).shortcuts, approved: false, label: nil).menuPath } : nil
     let named = revalidatesByName(type: type, menuRoute: menuRoute, approved: action["approved"] as? Bool == true)
     if named, ProcessInfo.processInfo.systemUptime * 1000 - (previous["capturedAt"] as? Double ?? 0) < 20000 { return previous }
@@ -3872,6 +3923,10 @@ func revalidateTarget(token: String, action: [String:Any]) async throws -> [Stri
     guard let current = getCurrentFrame(), let newWindow = current["window"] as? WindowState, let pixels = current["pixels"] as? ScreenPixels,
           let newFrame = current["windowFrame"] as? CGRect, let facts = current["facts"] as? TargetFacts, let stale = current["staleRisk"] as? Bool,
           sameWindow(oldWindow, newWindow, ignoringBounds: true) else { throw changedScreen("The display or window changed.") }
+    if namedTyping {
+        try validateNamedTyping(bound, action: action, observed: oldWindow, state: newWindow, frame: newFrame)
+        return fresh
+    }
     if named || type == "scroll" || (type == "key" && action["key"] as? String == "ESC") { return fresh }
     let keyboard = ["type_text", "key", "hotkey"].contains(type)
     if keyboard {
@@ -3945,6 +4000,7 @@ func executeTarget(token: String, action: [String:Any], rungs requested: [Rung])
     guard !plan.rungs.isEmpty else { return targetResult(rung: nil, effect: nil, code: plan.code, read: nil) }
     let state = targetState(bound)
     let entries = targetControlEntries(bound, state: state, frame: frame)
+    try validateNamedTyping(bound, action: action, observed: savedWindow, state: state, frame: frame)
     // What the step acts on: the control it named, the point it gave (the
     // window's centre for a scroll), the field it types into.
     var control: ControlEntry? = nil, point: CGPoint? = nil, revealed = false
