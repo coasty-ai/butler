@@ -16,7 +16,11 @@ import {
   type BuiltinServer,
   type ToolSpec,
 } from "../src/core/tools";
-import { SdkError, SdkErrorCode } from "@modelcontextprotocol/client";
+import {
+  SdkError,
+  SdkErrorCode,
+  type Tool,
+} from "@modelcontextprotocol/client";
 import {
   createMcpProvider,
   failureCode,
@@ -141,6 +145,8 @@ async function started(
     timers?: { fn: () => void; ms: number }[];
     now?: () => number;
     onDemand?: boolean;
+    cachedTools?: readonly Tool[];
+    onListed?: (tools: readonly Tool[]) => void;
   } = {},
 ) {
   const ticks: ToolServer["tools"] = {};
@@ -159,6 +165,8 @@ async function started(
       trace: o.trace,
       now: o.now,
       onDemand: o.onDemand,
+      cachedTools: o.cachedTools,
+      onListed: o.onListed,
       ...(o.timers
         ? {
             setTimer: (fn: () => void, ms: number) =>
@@ -533,6 +541,69 @@ describe("MCP client: calls", () => {
 });
 
 describe("MCP client: lifecycle", () => {
+  it("restores prior discovery without spawning and rediscoveries before the first call", async () => {
+    let saved: readonly Tool[] = [];
+    const first = await started({
+      onDemand: true,
+      onListed: (tools) => {
+        saved = structuredClone(tools);
+      },
+    });
+    await first.provider.close();
+    const launches = records().length;
+    const restored = await started({ onDemand: true, cachedTools: saved });
+    expect(records()).toHaveLength(launches);
+    expect(restored.provider.state().code).toBe("ON_DEMAND");
+    const read = named(
+      await restored.provider.tools(signal.signal),
+      "read_note",
+    );
+    expect(
+      (
+        await restored.provider.call(
+          read,
+          { name: "todo" },
+          { ...signal, timeoutMs: 2000 },
+        )
+      ).code,
+    ).toBe("ok");
+    expect(records()).toHaveLength(launches * 2);
+    expect(restored.provider.state().code).toBeUndefined();
+  });
+  it("rejects tool drift between cached discovery and a new process before effects", async () => {
+    const marker = join(scratch, "cached-shift");
+    rmSync(marker, { force: true });
+    try {
+      let saved: readonly Tool[] = [];
+      const options = {
+        onDemand: true,
+        row: { args: [fixture, "--signal", marker] },
+      };
+      const first = await started({
+        ...options,
+        onListed: (tools) => {
+          saved = structuredClone(tools);
+        },
+      });
+      await first.provider.close();
+      const restored = await started({ ...options, cachedTools: saved });
+      const read = named(
+        await restored.provider.tools(signal.signal),
+        "shifting",
+      );
+      writeFileSync(marker, "");
+      expect(
+        await restored.provider.call(read, {}, { ...signal, timeoutMs: 2000 }),
+      ).toEqual({ code: "pin_mismatch", raw: "", items: 0 });
+      expect(
+        (await restored.provider.tools(signal.signal)).some(
+          (t) => t.name === "shifting",
+        ),
+      ).toBe(false);
+    } finally {
+      rmSync(marker, { force: true });
+    }
+  });
   it("reaps a connection that finishes discovery after shutdown has begun", async () => {
     const provider = createMcpProvider(
       {

@@ -37,6 +37,7 @@ import {
 import {
   createMcpProvider,
   type McpProvider,
+  type McpCatalogueCache,
   type ProviderSource,
   type ServerSource,
 } from "./mcp";
@@ -57,6 +58,8 @@ import { resultLines, resultText, sanitizeResult } from "./result";
  * model reads it. Nothing here throws into a run.
  */
 export interface RegistryOptions {
+  /** Optional encrypted CLI discovery cache; fresh listing and pin checks precede every dormant call. */
+  catalogues?: McpCatalogueCache;
   settings: () => Settings;
   /** One server's vault secrets (electron/credentials.ts toolSecrets), read at spawn or connect. */
   credentials: (id: string) => {
@@ -394,6 +397,16 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     if (running && (!wanted || running.signature !== signature)) await stop(id);
     if (!wanted || providers.has(id)) return;
     const provider = create(wanted, {
+      ...(wanted.kind === "server" &&
+      wanted.row.transport === "stdio" &&
+      o.onDemand?.includes(wanted.row.id) &&
+      o.catalogues
+        ? {
+            cachedTools: o.catalogues.read(wanted.row.id, signature),
+            onListed: (tools) =>
+              o.catalogues!.save(wanted.row.id, signature, tools),
+          }
+        : {}),
       onStarted: () => {
         if (wanted.kind !== "server") return;
         // The recipe's default tools are ticked at their first listing;

@@ -195,6 +195,7 @@ export class TerminalConnections {
       home: homedir(),
       installRoot: join(store.root, "mcp"),
       version: "butler-terminal",
+      catalogues: store.catalogues,
       onTicks: (id, tools) => {
         const row = store.profile.settings.tools.servers.find(
           (r) => r.id === id,

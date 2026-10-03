@@ -406,3 +406,73 @@ test("a dormant Playwright connection keeps its approved read available and reco
     await c.registry.closeAll();
   }
 });
+test("a new CLI connection restores encrypted discovery but still performs the read through a fresh server", async () => {
+  const root = temp(),
+    key = randomBytes(32),
+    store = new TerminalStore(root, key);
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  for (const name of Object.keys(
+    store.profile.settings.tools.apple,
+  ) as (keyof typeof store.profile.settings.tools.apple)[])
+    store.profile.settings.tools.apple[name] = false;
+  const row = toolServerSchema.parse({
+    id: "playwright",
+    name: "Synthetic bridge",
+    transport: "stdio",
+    command: process.execPath,
+    args: [join(process.cwd(), "tests/fixtures/mcp-fixture-server.mjs")],
+    cwd: process.cwd(),
+    network: "none",
+    addedAt: 0,
+    enabled: true,
+    consented: true,
+    trust: "reads_unattended",
+  });
+  store.profile.settings.tools.servers = [row];
+  const first = new TerminalConnections(store, "/fixture", process.cwd());
+  row.approvedCommand = first.registry.approval(row);
+  try {
+    await first.start();
+    row.tools = first.registry.tick(row.id, "read_note", true);
+    store.save();
+  } finally {
+    await first.registry.closeAll();
+  }
+  const restored = new TerminalStore(root, key),
+    readCache = vi.spyOn(restored.catalogues, "read"),
+    second = new TerminalConnections(restored, "/fixture", process.cwd());
+  try {
+    await second.start();
+    expect(readCache).toHaveBeenCalledWith("playwright", expect.any(String));
+    expect(readCache.mock.results[0].value).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "read_note" })]),
+    );
+    expect(second.registry.status().servers[0]).toMatchObject({
+      state: "on",
+      code: "ON_DEMAND",
+    });
+    const access = second.registry.access({ synthetic: false })!,
+      signal = AbortSignal.timeout(3000),
+      read = (await access.list("Read the synthetic note", signal)).tools.find(
+        (t) => t.name === "read_note",
+      )!;
+    expect(read.trusted).toBe(true);
+    expect((await access.call(read, { name: "synthetic" }, signal)).code).toBe(
+      "ok",
+    );
+    expect(second.registry.status().servers[0].code).toBeUndefined();
+  } finally {
+    await second.registry.closeAll();
+  }
+  const changed = new TerminalStore(root, key);
+  changed.profile.settings.tools.servers[0].args.push("--changed");
+  const deniedCache = vi.spyOn(changed.catalogues, "read"),
+    third = new TerminalConnections(changed, "/fixture", process.cwd());
+  try {
+    await third.start();
+    expect(deniedCache).not.toHaveBeenCalled();
+    expect(third.registry.status().servers[0].state).not.toBe("on");
+  } finally {
+    await third.registry.closeAll();
+  }
+});

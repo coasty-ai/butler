@@ -50,7 +50,7 @@ Simple questions such as “check my reminders” (items due today) or “what�
 butler --ask "Check my inbox"
 ```
 
-Unused Claude Code, Codex and Playwright connections keep their approved tool catalogue available while releasing their processes after discovery. The first task reconnects and checks the tool pins again; a connection stays running once used so its background work can continue.
+After discovery, unused Claude Code, Codex and Playwright connections retain their tool catalogues and release their processes. Recent catalogues stay encrypted for up to a day, avoiding repeated discovery on restart. The first task reconnects and validates the live tool pins; used connections stay running for background work.
 
 For spoken replies and voice input:
 
@@ -154,8 +154,10 @@ npm ci --ignore-scripts
 npm run build:terminal
 npm start
 npm run check
-npm test -- --maxWorkers=4
+ELECTRON_OVERRIDE_DIST_PATH=/tmp/butler-electron-tests npm test -- --maxWorkers=4
 ```
+
+The override lets legacy speech unit tests resolve Electron without downloading its desktop binary; their process spawns are mocked.
 
 Butler ships as a CLI. `npm start`, `npm run dev`, and `npm run build` all target the terminal agent. Desktop app launch and packaging commands have been retired.
 

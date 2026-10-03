@@ -70,6 +70,10 @@ export interface BuiltinSource {
   helper: string;
 }
 export type ProviderSource = ServerSource | BuiltinSource;
+export interface McpCatalogueCache {
+  read(id: string, signature: string): readonly Tool[] | undefined;
+  save(id: string, signature: string, tools: readonly Tool[]): void;
+}
 
 export interface McpProviderOptions {
   home: string;
@@ -84,6 +88,9 @@ export interface McpProviderOptions {
   onStarted?: () => void;
   /** Release an unused stdio process after discovery; the first call reconnects and rechecks pins. */
   onDemand?: boolean;
+  /** Encrypted prior discovery, scoped to this exact approved connection. Calls always rediscover. */
+  cachedTools?: readonly Tool[];
+  onListed?: (tools: readonly Tool[]) => void;
   connectTimeoutMs?: number;
   fs?: ResolveFs;
   now?: () => number;
@@ -365,6 +372,7 @@ export function createMcpProvider(
     !!o.onDemand &&
     source.kind === "server" &&
     source.row.transport === "stdio";
+  let cachedTools = onDemand ? o.cachedTools : undefined;
   const compiled = new Map<
     string,
     ((input: unknown) => { valid: boolean }) | null
@@ -459,6 +467,9 @@ export function createMcpProvider(
     });
     listed = result.tools;
     stale = false;
+    try {
+      o.onListed?.(listed);
+    } catch {}
   };
   const exited = (from: Client) => {
     if (from !== client) return;
@@ -566,7 +577,19 @@ export function createMcpProvider(
     }
   };
   const start = () => {
+    if (closing) return Promise.resolve();
     if (starting) return starting;
+    if (cachedTools) {
+      const saved = cachedTools;
+      cachedTools = undefined;
+      if (!called && saved.length) {
+        listed = structuredClone([...saved]);
+        state = "on";
+        code = "ON_DEMAND";
+        trace("ToolServerCatalogueRestored", { toolCount: listed.length });
+        return Promise.resolve();
+      }
+    }
     starting = connect().finally(() => {
       starting = undefined;
     });
