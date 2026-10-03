@@ -1,5 +1,29 @@
 # Validation record
 
+## CLI-only local installation (October 2, 2026)
+
+A GUI instance was observed running again from `release/mac-arm64/Butler.app`
+after the terminal became the default. The desktop process and its helpers were
+stopped. Local app bundles, desktop distribution archives, backup app copies,
+renderer/main build outputs, and the installed Electron runtime binary were
+removed. No Butler launch-agent files were found.
+
+The package entry point and `butler` executable both target
+`dist-terminal/main.cjs`. Desktop launch, smoke and packaging commands and their
+scripts were retired, along with the app packaging dependency. Removing that
+dependency exposed an undeclared AJV import in the schema-contract tests; AJV is
+now an explicit development dependency at the previously installed version.
+Shared Node modules, native helpers and their protection rules remain available
+to the CLI.
+
+The local terminal installer, type checking and `npm start -- --help` passed.
+The full unit suite passed 4,813 tests with two skips across 138 files. An existing
+CLI session was left running; the engine lock correctly refused a duplicate
+interactive session. No live model, speech or desktop action accuracy is claimed.
+
+The earlier desktop sections below record historical checks. Their app bundles
+and packaging commands are no longer part of the current installation.
+
 ## Periodic briefings and British conversation (October 2, 2026)
 
 Butler now offers a selectable recurring check, spoken delivery with a readable

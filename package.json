@@ -4,27 +4,18 @@
   "private": true,
   "description": "Butler: a lightweight macOS terminal assistant with MCP tools, British conversation and proactive briefings.",
   "type": "module",
-  "main": "dist-electron/main.cjs",
+  "main": "dist-terminal/main.cjs",
   "scripts": {
     "dev": "npm run build:terminal && node dist-terminal/main.cjs",
-    "dev:ui": "vite --host 127.0.0.1",
     "build": "npm run build:terminal",
     "build:native": "node scripts/build-native.mjs",
     "start": "node dist-terminal/main.cjs",
     "start:local": "node dist-terminal/main.cjs",
-    "debug:local": "node scripts/debug-local.mjs",
-    "logs:live": "tail -n 40 -F .data/diagnostics/current.jsonl",
     "test": "vitest run",
     "check": "tsc --noEmit",
-    "test:e2e": "playwright test",
     "ingest": "tsx services/ingest/server.ts",
     "gym": "tsx src/gym/cli.ts",
-    "build:icon": "node scripts/build-icon.mjs",
-    "package:mac": "npm run build:icon && npm run build:native && npm run build:desktop && electron-builder --mac dir",
-    "package:mac:release": "npm run build:icon && npm run build:native && npm run build:desktop && electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false -c.directories.output=release-dist",
     "format": "prettier --write src electron services tests scripts *.ts *.json",
-    "test:desktop": "node scripts/desktop-smoke.mjs",
-    "test:provider": "node --import tsx scripts/provider-smoke.mjs",
     "test:native-safety": "node scripts/test-native-safety.mjs",
     "eval:dialog": "node --import tsx scripts/eval-dialog.mjs",
     "eval:jev": "node --import tsx scripts/eval-jev.mjs",
@@ -39,73 +30,8 @@
     "modules:check": "node scripts/modules-check.mjs",
     "observer:report": "node scripts/observer-report.mjs",
     "observer:eval": "node --import tsx scripts/observer-eval.mjs",
-    "dev:desktop": "node scripts/dev.mjs",
-    "build:desktop": "tsc --noEmit && vite build && node scripts/build-electron.mjs",
-    "start:desktop": "electron .",
-    "start:desktop:local": "node scripts/start-local.mjs",
     "build:terminal": "tsc --noEmit && node scripts/build-terminal.mjs",
     "install:terminal": "node scripts/install-terminal.mjs"
-  },
-  "build": {
-    "appId": "ai.coarena.openassist",
-    "productName": "Butler",
-    "files": [
-      "dist/**/*",
-      "dist-electron/main.cjs",
-      "dist-electron/preload.cjs",
-      "dist-electron/kokoro/worker.cjs",
-      "package.json",
-      "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
-      "!node_modules/onnxruntime-node/bin/napi-v6/win32/**",
-      "!node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/libonnxruntime.1.30.0.dylib",
-      "!node_modules/onnxruntime-node/{lib,script}/**",
-      "!node_modules/onnxruntime-node/dist/*.map",
-      "!node_modules/onnxruntime-common/{lib,dist/esm}/**"
-    ],
-    "asarUnpack": [
-      "node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/*"
-    ],
-    "extraResources": [
-      {
-        "from": "native/bin/coarena-controller",
-        "to": "coarena-controller"
-      },
-      {
-        "from": "native/bin/coarena-voice",
-        "to": "coarena-voice"
-      },
-      {
-        "from": "native/bin/coarena-messages",
-        "to": "coarena-messages"
-      },
-      {
-        "from": "native/bin/coarena-agenda",
-        "to": "coarena-agenda"
-      },
-      {
-        "from": "native/bin/coarena-apple",
-        "to": "coarena-apple"
-      },
-      {
-        "from": "native/bin/coarena-launch",
-        "to": "coarena-launch"
-      }
-    ],
-    "mac": {
-      "icon": "build/butler.icns",
-      "category": "public.app-category.productivity",
-      "minimumSystemVersion": "14.0",
-      "hardenedRuntime": true,
-      "extendInfo": {
-        "NSScreenCaptureUsageDescription": "Butler captures your selected display only during a run.",
-        "NSAccessibilityUsageDescription": "Butler clicks and types on your instruction. Interrupt at any time.",
-        "NSMicrophoneUsageDescription": "Butler uses the microphone for voice commands and, when enabled, to listen for Hey Butler. Audio stays on this Mac.",
-        "NSSpeechRecognitionUsageDescription": "Butler transcribes voice commands on this Mac. Cloud transcription is disabled."
-      }
-    },
-    "directories": {
-      "output": "release"
-    }
   },
   "dependencies": {
     "@fontsource-variable/space-grotesk": "^5.3.0",
@@ -122,8 +48,8 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "ajv": "^8.20.0",
     "electron": "^41.10.7",
-    "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "prettier": "^3.9.6",
     "tsx": "^4.23.13",

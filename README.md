@@ -85,13 +85,13 @@ The background process keeps running after the terminal closes, until stopped or
 
 ## Controls and macOS permissions
 
-Type to converse. `/run <task>` explicitly starts work. `/yes` and `/no` answer task approvals; `/stop`, `/pause`, `/resume` and Ctrl-C control work. Ctrl-D or `/quit` exits. `/voice off` disables spoken conversation replies. `/help` lists commands. The terminal version accepts text input; microphone listening remains in the earlier desktop version.
+Type to converse. `/run <task>` explicitly starts work. `/yes` and `/no` answer task approvals; `/stop`, `/pause`, `/resume` and Ctrl-C control work. Ctrl-D or `/quit` exits. `/voice off` disables spoken conversation replies. `/help` lists commands. Butler accepts text input and can speak its replies and briefings.
 
 For desktop control, name an already open app in your task (for example, `/run Summarize the visible note in Notes`). Butler can bind that window while its terminal stays in front. Terminal windows remain protected.
 
-MCP-only tasks do not need screen recording. For desktop control, use `/permissions` to check and request Screen Recording and Accessibility. Grant access to the terminal host macOS identifies, then fully quit and reopen that host if requested. A grant for the earlier Butler.app may not cover Terminal or iTerm. `butler permissions` checks access without requesting it.
+MCP-only tasks do not need screen recording. For desktop control, use `/permissions` to check and request Screen Recording and Accessibility. Grant access to the terminal host macOS identifies, then fully quit and reopen that host if requested. `butler permissions` checks access without requesting it.
 
-The desktop permission checklist now uses the helper’s current answer: a historical denial no longer keeps “restart needed” stuck after access becomes available. If macOS grants access but the current helper cannot use it yet, it reports restart needed. Locally rebuilt, ad-hoc-signed app copies can need a new grant.
+Permission checks use the native helper’s current access status. After granting access, reopen the terminal host if macOS requires it.
 
 ## Development
 
@@ -102,6 +102,8 @@ npm run check
 npm test -- --maxWorkers=4
 ```
 
-This is a development alpha. Offline tests validate policies, terminal behavior and mocked services; they do not establish arbitrary desktop reliability or live speech/model accuracy. The previous desktop client remains available through explicit `dev:desktop`, `build:desktop` and `start:desktop` commands; see [desktop documentation](docs/DESKTOP.md), [validation](docs/VALIDATION.md), and [privacy](docs/PRIVACY.md).
+Butler ships as a CLI. `npm start`, `npm run dev`, and `npm run build` all target the terminal agent. Desktop app launch and packaging commands have been retired.
+
+This is a development alpha. Offline tests validate policies, terminal behavior and mocked services; they do not establish arbitrary desktop reliability or live speech/model accuracy. See [validation](docs/VALIDATION.md) and [privacy](docs/PRIVACY.md).
 
 Open source under the [MIT license](LICENSE).

@@ -5,9 +5,12 @@ import { createInterface } from "node:readline";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
-import { localApp } from "./local-app.mjs";
 import { NativeController } from "../electron/controller.ts";
 import { ScreenChangedError } from "../src/core/errors.ts";
+if (process.argv.includes("--packaged"))
+  throw new Error(
+    "Butler is CLI-only. Use the native helper without --packaged.",
+  );
 mkdirSync("tmp/swift-cache", { recursive: true });
 const build = spawnSync(
   "swiftc",
@@ -61,16 +64,13 @@ function request(method) {
     fixture.stdin.write(JSON.stringify({ id, method }) + "\n");
   });
 }
-const packaged = process.argv.includes("--packaged");
 // The --background section (design §6.1) binds the fixture's window, covers
 // it and sends it behind Finder, then proves accessibility and posted input
 // reach it while the pointer and the frontmost application never change.
 const background = process.argv.includes("--background");
 const takeovers = [];
 const controller = new NativeController(
-  packaged
-    ? resolve(localApp(process.cwd()).resources, "coarena-controller")
-    : resolve("native/bin/coarena-controller"),
+  resolve("native/bin/coarena-controller"),
   () => {},
   () => {},
   (event, data) => {

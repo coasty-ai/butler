@@ -3,12 +3,13 @@
  * identifiers deliberately kept the old name, because something outside the
  * repository is keyed to each of them:
  *
- * - The bundle id: every macOS permission (Accessibility, Screen Recording,
+ * - The former app's bundle id: macOS permission records (Accessibility, Screen Recording,
  *   Microphone, Speech, Automation, Full Disk Access, Calendars, Reminders),
  *   and six Swift checks that keep the agent from screenshotting, targeting or
  *   launching its own app.
- * - The npm name: Electron's app.name, which picks the data folder, the
- *   Keychain item that unlocks the sealed vault and the single-instance lock.
+ * - The npm name: the historical desktop data folder and Keychain namespace.
+ *   The CLI now has its own encrypted profile; retiring the app does not
+ *   rename these existing identities.
  * - The bench root, calendar, list, lock and token ledger: harness state and
  *   the one desktop lock per Mac, shared by every checkout and worktree.
  * - The OPEN_ASSIST_* switches and the bench memory stores: the owner's shell
@@ -30,15 +31,15 @@ const read = (path: string) =>
 const count = (text: string, needle: string) => text.split(needle).length - 1;
 
 describe("identity guard: identifiers that stay after the Butler rename", () => {
-  it("keeps the npm name and the bundle id that macOS and the Keychain know", () => {
+  it("keeps the npm identity while exposing only the CLI entry point", () => {
     const pkg = JSON.parse(read("package.json"));
     expect(pkg.name).toBe("coarena-open-assist");
-    expect(pkg.build.appId).toBe("ai.coarena.openassist");
-    // A top-level productName (or extraMetadata) would become Electron's
-    // app.name: a new data folder, a new Keychain item, a vault that no
-    // longer opens. The display name lives only under build.
+    expect(pkg.main).toBe("dist-terminal/main.cjs");
+    expect(pkg.bin).toEqual({ butler: "dist-terminal/main.cjs" });
+    expect(pkg.build).toBeUndefined();
+    // Keep the historical npm identity; the terminal profile has its own
+    // encrypted storage and Keychain item, independent of app display names.
     expect(pkg.productName).toBeUndefined();
-    expect(pkg.build.extraMetadata).toBeUndefined();
     const lock = JSON.parse(read("package-lock.json"));
     expect([lock.name, lock.packages[""].name]).toEqual([
       "coarena-open-assist",

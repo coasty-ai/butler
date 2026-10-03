@@ -1,6 +1,6 @@
 # Contributing to Butler
 
-Butler is an experimental voice-first agent that operates a Mac. It drives real input on a real desktop, so contributions are held to a few standing rules before anything else.
+Butler is an experimental terminal agent that operates a Mac. It drives real input on a real desktop, so contributions are held to a few standing rules before anything else.
 
 ## Ground rules
 
@@ -11,7 +11,7 @@ Butler is an experimental voice-first agent that operates a Mac. It drives real 
 
 ## Setup
 
-Node 22.12 or newer, npm, macOS 14 or newer, Xcode Command Line Tools. See the README for `npm ci`, `npm run dev`, `npm run build:native` and the packaging scripts.
+Node 22.12 or newer, npm, macOS 14 or newer, Xcode Command Line Tools. See the README for `npm run install:terminal`, `npm run dev`, and `npm run build:native`.
 
 ## Before you open a pull request
 

@@ -1,5 +1,9 @@
 # Modularity and first run
 
+This records the earlier desktop design. Butler now ships as a CLI from
+`src/terminal/main.ts`; desktop launch and packaging scripts have been retired.
+The shared Node modules and their policy tests remain in the repository.
+
 A plan, not a refactor. **PR-1 (§8) has been applied; nothing else in this
 document has.** What PR-1 changed is marked where it appears. It names real
 files, real exports and real commands as they stand on `feat/memory-voice-natural-speech`
