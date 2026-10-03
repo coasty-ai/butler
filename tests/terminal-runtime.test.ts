@@ -23,6 +23,11 @@ const f = vi.hoisted(() => ({
   noteAssistant: vi.fn(),
   speak: vi.fn(async () => {}),
   decide: vi.fn(),
+  assistantOptions: undefined as any,
+  holdTask: false,
+  runners: [] as any[],
+  revisions: [] as string[],
+  resumes: 0,
   memory: undefined as any,
   connectionsStart: vi.fn(async () => {}),
   briefingCheck: vi.fn(async () => ({ on: true, state: "waiting" })),
@@ -114,6 +119,10 @@ vi.mock("../src/terminal/screen", () => ({
 }));
 vi.mock("../electron/assistant", () => ({
   AssistantSession: class {
+    constructor(options: any) {
+      f.assistantOptions = options;
+    }
+    interrupt = () => {};
     reset = () => {};
     proposal = () => undefined;
     decide = f.decide;
@@ -160,15 +169,25 @@ vi.mock("../src/core/runner", async (load) => {
         memory: any,
       ) {
         this.notify = notify;
+        f.runners.push(this);
         f.memory = memory;
       }
       start = async (task: string, options: any) => {
         f.tasks.push({ task, options });
         this.latest = {
           run: {
-            id: "fixture-run",
+            id: `fixture-run-${f.tasks.length}`,
             task,
-            status: f.handoff || (f.approval ? "confirming" : "completed"),
+            createdAt: new Date().toISOString(),
+            actions: 3,
+            summary: "The fixture note contains both requested paragraphs.",
+            status:
+              f.handoff ||
+              (f.approval
+                ? "confirming"
+                : f.holdTask
+                  ? "executing"
+                  : "completed"),
           },
           events: [],
           frame: null,
@@ -185,7 +204,7 @@ vi.mock("../src/core/runner", async (load) => {
             : {}),
         };
         this.notify(this.latest);
-        if (f.approval || f.handoff)
+        if (f.approval || f.handoff || f.holdTask)
           await new Promise<void>((resolve) => {
             this.release = resolve;
           });
@@ -193,6 +212,25 @@ vi.mock("../src/core/runner", async (load) => {
       };
       confirm = (yes: boolean) => {
         f.confirmations.push(yes);
+        this.release?.();
+      };
+      revise = async (text: string) => {
+        f.revisions.push(text);
+      };
+      resume = async () => {
+        f.resumes++;
+        this.latest.run.status = "executing";
+        this.notify(this.latest);
+        return true;
+      };
+      pause = () => {
+        this.latest.run.status = "paused";
+        this.notify(this.latest);
+      };
+      interruptForVoice = () => this.pause();
+      finish = () => {
+        this.latest.run.status = "completed";
+        this.notify(this.latest);
         this.release?.();
       };
       stop = () => {
@@ -210,6 +248,7 @@ vi.mock("../src/core/runner", async (load) => {
   };
 });
 import { main, briefingRequest } from "../src/terminal/main";
+import { TerminalStore } from "../src/terminal/store";
 let tty: PropertyDescriptor | undefined;
 let root: string;
 let listeners: Map<string, Set<Function>>;
@@ -219,6 +258,10 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "butler-runtime-test-"));
   f.store = { root, key: randomBytes(32) };
   f.tasks = [];
+  f.holdTask = false;
+  f.runners = [];
+  f.revisions = [];
+  f.resumes = 0;
   f.confirmations = [];
   f.approval = false;
   f.handoff = undefined;
@@ -258,6 +301,203 @@ afterEach(async () => {
       if (!old.has(listener)) process.removeListener(event, listener as any);
   rmSync(root, { recursive: true, force: true });
   process.exitCode = exitCode;
+});
+test("completed task facts and live progress are supplied to subsequent conversation", async () => {
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() =>
+    expect(f.noteAssistant).toHaveBeenCalledWith(
+      "The fixture note contains both requested paragraphs.",
+      "app",
+      { untrusted: true },
+    ),
+  );
+  expect(f.assistantOptions.view().lastFinished).toMatchObject({
+    outcome: "completed",
+    task: "create the fixture note",
+  });
+  expect(f.assistantOptions.history).toBe(f.store.instance.conversation);
+});
+test.each(["same", "fresh", "changed"] as const)(
+  "restart restores a finished task only within the %s conversation scope",
+  async (scope) => {
+    const store = new TerminalStore();
+    const at = Date.now() - 5000;
+    store.conversation.save([
+      {
+        role: "user",
+        channel: "app",
+        text: "Create the fixture note",
+        at,
+        untrusted: false,
+      },
+    ]);
+    store.vault.begin({
+      id: "a9a867b6-b045-4567-914f-a57993982609",
+      task: "Create the fixture note",
+      createdAt: new Date(at + 1000).toISOString(),
+      status: "completed",
+      privacy: store.profile.settings.privacy,
+      provider: store.profile.settings.provider,
+      model: store.profile.settings.model,
+      synthetic: true,
+      actions: 1,
+      frames: 0,
+      summary: "The fixture note is saved.",
+      usage: { inputTokens: 0, outputTokens: 0, cost: 0 },
+    });
+    if (scope === "fresh") {
+      store.conversation.save([]);
+      store.conversation.save([
+        {
+          role: "user",
+          channel: "app",
+          text: "Hello",
+          at: Date.now(),
+          untrusted: false,
+        },
+      ]);
+    }
+    if (scope === "changed")
+      store.profile.settings.model = "fixture-other-model";
+    store.save();
+    await main([]);
+    const last = f.assistantOptions.view().lastFinished;
+    if (scope === "same") expect(last).toMatchObject({ outcome: "completed" });
+    else expect(last).toBeUndefined();
+  },
+);
+test("continue with no active task replies locally instead of launching a targetless task", async () => {
+  await main([]);
+  f.ui.submit("continue");
+  await vi.waitFor(() =>
+    expect(f.speak).toHaveBeenCalledWith(
+      expect.stringContaining("paused task"),
+      false,
+      true,
+    ),
+  );
+  expect(f.decide).not.toHaveBeenCalled();
+  expect(f.tasks).toHaveLength(0);
+});
+test("a conversational correction reaches the running task", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.decide.mockResolvedValueOnce({
+    acting: true,
+    plan: { kind: "revise", text: "Use the second paragraph too" },
+  });
+  f.ui.submit("Add the second paragraph too");
+  await vi.waitFor(() =>
+    expect(f.revisions).toEqual(["Use the second paragraph too"]),
+  );
+  expect(f.tasks).toHaveLength(1);
+});
+test("an explicitly queued task starts after the first task has settled", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.decide.mockResolvedValueOnce({
+    acting: true,
+    plan: { kind: "queue", text: "Read the fixture note" },
+  });
+  f.ui.submit("Then read the fixture note");
+  await vi.waitFor(() =>
+    expect(f.assistantOptions.view().queued).toEqual(["Read the fixture note"]),
+  );
+  expect(f.tasks).toHaveLength(1);
+  f.holdTask = false;
+  f.runners[0].finish();
+  await vi.waitFor(() =>
+    expect(f.tasks.map((t) => t.task)).toEqual([
+      "create the fixture note",
+      "Read the fixture note",
+    ]),
+  );
+});
+test("the user's stop cancels both the running task and its queue", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.decide.mockResolvedValueOnce({
+    acting: true,
+    plan: { kind: "queue", text: "Read the fixture note" },
+  });
+  f.ui.submit("Then read the fixture note");
+  await vi.waitFor(() =>
+    expect(f.assistantOptions.view().queued).toHaveLength(1),
+  );
+  f.ui.interrupt();
+  await vi.waitFor(() => expect(f.assistantOptions.view().queued).toEqual([]));
+  expect(f.tasks).toHaveLength(1);
+});
+test("an ordinary spoken question resumes only the hold created by listening", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.voice.activity("listening");
+  expect(f.assistantOptions.view()).toMatchObject({
+    running: true,
+    status: "working",
+    steps: 3,
+  });
+  f.decide.mockResolvedValueOnce({
+    acting: false,
+    plan: { kind: "reply" },
+    sentences: (async function* () {
+      yield "Three steps so far.";
+    })(),
+  });
+  f.voice.receive({
+    text: "How is it going?",
+    source: "wake",
+    confidence: 0.95,
+    segments: 4,
+  });
+  await vi.waitFor(() => expect(f.resumes).toBe(1));
+});
+test("cancelled or unheard speech releases its temporary task hold", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.voice.activity("listening");
+  f.voice.activity("idle");
+  await vi.waitFor(() => expect(f.resumes).toBe(1));
+  expect(f.decide).not.toHaveBeenCalled();
+});
+test("a manual pause is not resumed by an unrelated spoken question", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.ui.submit("/pause");
+  await vi.waitFor(() =>
+    expect(f.assistantOptions.view().status).toBe("paused"),
+  );
+  f.voice.activity("listening");
+  f.decide.mockResolvedValueOnce({
+    acting: false,
+    plan: { kind: "reply" },
+    sentences: (async function* () {
+      yield "It is paused.";
+    })(),
+  });
+  f.voice.receive({
+    text: "How is it going?",
+    source: "wake",
+    confidence: 0.95,
+    segments: 4,
+  });
+  await vi.waitFor(() =>
+    expect(f.speak).toHaveBeenCalledWith("It is paused.", false, true),
+  );
+  expect(f.resumes).toBe(0);
 });
 test.each(["paused", "takeover"] as const)(
   "one-shot %s ends with an interactive-session message instead of hanging",

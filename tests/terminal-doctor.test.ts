@@ -22,6 +22,77 @@ const settings = {
   inputPrice: 4,
   outputPrice: 20,
 };
+test("dialogue traces keep context counts and fixed decisions without words or arbitrary codes", () => {
+  const root = mkdtempSync(join(tmpdir(), "butler-dialog-trace-"));
+  roots.push(root);
+  const trace = providerDiagnostics(root, () => []);
+  trace("DialogTurn", {
+    phase: "turn",
+    channel: "voice",
+    turns: 12,
+    text: "Private fixture message",
+  });
+  trace("DialogTurn", {
+    phase: "decided",
+    code: "timeout",
+    actMs: 100,
+    task: "Private fixture task",
+  });
+  trace("DialogTurn", {
+    phase: "Private fixture phase",
+    code: "PRIVATE_BODY_FIXTURE",
+    turns: "Private fixture turns",
+  });
+  trace("TextFailed", { code: "parse", error: "Private fixture error" });
+  const records = readFileSync(join(root, "current.jsonl"), "utf8");
+  expect(records).not.toContain("Private");
+  expect(records).not.toContain("PRIVATE_BODY_FIXTURE");
+  const rows = records
+    .trim()
+    .split("\n")
+    .map((s) => JSON.parse(s).data);
+  expect(rows[0]).toEqual({ phase: "turn", channel: "voice", turns: 12 });
+  expect(rows[1]).toEqual({ phase: "decided", code: "timeout", actMs: 100 });
+  expect(rows[2]).toEqual({});
+  expect(rows[3]).toEqual({ code: "parse" });
+});
+test("voice diagnostics retain finite measurements and fixed phases, never speech", () => {
+  const root = mkdtempSync(join(tmpdir(), "butler-voice-trace-"));
+  roots.push(root);
+  const trace = providerDiagnostics(root, () => []);
+  trace("VoiceInput", {
+    phase: "transcript_final",
+    confidence: 0.9,
+    segments: 1,
+    micLevel: 0.2,
+    textLength: 27,
+    text: "Private fixture sentence",
+  });
+  trace("VoiceInput", {
+    phase: "Private fixture phase",
+    confidence: "Private fixture confidence",
+    segments: "Private fixture segments",
+    micLevel: "Private fixture level",
+    error: "Private fixture error",
+  });
+  const records = readFileSync(join(root, "current.jsonl"), "utf8");
+  expect(records).not.toContain("Private");
+  expect(
+    records
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).data),
+  ).toEqual([
+    {
+      phase: "transcript_final",
+      confidence: 0.9,
+      segments: 1,
+      micLevel: 0.2,
+      textLength: 27,
+    },
+    {},
+  ]);
+});
 test("CLI provider diagnostics retain transport and HTTP codes, never tasks, images or raw errors", () => {
   const root = mkdtempSync(join(tmpdir(), "butler-doctor-test-"));
   roots.push(root);

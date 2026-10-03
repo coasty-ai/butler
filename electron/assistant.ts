@@ -95,8 +95,8 @@ export const DIALOG_LIMITS = {
   streamDeadlineMs: 6000,
   stateChars: 6000,
   localStateChars: 2500,
-  turns: 8,
-  turnTtlMs: 30 * 60_000,
+  turns: 24,
+  turnTtlMs: 24 * 60 * 60_000,
   /** An early request older than this no longer matches the final words. */
   preemptTtlMs: 3000,
   hourlyCalls: 240,
@@ -143,6 +143,7 @@ export interface AssistantOptions {
   /** Dialog usage during a run counts toward that run's budget. */
   addUsage?: (usage: Usage) => void;
   trace?: DiagnosticSink;
+  history?: { load(): TurnRecord[]; save(turns: TurnRecord[]): void };
   now?: () => number;
 }
 
@@ -276,6 +277,14 @@ export class AssistantSession implements AssistantSessionApi {
 
   constructor(private readonly options: AssistantOptions) {
     this.now = options.now ?? Date.now;
+    try {
+      this.turns = options.history?.load() ?? [];
+      this.prune();
+      this.previousReply = this.turns
+        .slice()
+        .reverse()
+        .find((t) => t.role === "assistant" && !t.untrusted)?.text;
+    } catch {}
   }
 
   /** Why the model cannot be asked right now, or "ok". */
@@ -671,6 +680,9 @@ export class AssistantSession implements AssistantSessionApi {
     this.live = undefined;
     this.epoch++;
     this.previousReply = undefined;
+    try {
+      this.options.history?.save([]);
+    } catch {}
   }
 
   // Internals ---------------------------------------------------------------
@@ -687,6 +699,9 @@ export class AssistantSession implements AssistantSessionApi {
   private remember(turn: TurnRecord) {
     this.turns.push({ ...turn, text: turn.text.trim() });
     this.prune();
+    try {
+      this.options.history?.save(this.turns);
+    } catch {}
   }
 
   private prune() {
@@ -706,7 +721,7 @@ export class AssistantSession implements AssistantSessionApi {
     const view = this.options.view();
     return [
       ...this.turns
-        .slice(-4)
+        .slice(-8)
         .filter((t) => !t.untrusted)
         .map((t) => t.text),
       ...(view.task ? [view.task] : []),
@@ -720,7 +735,7 @@ export class AssistantSession implements AssistantSessionApi {
     this.prune();
     return this.turns
       .filter((t) => t.role === "user")
-      .slice(-4)
+      .slice(-12)
       .map((t) => t.text);
   }
 
@@ -1043,7 +1058,7 @@ export class AssistantSession implements AssistantSessionApi {
       }
       if (events.length) notify();
     };
-    this.log(phase, { channel: state.channel });
+    this.log(phase, { channel: state.channel, turns: state.turns.length });
     let sawText = false;
     void (async () => {
       try {

@@ -38,6 +38,15 @@ export function providerDiagnostics(
       "cancelled",
       "timedOut",
       "bytes",
+      "actMs",
+      "firstAudioMs",
+      "sentences",
+      "textLength",
+      "turns",
+      "preempt",
+      "confidence",
+      "segments",
+      "micLevel",
     ])
       if (data[key] !== undefined) {
         const value = data[key];
@@ -76,6 +85,65 @@ export function providerDiagnostics(
         (data.cause as { code?: unknown } | undefined)?.code,
       );
     if (code) safe.code = code;
+    if (event === "DialogTurn") {
+      for (const [field, allowed] of Object.entries({
+        phase: ["turn", "preempt", "decided", "failed", "jev", "jev_ask"],
+        channel: ["voice", "app", "message", "remote"],
+        act: [
+          "none",
+          "answer",
+          "status",
+          "start",
+          "revise",
+          "replace",
+          "queue",
+          "resume",
+          "pause",
+        ],
+        code: [
+          "model",
+          "timeout",
+          "invalid",
+          "error",
+          "interrupted",
+          "off",
+          "budget",
+          "fast_start",
+          "local_greeting",
+          "proposal_accepted",
+          "secret",
+        ],
+      }))
+        if (allowed.includes(String(data[field]))) safe[field] = data[field];
+    } else if (
+      event === "VoiceInput" &&
+      [
+        "wake_error",
+        "transcript_final",
+        "transcript_recovered",
+        "transcript_unconfirmed",
+        "voice_cancelled",
+        "voice_error",
+      ].includes(String(data.phase))
+    )
+      safe.phase = data.phase;
+    else if (
+      event === "TextFailed" &&
+      [
+        "parse",
+        "network",
+        "timeout",
+        "quota",
+        "http_401",
+        "http_403",
+        "http_429",
+        "http_500",
+        "http_502",
+        "http_503",
+        "http_504",
+      ].includes(String(data.code))
+    )
+      safe.code = data.code;
     log.write(event, safe);
   };
 }

@@ -202,18 +202,19 @@ describe("dialog state", () => {
     expect(buildDialogState(input()).openApps).toBeUndefined();
   });
 
-  it("bounds turns to 8 × 240 and marks untrusted lines", () => {
-    const turns = Array.from({ length: 12 }, (_, i) =>
+  it("bounds the richer thread to 24 entries and preserves untrusted labels", () => {
+    const turns = Array.from({ length: 36 }, (_, i) =>
       turn(
         i % 2 ? "assistant" : "user",
-        `turn ${i} ${"y".repeat(300)}`,
-        i === 11,
+        `turn ${i} ${"y".repeat(1500)}`,
+        i === 35,
       ),
     );
     const state = buildDialogState(input({ turns }));
-    expect(state.turns).toHaveLength(8);
-    expect(state.turns[0].text.startsWith("turn 4")).toBe(true);
-    for (const t of state.turns) expect(t.text.length).toBeLessThanOrEqual(240);
+    expect(state.turns).toHaveLength(24);
+    expect(state.turns[0].text.startsWith("turn 12")).toBe(true);
+    for (const t of state.turns)
+      expect(t.text.length).toBeLessThanOrEqual(1200);
     expect(state.turns.at(-1)).toMatchObject({ untrusted: true });
     expect(state.turns[0].untrusted).toBeUndefined();
   });

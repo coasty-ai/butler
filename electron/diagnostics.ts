@@ -238,6 +238,7 @@ const fields = new Set([
   "preempt",
   "stream",
   "sentences",
+  "turns",
   "dropped",
   "channel",
   // A refused step's kind of screen change and a hotkey's route (menu or
@@ -407,6 +408,7 @@ const countFields = new Set([
   "index",
   "segments",
   "sentences",
+  "turns",
   "dropped",
   "words",
   "clauseIndex",

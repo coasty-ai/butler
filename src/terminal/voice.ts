@@ -7,6 +7,7 @@ import { redactSecrets } from "../core/sanitize";
 import { speakableText, splitSentences } from "../voice/speakable";
 import { type VoiceSource, voiceIntent } from "../voice/turns";
 import { voiceCommandConfidence } from "../voice/router";
+import { trace, type DiagnosticSink } from "../core/diagnostics";
 
 export interface InstalledVoice {
   id: string;
@@ -28,6 +29,7 @@ interface Options {
   receive: (input: SpokenInput) => void;
   notice: (message: string) => void;
   activity: (phase: "listening" | "speaking" | "idle") => void;
+  trace?: DiagnosticSink;
   create?: (receive: (event: VoiceEvent) => void) => VoicePort;
 }
 
@@ -71,6 +73,7 @@ export class TerminalVoice {
   private input = false;
   private wakeUnavailable = false;
   private capturing = false;
+  private inputLevel = 0;
   private source: VoiceSource = "wake";
   private closed = false;
   private pending?: { id: string; finish: (error?: Error) => void };
@@ -324,7 +327,16 @@ export class TerminalVoice {
         );
     }
     if (!this.input) return;
+    if (event.event === "audio_level") {
+      if (this.capturing && Number.isFinite(event.level))
+        this.inputLevel = Math.max(
+          this.inputLevel,
+          Math.min(1, Math.max(0, event.level!)),
+        );
+      return;
+    }
     if (event.event === "wake_error") {
+      trace(this.options.trace, "VoiceInput", { phase: "wake_error" });
       this.capturing = false;
       if (!this.speaking) this.options.activity("idle");
       if (!this.wakeUnavailable)
@@ -356,6 +368,7 @@ export class TerminalVoice {
             ? "followup"
             : "wake";
       this.capturing = true;
+      this.inputLevel = 0;
       this.options.activity("listening");
     }
     if (
@@ -369,6 +382,13 @@ export class TerminalVoice {
       const confidence = voiceCommandConfidence(event);
       const segments = event.segments ?? 1;
       const intent = voiceIntent(text);
+      trace(this.options.trace, "VoiceInput", {
+        phase: event.event,
+        textLength: text.length,
+        confidence,
+        segments,
+        micLevel: this.inputLevel,
+      });
       // Stop/pause can always halt input. Other speech must be finalized or
       // recovered from Apple's stable empty final, and clearly heard. It
       // never enters the typed command lane or approves a pending action.
@@ -396,6 +416,10 @@ export class TerminalVoice {
         event.event,
       )
     ) {
+      trace(this.options.trace, "VoiceInput", {
+        phase: event.event,
+        micLevel: this.capturing ? this.inputLevel : 0,
+      });
       this.capturing = false;
       this.options.activity("idle");
       if (event.event !== "voice_cancelled")

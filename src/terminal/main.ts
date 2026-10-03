@@ -26,6 +26,8 @@ import { TerminalConnections } from "./connections";
 import { UrlOpener } from "../../electron/open-url";
 import { NativeController } from "../../electron/controller";
 import { AssistantSession } from "../../electron/assistant";
+import { TaskQueue } from "../../electron/task-queue";
+import { runView } from "../assistant/run-view";
 import { answerByTool } from "../../electron/tools";
 import { toolFastPath } from "../assistant/tool-answers";
 import { inboxRequest, readInbox, summarizeInbox } from "./inbox";
@@ -43,6 +45,7 @@ import {
   type Snapshot,
   type ProviderKind,
   type TaskSource,
+  type Run,
 } from "../core/schema";
 import { fileFactsReader } from "../storage/files";
 import { deliverableTextReader } from "../tools/providers/files";
@@ -201,6 +204,22 @@ export async function main(args = process.argv.slice(2)) {
     message: "Ready when you are.",
   };
   let lastStatus = "";
+  const taskQueue = new TaskQueue();
+  const rememberedTurns = store.conversation.load();
+  let lastFinished: Run | undefined = rememberedTurns.length
+    ? store.vault
+        .list()
+        .find(
+          (r) =>
+            terminal(r.status) &&
+            r.privacy === store.profile.settings.privacy &&
+            r.provider === store.profile.settings.provider &&
+            r.model === store.profile.settings.model &&
+            Date.parse(r.createdAt) >= rememberedTurns[0].at &&
+            Date.now() - Date.parse(r.createdAt) < 24 * 60 * 60_000,
+        )
+    : undefined;
+  const recordedResults = new Set<string>();
   const isRunning = () =>
     !!snapshot.run &&
     snapshot.run.status !== "idle" &&
@@ -231,22 +250,17 @@ export async function main(args = process.argv.slice(2)) {
     }
     return native;
   };
-  const view = (): RunView => ({
-    running: !!isRunning(),
-    status:
-      snapshot.run?.status === "confirming"
-        ? "waiting_for_approval"
-        : snapshot.run?.status === "paused"
-          ? "paused"
-          : isRunning()
-            ? "working"
-            : "idle",
-    task: snapshot.run?.task,
-    recent: [],
-    queued: [],
-    watches: [],
-  });
+  const view = (): RunView =>
+    runView(isRunning() ? snapshot : undefined, {
+      queued: taskQueue.list(Date.now()),
+      watches: [],
+      lastFinished,
+      now: Date.now(),
+      heldByVoice,
+    });
   const interrupt = () => {
+    taskQueue.clear();
+    heldByVoice = false;
     activeTurn?.abort();
     runner?.stop();
     briefings.interrupt();
@@ -259,7 +273,7 @@ export async function main(args = process.argv.slice(2)) {
     if (stopped) return;
     stopped = true;
     interrupt();
-    dialog.reset();
+    dialog.interrupt();
     briefings.close();
     clearInterval(healthTimer);
     voice.close();
@@ -296,6 +310,7 @@ export async function main(args = process.argv.slice(2)) {
   const voice = new TerminalVoice({
     root: ROOT,
     settings,
+    trace: providerTrace,
     receive: (input) => void dispatch(input.text, input).catch(reportError),
     notice: show,
     activity: (phase) => {
@@ -324,6 +339,20 @@ export async function main(args = process.argv.slice(2)) {
             ? "Speaking."
             : snapshot.message;
       screen.draw();
+      if (phase === "idle")
+        queueMicrotask(() => {
+          // A rejected or cancelled utterance never reaches dispatch's finally.
+          if (
+            heldByVoice &&
+            !busy &&
+            !voice.listeningToTurn &&
+            snapshot.run?.status === "paused" &&
+            !stopped
+          ) {
+            heldByVoice = false;
+            void runner?.resume().catch(reportError);
+          }
+        });
     },
   });
   const speak = (text: string, force = false, followUp = true) =>
@@ -347,6 +376,7 @@ export async function main(args = process.argv.slice(2)) {
     providerKey: () => store.keyForProvider(),
     fetch: modelFetch,
     trace: providerTrace,
+    history: store.conversation,
     view,
     context: (words) => ({
       briefing: briefings.status().latest || store.briefingContext(),
@@ -354,6 +384,10 @@ export async function main(args = process.argv.slice(2)) {
     }),
     heldByVoice: () => heldByVoice,
   });
+  const resetConversation = () => {
+    dialog.reset();
+    lastFinished = undefined;
+  };
   const briefings = createBriefings({
     settings,
     budget: store.briefingBudget,
@@ -455,6 +489,20 @@ export async function main(args = process.argv.slice(2)) {
       settings(),
       (state) => {
         snapshot = state;
+        if (state.run && terminal(state.run.status)) {
+          lastFinished = state.run;
+          if (!recordedResults.has(state.run.id)) {
+            recordedResults.add(state.run.id);
+            if (recordedResults.size > 24)
+              recordedResults.delete(recordedResults.values().next().value!);
+            if (state.run.summary?.trim())
+              dialog.noteAssistant(
+                state.run.summary,
+                spoken ? "voice" : "app",
+                { untrusted: true },
+              );
+          }
+        }
         if (state.run?.status === "confirming" && !process.stdin.isTTY) {
           queueMicrotask(() => runner?.confirm(false));
           show(
@@ -509,7 +557,8 @@ export async function main(args = process.argv.slice(2)) {
     );
     briefings.interrupt();
     const opening = leadingClause(text);
-    runningWork = runner.start(text, {
+    const currentRunner = runner;
+    const work = currentRunner.start(text, {
       ...(opening?.target === "app" &&
       ["boundary", "end"].includes(opening.next)
         ? { initialApp: opening.name }
@@ -519,7 +568,18 @@ export async function main(args = process.argv.slice(2)) {
       origin: spoken ? "voice" : "typed",
       taskSource,
     });
-    await runningWork;
+    runningWork = work;
+    await work;
+    if (stopped || runner !== currentRunner) return;
+    if (snapshot.run?.status === "completed") {
+      const next = taskQueue.next(Date.now());
+      if (next) await task(next.text, next.taskSource, next.origin === "voice");
+    } else if (taskQueue.clear()) {
+      const line =
+        "The queued tasks were cancelled because this one did not finish. Tell me when you'd like to retry them.";
+      dialog.noteAssistant(line, spoken ? "voice" : "app");
+      show(line);
+    }
   };
   async function dispatch(text: string, spoken?: SpokenInput) {
     // Voice never enters the slash-command or credential/approval lane.
@@ -531,6 +591,7 @@ export async function main(args = process.argv.slice(2)) {
         return;
       }
       if (intent.kind === "pause") {
+        heldByVoice = false;
         runner?.interruptForVoice("control");
         return;
       }
@@ -559,6 +620,7 @@ export async function main(args = process.argv.slice(2)) {
       return;
     }
     if (text === "/pause") {
+      heldByVoice = false;
       runner?.pause(undefined, "manual");
       return;
     }
@@ -613,7 +675,7 @@ export async function main(args = process.argv.slice(2)) {
         if (rest === "on" || rest === "off") {
           settings().memory = rest === "on";
           store.save();
-          dialog.reset();
+          resetConversation();
           show(`Memory ${rest}.`);
         } else if (rest)
           throw new Error("Use /memory, /memory on, or /memory off.");
@@ -642,10 +704,10 @@ export async function main(args = process.argv.slice(2)) {
           });
           store.memory.flush();
         }
-        dialog.reset();
+        resetConversation();
         announce("That saved memory has been forgotten.");
       } else if (word === "/new") {
-        dialog.reset();
+        resetConversation();
         screen.clearMessages();
         announce("A fresh conversation. What shall we attend to?");
       } else if (word === "/apps")
@@ -806,6 +868,7 @@ export async function main(args = process.argv.slice(2)) {
       } else if (word === "/run" || word === "/cua") {
         if (!rest) throw new Error("Tell me the task after /run.");
         show(rest, "You");
+        dialog.noteUser(rest, "app");
         announce("Certainly. I'll attend to that.");
         if (process.stdin.isTTY)
           void task(rest, "user_words", false, word !== "/cua").catch(
@@ -912,7 +975,7 @@ export async function main(args = process.argv.slice(2)) {
         if (!key) throw new Error("No key supplied.");
         store.profile.secrets[`provider:${settings().provider}`] = key;
         store.save();
-        dialog.reset();
+        resetConversation();
         show("Provider key stored in Butler's encrypted terminal profile.");
       } else if (word === "/model") {
         const provider = parts[0] as ProviderKind;
@@ -943,7 +1006,7 @@ export async function main(args = process.argv.slice(2)) {
             : {}),
         });
         store.save();
-        dialog.reset();
+        resetConversation();
         briefings.apply();
         await connections.registry.configure();
         screen.state.model = `${provider} / ${settings().model}`;
@@ -962,7 +1025,7 @@ export async function main(args = process.argv.slice(2)) {
         settings().inputPrice = rates.inputPrice * (rest === "on" ? 2 : 1);
         settings().outputPrice = rates.outputPrice * (rest === "on" ? 2 : 1);
         store.save();
-        dialog.reset();
+        resetConversation();
         show(
           `Fast mode is ${rest}${rest === "on" ? "; token prices are twice Standard" : ""}.`,
         );
@@ -1058,6 +1121,7 @@ export async function main(args = process.argv.slice(2)) {
           return;
         }
         if (base.kind === "pause") {
+          heldByVoice = false;
           runner?.pause(undefined, "manual");
           return;
         }
@@ -1068,6 +1132,18 @@ export async function main(args = process.argv.slice(2)) {
         }
         if (base.kind === "endConversation") {
           await voice.endFollowUp();
+          return;
+        }
+        if (base.kind === "nothingRunning" || base.kind === "stillWorking") {
+          const line =
+            base.kind === "stillWorking"
+              ? "The task is already running."
+              : lastFinished?.status === "completed"
+                ? "The last task has finished. What would you like next?"
+                : "There isn't a paused task. Tell me what you'd like to do next.";
+          dialog.noteUser(text, spoken ? "voice" : "app");
+          dialog.noteAssistant(line, spoken ? "voice" : "app");
+          announce(line);
           return;
         }
         if (
@@ -1107,10 +1183,35 @@ export async function main(args = process.argv.slice(2)) {
           else await work;
         } else if (decision.plan.kind === "clarify")
           announce(decision.plan.question);
-        else if (decision.acting)
-          show(
-            "Use /run to start that task or /stop, /pause and /resume to control it.",
+        else if (
+          decision.acting &&
+          (decision.plan.kind === "revise" ||
+            decision.plan.kind === "amendTask")
+        ) {
+          await runner?.revise(decision.plan.text);
+          heldByVoice = false;
+          announce("Understood. I've updated the task.");
+        } else if (decision.acting && decision.plan.kind === "queue") {
+          const added = taskQueue.add(
+            decision.plan.text,
+            spoken ? "voice" : "typed",
+            Date.now(),
+            decision.taskSource,
           );
+          announce(
+            "position" in added
+              ? "I'll do that next."
+              : "full" in added
+                ? "Three tasks are already waiting. Let one finish first."
+                : "Enter credentials through /key or /connect.",
+          );
+        } else if (decision.acting && decision.plan.kind === "resume") {
+          heldByVoice = false;
+          await runner?.resume();
+        } else if (decision.acting && decision.plan.kind === "pause") {
+          heldByVoice = false;
+          runner?.pause(undefined, "manual");
+        } else if (decision.acting) show("Tell me the next task.");
         else if (decision.sentences) {
           let reply = "";
           let replyIndex: number | undefined;
@@ -1131,6 +1232,19 @@ export async function main(args = process.argv.slice(2)) {
           );
       }
     } finally {
+      if (
+        heldByVoice &&
+        !voice.listeningToTurn &&
+        snapshot.run?.status === "paused" &&
+        !stopped
+      ) {
+        heldByVoice = false;
+        try {
+          await runner?.resume();
+        } catch (error) {
+          reportError(error);
+        }
+      }
       busy = false;
       activeTurn = undefined;
       screen.state.phase = isRunning() ? "working" : "idle";

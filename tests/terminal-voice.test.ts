@@ -21,7 +21,8 @@ function fixture(permission = true) {
   let permissions = permission;
   const receive = vi.fn(),
     notice = vi.fn(),
-    activity = vi.fn();
+    activity = vi.fn(),
+    trace = vi.fn();
   const settings = { ...defaultSettings, voiceReplies: "always" as const };
   const call = vi.fn(
     async (method: string, data: Record<string, unknown> = {}) => {
@@ -51,6 +52,7 @@ function fixture(permission = true) {
     receive,
     notice,
     activity,
+    trace,
     create: (send) => {
       event = send;
       return { call, close };
@@ -65,6 +67,7 @@ function fixture(permission = true) {
     notice,
     activity,
     settings,
+    trace,
     emit: (e: VoiceEvent) => event(e),
     finish: () => {
       const latest = call.mock.calls
@@ -77,6 +80,35 @@ function fixture(permission = true) {
     },
   };
 }
+test("activated speech diagnostics retain measurements without hypotheses or background audio", async () => {
+  const f = fixture();
+  await f.voice.setListening(true);
+  f.emit({ event: "audio_level", level: 0.9 });
+  expect(f.trace).not.toHaveBeenCalled();
+  f.emit({ event: "wake_detected" });
+  f.emit({ event: "audio_level", level: 0.2 });
+  f.emit({ event: "audio_level", level: 0.1 });
+  f.emit({
+    event: "transcript_final",
+    text: "synthetic private utterance",
+    confidence: 0.9,
+    segments: 1,
+  });
+  expect(f.trace).toHaveBeenCalledExactlyOnceWith("VoiceInput", {
+    phase: "transcript_final",
+    textLength: 27,
+    confidence: 0.9,
+    segments: 1,
+    micLevel: 0.2,
+  });
+  expect(JSON.stringify(f.trace.mock.calls)).not.toContain("private utterance");
+  f.emit({ event: "shortcut_down" });
+  f.emit({ event: "voice_error", message: "private fixture sentence" });
+  expect(f.trace).toHaveBeenLastCalledWith("VoiceInput", {
+    phase: "voice_error",
+    micLevel: 0,
+  });
+});
 test("British output resolves installed names and identifiers and falls back from a missing voice", () => {
   expect(installedVoice(voices, "Arthur")).toEqual(voices[1]);
   expect(installedVoice(voices, "Samantha")).toEqual(voices[0]);

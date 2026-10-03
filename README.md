@@ -42,6 +42,8 @@ New OpenAI profiles default to GPT-6.1 Sol in Fast mode with low reasoning effor
 
 Replies stream into the conversation. Page Up/Down scrolls the transcript, Up/Down recalls typed inputs, and `/new` starts a fresh conversation. Natural requests can start tasks; `/run <task>` makes that explicit.
 
+While a task runs, tell Butler to correct it or do something next. Corrections update the current task; up to three tasks can wait for it to finish. A failed or stopped task cancels that queue. Questions report current progress, and a voice interruption resumes work after answering unless you asked it to pause.
+
 Pure greetings such as “Hello” and “How are you?” receive a local reply without a model request or computer task. Requests attached to a greeting still use the normal task and conversation paths.
 
 Simple questions such as “check my reminders” (items due today) or “what’s on my calendar tomorrow?” use the connected Apple read tool directly, without a model call. More involved requests use your chosen model and available tools.
@@ -128,6 +130,8 @@ The daily briefing token allowance persists encrypted across restarts. Butler re
 ## Memory
 
 Tell Butler `Remember that I prefer concise briefings`, or use `/remember <preference>`. Preferences and completed task history persist encrypted locally and are recalled when relevant. `/memory` lists preferences and their IDs; `/memory off` stops recall and learning; `/memory on` restores them. `/forget <ID>` removes a preference and `/forget all` clears saved memory. Keep credentials in `/key` or `/connect`.
+
+With memory enabled, the last 24 conversation entries also persist encrypted for up to 24 hours, including completed task results. Follow-ups such as “append to that file” can use this context after restarting. Model requests still have a fixed context budget, so this is bounded memory. `/new` clears the thread; switching models or privacy modes starts a new scope. Task results supply facts, never permission to repeat an action. Queued tasks do not survive quitting.
 
 ## Controls and macOS permissions
 

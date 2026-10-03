@@ -1,5 +1,64 @@
 # Validation record
 
+## CLI summaries, conversation and task control (October 3, 2026)
+
+Inspection of owner runs `854d4494-3f6d-4bd4-8254-f860ec7e0e21`,
+`9ff63e9e-138c-431b-ac73-1306ca536157` and
+`92136e7d-07ef-47c0-b0f8-0c1878f4e759` found completed tool reads alongside a
+later cancelled run with no executed action. Recent provider requests mostly
+received HTTP 200. The CLI supplied empty progress and queue fields to the
+dialogue model, omitted finished task results, retained only eight short
+conversation entries in RAM, and ignored correction and queue plans. Voice
+activation could pause a task without resuming it after a reply or an unheard
+utterance. These findings do not establish the cause of every failed run.
+
+The CLI now supplies the existing sanitized task view, applies corrections
+and queued tasks, and releases temporary listening holds. Explicit pauses and
+approval gates remain in force. With memory enabled, up to 24 conversation
+entries persist encrypted for 24 hours; the request context budget remains
+fixed. Saved tool results retain their untrusted designation. Reset and
+provider/model/privacy changes prevent restoring a task from an old thread.
+Summary prompts ask for ordinary words and useful decisions without incidental
+IDs, jargon, headings or closing boilerplate; meaningful amounts, deadlines,
+uncertainty and missing coverage must remain. Terminal wrapping keeps words
+together.
+
+Live synthetic evaluation `c29d43c0-d2c6-40d5-9488-1139aa6732f7` passed four
+requests across four fresh CLI processes: create a text file, append to
+“that file”, rename it, then recall the changes. Exact file contents and the
+rename were checked independently, and an unrelated sentinel stayed intact.
+The three file actions took 4,034, 3,880 and 3,732 ms; the recap took 1,481 ms.
+The three task runs recorded three model requests, three actions and zero
+frames. A synthetic email/Slack briefing used 72 words and passed checks for
+the payment amount, scheduled rather than sent status, recruiting item,
+missing Slack coverage and absence of the fixture invoice ID, acronym and
+Markdown. These are concrete file and summary checks, not arbitrary-app
+reliability claims. Metrics remain under the evaluation's local directory;
+its isolated profile and fixture were removed.
+
+The rebuilt bundle repeated all four checks successfully in evaluation
+`26898855-412a-4d9b-9811-a71ce5e1bc7c`: 4,389, 4,139 and 3,850 ms for the file
+actions, 1,532 ms for recall, and a 68-word briefing passing the same checks.
+The full offline suite passed 5,022 tests with two legacy speech-data skips
+across 150 files. Type checking, formatting and the prompt-size budget passed.
+The live microphone recognition limitation below remains separate from these
+offline checks.
+
+Two preceding test setups failed: the files provider refused a hidden
+configuration path (`TOOL_BAD_PATH`), then the non-interactive CLI declined a
+write requiring confirmation (`UserDenied`). The successful test used a
+visible isolated folder and an acknowledged autonomous mode only in its
+private test profile. Owner settings were not changed.
+
+On this Mac, the built-in microphone input gain measured about 30% and was
+raised to 70%. Speaker output was unchanged. Independent recognition probes
+timed out while the owner's live voice helper was running, so normal-volume
+speech accuracy remains unverified. Experimental voice-processing changes
+were discarded; the original native helper and its existing microphone/speech
+grants were restored. New activated-turn diagnostics retain only input-level,
+length and confidence measurements and fixed phases, without transcripts or
+background audio.
+
 ## CLI provider failure explanations and connection check (October 2, 2026)
 
 Owner run `7ffb19ee-38d8-4357-b627-af7660524cbc` captured four frames and

@@ -20,12 +20,20 @@ export function terminalText(value: string): string {
     .replace(/\t/g, "  ");
 }
 export function wrapText(value: string, width: number): string[] {
+  width = Math.max(1, Math.floor(width));
   const out: string[] = [];
   for (const line of terminalText(value).split("\n")) {
     let rest = Array.from(line);
     do {
-      out.push(rest.slice(0, width).join(""));
-      rest = rest.slice(width);
+      let cut = Math.min(width, rest.length);
+      if (rest.length > width && !/\s/.test(rest[width])) {
+        let boundary = width - 1;
+        while (boundary > 0 && !/\s/.test(rest[boundary])) boundary--;
+        if (boundary > 0) cut = boundary;
+      }
+      out.push(rest.slice(0, cut).join(""));
+      rest = rest.slice(cut);
+      if (rest.length) while (rest.length && /\s/.test(rest[0])) rest.shift();
     } while (rest.length);
   }
   return out;

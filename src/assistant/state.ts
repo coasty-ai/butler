@@ -36,7 +36,7 @@ export interface DialogState {
   addressAs?: string;
   persona?: "jarvis" | "friendly";
   previousReply?: string;
-  /** Oldest first, at most 8, each at most 240 characters. */
+  /** Oldest first; bounded rich replies preserve facts needed by follow-ups. */
   turns: DialogTurn[];
   run?: DialogRun;
   queued?: string[];
@@ -53,8 +53,8 @@ export interface DialogState {
   memory?: { preferences: string[]; episodes: string[] };
 }
 
-export const DIALOG_TURNS = 8;
-export const DIALOG_TURN_CHARS = 240;
+export const DIALOG_TURNS = 24;
+export const DIALOG_TURN_CHARS = 1200;
 const LIMITS = {
   agenda: { items: 8, chars: 160 },
   notifications: { items: 6, chars: 160 },

@@ -255,7 +255,7 @@ describe("one bounded inbox summary", () => {
   it("uses one text call on the saved Fast model, with no action tools or images", async () => {
     const t = summary();
     expect(await t.run()).toMatchObject({
-      said: "Message 1: the email says “Alex needs a deck review before 3 PM.” I\'d suggest reviewing it.\nThis covers selected excerpts; some context may be missing.",
+      said: "Message 1: the email says “Alex needs a deck review before 3 PM.” Worth a look.\nThis covers selected excerpts; some context may be missing.",
       usage: { inputTokens: 100, outputTokens: 10 },
     });
     expect(t.fetch).toHaveBeenCalledTimes(1);
@@ -341,7 +341,7 @@ describe("one bounded inbox summary", () => {
     );
     const reply = await t.run();
     expect(reply.said).toContain("Draft review: the email says");
-    expect(reply.said).toContain("I'd suggest considering a reply");
+    expect(reply.said).toContain("You could reply");
     expect(reply.said).toContain("Release news: I couldn't verify");
     expect(reply.said).toContain("Message 3: I couldn't verify");
     expect(reply.said).toContain("some context may be missing");
@@ -372,7 +372,7 @@ describe("one bounded inbox summary", () => {
     );
     const reply = await t.run();
     expect(reply.said).toContain(`the email says “${quote}”`);
-    expect(reply.said).toContain("I'd suggest checking the official account");
+    expect(reply.said).toContain("Check the account to confirm");
     expect(reply.said).not.toContain("your payment is");
   });
   it("bounds escaped excerpts, redacts credentials and reports incomplete coverage", async () => {

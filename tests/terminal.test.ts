@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   terminalText,
+  wrapText,
   screenLines,
   TerminalScreen,
   type ScreenState,
@@ -32,6 +33,18 @@ import {
 import { TerminalConnections } from "../src/terminal/connections";
 
 const roots: string[] = [];
+test("summaries wrap at word boundaries, preserve paragraphs and split only oversized tokens", () => {
+  expect(
+    wrapText("A short recruiting follow-up.\n\nNext step: reply.", 20),
+  ).toEqual(["A short recruiting", "follow-up.", "", "Next step: reply."]);
+  expect(wrapText("abcdefghij rest", 4)).toEqual([
+    "abcd",
+    "efgh",
+    "ij",
+    "rest",
+  ]);
+  expect(wrapText("🙂🙂🙂 words", 4)).toEqual(["🙂🙂🙂", "word", "s"]);
+});
 const temp = () => {
   const root = mkdtempSync(join(tmpdir(), "butler-terminal-test-"));
   roots.push(root);
