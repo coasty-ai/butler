@@ -1098,6 +1098,7 @@ export function nativeTimeout(
   if (screenReads.has(method)) return 25000;
   // Spotlight metadata lookups are fast; memory recall never waits long.
   if (method === "index") return 3000;
+  if (method === "briefingContext") return 3000;
   // A probe is one window capture and its OCR; binding and focusing list the
   // windows on screen and activate one; the rest flip a flag.
   if (method === "probe") return 10000;
@@ -1369,34 +1370,42 @@ export class NativeController implements Controller {
         // A slow Spotlight lookup only loses memory context for this run, and
         // a slow presence read only delays a status decision; neither may
         // restart the helper (and pause the run) like a stuck input.
-        method === "index"
-          ? { message: "The system index did not answer in time.", kill: false }
-          : method === "presence"
-            ? { message: "Presence did not answer in time.", kill: false }
-            : watchMethods.has(method)
-              ? // A slow probe costs one read of a background window; a
-                // restart would pause whatever run is going on.
-                { message: "The watch did not answer in time.", kill: false }
-              : method === "unbindTarget"
-                ? // Releasing a binding at the end of a run is never worth a restart.
-                  { message: "The target did not answer in time.", kill: false }
-                : method === "observe"
-                  ? // The observer is a flag and a timer; a restart would pause a run for it.
+        method === "briefingContext"
+          ? { message: "The workspace did not answer in time.", kill: false }
+          : method === "index"
+            ? {
+                message: "The system index did not answer in time.",
+                kill: false,
+              }
+            : method === "presence"
+              ? { message: "Presence did not answer in time.", kill: false }
+              : watchMethods.has(method)
+                ? // A slow probe costs one read of a background window; a
+                  // restart would pause whatever run is going on.
+                  { message: "The watch did not answer in time.", kill: false }
+                : method === "unbindTarget"
+                  ? // Releasing a binding at the end of a run is never worth a restart.
                     {
-                      message: "The observer did not answer in time.",
+                      message: "The target did not answer in time.",
                       kill: false,
                     }
-                  : {
-                      message:
-                        "Desktop control stopped responding and is restarting.",
-                      kill: true,
-                      // Alive and busy is not dead: while the helper answers
-                      // presence the wait is extended up to this bound, then
-                      // the request fails with its own sentence and the
-                      // helper, its bindings and its tap are kept.
-                      limitMs: this.slowLimit(method, data),
-                      slow: slowMessage(method),
-                    },
+                  : method === "observe"
+                    ? // The observer is a flag and a timer; a restart would pause a run for it.
+                      {
+                        message: "The observer did not answer in time.",
+                        kill: false,
+                      }
+                    : {
+                        message:
+                          "Desktop control stopped responding and is restarting.",
+                        kill: true,
+                        // Alive and busy is not dead: while the helper answers
+                        // presence the wait is extended up to this bound, then
+                        // the request fails with its own sentence and the
+                        // helper, its bindings and its tap are kept.
+                        limitMs: this.slowLimit(method, data),
+                        slow: slowMessage(method),
+                      },
       )
       .then(
         (result) => {

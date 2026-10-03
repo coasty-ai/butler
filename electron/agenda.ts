@@ -121,13 +121,17 @@ export function createAgenda(binary: string, options: AgendaOptions = {}) {
       cached = undefined;
       return (await invoke("request", 120_000)).access;
     },
-    /** Upcoming events and pressing reminders, reused for a minute. */
-    async read(): Promise<string[]> {
-      if (cached && now() - cached.at < cacheMs) return cached.reading.lines;
+    /** The same read with its access states, for honest briefing coverage. */
+    async readDetails(): Promise<AgendaReading> {
+      if (cached && now() - cached.at < cacheMs) return cached.reading;
       pending ??= invoke("read").finally(() => (pending = undefined));
       const reading = await pending;
       cached = { at: now(), reading };
-      return reading.lines;
+      return reading;
+    },
+    /** Upcoming events and pressing reminders, reused for a minute. */
+    async read(): Promise<string[]> {
+      return (await this.readDetails()).lines;
     },
     forget() {
       cached = undefined;

@@ -8,6 +8,51 @@ pane, the runner's tool step and the policy that decides when a call asks are
 documented with the lanes that own them (`.data/design/mcp-lanes.md`); the
 shared contract is `src/core/tools.ts`.
 
+## Tool tasks without desktop capture
+
+The app starts eligible real tasks with `toolsFirst: true`. The runner lists
+connected tools and recalls relevant memory, then works from tool results
+without capturing the desktop, binding a window or enabling native input.
+Ordinary mouse and keyboard activity does not pause this mode; explicit
+stop, pause, corrections and tool approvals still apply. Voice preparation
+and adoption use the same mode, and verified fast tool steps need no model
+call. `Frame.source: "tools"` is a decision token with no image or screen
+context; it is never saved as a captured frame.
+
+Explicit screen requests, dictation, undo, watch wake-ups, desktop preludes
+and known desktop replay plans use the screen path. If a tools-only request
+returns `capture` or another desktop action, that proposal sends no input:
+the runner enters desktop mode, applies its protection checks, captures a
+fresh screen and replans. Screen Recording and Accessibility remain needed
+for that fallback. Once on the desktop path, subsequent steps use its normal
+capture loop.
+
+All providers discover tools concurrently within a shared one-second
+budget. Healthy results survive another provider's timeout, and cancelling
+the run ends discovery immediately. The runner's outer deadline leaves
+100 ms for the registry to return partial results. The entire permitted
+catalogue is ranked by task words before the 18-tool cap, with app/server
+name matches weighted above generic action words. Every provider serializes
+the same 18-tool limit. Previously 17 first-party tools crowded connected
+servers down to one slot, and the HTTP adapter silently kept only the first
+12, hiding the web and MCP tools altogether in a full catalogue.
+
+The tools-only prompt is smaller than the desktop prompt and contains no
+screen instructions. OpenAI's action schema is also limited to tool work,
+waits, completion, questions and the capture handoff. A `done` claim needs
+at least one successful tool result, and unverified writes require a
+successful read from each changed provider before completion, including
+when a later verified write asks to finish. This check proves that a read
+occurred, not that every requested change is semantically correct; the
+existing requirement audit and live end-state graders remain relevant.
+
+Regression coverage is in `tests/runner-tools.test.ts`,
+`tests/tools-registry.test.ts` and `tests/providers.test.ts`. It checks
+zero-capture tool execution, fresh-screen fallback, protected surfaces,
+approvals, interruption, preparation/adoption, partial discovery and full
+catalogue serialization. These are automated checks, not a new live
+success-rate or response-time measurement.
+
 ## Components
 
 | Layer    | Where                                                                                                                                             | What it does                                                                                                                                                                                                                                                   |
@@ -462,9 +507,9 @@ in full, counted over or compared with another is read with the web tool,
 address from the objective or a link an earlier page text shows, the values
 carried in the note of the next step, never paged through screenshots
 (380 characters; the `tests/trim.test.ts` pins moved 17,400 → 17,800 and
-19,200 → 19,600 with the reason). `TOOL_LIMITS.list` moved from 16 to 18:
-the nine Apple tools, the six files tools and the two web tools are 17, and
-the seat a user's server had beside every first-party tool is kept.
+19,200 → 19,600 with the reason). `TOOL_LIMITS.list` is 18, shared with
+provider serialization; task ranking across first-party and connected tools
+decides which tools fit.
 
 ### Floors
 

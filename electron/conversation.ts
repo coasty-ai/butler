@@ -91,6 +91,8 @@ export interface SayOptions {
   key?: string;
   /** Whether the user is talking to it by voice (default true). */
   voiceTurn?: boolean;
+  /** Explicit opt-in speech delivery (periodic briefings), independent of reply modality. */
+  forceVoice?: boolean;
   /** gateOf(snapshot) for an approval listen window. */
   gate?: string;
   /** What a free-text line is (reply, status, clarify); decides its style. */
@@ -1026,6 +1028,8 @@ export class Conversation {
         gate: options.gate,
       },
       options.voiceTurn ?? true,
+      undefined,
+      options.forceVoice,
     );
   }
 
@@ -1462,10 +1466,12 @@ export class Conversation {
     moment: Moment,
     voiceTurn: boolean,
     handsFree?: boolean,
+    forceVoice = false,
   ): Utterance | undefined {
     const settings = this.options.settings();
     const replies = settings.voiceReplies ?? "voice";
-    const speak = replies === "always" || (replies === "voice" && voiceTurn);
+    const speak =
+      forceVoice || replies === "always" || (replies === "voice" && voiceTurn);
     const hands = handsFree ?? settings.handsFree;
     const listen =
       moment.listen && this.windowsAllowed(hands) && (voiceTurn || speak)

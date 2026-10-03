@@ -39,6 +39,45 @@ const input = (over: Partial<DialogStateInput> = {}): DialogStateInput => ({
   ...over,
 });
 
+describe("briefing conversation context", () => {
+  it("carries the selected personality and a bounded recap, with verification codes removed", () => {
+    const state = buildDialogState(
+      input({
+        persona: "jarvis",
+        briefing: {
+          at: now.getTime(),
+          text: "Review at three. Code 123456. " + "x".repeat(3000),
+        },
+      }),
+    );
+    expect(state.persona).toBe("jarvis");
+    expect(state.briefing?.text).toContain("[digits]");
+    expect(state.briefing?.text.length).toBeLessThanOrEqual(1800);
+    expect(JSON.parse(dialogStateJson(state, 6000)).briefing.at).toBe(
+      now.toISOString(),
+    );
+  });
+  it("doesn't treat yesterday's recap as current and drops optional context to fit the dialog budget", () => {
+    expect(
+      buildDialogState(
+        input({
+          briefing: { at: now.getTime() - 24 * 60 * 60_000, text: "Old" },
+        }),
+      ).briefing,
+    ).toBeUndefined();
+    const state = buildDialogState(
+      input({
+        persona: "friendly",
+        briefing: { at: now.getTime(), text: "x".repeat(1700) },
+      }),
+    );
+    const small = JSON.parse(dialogStateJson(state, 500));
+    expect(small.briefing).toBeUndefined();
+    expect(small.persona).toBe("friendly");
+    expect(small.user).toBe("how's it going?");
+  });
+});
+
 function confirming(): Snapshot {
   return {
     run: {

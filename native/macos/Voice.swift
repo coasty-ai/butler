@@ -1143,6 +1143,10 @@ func handle(_ command: [String: Any]) {
         if let locale = command["locale"] as? String {
             speech = SFSpeechRecognizer(locale: Locale(identifier: locale)); speaker.locale = locale
         }
+        // Output accent is independent of the owner's recognition language.
+        if let locale = command["voiceLocale"] as? String {
+            speaker.locale = locale.isEmpty ? (Locale.preferredLanguages.first ?? "en-US") : locale
+        }
         if let value = command["patience"] as? String, let next = Patience(rawValue: value) { patience = next }
         if let value = command["sounds"] as? Bool { soundsEnabled = value }
         if let value = command["voiceId"] as? String, value.count <= 200 { speaker.voiceSelected(value) }

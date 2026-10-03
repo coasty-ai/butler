@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   defaultSettings,
   toolServerSchema,
@@ -158,7 +158,7 @@ interface FakeTable {
   pins?: Record<string, string>;
   state?: ProviderState;
   /** tools() rejects or never settles. */
-  listing?: "throws" | "hangs";
+  listing?: "throws" | "hangs" | (() => Promise<void>);
   catalog?: McpProvider["catalog"];
 }
 function fakeProviders(tables: Record<string, FakeTable>) {
@@ -191,6 +191,7 @@ function fakeProviders(tables: Record<string, FakeTable>) {
       async tools() {
         if (table.listing === "throws") throw new Error("listing failed");
         if (table.listing === "hangs") await new Promise(() => {});
+        if (typeof table.listing === "function") await table.listing();
         return table.specs;
       },
       prepare: (s, args) => ({
@@ -333,7 +334,36 @@ const byom = (over: Partial<Settings["tools"]> = {}): Settings => ({
 const signal = new AbortController().signal;
 
 describe("tool registry: the list", () => {
-  it("puts builtin tools first, ranks servers' tools by the task's words and caps the list at TOOL_LIMITS.list", async () => {
+  it("briefing discovery includes reads across all apps beyond the task cap and excludes other tools", async () => {
+    const many = Array.from({ length: 24 }, (_, i) =>
+      spec("memo", `read_${i}`, { trusted: true }),
+    );
+    const { reg } = registry({
+      settings: byom({ servers: [row({})] }),
+      launch: LAUNCH,
+      tables: {
+        memo: {
+          specs: [
+            ...many,
+            spec("memo", "write", { tier: "write", trusted: true }),
+            spec("memo", "untrusted"),
+            spec("memo", "long", { trusted: true, longRunning: true }),
+          ],
+        },
+      },
+    });
+    await reg.configure();
+    const access = reg.access({ synthetic: false })!;
+    expect((await access.list("briefing", signal)).tools).toHaveLength(18);
+    const reads = await access.list("briefing", signal, { readsOnly: true });
+    expect(reads.tools).toHaveLength(24);
+    expect(
+      reads.tools.every(
+        (t) => t.trusted && t.tier === "read" && !t.longRunning,
+      ),
+    ).toBe(true);
+  });
+  it("ranks all tools by the task, keeps catalogue order on ties and caps at TOOL_LIMITS.list", async () => {
     const many = Array.from({ length: TOOL_LIMITS.list + 2 }, (_, i) =>
       spec("memo", `tool_${i}`, { does: i === 9 ? "Searches recipes" : "" }),
     );
@@ -357,16 +387,95 @@ describe("tool registry: the list", () => {
       .access({ synthetic: false })!
       .list("find the recipes folder", signal);
     expect(list.tools).toHaveLength(TOOL_LIMITS.list);
-    expect(list.tools.slice(0, 2).map((t) => t.id)).toEqual([
+    expect(list.tools.slice(0, 3).map((t) => t.id)).toEqual([
+      "memo__tool_9",
       "apple__calendar_list_events",
       "apple__calendar_create_event",
     ]);
-    // The one tool that mentions "recipes" comes first among the server's.
-    expect(list.tools[2].id).toBe("memo__tool_9");
     expect(list.tools.map((t) => t.id)).not.toContain(
       `memo__tool_${TOOL_LIMITS.list + 1}`,
     );
     expect(list.unavailable).toEqual([]);
+  });
+
+  it("keeps a connected app's relevant tools even with a full builtin catalogue", async () => {
+    const builtins = Array.from({ length: TOOL_LIMITS.list - 1 }, (_, i) =>
+      spec("apple", `builtin_${i}`, { title: "Apple", does: "" }),
+    );
+    const connected = ["search", "read_thread", "reply"].map((name) =>
+      spec("memo", name, { title: "Slack", does: "Works with messages" }),
+    );
+    const { reg } = registry({
+      settings: byom({ servers: [row({ name: "Slack" })] }),
+      launch: LAUNCH,
+      tables: { apple: { specs: builtins }, memo: { specs: connected } },
+    });
+    await reg.configure();
+    const list = await reg
+      .access({ synthetic: false })!
+      .list("Summarize Slack threads", signal);
+    expect(list.tools).toHaveLength(TOOL_LIMITS.list);
+    expect(list.tools.slice(0, 3)).toEqual(connected);
+  });
+
+  it("discovers healthy providers concurrently while an earlier provider stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const started: string[] = [];
+      const { reg } = registry({
+        settings: byom({ servers: [row({ id: "slow" }), row({ id: "fast" })] }),
+        launch: LAUNCH,
+        tables: {
+          apple: {
+            specs: [],
+            listing: async () => {
+              started.push("apple");
+              await new Promise(() => {});
+            },
+          },
+          slow: {
+            specs: [],
+            listing: async () => {
+              started.push("slow");
+              await new Promise(() => {});
+            },
+          },
+          fast: {
+            specs: [spec("fast", "quick")],
+            listing: async () => {
+              started.push("fast");
+              await new Promise((r) => setTimeout(r, 100));
+            },
+          },
+        },
+      });
+      await reg.configure();
+      const pending = reg.access({ synthetic: false })!.list("read", signal);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(started).toEqual(["apple", "slow", "fast"]);
+      await vi.advanceTimersByTimeAsync(TOOL_LIMITS.listBudgetMs);
+      expect((await pending).tools.map((tool) => tool.id)).toEqual([
+        "fast__quick",
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends discovery immediately on cancellation without waiting for a stalled server", async () => {
+    const { reg } = registry({
+      settings: byom({ servers: [row({ id: "slow" })] }),
+      launch: LAUNCH,
+      tables: { slow: { specs: [], listing: "hangs" } },
+    });
+    await reg.configure();
+    const abort = new AbortController();
+    const pending = reg
+      .access({ synthetic: false })!
+      .list("read", abort.signal);
+    abort.abort();
+    expect(await pending).toEqual({ tools: [], unavailable: [] });
   });
 
   it("names what is configured but unusable, by label and state, at most four entries", async () => {
@@ -541,7 +650,7 @@ describe("tool registry: the in-process files tool", () => {
     );
     return home;
   };
-  it("lists the six files tools and the two web tools after the bridge's, each gated by its own switch and the master switch", async () => {
+  it("lists the files and web tools by relevance, gated by their own switches and the master switch", async () => {
     const { reg, state } = registry({
       settings: byom({
         servers: [row({ tools: { dummy: { on: true, pin: "x" } } })],
@@ -558,13 +667,13 @@ describe("tool registry: the in-process files tool", () => {
     const access = reg.access({ synthetic: false })!;
     const list = await access.list("write the total into the notes", signal);
     expect(list.tools.map((t) => t.id)).toEqual([
+      "files__append_text_file",
+      "files__move_file",
       "apple__calendar_list_events",
       "files__read_text_file",
-      "files__append_text_file",
       "files__replace_file_text",
       "files__list_directory",
       "files__rename_file",
-      "files__move_file",
       "web__read_page_text",
       "web__read_current_page",
       "memo__dummy",

@@ -55,6 +55,7 @@ import type { ModuleRegistry, ModulePorts } from "../src/modules/registry";
 import { choiceQuestionOf } from "./modules";
 import {
   buildDialogState,
+  aboutBriefing,
   dialogStateJson,
   type DialogState,
 } from "../src/assistant/state";
@@ -124,6 +125,7 @@ export interface AssistantOptions {
     agenda?: string[];
     notifications?: string[];
     openApps?: string[];
+    briefing?: { at: number; text: string };
   };
   /** main.ts voiceHoldResumable(): the only hold a model resume may end. */
   heldByVoice: () => boolean;
@@ -694,10 +696,12 @@ export class AssistantSession implements AssistantSessionApi {
       view: this.options.view(),
       turns: this.turns,
       addressAs: s.addressAs,
+      persona: s.persona,
       previousReply: this.previousReply,
       agenda: context.agenda,
       notifications: context.notifications,
       openApps: context.openApps,
+      briefing: context.briefing,
       heldByVoice: this.options.heldByVoice(),
       now: new Date(this.now()),
     });
@@ -735,7 +739,11 @@ export class AssistantSession implements AssistantSessionApi {
       if (this.options.view().running) return;
       // The notifications the user asked about are in the state: the answer
       // is in hand, and no decider starts a run to go and read them.
-      if (state.notifications?.length) return;
+      if (
+        state.notifications?.length ||
+        (state.briefing && aboutBriefing(state.user))
+      )
+        return;
       if (!jevStartCandidate({ kind: "start", text }, text)) return;
       if (!JEV_ACT_QUESTION) return this.jevFailed(channel, "no_question");
       this.jevAsk = this.askJev(state, key, intent, channel);
@@ -972,7 +980,9 @@ export class AssistantSession implements AssistantSessionApi {
       events: [],
       ended: false,
       startedAt: this.now(),
-      readOut: !!state.notifications?.length,
+      readOut:
+        !!state.notifications?.length ||
+        (!!state.briefing && aboutBriefing(state.user)),
       wake: () => {},
     };
     this.flights.add(flight);

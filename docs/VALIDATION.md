@@ -1,5 +1,81 @@
 # Validation record
 
+## Periodic briefings and British conversation (October 2, 2026)
+
+Butler now offers a selectable recurring check, spoken delivery with a readable
+copy, source coverage, trusted connected-app reads and a British conversational
+persona. See [BRIEFINGS.md](BRIEFINGS.md) for setup and the access boundary.
+
+The full suite passed 4,801 tests with two skips across 137 files, using
+`--maxWorkers=4`. Twenty-four unit regressions were added for this change.
+After the final timezone, serialized-input bounding and settings-revocation
+changes, all 258 tests in eight affected files passed. All four browser flows
+passed across the final runs; `output/qa/butler-briefings.png` was visually
+inspected. Browser checks also exposed and fixed an existing renderer startup
+failure: two settings modules imported Node dependencies through shared barrels.
+They now import browser-safe modules; the production build has no Node
+externalization warnings.
+
+Type checking, production build, native helper compilation and native safety
+checks passed. The initial unrestricted-worker suite encountered host-load
+timing failures and a prompt-contract mismatch; the prompt compatibility was
+fixed and the bounded-worker suite then passed without weakening those checks.
+
+A live native read reported four applications, no screenshot and no notification
+content while notification access was disabled. A voice-helper status check
+selected Arthur from eleven available British voices while retaining `en-US`
+speech recognition; no audio was played. Summary accuracy and audible latency
+have not been measured live. Scheduling, summary fallback, cancellation and
+budget behavior are established by the automated checks.
+
+The local Apple Silicon build is
+`output/butler-proactive/mac-arm64/Butler.app` (359 MB, ad-hoc signed).
+The packaged main/preload bytes and all six native helpers' executable sections
+match the current build. Signing initially failed with the disk almost full;
+after clearing the replaceable Electron download archive, the framework was
+signed and verified, then signing resumed for the remaining app components.
+The same verified build was subsequently shipped to the canonical local path,
+`release/mac-arm64/Butler.app`, after gracefully quitting the previous app.
+The previous bundle is retained in `output/local-backups/` for rollback.
+The updated main process, controller and voice helper were confirmed running
+from the canonical path. This startup check does not measure task reliability
+or audible briefing quality.
+
+Briefings are disabled until enabled and saved in Settings. Connected app
+contents still require configured connections and their permissions; this is
+not a full data index of every installed app.
+
+## Tools before desktop control (October 2, 2026)
+
+Eligible app tasks now start without desktop capture or input. Connected
+providers discover tools concurrently, the complete permitted catalogue is
+ranked before the 18-tool limit, and provider serialization preserves that
+same limit. A desktop fallback discards the proposal, obtains a fresh screen
+and replans. Tools-only completion requires successful tool evidence and
+read-back after unverified writes. See [TOOLS.md](TOOLS.md).
+
+Validation: the broad suite passed 4,775 tests with two expectation failures
+and two skips. The tool-order assertion was updated for task ranking; an
+existing pricing assertion was corrected to match the already-implemented
+rule that a configured stronger auditor also audits single-clause tasks.
+All 187 checks in that file then passed. Across the final checks, 4,777 tests
+passed and two were skipped. Twenty regressions were added for this change.
+Type checking, production build and local Apple Silicon app packaging passed;
+the packaged main-process bytes were verified against the current build.
+The initial sandboxed suite could not open loopback servers (`EPERM`), so the
+broad checks were rerun with local server and native-helper access.
+
+The local build is `output/butler-tools-first/mac-arm64/Butler.app` (359 MB,
+ad-hoc signed). It was not installed or launched into a real desktop task.
+Zero screenshots/native input in the tool path and fresh capture on fallback
+are established by the automated checks. Live provider latency, speech
+responsiveness, task success rate and false completion rate have not been
+remeasured. The earlier live benchmark is not superseded by these checks.
+
+The observer still learns habits from frontmost-app observations rather
+than maintaining a full cross-app data index. The Electron shell and the
+optional voice model retain their existing resource costs.
+
 Validated September 16, 2026 on an Apple Silicon Mac. This is a development alpha with implemented native paths; automated synthetic success is not a claim of live agent reliability.
 
 The table and follow-ups below the next section are the earlier September 16 baseline; their test counts are superseded by the current change set.

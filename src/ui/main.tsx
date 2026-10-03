@@ -71,6 +71,7 @@ import { SettingsRemote } from "./settings-remote";
 import { SettingsTools } from "./settings-tools";
 import { SettingsModules } from "./settings-modules";
 import { SettingsWatching } from "./settings-watching";
+import { SettingsBriefings } from "./settings-briefings";
 import { SettingsWorking } from "./settings-working";
 import "@fontsource-variable/space-grotesk";
 import "./styles.css";
@@ -692,6 +693,7 @@ function App() {
             ) : info ? (
               <SettingsPanel
                 info={info}
+                focusBriefings={view === "briefings"}
                 busy={busy}
                 onSave={(settings, key, jevKey) =>
                   act(() => api.saveSettings(settings, key, jevKey))
@@ -1085,6 +1087,7 @@ function CurrentVoice({
 }
 function SettingsPanel({
   info,
+  focusBriefings,
   busy,
   onSave,
   onPermissions,
@@ -1099,6 +1102,7 @@ function SettingsPanel({
   onSetup,
 }: {
   info: AppInfo;
+  focusBriefings?: boolean;
   busy: boolean;
   /** `k` is the provider key, `jevKey` the OpenRouter key; undefined keeps each. */
   onSave: (s: Settings, k?: string, jevKey?: string) => Promise<boolean>;
@@ -2298,6 +2302,14 @@ function SettingsPanel({
         <SettingsTools s={s} set={set} api={api} busy={busy} info={info} />
         <SettingsModules s={s} set={set} api={api} busy={busy} info={info} />
         <SettingsWatching s={s} set={set} api={api} busy={busy} info={info} />
+        <SettingsBriefings
+          s={s}
+          set={set}
+          api={api}
+          busy={busy}
+          info={info}
+          focus={focusBriefings}
+        />
         <details className="setting-group">
           <summary>
             <span>
@@ -2325,10 +2337,10 @@ function SettingsPanel({
               <span>Learn from my tasks</span>
             </label>
             <p>
-              While it runs, Butler also sees which apps you have open and
-              notifications as they arrive, so it can pick up work already in
-              progress and tell you what you missed. Notifications from
-              protected apps are never read.
+              During tasks and briefings, Butler also sees which apps you have
+              open and notifications as they arrive, so it can pick up work
+              already in progress and tell you what you missed. Notifications
+              from protected apps are never read.
             </p>
             <label className="consent">
               <input

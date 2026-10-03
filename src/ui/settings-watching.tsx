@@ -11,7 +11,7 @@
 import React, { useEffect, useState } from "react";
 import type { ObserverSettings, ObserverTier, Settings } from "../core/schema";
 import type { Preference, Procedure, Routine } from "../memory/types";
-import { weekdaysPhrase } from "../observer/routines";
+import { weekdaysPhrase } from "../observer/words";
 import type {
   AppInfo,
   Bridge,

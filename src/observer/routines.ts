@@ -12,6 +12,8 @@ import { normalizeTask } from "../memory/skills";
 import { redactSecrets } from "../core/sanitize";
 import { bound } from "../memory/retrieve";
 import { dayKey } from "./log";
+import { weekdaysPhrase } from "./words";
+export { weekdaysPhrase } from "./words";
 
 export type RoutineOutcome =
   "completed" | "corrected" | "undone" | "declined" | "failed";
@@ -213,27 +215,6 @@ export function routineTask(
   );
 }
 
-const DAY_NAMES = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-];
-/** "weekdays", "weekends", "every day" or the listed days. */
-export function weekdaysPhrase(weekdays: number[]): string {
-  const set = new Set(weekdays);
-  if (set.size === 7) return "every day";
-  if (set.size === 5 && [1, 2, 3, 4, 5].every((d) => set.has(d)))
-    return "weekdays";
-  if (set.size === 2 && set.has(0) && set.has(6)) return "weekends";
-  return [...set]
-    .sort((a, b) => a - b)
-    .map((d) => DAY_NAMES[d] + "s")
-    .join(", ");
-}
 const hourWord = (h: number) =>
   h === 0 || h === 24
     ? "midnight"

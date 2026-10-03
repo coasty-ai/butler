@@ -34,6 +34,7 @@ export interface DialogState {
   now: string;
   user: string;
   addressAs?: string;
+  persona?: "jarvis" | "friendly";
   previousReply?: string;
   /** Oldest first, at most 8, each at most 240 characters. */
   turns: DialogTurn[];
@@ -48,6 +49,7 @@ export interface DialogState {
   agenda?: string[];
   notifications?: string[];
   openApps?: string[];
+  briefing?: { at: string; text: string };
 }
 
 export const DIALOG_TURNS = 8;
@@ -83,6 +85,13 @@ export function aboutNotifications(text: string): boolean {
     text,
   );
 }
+/** Questions about the dated recap already in hand; fresh checks still run. */
+export function aboutBriefing(text: string): boolean {
+  return (
+    /\bbriefings?\b/i.test(text) &&
+    !/\b(?:refresh|recheck|check again|changed since)\b/i.test(text)
+  );
+}
 
 /** Runs of four or more digits (verification codes) are never sent. */
 export function redactCodes(text: string): string {
@@ -97,10 +106,12 @@ export interface DialogStateInput {
   view: RunView;
   turns: TurnRecord[];
   addressAs?: string;
+  persona?: "jarvis" | "friendly";
   previousReply?: string;
   agenda?: string[];
   notifications?: string[];
   openApps?: string[];
+  briefing?: { at: number; text: string };
   /** The run is paused only because this activation interrupted it. */
   heldByVoice: boolean;
   now: Date;
@@ -115,6 +126,7 @@ export function buildDialogState(i: DialogStateInput): DialogState {
     // is the last line in case one gets past it.
     user: clip(redactSecrets(i.user), 2000),
     ...(i.addressAs?.trim() ? { addressAs: clip(i.addressAs, 40) } : {}),
+    ...(i.persona ? { persona: i.persona } : {}),
     ...(i.previousReply
       ? { previousReply: clip(redactSecrets(i.previousReply), 240) }
       : {}),
@@ -146,6 +158,11 @@ export function buildDialogState(i: DialogStateInput): DialogState {
   if (notifications?.length) state.notifications = notifications;
   const openApps = list(i.openApps, LIMITS.openApps);
   if (openApps?.length) state.openApps = openApps;
+  if (i.briefing && i.now.getTime() - i.briefing.at < 24 * 60 * 60_000)
+    state.briefing = {
+      at: new Date(i.briefing.at).toISOString(),
+      text: clip(redactSecrets(redactCodes(i.briefing.text)), 1800),
+    };
   return state;
 }
 
@@ -169,6 +186,7 @@ const KEY_ORDER: (keyof DialogState)[] = [
   "now",
   "user",
   "addressAs",
+  "persona",
   "previousReply",
   "turns",
   "run",
@@ -177,12 +195,14 @@ const KEY_ORDER: (keyof DialogState)[] = [
   "agenda",
   "notifications",
   "openApps",
+  "briefing",
 ];
 /** What goes first when the state must shrink to fit. */
 const DROP_ORDER: (keyof DialogState)[] = [
   "notifications",
   "openApps",
   "agenda",
+  "briefing",
 ];
 
 /**

@@ -499,6 +499,12 @@ export function previewBridge(): Bridge {
     }),
     // The preview watches nothing and proposes nothing: no stream, no log.
     watchingStatus: async () => watchingUnavailable(settings),
+    briefingStatus: async () => ({ on: false, state: "off", tokensToday: 0 }),
+    checkBriefingNow: async () => {
+      throw new Error("Briefings run in the Mac app. This is a preview.");
+    },
+    forgetBriefing: async () => ({ on: false, state: "off", tokensToday: 0 }),
+    briefingTools: async () => [],
     setWatchingPaused: async () => watchingUnavailable(settings),
     forgetWatching: async () => watchingUnavailable(settings),
     learnedProposals: async () => ({

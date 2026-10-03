@@ -549,7 +549,8 @@ describe("one attempt through the real runner", () => {
     expect(bare.cost).toBeCloseTo(runnerCost, 10);
     expect(JSON.stringify(bare)).not.toContain("auditModel");
 
-    // A one-clause task audits nothing: no tokens, no field.
+    // A configured stronger auditor also checks a one-clause objective.
+    // The multi-clause gate only applies when no stronger auditor is set.
     const quiet = auditing();
     const short = attemptDeps(fakeController().controller, {
       clients: { [CELL.cell]: quiet },
@@ -561,11 +562,10 @@ describe("one attempt through the real runner", () => {
       1,
       caps,
     );
-    expect(quiet.text).not.toHaveBeenCalled();
+    expect(quiet.text).toHaveBeenCalledTimes(1);
     expect(none.auditModel).toBe("gpt-audit");
-    expect(none.auditTokens).toBeUndefined();
-    // The same three keys and the done, nothing more.
-    expect(none.cost).toBeCloseTo(steps * usage.cost, 10);
+    expect(none.auditTokens).toEqual({ input: 1000, output: 200 });
+    expect(none.cost).toBeCloseTo(runnerCost + surcharge, 10);
     // A row that never ran carries the auditor too, beside its model.
     const skipped = neverRan(
       { ...priced, audit },
@@ -4135,8 +4135,8 @@ await import(${JSON.stringify(pathToFileURL(join(root, "src/gym/bench/attempt.ts
         new AbortController().signal,
       );
       expect(list.tools.map((t) => t.id)).toEqual([
-        "files__read_text_file",
         "files__append_text_file",
+        "files__read_text_file",
         "files__replace_file_text",
         "files__list_directory",
         "files__rename_file",

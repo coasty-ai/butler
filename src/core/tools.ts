@@ -212,8 +212,12 @@ export interface ToolClock {
 /** Runner-facing. Implementations never throw into the run. */
 export interface ToolAccess {
   clock(): ToolClock;
-  /** Once per run, before the first proposal; ≤ TOOL_LIMITS.list tools, builtin first; frozen for the run. */
-  list(task: string, signal: AbortSignal): Promise<ToolList>;
+  /** Once per run: ≤ TOOL_LIMITS.list task-ranked tools. readsOnly is the wider trusted-read catalogue for briefing setup. */
+  list(
+    task: string,
+    signal: AbortSignal,
+    options?: { readsOnly: boolean },
+  ): Promise<ToolList>;
   /** Synchronous validation and question fields; runs before policy. The words go along for a tool whose rule reads them here (the files tool's content-keeping rule). */
   prepare(
     spec: ToolSpec,
@@ -374,10 +378,8 @@ export interface ToolsStatus {
 
 export const TOOL_LIMITS = {
   /**
-   * Tools the model sees per run: the nine Apple tools, the six files tools
-   * and the two web tools (17) fit, with one seat left for a server's. Was
-   * 16 before the web tool (9 + 6 = 15 and one seat); the seat is kept so a
-   * user's server still lists one tool beside every first-party one.
+   * Tools the model sees per run, ranked across builtins and connected
+   * servers by the task. Provider serialization uses this same cap.
    */
   list: 18,
   unavailable: 4,

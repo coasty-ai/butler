@@ -51,6 +51,21 @@ struct DeliveredNotification: Equatable {
     let title: String
     let body: String
 }
+/** Banner labels are app names; protected settings usually contain bundle ids. */
+func notificationAppProtected(_ app: String, protected: [String], names: [String: String] = [:]) -> Bool {
+    let label = app.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !label.isEmpty else { return false }
+    return protected.contains { id in
+        let bundle = id.lowercased()
+        let name = names[id]?.lowercased() ?? ""
+        let tail = bundle.split(separator: ".").last.map(String.init) ?? bundle
+        return label.contains(bundle) || (!name.isEmpty && label == name) || (tail.count >= 4 && label == tail)
+    }
+}
+/** A rolling cursor is independent of relative display ages. */
+func briefingNotifications(_ entries: [DeliveredNotification], since: TimeInterval, now: TimeInterval) -> [DeliveredNotification] {
+    entries.filter { $0.at > since && now - $0.at <= 24 * 3600 }
+}
 /**
  Adds a notification to the recent list.
 

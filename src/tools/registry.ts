@@ -563,95 +563,136 @@ export function createToolRegistry(o: RegistryOptions): ToolRegistry {
     return next;
   };
   /** A provider's tool list, or nothing once the run's budget is spent. */
-  const within = <T>(work: Promise<T>, ms: number, fallback: T) =>
+  const within = <T>(
+    work: () => Promise<T>,
+    ms: number,
+    fallback: T,
+    signal: AbortSignal,
+  ) =>
     new Promise<T>((resolve) => {
-      const timer = setTimeout(() => resolve(fallback), Math.max(0, ms));
-      work.then(
-        (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        () => {
-          clearTimeout(timer);
-          resolve(fallback);
-        },
-      );
+      if (signal.aborted) return resolve(fallback);
+      const finish = (value: T) => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      };
+      const abort = () => finish(fallback);
+      const timer = setTimeout(abort, Math.max(0, ms));
+      signal.addEventListener("abort", abort, { once: true });
+      Promise.resolve().then(work).then(finish, abort);
     });
 
   const access: ToolAccess = {
     clock,
-    async list(task, signal): Promise<ToolList> {
+    async list(task, signal, options): Promise<ToolList> {
+      if (signal.aborted) return { tools: [], unavailable: [] };
       const s = o.settings();
       const deadline = now() + TOOL_LIMITS.listBudgetMs;
-      const builtin: ToolSpec[] = [];
-      const mcp: ToolSpec[] = [];
-      const unavailable: ToolUnavailable[] = [];
-      for (const server of builtinServers) {
-        const running = providers.get(server.id)?.provider;
-        for (const consent of CONSENTS) {
-          if (!s.tools.apple[consent] || appleAccess[consent] === "granted")
-            continue;
-          const title = Object.values(server.tools).find(
-            (t) => t.consent === consent,
-          )?.title;
-          if (title) unavailable.push({ title, state: "needs_permission" });
-        }
-        if (!running) continue;
-        const state = running.state().state;
-        if (usable(state))
-          builtin.push(
-            ...(await within(running.tools(signal), deadline - now(), [])),
-          );
-        else if (state !== "off")
-          unavailable.push({ title: builtinTitle(server), state });
-      }
-      // The in-process tools list after the bridge's and before any server's;
-      // an unusable one is nobody's loss (it has no permission to lack).
-      for (const server of localServers) {
-        const running = providers.get(server.id)?.provider;
-        if (!running || !usable(running.state().state)) continue;
-        builtin.push(
-          ...(await within(running.tools(signal), deadline - now(), [])),
-        );
-      }
-      for (const r of s.tools.servers) {
-        const running = providers.get(r.id)?.provider;
-        if (!running) {
-          const check = startable(r, s);
-          if (!check.ok && check.state !== "off")
-            unavailable.push({ title: r.name, state: check.state });
-          continue;
-        }
-        const state = running.state().state;
-        if (!usable(state)) {
-          unavailable.push({ title: r.name, state });
-          continue;
-        }
-        const specs = await within(
-          running.tools(signal),
+      // All providers get the same discovery window. A stalled bridge or
+      // server must not spend the whole budget before another even starts.
+      const jobs: Promise<ToolList>[] = [];
+      const discover = (running: McpProvider) =>
+        within(
+          () => running.tools(signal),
           deadline - now(),
           undefined,
+          signal,
         );
-        if (!specs) {
-          unavailable.push({ title: r.name, state: "starting" });
-          continue;
-        }
-        mcp.push(...specs.filter((spec) => toolsAllowed(s, spec)));
-      }
+      for (const server of builtinServers)
+        jobs.push(
+          (async () => {
+            const tools: ToolSpec[] = [];
+            const unavailable: ToolUnavailable[] = [];
+            const running = providers.get(server.id)?.provider;
+            for (const consent of CONSENTS) {
+              if (!s.tools.apple[consent] || appleAccess[consent] === "granted")
+                continue;
+              const title = Object.values(server.tools).find(
+                (t) => t.consent === consent,
+              )?.title;
+              if (title) unavailable.push({ title, state: "needs_permission" });
+            }
+            if (!running) return { tools, unavailable };
+            const state = running.state().state;
+            if (usable(state)) {
+              const listed = await discover(running);
+              if (listed) tools.push(...listed);
+              else
+                unavailable.push({
+                  title: builtinTitle(server),
+                  state: "starting",
+                });
+            } else if (state !== "off")
+              unavailable.push({ title: builtinTitle(server), state });
+            return { tools, unavailable };
+          })(),
+        );
+      // The in-process tools list after the bridge's and before any server's;
+      // an unusable one is nobody's loss (it has no permission to lack).
+      for (const server of localServers)
+        jobs.push(
+          (async () => {
+            const running = providers.get(server.id)?.provider;
+            if (!running || !usable(running.state().state))
+              return { tools: [], unavailable: [] };
+            return { tools: (await discover(running)) ?? [], unavailable: [] };
+          })(),
+        );
+      for (const r of s.tools.servers)
+        jobs.push(
+          (async () => {
+            const running = providers.get(r.id)?.provider;
+            if (!running) {
+              const check = startable(r, s);
+              return {
+                tools: [],
+                unavailable:
+                  !check.ok && check.state !== "off"
+                    ? [{ title: r.name, state: check.state }]
+                    : [],
+              };
+            }
+            const state = running.state().state;
+            if (!usable(state))
+              return { tools: [], unavailable: [{ title: r.name, state }] };
+            const specs = await discover(running);
+            return specs
+              ? { tools: specs, unavailable: [] }
+              : {
+                  tools: [],
+                  unavailable: [{ title: r.name, state: "starting" }],
+                };
+          })(),
+        );
+      const results = await Promise.all(jobs);
+      if (signal.aborted) return { tools: [], unavailable: [] };
       const words = tokens(task);
+      const matches = (text: string) =>
+        [...tokens(text)].filter((w) => words.has(w)).length;
+      // App/server names matter more than generic verbs such as "list".
+      // Rank the entire catalogue before capping: 17 first-party tools used
+      // to leave only one seat for every connected app together.
       const score = (spec: ToolSpec) =>
-        [...tokens(`${spec.name} ${spec.does}`)].filter((w) => words.has(w))
-          .length;
-      const ranked = mcp
+        3 * matches(`${spec.provider} ${spec.title}`) +
+        matches(`${spec.name} ${spec.does}`);
+      const ranked = results
+        .flatMap((result) => result.tools)
+        .filter((spec) => toolsAllowed(s, spec))
+        .filter(
+          (spec) =>
+            !options?.readsOnly ||
+            (spec.tier === "read" && spec.trusted && !spec.longRunning),
+        )
         .map((spec, index) => ({ spec, index, score: score(spec) }))
         .sort((a, b) => b.score - a.score || a.index - b.index)
         .map((entry) => entry.spec);
       return {
-        tools: [
-          ...builtin.filter((spec) => toolsAllowed(s, spec)),
-          ...ranked,
-        ].slice(0, TOOL_LIMITS.list),
-        unavailable: unavailable.slice(0, TOOL_LIMITS.unavailable),
+        // Briefing configuration needs the read catalogue across every app,
+        // rather than a task's 18 seats. Execution still validates each call.
+        tools: ranked.slice(0, options?.readsOnly ? 256 : TOOL_LIMITS.list),
+        unavailable: results
+          .flatMap((result) => result.unavailable)
+          .slice(0, options?.readsOnly ? 32 : TOOL_LIMITS.unavailable),
       };
     },
     prepare(spec, args, words): ToolPrepared {

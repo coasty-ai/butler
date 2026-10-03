@@ -938,8 +938,17 @@ func menuBarTitles(_ app: AXUIElement, limit: Int = 12) -> [String] {
 // Notifications seen while the helper has been running, and whether the user
 // asked for them at all (docs/PRIVACY.md). Guarded by stateLock.
 var deliveredNotifications = [DeliveredNotification]()
-var notificationsEnabled = true
+var notificationsEnabled = false
 var notificationObserver: AXObserver? = nil
+func protectedNotification(_ name: String) -> Bool {
+    var names = [String: String]()
+    for id in protectedApps {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+            names[id] = url.deletingPathExtension().lastPathComponent
+        }
+    }
+    return notificationAppProtected(name, protected: protectedApps, names: names)
+}
 // Reading a banner is a handful of accessibility reads on another process; the
 // observer fires on the main run loop, so it stays bounded and never blocks a
 // capture.
@@ -958,12 +967,12 @@ func readNotificationBanner(_ window: AXUIElement) {
     }
     let parts = notificationParts(texts)
     // A notification from a protected application is not read at all.
-    guard !protectedApps.contains(where: { parts.app.lowercased().contains($0.lowercased()) }) else { return }
+    guard !protectedNotification(parts.app), parts.app.lowercased() != "butler" else { return }
     let entry = DeliveredNotification(at: Date().timeIntervalSince1970,
                                       app: utf16Prefix(parts.app, 60),
                                       title: utf16Prefix(parts.title, notificationTextLimit),
                                       body: utf16Prefix(parts.body, notificationTextLimit))
-    withState { deliveredNotifications = mergeNotification(deliveredNotifications, entry) }
+    withState { deliveredNotifications = mergeNotification(deliveredNotifications, entry, limit: 200, horizon: 24 * 3600) }
 }
 /**
  Watches Notification Center for banners.
@@ -1027,6 +1036,28 @@ func openApplications() -> [OpenApp] {
         if a != b { return a < b }
         return first.windows.count > second.windows.count
     }
+}
+
+/** Metadata and observed banners for a background briefing. No image, input,
+    activation, document body or accessibility walk of other app windows. */
+func briefingContext(since: TimeInterval) -> [String: Any] {
+    watchNotifications()
+    let now = Date().timeIntervalSince1970
+    let apps = openApplications().map { item -> OpenApp in
+        // Background browser titles can disclose a protected website without
+        // publishing its address. Keep names only in a periodic briefing.
+        let browserNames = ["safari", "google chrome", "firefox", "arc", "brave browser", "microsoft edge", "chromium"]
+        return browserNames.contains(item.name.lowercased())
+            ? OpenApp(name: item.name, windows: [], frontmost: item.frontmost) : item
+    }
+    let entries = briefingNotifications(withState { notificationsEnabled ? deliveredNotifications : [] }, since: since, now: now)
+    return ["at": now * 1000,
+            "openApps": openAppLines(apps, limit: 64),
+            "appsMore": max(0, apps.count - 64),
+            "notifications": entries.suffix(100).map { notificationLine($0, now: now) },
+            "notificationsMore": max(0, entries.count - 100),
+            "accessibility": AXIsProcessTrusted(),
+            "notificationWatching": withState { notificationsEnabled } && notificationObserver != nil]
 }
 
 // MARK: Named targets
@@ -1923,7 +1954,7 @@ func screenContext() -> [String:Any] {
     let now=Date().timeIntervalSince1970
     let recent=withState { notificationsEnabled ? deliveredNotifications : [] }
         .filter { now - $0.at <= notificationHorizonSeconds }
-    if !recent.isEmpty {result["notifications"]=recent.map { notificationLine($0, now: now) }}
+    if !recent.isEmpty {result["notifications"]=recent.suffix(notificationListLimit).map { notificationLine($0, now: now) }}
     // Tell the model when this application publishes no usable accessibility,
     // so it stops guessing pixels and drives the menu bar and shortcuts. The
     // menu bar is a native NSMenu and normally survives a blind window; the
@@ -4597,7 +4628,10 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
     case "requestPermissions":
         _ = CGRequestScreenCaptureAccess();_ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String:true] as CFDictionary);return ["requested":true]
     case "configure":
-        if let apps = command["protectedApps"] as? [String]{protectedApps = apps};if let domains = command["protectedDomains"] as? [String]{protectedDomains = domains};if let id = command["displayId"] as? UInt32{displayID = id}
+        if let apps = command["protectedApps"] as? [String] {
+            if apps != protectedApps { withState { deliveredNotifications = [] } }
+            protectedApps = apps
+        };if let domains = command["protectedDomains"] as? [String]{protectedDomains = domains};if let id = command["displayId"] as? UInt32{displayID = id}
         if let notifications = command["notifications"] as? Bool {
             withState { notificationsEnabled = notifications; if !notifications { deliveredNotifications = [] } }
             if notifications { watchNotifications() }
@@ -4606,6 +4640,7 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
     case "surface":return surface(command["action"] as? [String:Any])
     // Read-only window facts for the typing probe (windowsReport): no input, no resume.
     case "windows":return windowsReport()
+    case "briefingContext":return briefingContext(since: (command["since"] as? Double ?? 0) / 1000)
     // Read-only local system index: sends no input, so it needs no resume.
     case "index":return await systemIndex(query: command["query"] as? String ?? "", limit: indexLimit(command["limit"]))
     case "rememberForeground":

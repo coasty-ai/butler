@@ -13,6 +13,7 @@ import {
   shell,
   systemPreferences,
   powerSaveBlocker,
+  Notification,
 } from "electron";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -111,6 +112,12 @@ import { createObserver, type Observer } from "./observer";
 import { createRoutineScheduler, type RoutineScheduler } from "./routines";
 import { createMemoryAccess } from "../src/memory/access";
 import { createAgenda, withAgenda } from "./agenda";
+import { collectBriefing } from "../src/briefings/collect";
+import {
+  createBriefings,
+  createBriefingSummarizer,
+  type BriefingService,
+} from "./briefings";
 import type { MemoryAccess, SystemIndex } from "../src/core/memory";
 import {
   privacyPanes,
@@ -303,6 +310,7 @@ let memory: MemoryStore | undefined;
 let observer: Observer | undefined;
 let routines: RoutineScheduler | undefined;
 let routineClock: ReturnType<typeof setInterval> | undefined;
+let briefings: BriefingService | undefined;
 let root: string;
 let master: Buffer;
 let settings: Settings = defaultSettings;
@@ -674,6 +682,7 @@ async function speculate(invocation: number, text: string) {
   }
   if (!listening || invocation !== voiceInvocation) return skip("cancelled");
   const step = prepared.prepare(task, {
+    toolsFirst: true,
     origin: "voice",
     taskSource: "user_words",
     ...(dictation ? { dictation } : {}),
@@ -1150,6 +1159,77 @@ function getRoutines() {
   });
   return routines;
 }
+/** Periodic app checks use consented reads; suggestions never execute here. */
+function getBriefings() {
+  briefings ??= createBriefings({
+    settings: () => settings,
+    busy: () =>
+      runActive() ||
+      listening ||
+      !!turnAbort ||
+      conversation.speaking ||
+      !!conversation.followUp,
+    locked: async () => {
+      if (process.platform !== "darwin") return true;
+      const p = await getNative().request("presence");
+      return p.locked === true || p.displayAsleep === true;
+    },
+    collect: (since, signal) =>
+      collectBriefing({
+        settings,
+        since,
+        signal,
+        workspace: async (at) => {
+          await getNative().configure(settings);
+          return getNative().request("briefingContext", { since: at });
+        },
+        agenda: () => getAgenda().readDetails(),
+        tools: getTools().access({ synthetic: false }),
+      }),
+    summarize: createBriefingSummarizer({
+      settings: () => settings,
+      key: () => providerKey(credentials, textSettings(settings)),
+      fetch: desktopTransport(debug),
+      trace: debug,
+    }),
+    modelReady: () =>
+      settings.provider === "ollama" ||
+      !!providerKey(credentials, textSettings(settings)),
+    deliver: (briefing) => {
+      const delivery = settings.briefings.delivery;
+      if (delivery !== "speech" && Notification.isSupported()) {
+        const notification = new Notification({
+          title: "Butler · Your briefing",
+          body: briefing.text.slice(0, 240),
+          silent: true,
+        });
+        notification.on("click", () => showSettings("briefings"));
+        notification.show();
+      }
+      if (delivery !== "notification") {
+        // No listening window: a briefing should not keep the microphone open.
+        const utterance = conversation.say(
+          { text: briefing.text },
+          {
+            priority: "result",
+            voiceTurn: true,
+            forceVoice: true,
+            kind: "briefing",
+          },
+        );
+        if (!utterance) throw new Error("Speech unavailable.");
+      }
+      setPill({
+        phase: "done",
+        label: "Your briefing is ready.",
+        transcript: briefing.text.slice(0, 500),
+        canApprove: false,
+      });
+    },
+    trace: debug,
+  });
+  return briefings;
+}
 /** Settings with one server row replaced. */
 function withToolServer(
   s: Settings,
@@ -1289,6 +1369,7 @@ const conversation = new Conversation({
 /** The turn whose decision is in flight; aborted when the user takes the floor. */
 let turnAbort: AbortController | undefined;
 function abortTurn() {
+  briefings?.interrupt();
   turnAbort?.abort();
   turnAbort = undefined;
 }
@@ -1342,6 +1423,7 @@ function dialogContext() {
     agenda: settings.agenda ? agendaLines : undefined,
     notifications: context?.notifications,
     openApps: context?.openApps,
+    briefing: settings.briefings.on ? briefings?.status().latest : undefined,
   };
 }
 /**
@@ -2100,6 +2182,9 @@ function saveConfig() {
     { mode: 0o600 },
   );
   renameSync(path + ".tmp", path);
+  // Every settings writer, including Tools' immediate switches, revokes
+  // in-flight briefing access before returning to its caller.
+  briefings?.apply();
 }
 function getNative() {
   if (process.platform !== "darwin")
@@ -2602,6 +2687,10 @@ function updateTray() {
         click: () => showSettings("setup"),
       },
       { label: "Settings…", click: () => showSettings() },
+      {
+        label: "Your latest briefing…",
+        click: () => showSettings("briefings"),
+      },
       { label: "Review local runs…", click: () => showSettings("review") },
       ...(settings.remoteEnabled
         ? [
@@ -2717,8 +2806,11 @@ function scheduleVocabulary() {
 /** Spoken-reply and listening settings the voice helper applies. */
 function voiceOutputConfig(s: Settings = settings) {
   return {
-    speechEnabled: s.voiceReplies !== "off",
+    speechEnabled:
+      s.voiceReplies !== "off" ||
+      (s.briefings.on && s.briefings.delivery !== "notification"),
     voiceId: s.voiceId,
+    voiceLocale: s.persona === "jarvis" ? "en-GB" : "",
     voiceRate: s.voiceRate,
     patience: s.listeningPatience,
     followUp: s.followUpListening,
@@ -2734,6 +2826,8 @@ const voiceOutputKeys = [
   "followUpListening",
   "followUpWindow",
   "voiceSounds",
+  "persona",
+  "briefings",
 ] as const;
 async function configureVoice() {
   try {
@@ -3214,6 +3308,7 @@ async function command(
   confidence = 1,
   extra: { segments?: number; invocation?: number; recovered?: boolean } = {},
 ) {
+  briefings?.interrupt();
   // The final words settle an early step before anything plans them: kept
   // for the run they start, otherwise left as it is (the app stays open).
   const turnInvocation = extra.invocation ?? voiceInvocation;
@@ -4312,6 +4407,7 @@ async function startRun(
   prelude?: RunPrelude,
   adopt?: Speculation,
 ) {
+  briefings?.interrupt();
   startingRun = true;
   try {
     await early.idle();
@@ -4355,6 +4451,7 @@ async function startRun(
       !from?.undo;
     void runner
       .start(task, {
+        toolsFirst: true,
         origin,
         taskSource,
         ...(from?.watch ? { watch: from.watch } : {}),
@@ -4536,6 +4633,12 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
       credentials = nextCredentials;
       settings = next;
       saveConfig();
+      // Keep the banner observer alive between tasks and apply disable/protection
+      // changes immediately, even when no action runner owns the helper.
+      if (native || settings.notifications || settings.briefings.on)
+        void getNative()
+          .configure(settings)
+          .catch((error) => debug("NativeSetupFailed", errorDetails(error)));
       // The observe stream follows the switch and the tier at once.
       void getObserver()
         .apply()
@@ -5175,6 +5278,25 @@ async function dispatch(method: string, args: unknown[]): Promise<unknown> {
         "x-apple.systempreferences:com.apple.Accessibility-Settings.extension",
       );
       return;
+    // Read-only briefings. Settings window only.
+    case "briefingStatus":
+      return getBriefings().status();
+    case "checkBriefingNow":
+      return getBriefings().checkNow();
+    case "forgetBriefing":
+      getBriefings().forget();
+      return getBriefings().status();
+    case "briefingTools": {
+      const list = await getTools()
+        .access({ synthetic: false })
+        ?.list("briefing", AbortSignal.timeout(1500), { readsOnly: true });
+      return (list?.tools ?? []).map(({ id, title, does, params }) => ({
+        id,
+        title,
+        does,
+        params,
+      }));
+    }
     // Watching (electron/observer.ts, src/observer). Settings window only.
     case "watchingStatus":
       return getObserver().status();
@@ -5506,6 +5628,11 @@ app
     // Watching: retention at start, the midnight pass, the setting pushed
     // to the helper once one runs; approved routines checked every minute.
     getObserver().start();
+    getBriefings().start();
+    if (settings.notifications || settings.briefings.on)
+      void getNative()
+        .configure(settings)
+        .catch((error) => debug("NativeSetupFailed", errorDetails(error)));
     routineClock = setInterval(
       () =>
         void getRoutines()
@@ -5756,6 +5883,7 @@ app.on("before-quit", () => {
   runner?.stop();
   clearInterval(routineClock);
   observer?.close();
+  briefings?.close();
   flushMemory();
   native?.close();
   voice?.close();

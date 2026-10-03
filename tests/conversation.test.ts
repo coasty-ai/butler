@@ -339,6 +339,20 @@ describe("conversation: when to speak", () => {
     expect(t.spoken).toHaveLength(0);
   });
 
+  it("explicit spoken briefings use the speech queue without opening the microphone, even with ordinary replies off", () => {
+    const t = setup({ voiceReplies: "off", handsFree: true });
+    const briefing = t.conversation.say(
+      { text: "There's a review at three. I'd start with the deck." },
+      { priority: "result", forceVoice: true, kind: "briefing" },
+    );
+    expect(briefing).toBeDefined();
+    expect(t.texts()).toEqual([
+      "There's a review at three. I'd start with the deck.",
+    ]);
+    expect(t.listens()).toEqual([]);
+    expect(t.spoken[0].style).toBe("persona");
+  });
+
   it("keeps the room open for a thanks while a question is pending under the conversation setting", () => {
     // The helper heard a closing phrase and opened no window after it, knowing
     // nothing of the question: the app asks for a continuation window, whose

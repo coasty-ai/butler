@@ -128,6 +128,8 @@ import {
   toolUndoLine,
 } from "./tool-text";
 import { entityTokens } from "./entities";
+import { toolDecision } from "./tool-policy";
+import { needsScreen, toolFrame, TOOL_SESSION_ACTIONS } from "./tool-session";
 import { actionConfirmed, contextDigest, screenshotUse } from "./vision";
 import { redactSecrets, scanText } from "./sanitize";
 import { streamedPrelude, type StreamedStep } from "./streamed";
@@ -1602,6 +1604,8 @@ const taskWords = (text: string) =>
     .trim();
 /** What Runner.start is told about the run it begins. */
 export interface StartOptions {
+  /** Try connected tools without reading the desktop; capture hands off to the normal screen loop. */
+  toolsFirst?: boolean;
   origin?: RunOrigin;
   taskSource?: TaskSource;
   /**
@@ -1848,6 +1852,10 @@ export class Runner {
   private executed: Action[] = [];
   /** The tools this run may call, listed once and frozen; unset without the tool layer. */
   private toolList?: ToolList;
+  /** Connected app work proceeds independently of whatever the user does on screen. */
+  private toolsOnly = false;
+  private toolEvidence = false;
+  private unverifiedToolWrites = new Set<string>();
   /** Consecutive capture steps executed; the second on a browser page gets PAGE_TOOL_NOTE. */
   private looksInARow = 0;
   /**
@@ -2624,6 +2632,7 @@ export class Runner {
    * is in front for a step. Every other run pauses as it always did.
    */
   manualTakeover(scope: TakeoverScope = "screen") {
+    if (this.toolsOnly) return;
     const target = this.boundTarget();
     if (target && scope === "screen" && !this.inFront) return;
     if (this.snapshot.pending && this.snapshot.run?.status === "confirming") {
@@ -2705,7 +2714,7 @@ export class Runner {
       // The approval is still pending; only re-enable native input for it.
       const epoch = this.epoch,
         interrupts = this.interrupts;
-      await this.controller.resume();
+      if (!this.toolsOnly) await this.controller.resume();
       if (
         !this.active() ||
         this.held ||
@@ -2720,7 +2729,7 @@ export class Runner {
     }
     if (!this.held) return false;
     const epoch = this.epoch;
-    await this.controller.resume();
+    if (!this.toolsOnly) await this.controller.resume();
     // A pause, takeover or stop that landed during the native round-trip wins.
     if (!this.active() || epoch !== this.epoch) {
       this.controller.stop();
@@ -2732,7 +2741,12 @@ export class Runner {
     this.markActive();
     this.abort = new AbortController();
     this.event("UserTakeoverEnded");
-    this.status("capturing", "Resuming with a fresh screenshot.");
+    this.status(
+      this.toolsOnly ? "thinking" : "capturing",
+      this.toolsOnly
+        ? "Continuing through connected apps."
+        : "Resuming with a fresh screenshot.",
+    );
     this.wake?.();
     return true;
   }
@@ -2775,7 +2789,7 @@ export class Runner {
     if (this.voiceApproval) {
       const epoch = this.epoch,
         interrupts = this.interrupts;
-      await this.controller.resume();
+      if (!this.toolsOnly) await this.controller.resume();
       if (
         !this.active() ||
         epoch !== this.epoch ||
@@ -3178,6 +3192,9 @@ export class Runner {
     this.appsSeen = new Set();
     this.prelude = undefined;
     this.toolList = undefined;
+    this.toolsOnly = false;
+    this.toolEvidence = false;
+    this.unverifiedToolWrites.clear();
     this.toolNow = undefined;
     this.toolFallback = undefined;
     this.target = undefined;
@@ -3291,7 +3308,9 @@ export class Runner {
    */
   private async listTools(tools: ToolAccess, task: string) {
     const { value: list, timedOut } = await this.within<ToolList>(
-      TOOL_LIMITS.listBudgetMs,
+      // Let the registry return its partial results at its own deadline
+      // before this outer guard cancels a broken implementation.
+      TOOL_LIMITS.listBudgetMs + 100,
       (signal) => tools.list(task, signal),
     );
     if (!this.active()) return;
@@ -3464,6 +3483,11 @@ export class Runner {
       return "continue";
     }
     const ok = outcome.code === "ok";
+    if (ok) {
+      this.toolEvidence = true;
+      if (spec.tier === "read") this.unverifiedToolWrites.delete(spec.provider);
+      else if (!outcome.verified) this.unverifiedToolWrites.add(spec.provider);
+    }
     if (ok) this.trackDeliverable(action, outcome, earlier !== undefined);
     run.actions++;
     run.tools = {
@@ -3537,7 +3561,13 @@ export class Runner {
       this.stuck(this.history.at(-1));
       return "continue";
     }
-    if (action.finish && ok && outcome.verified && outcome.facts) {
+    if (
+      action.finish &&
+      ok &&
+      outcome.verified &&
+      outcome.facts &&
+      (!this.toolsOnly || !this.unverifiedToolWrites.size)
+    ) {
       const summary = redactSecrets(
         toolDoneLine(outcome.facts, tools.clock(), this.userWords(run)),
       );
@@ -4302,6 +4332,7 @@ export class Runner {
   private recordFrame(frame: Frame) {
     this.check();
     if (this.held) return null;
+    if (frame.source === "tools") return frame;
     if (frame.context) frame.context.recentTasks = this.recentTasks;
     if (frame.appId && this.appsSeen.size < 50) this.appsSeen.add(frame.appId);
     this.snapshot.frame = frame;
@@ -4816,6 +4847,26 @@ export class Runner {
       ? undefined
       : this.extras.tools;
   }
+  private prefersTools(task: string, options: StartOptions): boolean {
+    return (
+      !!options.toolsFirst &&
+      !options.undo &&
+      options.dictation === undefined &&
+      !options.watch &&
+      !options.prelude &&
+      !options.streamed?.length &&
+      !needsScreen(task)
+    );
+  }
+  private enterTools(): boolean {
+    this.toolsOnly =
+      !!this.toolList?.tools.length &&
+      (!this.plan ||
+        this.plan.steps.every((step) => step.action.type === "tool_call"));
+    if (this.toolsOnly)
+      this.event("ToolModeStarted", { toolCount: this.toolList!.tools.length });
+    return this.toolsOnly;
+  }
   /**
    * Prepares a run's first step before its words are final (PreparedStep):
    * the memory recall, the tool list, the first capture and, when that step
@@ -4878,7 +4929,18 @@ export class Runner {
     const live = () => this.preparation === p && !p.code && this.active();
     this.memoryRun = this.usesMemory(run, options);
     const tools = this.toolsFor(run, options);
+    const preferTools = tools && this.prefersTools(task, options);
+    let recalled =
+      this.memoryRun && preferTools ? this.recall(task) : undefined;
+    let listed = preferTools ? this.listTools(tools, task) : undefined;
+    if (preferTools) {
+      await recalled;
+      await listed;
+      if (!live()) return;
+      this.enterTools();
+    }
     if (
+      !this.toolsOnly &&
       options.background &&
       this.settings.workInBackground &&
       !run.synthetic &&
@@ -4886,33 +4948,37 @@ export class Runner {
     )
       await this.bindTarget(run);
     if (!live()) return;
-    const recalled = this.memoryRun ? this.recall(task) : undefined;
-    const listed = tools ? this.listTools(tools, task) : undefined;
+    if (!preferTools) {
+      recalled = this.memoryRun ? this.recall(task) : undefined;
+      listed = tools ? this.listTools(tools, task) : undefined;
+    }
     // The read-only capture, as capture() takes it: never while a protected,
     // terminal or secure input surface is in front, which simply ends the
     // preparation (the run, if one starts, will say so itself).
     let frame: Frame;
-    try {
-      const surface = await this.surfaceNow();
-      if (!live()) return;
-      this.lastSurface = surface;
-      if (surfacePolicy(surface, this.settings).kind !== "ALLOW")
-        return this.failPreparation(p, "surface");
-      const target = this.boundTarget();
-      await this.controller.resume();
+    if (this.toolsOnly) frame = toolFrame();
+    else
       try {
-        frame = target
-          ? await this.controller.captureTarget!(target.token)
-          : await this.controller.capture();
-      } finally {
-        this.controller.stop();
+        const surface = await this.surfaceNow();
+        if (!live()) return;
+        this.lastSurface = surface;
+        if (surfacePolicy(surface, this.settings).kind !== "ALLOW")
+          return this.failPreparation(p, "surface");
+        const target = this.boundTarget();
+        await this.controller.resume();
+        try {
+          frame = target
+            ? await this.controller.captureTarget!(target.token)
+            : await this.controller.capture();
+        } finally {
+          this.controller.stop();
+        }
+      } catch {
+        return this.failPreparation(
+          p,
+          p.abort.signal.aborted ? (p.code ?? "discarded") : "native_error",
+        );
       }
-    } catch {
-      return this.failPreparation(
-        p,
-        p.abort.signal.aborted ? (p.code ?? "discarded") : "native_error",
-      );
-    }
     if (!live()) return;
     if (frame.context) frame.context.recentTasks = this.recentTasks;
     p.frame = frame;
@@ -4931,14 +4997,16 @@ export class Runner {
         !!this.toolList?.tools.some((t) => t.id === options.toolStep!.tool)) ||
       (options.dictation !== undefined && focusedTextField(this.lastSurface!));
     if (proposesItself) return;
-    const screenshot = screenshotUse({
-      mode: this.settings.visionMode,
-      frame,
-      surface: this.lastSurface,
-      shown: this.shown,
-      sinceImage: this.sinceImage,
-      executed: this.lastStep,
-    });
+    const screenshot: ScreenshotUse = this.toolsOnly
+      ? { send: "none", reason: "tools" }
+      : screenshotUse({
+          mode: this.settings.visionMode,
+          frame,
+          surface: this.lastSurface,
+          shown: this.shown,
+          sinceImage: this.sinceImage,
+          executed: this.lastStep,
+        });
     this.event("ModelRequestStarted", {
       screenshot: screenshot.send,
       screenshotReason: screenshot.reason,
@@ -5016,6 +5084,8 @@ export class Runner {
     if (options.prelude) return "early_step";
     if (taskWords(task) !== taskWords(p.task)) return "text_changed";
     if (Date.now() - p.capturedAt > PREPARED_FRAME_MAX_AGE_MS) return "stale";
+    if (p.frame.source === "tools")
+      return this.prefersTools(task, options) ? undefined : "mode_changed";
     try {
       const surface = await this.surfaceNow();
       if (p.code) return p.code;
@@ -5134,6 +5204,19 @@ export class Runner {
     let toolStep = options.toolStep;
     const tools = this.toolsFor(run, options);
     try {
+      const preferTools =
+        !adopting && tools && this.prefersTools(task, options);
+      let recalled =
+        this.memoryRun && preferTools ? this.recall(task) : undefined;
+      let listed = preferTools ? this.listTools(tools, task) : undefined;
+      if (preferTools) {
+        await recalled;
+        await listed;
+        recalled = undefined;
+        listed = undefined;
+        if (!this.active()) return;
+        this.enterTools();
+      }
       // An adopted step bound its window, recalled and listed already.
       if (!adopting) {
         if (options.prelude && !run.synthetic)
@@ -5141,6 +5224,7 @@ export class Runner {
         if (options.streamed?.length && !run.synthetic)
           this.applyStreamed(options.streamed);
         if (
+          !this.toolsOnly &&
           options.background &&
           this.settings.workInBackground &&
           !run.synthetic &&
@@ -5152,11 +5236,12 @@ export class Runner {
       // answers the index off its queue); both are awaited before anything
       // decides on the frame, so a recalled plan, memory and the frozen tool
       // list are in place exactly as if they had come first.
-      let recalled =
-        this.memoryRun && !adopting ? this.recall(task) : undefined;
-      let listed = tools && !adopting ? this.listTools(tools, task) : undefined;
+      if (!preferTools) {
+        recalled = this.memoryRun && !adopting ? this.recall(task) : undefined;
+        listed = tools && !adopting ? this.listTools(tools, task) : undefined;
+      }
       if (!this.active()) return;
-      await this.controller.resume();
+      if (!this.toolsOnly) await this.controller.resume();
       while (this.active()) {
         await this.ready();
         const epoch = this.epoch;
@@ -5170,13 +5255,16 @@ export class Runner {
         if (reaim && (reaim.epoch !== epoch || reaim.handsOn !== this.handsOn))
           reaim = undefined;
         this.status(
-          "capturing",
-          reaim
-            ? "The screen moved; re-aiming at the same control."
-            : "Seeing the selected surface.",
+          this.toolsOnly ? "thinking" : "capturing",
+          this.toolsOnly
+            ? "Working through connected apps."
+            : reaim
+              ? "The screen moved; re-aiming at the same control."
+              : "Seeing the selected surface.",
         );
         let frame: Frame | null;
         if (first) frame = first.frame;
+        else if (this.toolsOnly) frame = toolFrame();
         else
           try {
             frame = reaim ? reaim.frame : await this.captureSettled(epoch);
@@ -5195,7 +5283,7 @@ export class Runner {
         }
         // Advice only, before the model sees this step's history. A re-aim is
         // the same step: it neither ends nor starts a no-progress streak.
-        if (!reaim) this.trackProgress(frame);
+        if (!reaim && !this.toolsOnly) this.trackProgress(frame);
         // The prepared request rides on the controller it was sent with.
         if (!first) this.abort = new AbortController();
         if (this.planPending !== undefined) this.abandonPlan("interrupted");
@@ -5370,14 +5458,16 @@ export class Runner {
           const prepared = first?.proposal ? first : undefined;
           const screenshot =
             prepared?.screenshot ??
-            screenshotUse({
-              mode: this.settings.visionMode,
-              frame,
-              surface: this.lastSurface,
-              shown: this.shown,
-              sinceImage: this.sinceImage,
-              executed: this.lastStep,
-            });
+            (this.toolsOnly
+              ? ({ send: "none", reason: "tools" } as ScreenshotUse)
+              : screenshotUse({
+                  mode: this.settings.visionMode,
+                  frame,
+                  surface: this.lastSurface,
+                  shown: this.shown,
+                  sinceImage: this.sinceImage,
+                  executed: this.lastStep,
+                }));
           this.lastStep = undefined;
           if (!prepared)
             this.event("ModelRequestStarted", {
@@ -5526,6 +5616,34 @@ export class Runner {
           this.countInvalid();
           continue;
         }
+        // A tools-only decision has no screen coordinates or window to act
+        // on. Drop desktop proposals and replan from a fresh capture.
+        if (this.toolsOnly && !TOOL_SESSION_ACTIONS.has(action.type)) {
+          this.toolsOnly = false;
+          this.planPending = undefined;
+          this.shown = undefined;
+          this.event("ToolModeFallback", { actionType: action.type });
+          history.push({
+            type: "rejected",
+            result:
+              "No desktop input was sent. Reading a fresh screen before planning the remaining step.",
+          });
+          try {
+            if (
+              options.background &&
+              this.settings.workInBackground &&
+              this.controller.bindTarget
+            )
+              await this.bindTarget(run);
+            if (!this.active() || this.held || epoch !== this.epoch) continue;
+            await this.controller.resume();
+          } catch (error) {
+            if (this.held || epoch !== this.epoch) continue;
+            if (await this.recoverNative(error, epoch)) continue;
+            throw error;
+          }
+          continue;
+        }
         // Without the tool layer a tool step has nowhere to go; the model
         // hears it and drives the screen (the monitor precedent).
         if (action.type === "tool_call" && !this.extras.tools) {
@@ -5544,19 +5662,27 @@ export class Runner {
         // arguments never reach the helper.
         let actionSurface: Surface;
         const boundWindow = this.boundTarget();
-        try {
-          actionSurface = await this.surfaceNow(
-            action.type === "tool_call" ? undefined : action,
-          );
-        } catch (error) {
-          if (this.held || epoch !== this.epoch) {
-            planFail("interrupted");
-            continue;
+        if (this.toolsOnly)
+          actionSurface = {
+            appId: "",
+            pid: 0,
+            secureInput: false,
+            unknown: false,
+          };
+        else
+          try {
+            actionSurface = await this.surfaceNow(
+              action.type === "tool_call" ? undefined : action,
+            );
+          } catch (error) {
+            if (this.held || epoch !== this.epoch) {
+              planFail("interrupted");
+              continue;
+            }
+            planFail(nativeReason(error));
+            if (await this.recoverNative(error, epoch, action)) continue;
+            throw error;
           }
-          planFail(nativeReason(error));
-          if (await this.recoverNative(error, epoch, action)) continue;
-          throw error;
-        }
         // A menu Copy, Cut or Paste with nothing to act on is answered with
         // its fixed line and counted as an invalid step, as a refused tool
         // call is: it never executes, so it is no revisit the loop rule
@@ -5586,35 +5712,38 @@ export class Runner {
             ? this.toolContext(action, userWords, frame)
             : {};
 
-        const evaluated = evaluate(
-          action,
-          actionSurface,
-          this.settings,
-          run.synthetic,
-          {
-            // A wake-up run's objective quotes the watched request: only the
-            // user's own corrections to this run can ask it for a paste.
-            pasteRequested: pasteRequested(
-              run.origin === "watch" ? "" : run.task,
-              run.corrections,
-              run.taskSource,
-            ),
-            ...(userWords ? { userWords } : {}),
-            ...toolContext,
-            // The task's browser: opening another one is refused.
-            ...(run.browser ? { browser: run.browser } : {}),
-            // The same rules, on the bound window's surface, plus the one
-            // refusal a bound run adds: input goes to that process alone.
-            ...(boundWindow
-              ? {
-                  target: {
-                    pid: boundWindow.pid,
-                    appName: boundWindow.appName,
-                  },
-                }
-              : {}),
-          },
-        );
+        const evaluated: Decision = this.toolsOnly
+          ? action.type === "tool_call"
+            ? toolDecision(action, this.settings, run.synthetic, {
+                ...(userWords ? { userWords } : {}),
+                ...toolContext,
+              })
+            : action.type === "request_user"
+              ? { kind: "USER_TAKEOVER", reason: action.reason }
+              : { kind: "ALLOW", reason: "" }
+          : evaluate(action, actionSurface, this.settings, run.synthetic, {
+              // A wake-up run's objective quotes the watched request: only the
+              // user's own corrections to this run can ask it for a paste.
+              pasteRequested: pasteRequested(
+                run.origin === "watch" ? "" : run.task,
+                run.corrections,
+                run.taskSource,
+              ),
+              ...(userWords ? { userWords } : {}),
+              ...toolContext,
+              // The task's browser: opening another one is refused.
+              ...(run.browser ? { browser: run.browser } : {}),
+              // The same rules, on the bound window's surface, plus the one
+              // refusal a bound run adds: input goes to that process alone.
+              ...(boundWindow
+                ? {
+                    target: {
+                      pid: boundWindow.pid,
+                      appName: boundWindow.appName,
+                    },
+                  }
+                : {}),
+            });
         // Only an ALLOW is replaced: every refusal keeps its own reason.
         const windowless = this.windowlessApp;
         const decision =
@@ -5860,7 +5989,7 @@ export class Runner {
             // approval binds to the exact arguments the question rendered.
             // Native input is re-enabled for the screen steps that follow.
             try {
-              if (relatch) await this.controller.resume();
+              if (relatch && !this.toolsOnly) await this.controller.resume();
             } catch (error) {
               if (this.held || epoch !== this.epoch) {
                 planFail("interrupted");
@@ -5940,6 +6069,26 @@ export class Runner {
           continue;
         }
         if (action.type === "done") {
+          if (
+            this.toolsOnly &&
+            (!this.toolEvidence || this.unverifiedToolWrites.size)
+          ) {
+            history.push({
+              type: "rejected",
+              result: this.toolEvidence
+                ? "A tool write has not been verified. Use a read tool from each server you changed to check the result before done, or call capture to verify on screen."
+                : "Nothing has been successfully read or changed yet. Use a tool to obtain evidence, call capture for desktop work, or fail with what blocks.",
+            });
+            this.event("ActionFailed", {
+              code: "DONE_CHALLENGED",
+              actionType: "done",
+              reason: this.toolEvidence
+                ? "tool_write_unverified"
+                : "no_tool_evidence",
+            });
+            this.countInvalid();
+            continue;
+          }
           // A claim made after a refused step is checked once: the model
           // reads the refusal again on a fresh screenshot and says done
           // again or fail. Nothing executes, and no floor moved.
@@ -6045,6 +6194,18 @@ export class Runner {
           break;
         }
         if (action.type === "fail") throw new ModelFailedError(action.reason);
+        if (this.toolsOnly && action.type === "wait") {
+          this.status("executing", "Waiting for the next tool check.");
+          await this.sleep(action.milliseconds);
+          if (!this.active() || this.held || epoch !== this.epoch) continue;
+          run.actions++;
+          history.push({
+            type: "wait",
+            result: "Waited without reading or controlling the desktop.",
+          });
+          this.event("ActionExecuted", { action, frame_id: frame.id });
+          continue;
+        }
         if (action.type === "monitor") {
           // Runner-side, never sent to controller.execute: the watch takes
           // the window and this run is over.

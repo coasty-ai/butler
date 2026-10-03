@@ -10,6 +10,7 @@ import type { AppleConsent, ToolsStatus } from "../core/tools";
 import type { ToolServerTest } from "../tools/registry";
 import type { ModulesStatus } from "../modules/registry";
 import type { WatchingStatus } from "../observer/types";
+import type { BriefingStatus, BriefingTool } from "../briefings/types";
 import type {
   LearnedProposals,
   ProposalDecision,
@@ -582,6 +583,10 @@ export interface Bridge {
   recipesStatus(): Promise<RecipesStatus>;
   /** Settings window only. Watching's switch, tier, pause state and the work log's counts. */
   watchingStatus(): Promise<WatchingStatus>;
+  briefingStatus(): Promise<BriefingStatus>;
+  checkBriefingNow(): Promise<BriefingStatus>;
+  forgetBriefing(): Promise<BriefingStatus>;
+  briefingTools(): Promise<BriefingTool[]>;
   /** Settings window only. Pauses or resumes the observe stream now; the setting stays. */
   setWatchingPaused(paused: boolean): Promise<WatchingStatus>;
   /** Settings window only. Deletes today's work log, or every day's. */

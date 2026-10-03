@@ -176,6 +176,7 @@ function setup(
       agenda?: string[];
       notifications?: string[];
       openApps?: string[];
+      briefing?: { at: number; text: string };
     };
     /** A function stands in for the presence read, so a test can make it fail. */
     heldByVoice?: boolean | (() => boolean);
@@ -322,6 +323,32 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("assistant session: deciding a turn", () => {
+  it("discusses its latest briefing in the selected British persona without starting a desktop task", async () => {
+    const t = setup({
+      settings: { persona: "jarvis" },
+      context: {
+        briefing: {
+          at: 1_000_000,
+          text: "Alex needs the deck before the three o'clock review.",
+        },
+      },
+      bodies: [
+        answer(
+          "I'd start with Alex's deck. That gives you breathing room before the review.",
+        ),
+      ],
+    });
+    const decision = await t.decided(
+      "Talk me through my latest briefing",
+      start("Talk me through my latest briefing"),
+    );
+    expect(decision.acting).toBe(false);
+    const spoken = await t.collect(decision);
+    expect(spoken.join(" ")).toContain("Alex's deck");
+    const state = t.stateOf(0);
+    expect(state.persona).toBe("jarvis");
+    expect(state.briefing.text).toContain("three o'clock");
+  });
   it("speaks a filtered answer, two sentences at most, and notes both turns", async () => {
     const t = setup({
       bodies: [

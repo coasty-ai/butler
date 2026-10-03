@@ -31,6 +31,14 @@ func workspaceChecks(_ check: (Bool, String) -> Void) {
     var many = [DeliveredNotification]()
     for index in 0..<40 { many = mergeNotification(many, DeliveredNotification(at: Double(index), app: "A", title: "\(index)", body: "")) }
     check(many.count == notificationListLimit && many.last?.title == "39", "the list keeps only the most recent notifications")
+    var briefing = [DeliveredNotification]()
+    for index in 0..<220 { briefing = mergeNotification(briefing, DeliveredNotification(at: Double(index), app: "Slack", title: "\(index)", body: ""), limit: 200, horizon: 24 * 3600) }
+    check(briefing.count == 200, "background banner storage stays bounded")
+    check(briefingNotifications(briefing, since: 215, now: 220).count == 4, "briefings read only banners after their cursor")
+    check(briefingNotifications(briefing, since: 0, now: 25 * 3600).isEmpty, "briefings expire old banners")
+    check(notificationAppProtected("Terminal", protected: ["com.apple.Terminal"]), "bundle protection covers a banner app name")
+    check(notificationAppProtected("Secrets", protected: ["org.vendor.vault"], names: ["org.vendor.vault": "Secrets"]), "installed app names cover custom protected apps")
+    check(!notificationAppProtected("Slack", protected: ["com.apple.Terminal"]), "other app banners stay available")
 
     // notificationLine
     let now = 10_000.0

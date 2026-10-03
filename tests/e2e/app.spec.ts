@@ -127,3 +127,44 @@ test("tiny settings and responsive preview", async ({ page }) => {
   await page.getByRole("button", { name: "Execute command" }).click();
   await expect(page.getByRole("alert")).toContainText("macOS app");
 });
+
+test("periodic briefings offer spoken delivery and a selectable interval without granting app access", async ({
+  page,
+}) => {
+  await page.goto("/#settings");
+  const panel = page.locator("#briefings");
+  await panel.locator(":scope > summary").click();
+  await expect(panel.getByRole("combobox", { name: "Delivery" })).toHaveValue(
+    "speech",
+  );
+  await panel
+    .getByRole("checkbox", { name: "Give me regular briefings" })
+    .check();
+  await panel.getByRole("combobox", { name: "Check every" }).selectOption("15");
+  await expect(panel.getByRole("button", { name: "Check now" })).toBeDisabled();
+  await expect(
+    panel.getByText("Save Settings below to apply these changes."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Saved", exact: true }),
+  ).toBeVisible();
+  await expect(panel.locator(":scope > summary")).toContainText(
+    "Every 15 minutes",
+  );
+  // The preview saves choices but cannot collect desktop data.
+  await panel.getByRole("button", { name: "Check now" }).click();
+  await expect(panel.getByRole("alert")).toContainText("Mac app");
+  const learning = page
+    .locator(".setting-group")
+    .filter({ has: page.locator("summary").filter({ hasText: "Learning" }) });
+  await learning.locator(":scope > summary").click();
+  await expect(
+    page.getByRole("checkbox", { name: "Read my notifications" }),
+  ).not.toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: "Use my Calendar and Reminders" }),
+  ).not.toBeChecked();
+  await panel.scrollIntoViewIfNeeded();
+  await panel.screenshot({ path: "output/qa/butler-briefings.png" });
+});

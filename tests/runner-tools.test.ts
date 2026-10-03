@@ -211,6 +211,30 @@ afterEach(() => {
 });
 
 describe("the tool list", () => {
+  it("preserves healthy tools returned at the registry's deadline", async () => {
+    vi.useFakeTimers();
+    const h = harness({
+      tools: fakeTools({
+        list: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          return {
+            tools: [CALENDAR_LIST],
+            unavailable: [{ title: "Slow", state: "starting" }],
+          };
+        },
+      }),
+    });
+    const pending = h.runner.start("check my calendar", voice);
+    await vi.advanceTimersByTimeAsync(1000);
+    await pending;
+    expect(
+      h.provider.observations[0].tools?.list.map((tool) => tool.id),
+    ).toEqual([CALENDAR_LIST.id]);
+    expect(h.m.of("ToolsListed")[0].data).toEqual({
+      toolCount: 1,
+      unavailableCount: 1,
+    });
+  });
   it("is listed once before the first proposal, journaled, and shown to the model with the clock", async () => {
     const h = harness({
       replies: [call(CALENDAR_LIST.id, LIST_ARGS)],
@@ -285,6 +309,264 @@ describe("the tool list", () => {
     });
     await practice.runner.start("practice", voice);
     expect(practice.tools!.listCalls).toEqual([]);
+  });
+});
+
+describe("tools before desktop control", () => {
+  const backgroundTools = { ...voice, toolsFirst: true, background: true };
+
+  it("answers from a tool without any desktop observations, input or window binding", async () => {
+    const c = controller({
+      bindTarget: vi.fn(async () => {
+        throw new Error("must not bind");
+      }),
+      surface: vi.fn(async () => {
+        throw new Error("the frontmost app must not matter");
+      }),
+      capture: vi.fn(async () => {
+        throw new Error("no screen permission");
+      }),
+    });
+    const h = harness({
+      controller: c,
+      replies: [call(CALENDAR_LIST.id, LIST_ARGS)],
+    });
+    await h.runner.start("what's on my calendar Thursday", backgroundTools);
+    expect(h.runner.snapshot.run).toMatchObject({
+      status: "completed",
+      frames: 0,
+      tools: { calls: 1 },
+    });
+    expect(h.runner.snapshot.frame).toBeNull();
+    for (const method of [
+      c.capture,
+      c.surface,
+      c.execute,
+      c.resume,
+      c.bindTarget,
+    ])
+      expect(method).not.toHaveBeenCalled();
+    expect(
+      h.provider.observations.every(
+        (o) => o.frame.source === "tools" && o.screenshot?.send === "none",
+      ),
+    ).toBe(true);
+    expect(h.m.of("FrameCaptured")).toHaveLength(0);
+    expect(h.m.of("ToolModeStarted")).toHaveLength(1);
+  });
+
+  it("keeps working while the user moves the mouse or types in another app", async () => {
+    const tools = fakeTools();
+    const h = harness({ tools, replies: [call(CALENDAR_LIST.id, LIST_ARGS)] });
+    tools.script(CALENDAR_LIST.id, () => {
+      h.runner.manualTakeover("screen");
+      h.runner.manualTakeover("target");
+      return ok(CALENDAR_LIST, "Dentist at 6");
+    });
+    await h.runner.start("check my calendar", backgroundTools);
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.m.of("RunPaused")).toHaveLength(0);
+  });
+
+  it("executes a verified fast tool step without a model or a screenshot", async () => {
+    const h = harness();
+    await h.runner.start(DENTIST_WORDS, {
+      ...backgroundTools,
+      toolStep: { tool: CALENDAR_ADD.id, args: DENTIST },
+    });
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.provider.next).not.toHaveBeenCalled();
+    expect(h.c.capture).not.toHaveBeenCalled();
+    expect(h.c.surface).not.toHaveBeenCalled();
+  });
+
+  it("drops a desktop proposal and replans from a fresh capture before sending input", async () => {
+    const h = harness({
+      replies: [
+        act({ type: "click", x: 0.2, y: 0.3 }),
+        act({ type: "wait", milliseconds: 1 }),
+      ],
+    });
+    await h.runner.start("find an app with no connected tool", {
+      ...voice,
+      toolsFirst: true,
+    });
+    expect(h.m.of("ToolModeFallback")).toHaveLength(1);
+    expect(h.provider.observations[0].frame.source).toBe("tools");
+    expect(h.provider.observations[1].frame.source).toBeUndefined();
+    expect(h.c.capture).toHaveBeenCalled();
+    expect(h.c.execute).toHaveBeenCalledTimes(1);
+    expect(h.c.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "wait" }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(
+      h.m.events.findIndex((event) => event.type === "FrameCaptured"),
+    ).toBeLessThan(
+      h.m.events.findIndex((event) => event.type === "ActionExecuted"),
+    );
+  });
+
+  it("applies desktop protection when handing off from tools to a protected surface", async () => {
+    const h = harness({
+      controller: controller({
+        surface: vi.fn(async () => ({
+          ...surface,
+          appId: "com.apple.Terminal",
+        })),
+      }),
+      replies: [act({ type: "capture" })],
+    });
+    const pending = h.runner.start("check an app through its screen", {
+      ...voice,
+      toolsFirst: true,
+    });
+    await until(() => h.runner.snapshot.run?.status === "takeover");
+    expect(h.c.capture).not.toHaveBeenCalled();
+    expect(h.c.execute).not.toHaveBeenCalled();
+    h.runner.stop();
+    await pending;
+  });
+
+  it("keeps explicit screen requests on the desktop path", async () => {
+    const h = harness();
+    await h.runner.start("read this to me", backgroundTools);
+    expect(h.provider.observations[0].frame.source).toBeUndefined();
+    expect(h.c.capture).toHaveBeenCalled();
+  });
+
+  it("uses the desktop path when no tools are available", async () => {
+    const h = harness({ tools: fakeTools({ tools: [] }) });
+    await h.runner.start("check my calendar", backgroundTools);
+    expect(h.c.capture).toHaveBeenCalled();
+    expect(h.m.of("ToolModeStarted")).toHaveLength(0);
+  });
+
+  it("rejects done without successful tool evidence, including after a wait", async () => {
+    const h = harness({
+      replies: [
+        act({ type: "wait", milliseconds: 1 }),
+        act({ type: "done", summary: "Checked it" }),
+        call(CALENDAR_LIST.id, LIST_ARGS),
+      ],
+    });
+    await h.runner.start("check my calendar", backgroundTools);
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.m.of("ActionFailed")).toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: "no_tool_evidence" }),
+      }),
+    );
+    expect(h.c.execute).not.toHaveBeenCalled();
+    expect(h.c.capture).not.toHaveBeenCalled();
+  });
+
+  it("requires a read after an unverified MCP write before accepting done", async () => {
+    const tools = fakeTools({ tools: [FS_WRITE, FS_LIST] });
+    const h = harness({
+      tools,
+      settings: { autonomy: "all", autonomyAllAcknowledged: true },
+      replies: [
+        call(FS_WRITE.id, { path: "~/Documents/test.txt", content: "hello" }),
+        act({ type: "done", summary: "Saved it" }),
+        call(FS_LIST.id, { path: "~/Documents" }),
+      ],
+    });
+    await h.runner.start(
+      "write hello to ~/Documents/test.txt",
+      backgroundTools,
+    );
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.m.of("ActionFailed")).toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: "tool_write_unverified" }),
+      }),
+    );
+    expect(h.c.capture).not.toHaveBeenCalled();
+  });
+
+  it("can prepare and adopt a tool decision without reading the desktop", async () => {
+    const h = harness({ replies: [call(CALENDAR_LIST.id, LIST_ARGS)] });
+    const prepared = h.runner.prepare("check my calendar", backgroundTools);
+    await prepared.ready;
+    await h.runner.start("check my calendar", { ...backgroundTools, prepared });
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.provider.observations).toHaveLength(2);
+    expect(h.m.of("SpeculationAdopted")).toHaveLength(1);
+    expect(h.runner.snapshot.run?.frames).toBe(0);
+    expect(h.c.capture).not.toHaveBeenCalled();
+    expect(h.c.surface).not.toHaveBeenCalled();
+  });
+
+  it("honors explicit stop even while a tool is in flight", async () => {
+    const tools = fakeTools();
+    const h = harness({ tools, replies: [call(CALENDAR_LIST.id, LIST_ARGS)] });
+    tools.script(CALENDAR_LIST.id, async (_args, signal) => {
+      h.runner.stop();
+      expect(signal.aborted).toBe(true);
+      return failed(CALENDAR_LIST, "interrupted");
+    });
+    await h.runner.start("check my calendar", backgroundTools);
+    expect(h.runner.snapshot.run?.status).toBe("cancelled");
+    expect(h.c.capture).not.toHaveBeenCalled();
+  });
+
+  it("pauses and resumes on explicit user control without enabling desktop input", async () => {
+    let pause!: () => void;
+    const h = harness({
+      replies: [
+        () => {
+          pause();
+          return {
+            action: { type: "done", frame_id: "stale", summary: "Ignored" },
+          };
+        },
+        call(CALENDAR_LIST.id, LIST_ARGS),
+      ],
+    });
+    pause = () => h.runner.pause();
+    const pending = h.runner.start("check my calendar", backgroundTools);
+    await until(() => h.runner.snapshot.run?.status === "paused");
+    expect(await h.runner.resume()).toBe(true);
+    await pending;
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.c.resume).not.toHaveBeenCalled();
+    expect(h.c.capture).not.toHaveBeenCalled();
+  });
+
+  it("preserves approvals for an untrusted tool read while ignoring unrelated mouse input", async () => {
+    const h = harness({ replies: [call(FS_LIST.id, { path: "~/Documents" })] });
+    const pending = h.runner.start("list ~/Documents", backgroundTools);
+    await until(() => h.runner.snapshot.run?.status === "confirming");
+    h.runner.manualTakeover();
+    expect(h.runner.snapshot.run?.status).toBe("confirming");
+    expect(h.tools!.calls).toHaveLength(0);
+    h.runner.confirm(true);
+    await pending;
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.tools!.calls).toHaveLength(1);
+    expect(h.c.capture).not.toHaveBeenCalled();
+    expect(h.c.resume).not.toHaveBeenCalled();
+  });
+
+  it("does not let a verified write in another app finish an unverified MCP change", async () => {
+    const h = harness({
+      settings: { autonomy: "all", autonomyAllAcknowledged: true },
+      replies: [
+        call(FS_WRITE.id, { path: "~/Documents/test.txt", content: "hello" }),
+        call(CALENDAR_ADD.id, DENTIST, true),
+        call(FS_LIST.id, { path: "~/Documents" }),
+      ],
+    });
+    await h.runner.start(
+      "write hello to ~/Documents/test.txt and " + DENTIST_WORDS,
+      backgroundTools,
+    );
+    expect(h.provider.observations).toHaveLength(4);
+    expect(h.runner.snapshot.run?.status).toBe("completed");
+    expect(h.m.of("RunCompleted")).toHaveLength(1);
+    expect(h.c.capture).not.toHaveBeenCalled();
   });
 });
 

@@ -16,6 +16,21 @@ Butler is the consumer product. CoArena is the intelligence/evaluation layer; Co
 
 ## Download and start (Apple Silicon Mac)
 
+**Source update (2 October 2026):** eligible connected-tool tasks now run
+without screenshots or taking over a window, with fresh desktop capture
+when computer control is needed. Tool discovery ranks across all providers,
+and the HTTP adapters preserve the full 18-tool list. Completion checks
+reject missing tool evidence and unverified writes. These changes require a
+new source build; the earlier live benchmark above has not been rerun. See
+[the tool execution details](docs/TOOLS.md#tool-tasks-without-desktop-capture).
+
+**Periodic briefings:** Settings → Briefings now offers a selectable interval,
+spoken updates and a readable copy, with per-source coverage and optional
+connected-app read queries. Checks use enabled app and notification sources in
+the background; suggested actions wait for your instruction. The JARVIS
+personality also reaches the conversation model and prefers a British system
+voice. See [briefing setup and coverage](docs/BRIEFINGS.md).
+
 Requirements: a Mac with Apple Silicon (M1 or newer) running macOS 14 Sonoma or later.
 
 1. **Download** the latest `Butler-<version>-arm64.dmg` from [Releases](https://github.com/coasty-ai/butler/releases). The only release at the time of publishing (v0.1.0-alpha.1, 17 September 2026) predates the rename and most of this history; until the next tagged build, build from source as described below.

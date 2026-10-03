@@ -141,6 +141,8 @@ export function actionConfirmed(
 /** The one line a step carries in place of its screenshot. */
 export function screenshotNote(use: ScreenshotUse): string | undefined {
   if (use.send !== "none") return undefined;
+  if (use.reason === "tools")
+    return "No screen has been read. Use tool results; call capture only if desktop control is needed.";
   return use.reason === "unchanged"
     ? "No screenshot: the screen is unchanged since your last step (same image, controls and text). Call capture if you need to see it."
     : "No screenshot: context.controls and context.visibleText describe this screen. Call capture if you need to see it.";

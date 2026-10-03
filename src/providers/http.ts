@@ -9,6 +9,11 @@ import type {
   Usage,
 } from "../core/schema";
 import { VISIBLE_TEXT_CUT_MARKER } from "../core/schema";
+import { TOOL_LIMITS } from "../core/tools";
+import {
+  TOOL_SESSION_ACTIONS,
+  TOOL_SESSION_PROMPT,
+} from "../core/tool-session";
 // text.ts imports this module's response helpers and this module imports its
 // completeText; both are used inside functions only, so the cycle is inert.
 import { completeText, textSettings } from "./text";
@@ -28,6 +33,20 @@ import {
   type ArgumentShape,
 } from "./action-format";
 export { singleJsonObject } from "./action-format";
+
+const toolSessionParameters = {
+  ...strictActionParameters,
+  properties: {
+    action: {
+      ...strictActionParameters.properties.action,
+      anyOf: strictActionParameters.properties.action.anyOf.filter((variant) =>
+        variant.properties.type.enum.some(
+          (type) => type === "capture" || TOOL_SESSION_ACTIONS.has(type),
+        ),
+      ),
+    },
+  },
+};
 
 class ProviderResponseError extends Error {}
 /**
@@ -107,18 +126,20 @@ const objectToolFormat =
 const jsonFormat =
   " Reply with only the JSON action object, without prose, wrappers or code fences.";
 /** The instruction for one request: the core and the provider's format line, then the background paragraph for a bound run. */
-const instruction = (format: string, bound: boolean) =>
-  core + format + (bound ? "\n" + background : "");
+const instruction = (format: string, bound: boolean, toolsOnly = false) =>
+  (toolsOnly ? TOOL_SESSION_PROMPT : core) +
+  format +
+  (bound ? "\n" + background : "");
 /**
  * Anthropic's system blocks: the plain instruction with the breakpoint that
  * caches it (with the tools) for every run, and for a bound run the paragraph
  * as a second block, which the workspace breakpoint below then covers for the
  * steps of that run.
  */
-const systemBlocks = (format: string, bound: boolean) => [
+const systemBlocks = (format: string, bound: boolean, toolsOnly = false) => [
   {
     type: "text",
-    text: instruction(format, false),
+    text: instruction(format, false, toolsOnly),
     cache_control: { type: "ephemeral" },
   },
   ...(bound ? [{ type: "text", text: background }] : []),
@@ -262,7 +283,7 @@ export function toolsForModel(
   tools: Observation["tools"] | undefined,
 ): Json | undefined {
   if (!isObject(tools)) return undefined;
-  const list = boundedList(tools.list, 12, (t) => {
+  const list = boundedList(tools.list, TOOL_LIMITS.list, (t) => {
     if (!isObject(t)) return undefined;
     const id = boundedText(t.id, 170),
       title = boundedText(t.title, 40),
@@ -296,16 +317,19 @@ export function buildRequest(
     .toString()
     .replace(/\/$/, "");
   const alias = frameAlias(o.frame.id);
+  const toolsOnly = o.frame.source === "tools";
   const memory = memoryForModel(o.memory);
   // Per-request, never in the cached instruction: fixed keyboard routes for
   // the frontmost application (src/providers/playbooks.ts). Static text only, so
   // it carries no user content and cannot grow past 6 short lines.
-  const screen = trimScreenContext(cleanScreenContext(o.frame.context));
+  const screen = toolsOnly
+    ? undefined
+    : trimScreenContext(cleanScreenContext(o.frame.context));
   // The run works in a background window: its facts ride on the frame, the
   // paragraph that explains them on the instruction.
   const bound = screen?.background !== undefined;
   const playbook = playbookLines({
-    appId: o.frame.appId,
+    appId: toolsOnly ? undefined : o.frame.appId,
     appName: screen?.appName,
     plan: o.memory?.plan?.source,
   });
@@ -352,7 +376,7 @@ export function buildRequest(
   }
   // Which rendition of the screenshot goes, if any (src/core/vision.ts). A
   // reduced look without the helper's rendition falls back to the PNG.
-  const send = o.screenshot?.send ?? "full";
+  const send = toolsOnly ? "none" : (o.screenshot?.send ?? "full");
   const picture =
     send === "none"
       ? undefined
@@ -366,8 +390,15 @@ export function buildRequest(
   const note = o.screenshot && screenshotNote(o.screenshot);
   const context = JSON.stringify({
     frame_id: alias,
-    image_width_px: picture?.width ?? o.frame.geometry.model_width,
-    image_height_px: picture?.height ?? o.frame.geometry.model_height,
+    ...(!toolsOnly && {
+      image_width_px: picture?.width ?? o.frame.geometry.model_width,
+      image_height_px: picture?.height ?? o.frame.geometry.model_height,
+    }),
+    ...(toolsOnly && {
+      mode: "tools",
+      screenshot:
+        "No screen has been read. Call capture if desktop control is needed.",
+    }),
     ...(note && { screenshot: note }),
     // Never show the model a raw UUID it could copy instead of the alias.
     history: o.history.map((entry) => ({
@@ -405,7 +436,10 @@ export function buildRequest(
           stream: false,
           format: "json",
           messages: [
-            { role: "system", content: instruction(jsonFormat, bound) },
+            {
+              role: "system",
+              content: instruction(jsonFormat, bound, toolsOnly),
+            },
             {
               role: "user",
               content: workspace + "\n" + context,
@@ -439,7 +473,7 @@ export function buildRequest(
           // and every run, bound or not (a bound run's paragraph is its own
           // block after it); the second, on the workspace part below, covers
           // what stays the same across the steps in one application.
-          system: systemBlocks(toolFormat, bound),
+          system: systemBlocks(toolFormat, bound, toolsOnly),
           tools: [
             {
               name: "coarena_action",
@@ -492,7 +526,7 @@ export function buildRequest(
         headers: { ...headers, "x-goog-api-key": key },
         body: {
           systemInstruction: {
-            parts: [{ text: instruction(toolFormat, bound) }],
+            parts: [{ text: instruction(toolFormat, bound, toolsOnly) }],
           },
           contents: [
             {
@@ -542,7 +576,7 @@ export function buildRequest(
         body: {
           model: settings.model,
           store: false,
-          instructions: instruction(objectToolFormat, bound),
+          instructions: instruction(objectToolFormat, bound, toolsOnly),
           // Automatic prefix caching (1024 tokens and up) covers the
           // instruction, the tools and the workspace part; one fixed key
           // routes every step to the same cache.
@@ -569,7 +603,9 @@ export function buildRequest(
               // encoded form (schema above) failed on 11 of 733 calls when
               // the model mis-escaped the JSON inside action_json; strict
               // mode had only covered the outer object.
-              parameters: strictActionParameters,
+              parameters: toolsOnly
+                ? toolSessionParameters
+                : strictActionParameters,
               strict: true,
             },
           ],
@@ -590,7 +626,10 @@ export function buildRequest(
           model: settings.model,
           max_tokens: 4096,
           messages: [
-            { role: "system", content: instruction(toolFormat, bound) },
+            {
+              role: "system",
+              content: instruction(toolFormat, bound, toolsOnly),
+            },
             {
               role: "user",
               content: [

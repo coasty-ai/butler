@@ -101,6 +101,63 @@ const s = (provider: Settings["provider"]): Settings => ({
 });
 afterEach(() => vi.useRealTimers());
 describe("provider-neutral adapters", () => {
+  it("sends tools-only requests without desktop content or images on every provider", () => {
+    const request: Observation = {
+      ...o,
+      frame: {
+        ...o.frame,
+        source: "tools",
+        context: { appName: "Private app", windowTitle: "Private window" },
+      },
+      tools: {
+        now: "today",
+        unavailable: [],
+        list: [
+          {
+            id: "apple__calendar_list_events",
+            title: "Calendar",
+            does: "List events",
+            params: "from, to",
+          },
+        ],
+      },
+    };
+    for (const provider of Object.keys(configs) as Settings["provider"][]) {
+      const body = buildRequest(s(provider), "K", request).body;
+      const content = sent(provider, body);
+      expect(content.image).toBeUndefined();
+      expect(content.workspace.appId).toBeUndefined();
+      expect(content.workspace.context.tools.list[0].id).toBe(
+        "apple__calendar_list_events",
+      );
+      expect(content.step).toMatchObject({ mode: "tools" });
+      expect(content.step.image_width_px).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain("Private window");
+      const instruction =
+        provider === "openai"
+          ? body.instructions
+          : provider === "anthropic"
+            ? body.system[0].text
+            : provider === "google"
+              ? body.systemInstruction.parts[0].text
+              : body.messages[0].content;
+      expect(instruction).toContain(
+        "No screen, window, controls, clipboard or screenshot has been read",
+      );
+      expect(instruction.length).toBeLessThan(3000);
+    }
+  });
+
+  it("limits OpenAI's tools-only action schema to tool work and the capture handoff", () => {
+    const body = buildRequest(s("openai"), "K", {
+      ...o,
+      frame: { ...o.frame, source: "tools" },
+    }).body;
+    const variants = body.tools[0].parameters.properties.action.anyOf;
+    expect(
+      variants.map((variant: any) => variant.properties.type.enum[0]),
+    ).toEqual(["capture", "tool_call", "wait", "request_user", "done", "fail"]);
+  });
   it("enables bounded reasoning only for reasoning OpenAI models", () => {
     for (const model of [
       "gpt-5.4-mini",
@@ -597,7 +654,7 @@ describe("provider-neutral adapters", () => {
     expect(context.tools.list[1].does.length).toBeLessThanOrEqual(200);
     expect(context.tools.list[1].params).not.toContain("sk-abcdef");
     expect(context.tools.unavailable).toEqual(tools.unavailable);
-    // Twelve tools and four unavailable providers at most.
+    // The registry's full catalogue reaches the provider; four unavailable providers at most.
     const many = {
       ...tools,
       list: Array.from({ length: 20 }, (_, i) => ({
@@ -613,7 +670,7 @@ describe("provider-neutral adapters", () => {
       buildRequest(s("openai"), "K", { ...o, tools: many }).body.input[0]
         .content[0].text,
     ).context.tools;
-    expect(capped.list).toHaveLength(12);
+    expect(capped.list).toHaveLength(18);
     expect(capped.unavailable).toHaveLength(4);
     // An empty list is left out; without tools there is no context.tools.
     expect(

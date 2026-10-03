@@ -14,7 +14,7 @@ import {
   type ProviderState,
   type ToolTier,
 } from "../core/tools";
-import { RECIPES } from "../tools/providers";
+import { RECIPES } from "../tools/providers/recipes";
 import type { AppInfo, Bridge, ToolServerTest, ToolsStatus } from "./api";
 
 const readable = (error: unknown) =>

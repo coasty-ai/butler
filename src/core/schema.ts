@@ -594,6 +594,35 @@ export const observerSettingsSchema = z
   .strict()
   .prefault({});
 export type ObserverSettings = z.infer<typeof observerSettingsSchema>;
+/** Periodic, read-only briefings. App data follows the existing consent gates. */
+export const briefingSettingsSchema = z
+  .object({
+    on: z.boolean().default(false),
+    intervalMinutes: z.number().int().min(5).max(1440).default(30),
+    delivery: z.enum(["notification", "speech", "both"]).default("speech"),
+    dailyTokenBudget: z.number().int().min(1000).max(1_000_000).default(50_000),
+    reads: z
+      .array(
+        z
+          .object({
+            tool: z
+              .string()
+              .regex(/^[a-z0-9][a-z0-9-]{0,39}__[A-Za-z0-9_.-]{1,128}$/),
+            args: z
+              .record(z.string().max(64), z.unknown())
+              .refine(
+                (args) => JSON.stringify(args).length <= 8192,
+                "Briefing arguments are too large",
+              ),
+          })
+          .strict(),
+      )
+      .max(16)
+      .default([]),
+  })
+  .strict()
+  .prefault({});
+export type BriefingSettings = z.infer<typeof briefingSettingsSchema>;
 export const settingsSchema = z
   .object({
     privacy: privacySchema,
@@ -832,6 +861,7 @@ export const settingsSchema = z
     modules: modulesSettingsSchema,
     /** Watching how the owner works; off until the owner turns it on. */
     observer: observerSettingsSchema,
+    briefings: briefingSettingsSchema,
     /**
      * Work in the window a task names (or the one the user was in) without
      * taking the screen while the user is at the Mac: the run binds that
@@ -931,6 +961,13 @@ export const defaultSettings: Settings = {
     consolidateWhenIdleMin: 10,
   },
   workInBackground: true,
+  briefings: {
+    on: false,
+    intervalMinutes: 30,
+    delivery: "speech",
+    dailyTokenBudget: 50_000,
+    reads: [],
+  },
 };
 /** One phone the remote knows about (settings.remoteDevices). */
 export type RemoteDevice = Settings["remoteDevices"][number];
@@ -954,6 +991,8 @@ export interface Geometry {
   window?: { id: number; x: number; y: number; width: number; height: number };
 }
 export interface Frame {
+  /** Tools-only decision token; has no screen content and is never recorded as a frame. */
+  source?: "tools";
   id: string;
   sha256: string;
   image: string;
@@ -1350,6 +1389,7 @@ export type ScreenshotReason =
   | "cadence"
   | "unchanged"
   | "described"
+  | "tools"
   | "changed";
 export interface ScreenshotUse {
   send: "full" | "reduced" | "none";
