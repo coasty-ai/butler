@@ -18,6 +18,7 @@ import {
 } from "../src/terminal/connections";
 import { TerminalStore } from "../src/terminal/store";
 import { McpOAuth } from "../src/terminal/mcp-oauth";
+import { freshOnboarding } from "../src/terminal/onboarding";
 import {
   settingsSchema,
   toolServerSchema,
@@ -30,6 +31,31 @@ const temp = () => {
   roots.push(root);
   return root;
 };
+test("verified desktop access remains visible without claiming or duplicating an MCP connection", () => {
+  const store = new TerminalStore(temp(), randomBytes(32));
+  store.profile.onboarding = {
+    ...freshOnboarding(),
+    desktopReady: ["gmail", "slack", "github"],
+  };
+  const connections = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(connections.registry, "status").mockReturnValue({
+    ...connections.registry.status(),
+    servers: [
+      {
+        id: "github",
+        name: "GitHub",
+        state: "off",
+        code: "ON_DEMAND",
+        tools: [],
+      },
+    ],
+  } as any);
+  expect(connections.labels()).toContain("Gmail: computer use");
+  expect(connections.labels()).toContain("Slack: computer use");
+  expect(connections.labels()).not.toContain("GitHub: computer use");
+  expect(connections.labels()).toContain("GitHub: ready on demand");
+  expect(store.profile.settings.tools.servers).toEqual([]);
+});
 afterEach(() => {
   roots
     .splice(0)
@@ -532,6 +558,49 @@ test("Slack API errors cannot leak server bodies, and bot thread restrictions ar
   ).rejects.toThrow("valid Slack");
   await expect(read("chat.postMessage", {})).rejects.toThrow("Unexpected");
   expect(request).toHaveBeenCalledTimes(1);
+});
+test("guided app setup prepares normal browser access without demanding developer credentials", async () => {
+  const store = new TerminalStore(temp(), randomBytes(32));
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  const ask = vi.fn(async () => {
+    throw new Error("SYNTHETIC unexpected credential prompt");
+  });
+  const result = await c.setup(
+    ["gmail", "slack"],
+    "Safari",
+    vi.fn(),
+    new AbortController().signal,
+    [],
+    ask,
+    { desktopFirst: true },
+  );
+  expect(result.browserTask).toContain("https://mail.google.com/");
+  expect(result.browserApp).toBe("gmail");
+  expect(result.connected).toEqual([]);
+  expect(result.pending).toEqual(["gmail", "slack"]);
+  const next = await c.setup(
+    ["gmail", "slack"],
+    "Safari",
+    vi.fn(),
+    new AbortController().signal,
+    [],
+    ask,
+    { desktopFirst: true, desktopReady: ["gmail"], slackInstalled: true },
+  );
+  expect(next.browserTask).toContain("In Slack,");
+  expect(next.browserApp).toBe("slack");
+  expect(ask).not.toHaveBeenCalled();
+  expect(
+    store.profile.settings.tools.servers.every(
+      (row) =>
+        !row.enabled &&
+        !row.consented &&
+        !row.approvedCommand &&
+        !row.tools.length,
+    ),
+  ).toBe(true);
 });
 test("Slack explains only the missing read scope and never echoes arbitrary scope data", async () => {
   const request = vi.fn(async () =>

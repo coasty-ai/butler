@@ -130,6 +130,29 @@ test("history paging preserves the input and returns to new conversation message
     screen.close();
   }
 });
+test("desktop app access is counted separately from connected tools", () => {
+  const view = screenLines(
+    {
+      phase: "idle",
+      model: "synthetic",
+      nextBriefing: "off",
+      status: "Ready",
+      connections: [
+        "Gmail: not connected",
+        "Gmail: computer use",
+        "Slack: computer use",
+        "GitHub: on",
+      ],
+      messages: [],
+    },
+    100,
+    30,
+    0,
+    "",
+  ).join("\n");
+  expect(view).toContain("1 connected · 2 via computer use");
+  expect(view).not.toContain("Connect my apps");
+});
 test("streamed message identifiers survive transcript trimming without replacing another message", () => {
   const output = { isTTY: false, write: vi.fn() };
   const screen = new TerminalScreen(

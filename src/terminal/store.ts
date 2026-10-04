@@ -17,10 +17,16 @@ import { MemoryStore } from "../memory/store";
 import { McpCatalogues } from "./catalogues";
 import { TerminalBriefingBudget } from "./briefing-budget";
 import { TerminalConversation } from "./conversation";
+import {
+  freshOnboarding,
+  onboardingSchema,
+  type Onboarding,
+} from "./onboarding";
 
 export interface TerminalProfile {
   settings: Settings;
   secrets: Record<string, string>;
+  onboarding?: Onboarding;
 }
 export const terminalHome = () =>
   process.env.BUTLER_DATA_DIR || join(homedir(), ".config", "butler");
@@ -96,11 +102,18 @@ export class TerminalStore {
       const saved = JSON.parse(
         unseal(key, readFileSync(file), "terminal-profile").toString(),
       );
+      const onboarding = onboardingSchema.safeParse(saved.onboarding);
       this.profile = {
         settings: settingsSchema.parse(saved.settings),
         secrets: saved.secrets ?? {},
+        ...(onboarding.success ? { onboarding: onboarding.data } : {}),
       };
-    } else this.profile = { settings: initialSettings(), secrets: {} };
+    } else
+      this.profile = {
+        settings: initialSettings(),
+        secrets: {},
+        onboarding: freshOnboarding(),
+      };
     this.vault = new Vault(join(root, "runs"), key);
     this.memory = new MemoryStore(join(root, "memory"), key);
     this.conversation = new TerminalConversation(

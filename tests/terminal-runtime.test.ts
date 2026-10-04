@@ -21,7 +21,7 @@ const f = vi.hoisted(() => ({
   toolAnswer: vi.fn(async () => undefined as any),
   noteUser: vi.fn(),
   noteAssistant: vi.fn(),
-  speak: vi.fn(async () => {}),
+  speak: vi.fn(async (..._args: any[]) => {}),
   decide: vi.fn(),
   assistantOptions: undefined as any,
   holdTask: false,
@@ -31,10 +31,19 @@ const f = vi.hoisted(() => ({
   resumes: 0,
   memory: undefined as any,
   connectionsStart: vi.fn(async () => {}),
-  setupConnections: vi.fn(async (..._args: any[]) => ({
-    connected: ["gmail"],
-    pending: [] as string[],
-    browserTask: undefined as string | undefined,
+  setupConnections: vi.fn(
+    async (..._args: any[]) =>
+      ({
+        connected: ["gmail"],
+        pending: [] as string[],
+        browserTask: undefined as string | undefined,
+        browserApp: undefined as "gmail" | "slack" | "github" | undefined,
+      }) as import("../src/terminal/connections").ConnectionSetup,
+  ),
+  ask: vi.fn(async (..._args: any[]) => ""),
+  nativeRequest: vi.fn(async (..._args: any[]) => ({
+    screen: true,
+    accessibility: true,
   })),
   briefingCheck: vi.fn(async () => ({ on: true, state: "waiting" })),
   briefingOptions: undefined as any,
@@ -82,6 +91,7 @@ vi.mock("../src/terminal/connections", () => ({
 }));
 vi.mock("../electron/tools", () => ({ answerByTool: f.toolAnswer }));
 vi.mock("../src/terminal/voice", () => ({
+  VOICE_READ_MIN_CONFIDENCE: 0.65,
   TerminalVoice: class {
     constructor(options: any) {
       f.voice = options;
@@ -111,7 +121,7 @@ vi.mock("../src/terminal/screen", () => ({
       status: "",
     };
     prompting = false;
-    ask = vi.fn(async () => "");
+    ask = f.ask;
     clearMessages = () => {
       this.state.messages = [];
     };
@@ -154,6 +164,7 @@ vi.mock("../electron/briefings", async (load) => {
 vi.mock("../electron/controller", () => ({
   NativeController: class {
     configure = async () => {};
+    request = f.nativeRequest;
     stop = () => {};
     close = () => {};
   },
@@ -260,6 +271,8 @@ vi.mock("../src/core/runner", async (load) => {
 });
 import { main, briefingRequest } from "../src/terminal/main";
 import { TerminalStore } from "../src/terminal/store";
+import { freshOnboarding } from "../src/terminal/onboarding";
+import { initialSettings } from "../src/terminal/store";
 let tty: PropertyDescriptor | undefined;
 let root: string;
 let listeners: Map<string, Set<Function>>;
@@ -268,6 +281,14 @@ beforeEach(() => {
   exitCode = process.exitCode;
   root = mkdtempSync(join(tmpdir(), "butler-runtime-test-"));
   f.store = { root, key: randomBytes(32) };
+  // Existing-session cases should not re-enter a first-launch workflow.
+  const existing = new TerminalStore();
+  delete existing.profile.onboarding;
+  existing.save();
+  f.ask.mockReset().mockResolvedValue("");
+  f.nativeRequest
+    .mockReset()
+    .mockResolvedValue({ screen: true, accessibility: true });
   f.tasks = [];
   f.holdTask = false;
   f.conversationCanOverlap = false;
@@ -331,6 +352,284 @@ test("startup with saved access loads it without asking to connect again", async
   expect(f.ui.screen.ask).not.toHaveBeenCalled();
   expect(f.setupConnections).not.toHaveBeenCalled();
 });
+const firstLaunch = () => {
+  const store = new TerminalStore();
+  store.profile.onboarding = freshOnboarding();
+  store.profile.settings = initialSettings({ OPENAI_API_KEY: "SYNTHETIC-key" });
+  store.save();
+};
+test("first launch offers app setup once and Later persists without granting access", async () => {
+  firstLaunch();
+  f.ask.mockResolvedValueOnce("later");
+  await main([]);
+  expect(f.ask).toHaveBeenCalledOnce();
+  expect(f.setupConnections).not.toHaveBeenCalled();
+  expect(f.store.instance.profile.onboarding.phase).toBe("later");
+  expect(Object.values(f.store.instance.profile.settings.tools.apple)).toEqual([
+    false,
+    false,
+    false,
+    false,
+  ]);
+  await f.ui.quit();
+  await vi.waitFor(() =>
+    expect(existsSync(join(root, "engine.pid"))).toBe(false),
+  );
+  await main([]);
+  expect(f.ask).toHaveBeenCalledOnce();
+  expect(f.tasks).toEqual([]);
+});
+test("quitting during first-launch consent cannot restart greeting output", async () => {
+  firstLaunch();
+  let answer!: (value: string) => void;
+  f.ask.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        answer = resolve;
+      }),
+  );
+  const launch = main([]);
+  await vi.waitFor(() => expect(f.ask).toHaveBeenCalledOnce());
+  f.ui.quit();
+  answer("later");
+  await launch;
+  expect(f.speak.mock.calls.map(([text]) => text)).not.toContain(
+    "At your service. What shall we attend to?",
+  );
+  expect(f.setupConnections).not.toHaveBeenCalled();
+  expect(f.tasks).toEqual([]);
+});
+test("first-launch approval automatically prepares apps with desktop fallback, not developer keys", async () => {
+  firstLaunch();
+  f.ask.mockResolvedValueOnce("yes");
+  f.handoff = "takeover";
+  f.setupConnections.mockResolvedValueOnce({
+    connected: ["calendar"],
+    pending: ["gmail"],
+    browserApp: "gmail",
+    browserTask:
+      "In Safari, verify SYNTHETIC Gmail app access and wait for sign-in.",
+  });
+  await main([]);
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  expect(f.setupConnections.mock.calls[0][0]).toContain("gmail");
+  expect(f.setupConnections.mock.calls[0][6]).toMatchObject({
+    desktopFirst: true,
+  });
+  expect(f.tasks[0].options).toMatchObject({
+    toolsFirst: false,
+    taskSource: "user_words",
+  });
+  expect(f.store.instance.profile.onboarding).toMatchObject({
+    phase: "waiting",
+    activeApp: "gmail",
+    pending: ["gmail"],
+  });
+  expect(f.decide).not.toHaveBeenCalled();
+});
+test("missing desktop permissions save progress before any model-driven computer task", async () => {
+  firstLaunch();
+  f.ask.mockResolvedValueOnce("yes");
+  f.setupConnections.mockResolvedValueOnce({
+    connected: ["calendar"],
+    pending: ["gmail"],
+    browserApp: "gmail",
+    browserTask: "In Safari, prepare SYNTHETIC Gmail access.",
+  });
+  f.nativeRequest.mockResolvedValue({ screen: false, accessibility: false });
+  await main([]);
+  expect(f.tasks).toEqual([]);
+  expect(f.nativeRequest.mock.calls.map(([method]) => method)).toEqual([
+    "permissions",
+    "requestPermissions",
+    "permissions",
+  ]);
+  expect(f.store.instance.profile.onboarding.phase).toBe("waiting");
+  f.ui.submit("Done");
+  await vi.waitFor(() => expect(f.setupConnections).toHaveBeenCalledTimes(2));
+  expect(f.store.instance.profile.onboarding.phase).toBe("ready");
+  expect(f.ask).toHaveBeenCalledOnce();
+});
+test.each(["", "SYNTHETIC-provider-key"])(
+  "model setup stays hidden, allows deferral and preserves other preferences (key=%s)",
+  async (key) => {
+    firstLaunch();
+    const store = new TerminalStore();
+    store.profile.settings = initialSettings({});
+    store.profile.settings.memory = false;
+    store.profile.settings.voiceReplies = "off";
+    store.save();
+    f.ask.mockResolvedValueOnce("yes").mockResolvedValueOnce(key);
+    f.setupConnections.mockResolvedValueOnce({
+      connected: [],
+      pending: ["gmail"],
+      browserApp: "gmail",
+      browserTask: "In Safari, prepare SYNTHETIC Gmail access.",
+    });
+    f.nativeRequest.mockResolvedValue({ screen: false, accessibility: false });
+    const health = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ models: [] }), { status: 200 }),
+      );
+    try {
+      await main([]);
+      expect(f.ask.mock.calls[1][1]).toBe(true);
+      expect(f.tasks).toEqual([]);
+      expect(f.store.instance.profile.settings.memory).toBe(false);
+      expect(f.store.instance.profile.settings.voiceReplies).toBe("off");
+      expect(f.store.instance.profile.onboarding.phase).toBe("waiting");
+      if (key) {
+        expect(f.store.instance.profile.settings.provider).toBe("openai");
+        expect(f.store.instance.profile.secrets["provider:openai"]).toBe(key);
+      } else {
+        expect(f.store.instance.profile.settings.provider).toBe("ollama");
+        expect(f.nativeRequest).not.toHaveBeenCalled();
+      }
+    } finally {
+      health.mockRestore();
+    }
+  },
+);
+test("restart and Done resume the selected setup scope without adding accounts or prompting again", async () => {
+  const store = new TerminalStore();
+  store.profile.onboarding = {
+    phase: "waiting",
+    apps: ["gmail"],
+    pending: ["gmail"],
+    activeApp: "gmail",
+    desktopReady: [],
+    desktopFirst: true,
+  };
+  store.save();
+  await main([]);
+  expect(f.ask).not.toHaveBeenCalled();
+  f.ui.submit("Done");
+  await vi.waitFor(() => expect(f.setupConnections).toHaveBeenCalledOnce());
+  expect(f.setupConnections.mock.calls[0][0]).toEqual(["gmail"]);
+  expect(f.store.instance.profile.onboarding.phase).toBe("ready");
+});
+test("verified app preparation advances to the next account and records desktop rather than MCP access", async () => {
+  firstLaunch();
+  f.ask.mockResolvedValueOnce("yes");
+  f.holdTask = true;
+  f.setupConnections.mockResolvedValueOnce({
+    connected: [],
+    pending: ["gmail", "slack"],
+    browserApp: "gmail",
+    browserTask: "In Safari, verify SYNTHETIC Gmail app access.",
+  });
+  await main([]);
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.runners[0].finish();
+  await vi.waitFor(() => expect(f.setupConnections).toHaveBeenCalledTimes(2));
+  expect(f.setupConnections.mock.calls[1][6]).toMatchObject({
+    desktopReady: ["gmail"],
+  });
+  expect(f.store.instance.profile.onboarding.desktopReady).toEqual(["gmail"]);
+  expect(f.store.instance.profile.settings.tools.servers).toEqual([]);
+});
+test("a setup task that finishes during the initial prompt advances when that turn releases", async () => {
+  firstLaunch();
+  f.ask.mockResolvedValueOnce("yes");
+  f.setupConnections.mockResolvedValueOnce({
+    connected: [],
+    pending: ["gmail", "slack"],
+    browserApp: "gmail",
+    browserTask: "In Safari, verify SYNTHETIC Gmail app access.",
+  });
+  await main([]);
+  await vi.waitFor(() => expect(f.setupConnections).toHaveBeenCalledTimes(2));
+  expect(f.store.instance.profile.onboarding.desktopReady).toEqual(["gmail"]);
+  expect(f.store.instance.profile.onboarding.phase).toBe("ready");
+});
+test("Skip setup aborts the setup check without allowing its delayed result to overwrite saved progress", async () => {
+  await main([]);
+  f.ask.mockResolvedValueOnce("yes");
+  let checking!: () => void;
+  const started = new Promise<void>((resolve) => {
+    checking = resolve;
+  });
+  f.setupConnections.mockImplementationOnce(async (...args: any[]) => {
+    checking();
+    await new Promise<void>((resolve) =>
+      args[3].addEventListener("abort", () => resolve(), { once: true }),
+    );
+    return {
+      connected: [],
+      pending: ["gmail"],
+      browserApp: "gmail",
+      browserTask: "SYNTHETIC delayed setup.",
+    };
+  });
+  f.ui.submit("Get me ready");
+  await started;
+  f.ui.submit("Skip setup");
+  await vi.waitFor(() =>
+    expect(f.store.instance.profile.onboarding.phase).toBe("later"),
+  );
+  f.ui.submit("Help");
+  await vi.waitFor(() =>
+    expect(f.ui.screen.message).toHaveBeenCalledWith(
+      "Butler",
+      expect.stringContaining("Technical commands are optional"),
+    ),
+  );
+  expect(f.tasks).toEqual([]);
+  expect(f.stops).toBe(0);
+});
+test.each([false, true])(
+  "spoken Done resumes saved setup only for confirmed speech (recovered=%s)",
+  async (recovered) => {
+    const store = new TerminalStore();
+    store.profile.onboarding = {
+      ...freshOnboarding(),
+      phase: "waiting",
+      apps: ["gmail"],
+      pending: ["gmail"],
+    };
+    store.save();
+    await main([]);
+    f.voice.receive({
+      text: "Done",
+      confidence: 0.98,
+      recovered,
+      source: "wake",
+      segments: 1,
+    });
+    if (!recovered)
+      await vi.waitFor(() => expect(f.setupConnections).toHaveBeenCalledOnce());
+    else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(f.setupConnections).not.toHaveBeenCalled();
+    }
+    expect(f.confirmations).toEqual([]);
+    expect(f.tasks).toEqual([]);
+    expect(f.decide).not.toHaveBeenCalled();
+  },
+);
+test.each(["check my reminders", "check my inbox"])(
+  "recovered read cannot fall through to a computer task when tools are unavailable: %s",
+  async (text) => {
+    await main([]);
+    f.voice.receive({
+      text,
+      confidence: 0.7,
+      recovered: true,
+      source: "wake",
+      segments: 2,
+    });
+    await vi.waitFor(() =>
+      expect(f.ui.screen.message).toHaveBeenCalledWith(
+        "Butler",
+        expect.stringContaining("through your connected tools"),
+      ),
+    );
+    expect(f.tasks).toEqual([]);
+    expect(f.decide).not.toHaveBeenCalled();
+    expect(f.confirmations).toEqual([]);
+  },
+);
 test("plain setup uses saved connections without a planner or native task and remembers its verified result", async () => {
   await main([]);
   f.ui.submit("Connect Gmail and Slack");
@@ -427,6 +726,41 @@ test.each(["Connect Gmail", "Read replies aloud", "Brief me every 30 minutes"])(
     expect(f.decide).not.toHaveBeenCalled();
   },
 );
+test("stable recovered speech can enable spoken output without granting app or task access", async () => {
+  await main([]);
+  f.voice.receive({
+    text: "Read replies aloud",
+    confidence: 0.7,
+    recovered: true,
+    source: "wake",
+    segments: 2,
+  });
+  await vi.waitFor(() =>
+    expect(f.store.instance.profile.settings.voiceReplies).toBe("always"),
+  );
+  expect(f.setupConnections).not.toHaveBeenCalled();
+  expect(f.tasks).toEqual([]);
+  expect(f.decide).not.toHaveBeenCalled();
+  expect(f.confirmations).toEqual([]);
+});
+test("a stable recovered read uses the existing trusted fast path instead of another computer task", async () => {
+  f.toolAnswer.mockResolvedValueOnce({
+    said: "SYNTHETIC no reminders due.",
+    outcome: {},
+  });
+  await main([]);
+  f.voice.receive({
+    text: "check my reminders",
+    confidence: 0.7,
+    recovered: true,
+    source: "wake",
+    segments: 2,
+  });
+  await vi.waitFor(() => expect(f.toolAnswer).toHaveBeenCalledOnce());
+  expect(f.decide).not.toHaveBeenCalled();
+  expect(f.tasks).toEqual([]);
+  expect(f.setupConnections).not.toHaveBeenCalled();
+});
 test("plain Yes approves only an existing typed task confirmation", async () => {
   f.approval = true;
   await main([]);

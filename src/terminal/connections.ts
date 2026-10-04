@@ -30,6 +30,7 @@ import {
   googleClientFile,
   type SetupApp,
 } from "./concierge";
+import { desktopSetupTask, appNames } from "./onboarding";
 
 export const CONNECTIONS = [
   "github",
@@ -47,6 +48,7 @@ export interface ConnectionSetup {
   connected: string[];
   pending: string[];
   browserTask?: string;
+  browserApp?: "gmail" | "slack" | "github";
 }
 /** Scope a direct Apple read or a passive check without editing saved consent. */
 export function connectionSettings(
@@ -286,6 +288,17 @@ export class TerminalConnections {
     labels.push(
       `Apple apps: ${apple.state}${apple.code ? ` (${apple.code})` : ""}`,
     );
+    for (const app of this.store.profile.onboarding?.desktopReady || []) {
+      const id = app === "slack" ? "slack-bot" : app;
+      if (
+        !servers.some(
+          (server) =>
+            (server.id === app || server.id === id) &&
+            (server.state === "on" || server.code === "ON_DEMAND"),
+        )
+      )
+        labels.push(`${appNames([app])}: computer use`);
+    }
     return labels;
   }
   private makeRow(id: ConnectionId): ToolServer {
@@ -326,6 +339,11 @@ export class TerminalConnections {
     signal: AbortSignal,
     clientFolders = [join(homedir(), "Downloads"), this.project],
     ask?: Ask,
+    options: {
+      desktopFirst?: boolean;
+      desktopReady?: readonly SetupApp[];
+      slackInstalled?: boolean;
+    } = {},
   ): Promise<ConnectionSetup> {
     const result: ConnectionSetup = { connected: [], pending: [] };
     const secrets = this.store.profile.secrets;
@@ -356,6 +374,19 @@ export class TerminalConnections {
       }
       if (this.store.profile.settings.privacy === "PRIVATE_LOCAL") {
         result.pending.push(app);
+        if (
+          options.desktopFirst &&
+          !result.browserTask &&
+          !options.desktopReady?.includes(app) &&
+          (app === "gmail" || app === "slack" || app === "github")
+        ) {
+          result.browserTask = desktopSetupTask(
+            app,
+            browser,
+            !!options.slackInstalled,
+          );
+          result.browserApp = app;
+        }
         continue;
       }
       if (
@@ -366,6 +397,7 @@ export class TerminalConnections {
               (row.id === app || (app === "slack" && row.id === "slack-bot")),
           )) &&
         ask &&
+        !options.desktopFirst &&
         (app === "github" || app === "slack") &&
         !(app === "github"
           ? secrets["github:token"]
@@ -420,7 +452,12 @@ export class TerminalConnections {
         !(secrets["gmail:clientId"] && secrets["gmail:clientSecret"])
       ) {
         let client = findGoogleClient(clientFolders);
-        if (!client && ask && (this.browserAttempted.has(app) || row)) {
+        if (
+          !client &&
+          ask &&
+          !options.desktopFirst &&
+          (this.browserAttempted.has(app) || row)
+        ) {
           const path = await ask(
             "Choose your downloaded Google Desktop client JSON (file path), or leave blank for browser setup",
             true,
@@ -463,11 +500,12 @@ export class TerminalConnections {
           this.store.save();
         }
         result.pending.push(app);
-        if (!result.browserTask) {
-          result.browserTask = browserSetupTask(
-            app as "gmail" | "slack" | "github",
-            browser,
-          );
+        if (!result.browserTask && !options.desktopReady?.includes(app)) {
+          const webApp = app as "gmail" | "slack" | "github";
+          result.browserTask = options.desktopFirst
+            ? desktopSetupTask(webApp, browser, !!options.slackInstalled)
+            : browserSetupTask(webApp, browser);
+          result.browserApp = webApp;
           this.browserAttempted.add(app);
         }
         continue;

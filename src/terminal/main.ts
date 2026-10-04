@@ -11,8 +11,12 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { TerminalScreen, screenLines } from "./screen";
-import { TerminalStore, terminalHome } from "./store";
-import { TerminalVoice, type SpokenInput } from "./voice";
+import { TerminalStore, terminalHome, initialSettings } from "./store";
+import {
+  TerminalVoice,
+  VOICE_READ_MIN_CONFIDENCE,
+  type SpokenInput,
+} from "./voice";
 import { installedApps } from "./apps";
 import { providerDiagnostics, probeModel } from "./doctor";
 import { nativeModelFetch } from "./transport";
@@ -30,6 +34,15 @@ import {
   SETUP_APPS,
   type SetupApp,
 } from "./concierge";
+import {
+  appNames,
+  continuesSetup,
+  startsOnboarding,
+  installedCodingClis,
+  onboardingApps,
+  freshOnboarding,
+  type Onboarding,
+} from "./onboarding";
 import { UrlOpener } from "../../electron/open-url";
 import { NativeController } from "../../electron/controller";
 import { AssistantSession } from "../../electron/assistant";
@@ -490,7 +503,7 @@ export async function main(args = process.argv.slice(2)) {
     taskSource: TaskSource = "user_words",
     spoken = false,
     toolsFirst = true,
-  ) => {
+  ): Promise<void> => {
     if (isRunning())
       throw new Error("A task is active. Use /stop, /pause or /resume first.");
     if (runner && !runner.settled) await runningWork;
@@ -596,7 +609,27 @@ export async function main(args = process.argv.slice(2)) {
     runningWork = work;
     await work;
     if (stopped || runner !== currentRunner) return;
+    const onboarding = store.profile.onboarding;
+    const finishingSetup =
+      onboarding?.desktopFirst &&
+      onboarding.activeApp &&
+      snapshot.run?.task === setupGoal;
+    if (finishingSetup) {
+      if (snapshot.run?.status === "completed") {
+        onboarding.desktopReady = [
+          ...new Set([...onboarding.desktopReady, onboarding.activeApp!]),
+        ];
+        onboarding.pending = onboarding.pending.filter(
+          (app) => app !== onboarding.activeApp,
+        );
+        onboarding.activeApp = undefined;
+        onboarding.phase = onboarding.pending.length ? "connecting" : "ready";
+        setupGoal = undefined;
+      } else onboarding.phase = "waiting";
+      store.save();
+    }
     if (snapshot.run?.status === "completed") {
+      if (finishingSetup) advanceSetup = true;
       const next = taskQueue.next(Date.now());
       if (next)
         await task(
@@ -605,6 +638,9 @@ export async function main(args = process.argv.slice(2)) {
           next.origin === "voice",
           next.toolsFirst ?? true,
         );
+      else {
+        await advanceOnboarding();
+      }
     } else if (taskQueue.clear()) {
       const line =
         "The queued tasks were cancelled because this one did not finish. Tell me when you'd like to retry them.";
@@ -634,11 +670,29 @@ export async function main(args = process.argv.slice(2)) {
     );
   };
   let setupGoal: string | undefined;
+  let setupAbort: (() => void) | undefined;
+  let advanceSetup = false;
+  const advanceOnboarding = async (): Promise<void> => {
+    if (!advanceSetup || busy || isRunning() || stopped) return;
+    advanceSetup = false;
+    const state = store.profile.onboarding;
+    if (!state?.desktopFirst || state.phase === "later") return;
+    busy = true;
+    activeTurn = new AbortController();
+    try {
+      await setupApps(state.apps, activeTurn.signal, false, true);
+    } finally {
+      busy = false;
+      activeTurn = undefined;
+      if (advanceSetup) await advanceOnboarding();
+    }
+  };
   const setupApps = async (
     apps: SetupApp[],
-    signal: AbortSignal,
+    parentSignal: AbortSignal,
     spoken = false,
-  ) => {
+    guided = false,
+  ): Promise<void> => {
     // Recheck after the owner completes a paused browser setup handoff.
     if (
       setupGoal &&
@@ -655,39 +709,196 @@ export async function main(args = process.argv.slice(2)) {
       );
       return;
     }
-    ownEngine();
-    await readyConnections();
-    const browser = installedApps().some((app) => app.name === "Google Chrome")
-      ? "Google Chrome"
-      : "Safari";
-    const result = await connections.setup(
-      apps,
-      browser,
-      show,
-      signal,
-      undefined,
-      screen.ask.bind(screen),
-    );
-    briefings.apply();
-    screen.state.connections = connections.labels();
-    dialog.noteAssistant(
-      `Connection check: ready ${result.connected.join(", ") || "none"}; still needs attention ${result.pending.join(", ") || "none"}.`,
-      spoken ? "voice" : "app",
-      { untrusted: true },
-    );
-    if (result.browserTask) {
-      setupGoal = result.browserTask;
-      announce(
-        "I'll prepare the browser setup. I'll stop when it's your turn to sign in or approve access.",
+    const controller = new AbortController();
+    const signal = AbortSignal.any([parentSignal, controller.signal]);
+    const cancel = () => controller.abort();
+    setupAbort = cancel;
+    try {
+      ownEngine();
+      await readyConnections();
+      const installed = installedApps();
+      const browser = installed.some((app) => app.name === "Google Chrome")
+        ? "Google Chrome"
+        : "Safari";
+      const previous = store.profile.onboarding;
+      const state: Onboarding = {
+        ...(guided && previous ? previous : freshOnboarding()),
+        phase: "connecting" as const,
+        apps: [...new Set(apps)],
+        desktopFirst: guided,
+      };
+      store.profile.onboarding = state;
+      store.save();
+      const result = await connections.setup(
+        apps,
+        browser,
+        guided
+          ? (line) => {
+              if (
+                !/^(?:Ready:|Still needs attention:|No new connections)/.test(
+                  line,
+                )
+              )
+                show(line);
+            }
+          : show,
+        signal,
+        undefined,
+        screen.ask.bind(screen),
+        guided
+          ? {
+              desktopFirst: true,
+              desktopReady: state.desktopReady,
+              slackInstalled: installed.some((app) => app.name === "Slack"),
+            }
+          : undefined,
       );
-      const work = task(result.browserTask, "user_words", spoken, false);
-      if (interactive) void work.catch(reportError);
-      else await work;
-    } else if (result.pending.length)
-      announce(
-        "Some accounts still need attention. Tell me which one you'd like to sort out next.",
+      signal.throwIfAborted();
+      state.pending = result.pending.filter(
+        (app): app is SetupApp =>
+          SETUP_APPS.includes(app as SetupApp) &&
+          !state.desktopReady.includes(app as SetupApp),
       );
-    else announce("Your requested connections are ready.");
+      state.activeApp = result.browserApp;
+      state.phase = state.pending.length ? "waiting" : "ready";
+      store.save();
+      briefings.apply();
+      screen.state.connections = connections.labels();
+      dialog.noteAssistant(
+        `Connection check: ready ${result.connected.join(", ") || "none"}; still needs attention ${result.pending.join(", ") || "none"}.`,
+        spoken ? "voice" : "app",
+        { untrusted: true },
+      );
+      if (result.browserTask) {
+        setupGoal = result.browserTask;
+        if (guided) {
+          if (!(await prepareOnboardingModel(signal))) return;
+          const controller = getNative();
+          await nativeSetup;
+          let access = (await controller.request("permissions")) as {
+            screen?: boolean;
+            accessibility?: boolean;
+          };
+          if (!access.screen || !access.accessibility) {
+            announce(
+              "macOS needs your approval for Butler to see and control apps. I'll open the permission requests.",
+            );
+            await controller.request("requestPermissions");
+            access = (await controller.request("permissions")) as typeof access;
+            if (!access.screen || !access.accessibility) {
+              announce(
+                "Allow Screen Recording and Accessibility for Butler's controller, then tell me ‘Done’. Your other connections are saved.",
+              );
+              return;
+            }
+          }
+        }
+        signal.throwIfAborted();
+        announce(
+          guided
+            ? `I'll get ${appNames([result.browserApp!])} ready using your Mac. I'll wait if you need to sign in.`
+            : "I'll prepare the browser setup. I'll stop when it's your turn to sign in or approve access.",
+        );
+        const work = task(result.browserTask, "user_words", spoken, false);
+        if (interactive) void work.catch(reportError);
+        else await work;
+      } else if (state.pending.length)
+        announce(
+          "Some accounts still need attention. Tell me which one you'd like to sort out next.",
+        );
+      else
+        announce(
+          guided
+            ? "Your everyday apps are ready. Tell me what needs doing; I’ll use connected tools and computer control as needed."
+            : "Your requested connections are ready.",
+        );
+    } catch (error) {
+      if (!signal.aborted) throw error;
+    } finally {
+      if (setupAbort === cancel) setupAbort = undefined;
+    }
+  };
+  const prepareOnboardingModel = async (
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    if (settings().provider !== "ollama" && store.keyForProvider()) return true;
+    if (settings().provider === "ollama") {
+      try {
+        const response = await fetch(
+          settings().endpoint.replace(/\/$/, "") + "/api/tags",
+          {
+            signal: AbortSignal.any([signal, AbortSignal.timeout(1200)]),
+          },
+        );
+        const value = await response.json();
+        if (
+          response.ok &&
+          Array.isArray(value.models) &&
+          value.models.some((m: any) => m.name === settings().model)
+        )
+          return true;
+      } catch {
+        signal.throwIfAborted();
+      }
+    }
+    show(
+      "To chat and use apps, Butler needs a model. Cloud requests and relevant task context go to your chosen provider; keys stay encrypted on this Mac.",
+    );
+    const existingProvider = settings().provider !== "ollama";
+    const key = await screen.ask(
+      existingProvider
+        ? "Provider API key (hidden; Enter to set up later)"
+        : "OpenAI API key (hidden; Enter to keep local setup for later)",
+      true,
+    );
+    signal.throwIfAborted();
+    if (!key || /^(?:later|skip|skip setup|local)$/i.test(key.trim())) {
+      announce(
+        "Your connections are saved. Chat and computer control need a working model; tell me ‘Continue setup’ when you’re ready.",
+      );
+      return false;
+    }
+    if (!existingProvider) {
+      const defaults = initialSettings({ OPENAI_API_KEY: "present" });
+      for (const field of [
+        "provider",
+        "privacy",
+        "model",
+        "dialogModel",
+        "endpoint",
+        "openaiServiceTier",
+        "inputPrice",
+        "outputPrice",
+      ] as const)
+        (settings() as any)[field] = defaults[field];
+      screen.state.model = `${settings().provider} / ${settings().model}`;
+    }
+    store.profile.secrets[`provider:${settings().provider}`] = key;
+    store.save();
+    await connections.registry.configure();
+    return true;
+  };
+  const startOnboarding = async (signal: AbortSignal): Promise<void> => {
+    const state = store.profile.onboarding || freshOnboarding();
+    state.apps = onboardingApps(installedApps(), installedCodingClis());
+    store.profile.onboarding = state;
+    store.save();
+    show(
+      `At your service. I’ll get ${appNames(state.apps)} ready, reuse existing sign-ins and guide any remaining setup. ${state.apps.some((app) => app === "codex" || app === "claude-code") ? "Coding assistants use this project folder and ask before coding work. " : ""}macOS access and account sign-ins stay with you.`,
+    );
+    const answer = (await screen.ask("Get my apps ready? Enter Yes, or Later"))
+      .trim()
+      .toLowerCase();
+    signal.throwIfAborted();
+    if (answer !== "yes" && answer !== "y") {
+      state.phase = "later";
+      store.save();
+      show(
+        "Setup can wait. Tell me what you'd like done, or say ‘Get me ready’ whenever you like.",
+      );
+      return;
+    }
+    await setupApps(state.apps, signal, false, true);
   };
   const setRegularBriefings = (rest: string) => {
     const minutes = Number(rest);
@@ -757,6 +968,26 @@ export async function main(args = process.argv.slice(2)) {
     }
     await voice.interruptOutput();
     if (text === "/quit") return quit();
+    if (
+      !spoken &&
+      /^(?:skip setup|set up later|setup later)[.!?]*$/i.test(text.trim())
+    ) {
+      const state = store.profile.onboarding;
+      if (state) {
+        setupAbort?.();
+        advanceSetup = false;
+        if (setupGoal && snapshot.run?.task === setupGoal && isRunning()) {
+          runner?.stop();
+          await runningWork;
+        }
+        state.phase = "later";
+        state.activeApp = undefined;
+        setupGoal = undefined;
+        store.save();
+      }
+      announce("Setup can wait. Tell me what you'd like done.");
+      return;
+    }
     if (text === "/stop") {
       interrupt();
       return;
@@ -1033,7 +1264,7 @@ export async function main(args = process.argv.slice(2)) {
           );
         else await task(rest, "user_words", false, word !== "/cua");
       } else if (word === "/briefing" || briefingRequest(text)) {
-        if (spoken && spoken.confidence < APPROVAL_MIN_CONFIDENCE) {
+        if (spoken && spoken.confidence < VOICE_READ_MIN_CONFIDENCE) {
           announce("Please repeat that if you'd like a fresh briefing.");
           return;
         }
@@ -1170,6 +1401,37 @@ export async function main(args = process.argv.slice(2)) {
         );
       else {
         show(text, "You");
+        const onboarding = store.profile.onboarding;
+        if (
+          startsOnboarding(text) &&
+          (!spoken || spoken.confidence >= VOICE_READ_MIN_CONFIDENCE)
+        ) {
+          await startOnboarding(activeTurn.signal);
+          return;
+        }
+        if (
+          onboarding?.apps.length &&
+          (onboarding.phase === "waiting" ||
+            onboarding.phase === "connecting") &&
+          continuesSetup(text)
+        ) {
+          if (
+            spoken &&
+            (spoken.recovered || spoken.confidence < APPROVAL_MIN_CONFIDENCE)
+          ) {
+            announce(
+              "Please repeat ‘Done’ clearly, or type it to continue setup.",
+            );
+            return;
+          }
+          await setupApps(
+            onboarding.apps,
+            activeTurn.signal,
+            false,
+            onboarding.desktopFirst,
+          );
+          return;
+        }
         const preference = spoken ? naturalControl(text) : undefined;
         if (
           spoken &&
@@ -1179,7 +1441,13 @@ export async function main(args = process.argv.slice(2)) {
               preference === prefix || preference.startsWith(prefix + " "),
           )
         ) {
-          if (spoken.recovered || spoken.confidence < APPROVAL_MIN_CONFIDENCE) {
+          const voiceOutputOnly =
+            preference === "/voice on" || preference === "/voice off";
+          if (
+            voiceOutputOnly
+              ? spoken.confidence < VOICE_READ_MIN_CONFIDENCE
+              : spoken.recovered || spoken.confidence < APPROVAL_MIN_CONFIDENCE
+          ) {
             announce("Please repeat that setting change clearly, or type it.");
             return;
           }
@@ -1220,7 +1488,7 @@ export async function main(args = process.argv.slice(2)) {
         const inbox = inboxRequest(text);
         if (
           inbox &&
-          (!spoken || spoken.confidence >= APPROVAL_MIN_CONFIDENCE)
+          (!spoken || spoken.confidence >= VOICE_READ_MIN_CONFIDENCE)
         ) {
           await readyConnections();
           const tools = connections.registry.access({ synthetic: false });
@@ -1260,14 +1528,19 @@ export async function main(args = process.argv.slice(2)) {
               });
             return;
           }
-          if (parallel) {
-            const line =
-              "I couldn't read the inbox just now. The current task is still in place.";
+          if (
+            parallel ||
+            (spoken && (spoken.recovered || spoken.segments !== 1))
+          ) {
+            const line = parallel
+              ? "I couldn't read the inbox just now. The current task is still in place."
+              : "I couldn't read the inbox through your connected tools. Type the request if you'd like me to try computer use.";
             dialog.noteUser(text, spoken ? "voice" : "app");
             dialog.noteAssistant(line, spoken ? "voice" : "app");
-            providerTrace("ParallelReadUnavailable", {
-              durationMs: Date.now() - readStarted,
-            });
+            if (parallel)
+              providerTrace("ParallelReadUnavailable", {
+                durationMs: Date.now() - readStarted,
+              });
             announce(line);
             return;
           }
@@ -1275,7 +1548,7 @@ export async function main(args = process.argv.slice(2)) {
         const fast = toolFastPath(text, connections.registry.clock());
         if (
           fast?.kind === "answer" &&
-          (!spoken || spoken.confidence >= APPROVAL_MIN_CONFIDENCE)
+          (!spoken || spoken.confidence >= VOICE_READ_MIN_CONFIDENCE)
         ) {
           await readyConnections();
           const parallel = isRunning();
@@ -1298,14 +1571,20 @@ export async function main(args = process.argv.slice(2)) {
               });
             return;
           }
-          if (parallel && !activeTurn.signal.aborted) {
-            const line =
-              "I couldn't check that just now. The current task is still in place.";
+          if (
+            (parallel ||
+              (spoken && (spoken.recovered || spoken.segments !== 1))) &&
+            !activeTurn.signal.aborted
+          ) {
+            const line = parallel
+              ? "I couldn't check that just now. The current task is still in place."
+              : "I couldn't check that through your connected tools. Type the request if you'd like me to try computer use.";
             dialog.noteUser(text, spoken ? "voice" : "app");
             dialog.noteAssistant(line, spoken ? "voice" : "app");
-            providerTrace("ParallelReadUnavailable", {
-              durationMs: Date.now() - readStarted,
-            });
+            if (parallel)
+              providerTrace("ParallelReadUnavailable", {
+                durationMs: Date.now() - readStarted,
+              });
             announce(line);
             return;
           }
@@ -1470,6 +1749,7 @@ export async function main(args = process.argv.slice(2)) {
         ? snapshot.message
         : "Ready when you are.";
       screen.draw();
+      await advanceOnboarding();
     }
   }
   process.once("SIGTERM", () => void quit());
@@ -1594,15 +1874,39 @@ export async function main(args = process.argv.slice(2)) {
     await quit();
     return;
   }
-  show(
-    settings().tools.servers.some((row) => row.enabled && row.consented) ||
-      Object.values(settings().tools.apple).some(Boolean)
-      ? "At your service. Your saved connections and settings are loaded. Tell me what you'd like done, or say ‘Help’ for examples."
-      : "At your service. Tell me what you'd like done. Say ‘Connect my apps’ to get started, or ‘Help’ for examples.",
-  );
+  if (store.profile.onboarding?.phase === "new") {
+    busy = true;
+    activeTurn = new AbortController();
+    try {
+      await startOnboarding(activeTurn.signal);
+    } catch (error) {
+      if (store.profile.onboarding?.phase === "new") {
+        store.profile.onboarding.phase = "later";
+        store.save();
+      }
+      reportError(error);
+    } finally {
+      busy = false;
+      activeTurn = undefined;
+      await advanceOnboarding();
+    }
+  } else
+    show(
+      settings().tools.servers.some((row) => row.enabled && row.consented) ||
+        Object.values(settings().tools.apple).some(Boolean) ||
+        store.profile.onboarding?.desktopReady.length
+        ? "At your service. Your saved connections and settings are loaded. Tell me what you'd like done, or say ‘Help’ for examples."
+        : "At your service. Tell me what you'd like done. Say ‘Connect my apps’ to get started, or ‘Help’ for examples.",
+    );
+  if (stopped) return;
+  if (store.profile.onboarding?.phase === "waiting")
+    show(
+      `Setup is saved. ${appNames(store.profile.onboarding.pending)} still needs attention. Say ‘Continue setup’ to pick up where we left off, or give me another task.`,
+    );
   await speak("At your service. What shall we attend to?", false, false).catch(
     reportError,
   );
+  if (stopped) return;
   if (settings().handsFree || args.includes("--listen")) {
     busy = true;
     activeTurn = new AbortController();

@@ -73,6 +73,10 @@ export function screenLines(
       c.includes(": ready on demand") ||
       c.includes("[demo]"),
   );
+  const desktop = s.connections.filter((c) =>
+    c.endsWith(": computer use"),
+  ).length;
+  const access = `${connected.length} connected${desktop ? ` · ${desktop} via computer use` : ""}`;
   const spinner = s.phase === "idle" ? "o" : ["|", "/", "-", "\\"][tick % 4];
   const fixed = [
     "  B U T L E R   /   personal assistant",
@@ -85,14 +89,14 @@ export function screenLines(
               `  ${line}  ${
                 [
                   `${spinner} ${s.phase.toUpperCase()}  ${s.status}`,
-                  `${connected.length} connected  ·  Say “Connect my apps”`,
+                  `${access}${desktop ? "" : "  ·  Say “Connect my apps”"}`,
                   `Briefings: ${s.nextBriefing}`,
                 ][i]
               }`,
           )
       : [
           `  ${spinner} ${s.phase.toUpperCase()}  ${s.status}`,
-          `  ${connected.length} connected  |  Briefings: ${s.nextBriefing}`,
+          `  ${access}  |  Briefings: ${s.nextBriefing}`,
         ]),
     rule,
   ];

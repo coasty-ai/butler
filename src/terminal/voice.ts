@@ -8,6 +8,24 @@ import { speakableText, splitSentences } from "../voice/speakable";
 import { type VoiceSource, voiceIntent } from "../voice/turns";
 import { voiceCommandConfidence } from "../voice/router";
 import { trace, type DiagnosticSink } from "../core/diagnostics";
+import { naturalControl } from "./concierge";
+import { inboxRequest } from "./inbox";
+import { toolFastPath } from "../assistant/tool-answers";
+
+/** Existing recognition minimum for conversation; never an approval threshold. */
+export const VOICE_READ_MIN_CONFIDENCE = 0.65;
+function recoverableLocalRequest(text: string): boolean {
+  const control = naturalControl(text);
+  return (
+    control === "/voice on" ||
+    control === "/voice off" ||
+    !!inboxRequest(text) ||
+    toolFastPath(text, {
+      now: new Date(),
+      zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    })?.kind === "answer"
+  );
+}
 
 export interface InstalledVoice {
   id: string;
@@ -389,14 +407,20 @@ export class TerminalVoice {
         segments,
         micLevel: this.inputLevel,
       });
-      // Stop/pause can always halt input. Other speech must be finalized or
-      // recovered from Apple's stable empty final, and clearly heard. It
-      // never enters the typed command lane or approves a pending action.
+      // A bounded multi-segment read or voice-output toggle can use existing
+      // access. Other merged speech still needs repetition. Neither route
+      // enters the typed command lane or approves a pending action.
+      const readableSegments =
+        Number.isInteger(segments) &&
+        segments >= 1 &&
+        segments <= 8 &&
+        recoverableLocalRequest(text);
       if (
         !text ||
         text.length > 8192 ||
         text.startsWith("/") ||
-        ((confidence < 0.65 || segments !== 1) &&
+        ((confidence < VOICE_READ_MIN_CONFIDENCE ||
+          (segments !== 1 && !readableSegments)) &&
           !["stop", "pause"].includes(intent.kind))
       ) {
         this.options.notice("I didn't catch that clearly. Please try again.");

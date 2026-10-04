@@ -25,6 +25,19 @@ Already have this checkout? Run `npm run install:terminal` in its folder.
 butler
 ```
 
+On the first launch, Butler offers to get your everyday apps ready. Type **Yes**
+once: it checks the Apple apps and installed coding assistants, reuses saved
+connections, and uses your signed-in browser or Slack app when Gmail, Slack or
+GitHub has no connected tool. It checks desktop permissions before starting
+computer use and waits for you to sign in or approve access. Say **Done** or
+**Continue setup** after a handoff. Progress is saved across restarts; **Skip
+setup** puts it aside, and **Get me ready** brings it back.
+
+Ordinary app access needs no Google developer project or Slack bot token.
+Desktop access is shown separately from connected tools. Scheduled API reads
+still need an MCP connection. If no working model is configured, Butler offers
+a hidden API-key prompt; you can leave it for later or use your local Ollama model.
+
 Preview just the animation without accounts, permissions, or model calls:
 
 ```sh
@@ -80,7 +93,16 @@ Set up Gmail and Slack
 Show my connections
 ```
 
-Butler checks GitHub, Gmail, Slack, Claude Code, Codex and the four Apple app bridges. It reuses saved grants, GitHub CLI sign-in and installed coding CLIs. Gmail setup can reuse a single unambiguous Desktop client download in Downloads or the project folder. Account sign-in opens in your browser. When credentials are missing, Butler uses desktop control to prepare Gmail, Slack or GitHub setup, then stops for your account choices, credential creation and access approvals. After your part, say “Set up Gmail” or “Set up Slack” again to verify and finish. Approved tokens use a hidden prompt and never enter the chat model. Console preparation depends on the page and available desktop permissions; it cannot bypass a service's registration or workspace approval.
+The first-launch flow and “Get me ready” use ordinary app access when a connected
+tool is unavailable. “Connect my apps” or “Set up Gmail and Slack” explicitly
+configure API/MCP connections instead. Butler checks GitHub, Gmail, Slack,
+Claude Code, Codex and the four Apple app bridges. It reuses saved grants,
+GitHub CLI sign-in and installed coding CLIs. Gmail API setup can reuse a single
+unambiguous Desktop client download in Downloads or the project folder. Missing
+developer credentials use a guided browser handoff; after your part, say
+“Continue setup” to verify the same accounts. Approved tokens use a hidden
+prompt and never enter the chat model. Service registration, account choices
+and access approvals stay with you.
 
 GitHub connects in read-only mode. Claude Code uses `claude mcp serve`. Codex uses Butler’s local MCP bridge to the installed, signed-in Codex CLI. Coding tasks ask for approval and run in the project folder chosen when connecting; use `butler --cwd /path/to/project` for a different project.
 

@@ -1,5 +1,73 @@
 # Validation record
 
+## Retained log review and first-launch onboarding (October 3, 2026)
+
+Read-only audit `272425a9-8625-4621-b348-9522d0c81faf` examined all 19 retained
+task records, complete encrypted journal entries and retained diagnostic logs.
+It left partial active journals untouched and saved only counts, fixed codes,
+lengths and hashes. Three runs completed, five failed, ten were cancelled and
+one remained in takeover. These include interrupted user sessions, so they
+are not a benchmark success rate. The live observer remains separate.
+
+Media runs `4bef3662-857b-42da-a025-28f4060b194e` and
+`a823a9ad-6523-4bc0-abcd-11b7a97216e8` failed the desktop permission check with
+zero actions and frames. Run `0a7027e8-a7a1-4ea4-b463-aed20235722f` captured
+three frames and ended with `MODEL_FAILED`, with no executed actions. Two
+older media failures retain `RUN_ERROR`; their cause has not been established.
+Three connection resets were retried and four timeouts were logged. Most
+dialogue requests reached HTTP 200; not every cancelled request is a transport
+failure. The previously diagnosed Slack bot still needs its missing read scope.
+
+Of 74 transcript records, 54 were recovered hypotheses, 16 finalized and four
+unconfirmed. The current profile had listening enabled and spoken replies off.
+The CLI rejected all multi-segment speech, including simple reads and output
+toggles, and applied the task approval confidence threshold to those reads.
+Bounded recognized reads and spoken-output toggles now use the existing 0.65
+recognition minimum. Reads use already trusted tools; unavailable tools cannot
+turn recovered or merged speech into a computer task. Generic merged tasks,
+credentials, account changes and spoken action approvals remain blocked.
+This does not validate live recognition accuracy or microphone sensitivity.
+
+Fresh profiles now offer one typed setup choice. The guided flow checks available
+Apple apps and installed coding CLIs, reuses saved connections and prepares the
+normal Gmail, Slack or GitHub app when credentials are absent. It does not
+require developer registration to start ordinary desktop work. It checks for a
+working configured local model or offers a hidden provider-key prompt, then
+checks desktop permissions before starting computer use. Account sign-in,
+security fields and final grants remain owner handoffs. The exact selected apps,
+pending step and verified desktop access persist encrypted. Continue/Done
+resumes that scope, and Skip setup cancels a pending check. Desktop access is
+labelled separately from MCP access; it cannot supply scheduled API reads.
+Existing profiles retain their settings without an unsolicited setup wizard.
+
+Focused tests cover consent, deferral, model setup, permission rechecks, restart,
+automatic advance, cancellation, trusted voice reads and approval boundaries.
+These tests use synthetic accounts and simulated native responses. Live browser
+or Slack onboarding has not been driven: this session's usual Computer Use
+controller is unavailable, and the alternate-controller method choice remains
+unanswered. No account grant or owner setting was changed.
+
+Actual CLI evaluation `adeb4639-48e7-4192-882d-54fac67d7acf` passed four
+pseudo-terminal processes with a disposable encrypted profile and a synthetic
+local model catalogue. Later persisted, restart omitted the initial prompt,
+Yes reached a simulated permission handoff, and Done resumed the same selected
+apps after restart. All processes exited normally. There were two model-health
+catalogue checks, zero model generations, zero task runs and zero GUI actions.
+The native stand-in answered only configuration and permission RPCs; it could
+not operate the Mac. The owner's engine lock stayed unchanged. The final bundle
+repeated these checks in `7d1ee20a-c9ed-42df-94ef-ef620cfdbb7c`, with a 55 ms
+fixture continuation. These timings exclude real model latency and GUI work.
+An earlier fixture used a different HOME, which prevented access to the login
+Keychain, and a malformed simulated helper stalled a later trial. Corrected
+fixtures retain the normal Keychain environment; local-only setup skips cloud
+credential discovery and no owner credentials are copied into the profile.
+
+Type checking and touched-file formatting passed. The full offline suite passed
+4,900 tests with three skips: two legacy speech data cases and native presence
+because this isolated checkout has no compiled helper. The harness-cycle suite
+was excluded. The Electron path override only supports mocked legacy speech
+tests. No new dependency or native source change was made.
+
 ## Live diagnosis and concurrent CLI conversation (October 3, 2026)
 
 Owner run `c72f7c05-3d1e-46ee-a82e-42347e449f2f` made one Slack tool call,

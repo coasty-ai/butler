@@ -273,6 +273,51 @@ test("a stable Apple empty final routes a recovered turn without claiming final 
   expect(f.notice).not.toHaveBeenCalled();
   expect(f.voice.listeningToTurn).toBe(false);
 });
+test.each(["check my inbox", "check my reminders", "Read replies aloud"])(
+  "bounded recovered segments reach only a local read or speech-output request: %s",
+  async (text) => {
+    const f = fixture();
+    await f.voice.setListening(true);
+    f.emit({ event: "wake_detected" });
+    f.emit({
+      event: "transcript_recovered",
+      text,
+      source: "empty_final_after_endpoint",
+      confidence: 0,
+      stableMs: 2000,
+      segments: 2,
+    });
+    expect(f.receive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text,
+        confidence: 0.7,
+        recovered: true,
+        segments: 2,
+      }),
+    );
+  },
+);
+test.each([
+  "Connect Gmail",
+  "Yes",
+  "Send my inbox to Dana",
+  "Read replies aloud and delete files",
+])(
+  "merged speech does not gain setup, approval or task authority: %s",
+  async (text) => {
+    const f = fixture();
+    await f.voice.setListening(true);
+    f.emit({ event: "wake_detected" });
+    f.emit({
+      event: "transcript_recovered",
+      text,
+      source: "empty_final_after_endpoint",
+      stableMs: 2000,
+      segments: 2,
+    });
+    expect(f.receive).not.toHaveBeenCalled();
+  },
+);
 test("wake failures invalidate a capture and report recovery once, without repeating native error content", async () => {
   const f = fixture();
   await f.voice.setListening(true);
