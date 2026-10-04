@@ -47,6 +47,8 @@ export interface QueuedTask {
   text: string;
   origin: RunOrigin;
   taskSource?: TaskSource;
+  /** Preserve an explicit CLI desktop-only request when it waits its turn. */
+  toolsFirst?: boolean;
   at: number;
 }
 

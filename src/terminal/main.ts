@@ -60,6 +60,7 @@ import {
   APPROVAL_MIN_CONFIDENCE,
   planVoiceTurn,
   voiceIntent,
+  dropsCurrentTask,
 } from "../voice/turns";
 import { leadingClause } from "../voice/early";
 import { redactSecrets } from "../core/sanitize";
@@ -339,7 +340,12 @@ export async function main(args = process.argv.slice(2)) {
         activeTurn?.abort();
         void voice.interruptOutput();
       }
-      if (phase === "listening" && isRunning() && view().status === "working") {
+      if (
+        phase === "listening" &&
+        isRunning() &&
+        view().status === "working" &&
+        !runner?.conversationCanOverlap
+      ) {
         heldByVoice = true;
         runner?.interruptForVoice("control");
       }
@@ -592,13 +598,40 @@ export async function main(args = process.argv.slice(2)) {
     if (stopped || runner !== currentRunner) return;
     if (snapshot.run?.status === "completed") {
       const next = taskQueue.next(Date.now());
-      if (next) await task(next.text, next.taskSource, next.origin === "voice");
+      if (next)
+        await task(
+          next.text,
+          next.taskSource,
+          next.origin === "voice",
+          next.toolsFirst ?? true,
+        );
     } else if (taskQueue.clear()) {
       const line =
         "The queued tasks were cancelled because this one did not finish. Tell me when you'd like to retry them.";
       dialog.noteAssistant(line, spoken ? "voice" : "app");
       show(line);
     }
+  };
+  const enqueueTask = (
+    text: string,
+    source: TaskSource | undefined,
+    spoken: boolean,
+    toolsFirst?: boolean,
+  ) => {
+    const added = taskQueue.add(
+      text,
+      spoken ? "voice" : "typed",
+      Date.now(),
+      source,
+      toolsFirst === undefined ? undefined : { toolsFirst },
+    );
+    announce(
+      "position" in added
+        ? "I'll do that next; the current task will carry on."
+        : "full" in added
+          ? "Three tasks are already waiting. Let one finish first."
+          : "Enter credentials through /key or /connect.",
+    );
   };
   let setupGoal: string | undefined;
   const setupApps = async (
@@ -989,6 +1022,10 @@ export async function main(args = process.argv.slice(2)) {
         if (!rest) throw new Error("Tell me the task after /run.");
         show(rest, "You");
         dialog.noteUser(rest, "app");
+        if (isRunning()) {
+          enqueueTask(rest, "user_words", false, word !== "/cua");
+          return;
+        }
         announce("Certainly. I'll attend to that.");
         if (process.stdin.isTTY)
           void task(rest, "user_words", false, word !== "/cua").catch(
@@ -1182,12 +1219,14 @@ export async function main(args = process.argv.slice(2)) {
         }
         const inbox = inboxRequest(text);
         if (
-          !isRunning() &&
           inbox &&
           (!spoken || spoken.confidence >= APPROVAL_MIN_CONFIDENCE)
         ) {
           await readyConnections();
           const tools = connections.registry.access({ synthetic: false });
+          const parallel = isRunning();
+          const readStarted = Date.now();
+          if (parallel) providerTrace("ParallelReadStarted");
           const reading =
             tools &&
             (await readInbox({
@@ -1215,16 +1254,33 @@ export async function main(args = process.argv.slice(2)) {
             dialog.noteUser(text, channel);
             dialog.noteAssistant(answered.said, channel, { untrusted: true });
             announce(answered.said);
+            if (parallel)
+              providerTrace("ParallelReadFinished", {
+                durationMs: Date.now() - readStarted,
+              });
+            return;
+          }
+          if (parallel) {
+            const line =
+              "I couldn't read the inbox just now. The current task is still in place.";
+            dialog.noteUser(text, spoken ? "voice" : "app");
+            dialog.noteAssistant(line, spoken ? "voice" : "app");
+            providerTrace("ParallelReadUnavailable", {
+              durationMs: Date.now() - readStarted,
+            });
+            announce(line);
             return;
           }
         }
         const fast = toolFastPath(text, connections.registry.clock());
         if (
-          !isRunning() &&
           fast?.kind === "answer" &&
           (!spoken || spoken.confidence >= APPROVAL_MIN_CONFIDENCE)
         ) {
           await readyConnections();
+          const parallel = isRunning();
+          const readStarted = Date.now();
+          if (parallel) providerTrace("ParallelReadStarted");
           const answered = await answerByTool(
             connections.registry,
             fast,
@@ -1236,6 +1292,21 @@ export async function main(args = process.argv.slice(2)) {
             dialog.noteUser(text, channel);
             dialog.noteAssistant(answered.said, channel, { untrusted: true });
             announce(answered.said);
+            if (parallel)
+              providerTrace("ParallelReadFinished", {
+                durationMs: Date.now() - readStarted,
+              });
+            return;
+          }
+          if (parallel && !activeTurn.signal.aborted) {
+            const line =
+              "I couldn't check that just now. The current task is still in place.";
+            dialog.noteUser(text, spoken ? "voice" : "app");
+            dialog.noteAssistant(line, spoken ? "voice" : "app");
+            providerTrace("ParallelReadUnavailable", {
+              durationMs: Date.now() - readStarted,
+            });
+            announce(line);
             return;
           }
         }
@@ -1313,6 +1384,20 @@ export async function main(args = process.argv.slice(2)) {
           decision.acting &&
           (decision.plan.kind === "start" || decision.plan.kind === "replace")
         ) {
+          if (isRunning() && !dropsCurrentTask(text, snapshot.run?.task)) {
+            enqueueTask(
+              decision.plan.text,
+              decision.taskSource ||
+                (decision.plan.kind === "start"
+                  ? decision.plan.taskSource
+                  : undefined) ||
+                (spoken && spoken.confidence < APPROVAL_MIN_CONFIDENCE
+                  ? "user_words_unsure"
+                  : "user_words"),
+              !!spoken,
+            );
+            return;
+          }
           if (decision.plan.kind === "replace") runner?.stop();
           announce("Certainly. I’ll attend to that.");
           const work = task(
@@ -1337,19 +1422,7 @@ export async function main(args = process.argv.slice(2)) {
           heldByVoice = false;
           announce("Understood. I've updated the task.");
         } else if (decision.acting && decision.plan.kind === "queue") {
-          const added = taskQueue.add(
-            decision.plan.text,
-            spoken ? "voice" : "typed",
-            Date.now(),
-            decision.taskSource,
-          );
-          announce(
-            "position" in added
-              ? "I'll do that next."
-              : "full" in added
-                ? "Three tasks are already waiting. Let one finish first."
-                : "Enter credentials through /key or /connect.",
-          );
+          enqueueTask(decision.plan.text, decision.taskSource, !!spoken);
         } else if (decision.acting && decision.plan.kind === "resume") {
           heldByVoice = false;
           await runner?.resume();

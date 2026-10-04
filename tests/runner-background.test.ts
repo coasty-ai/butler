@@ -326,6 +326,36 @@ const start = (runner: Runner, task: string, extra: object = {}) =>
   });
 
 describe("binding the window (design §2.2)", () => {
+  it("conversation can overlap a separate bound window until a genuine takeover", async () => {
+    const c = desktop(),
+      m = journal();
+    let release!: () => void;
+    const p = scripted();
+    p.next.mockImplementationOnce(async (o) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return {
+        usage,
+        action: {
+          type: "done",
+          summary: "Synthetic check",
+          frame_id: o.frame.id,
+        },
+      };
+    });
+    const runner = runnerWith(c, p, m);
+    const work = start(runner, "in Slack, check recent activity");
+    await until(() => !!release);
+    expect(runner.conversationCanOverlap).toBe(true);
+    runner.manualTakeover("target");
+    expect(runner.conversationCanOverlap).toBe(false);
+    expect(m.getRun().status).toBe("paused");
+    runner.stop();
+    release();
+    await work;
+    expect(runner.conversationCanOverlap).toBe(false);
+  });
   it("a typed CLI opening clause binds the named existing window before capture", async () => {
     const c = desktop();
     const m = journal();
@@ -335,6 +365,25 @@ describe("binding the window (design §2.2)", () => {
       initialApp: "Slack",
     });
     expect(c.bindTarget).toHaveBeenCalledWith({ app: "Slack" });
+    expect(c.capture).not.toHaveBeenCalled();
+    expect(c.captureTarget).toHaveBeenCalled();
+    expect(m.of("TargetBound")[0].data).toMatchObject({ by: "words" });
+  });
+  it("a request on Slack binds its window before examining a protected CLI surface", async () => {
+    const c = desktop();
+    c.surface.mockResolvedValue({
+      appId: "com.apple.Terminal",
+      pid: 9,
+      secureInput: false,
+      unknown: false,
+    });
+    const m = journal(),
+      p = scripted();
+    await start(runnerWith(c, p, m), "Check SYNTHETIC activity on Slack", {
+      origin: "typed",
+    });
+    expect(c.bindTarget).toHaveBeenCalledWith({ app: "Slack" });
+    expect(c.surface).not.toHaveBeenCalled();
     expect(c.capture).not.toHaveBeenCalled();
     expect(c.captureTarget).toHaveBeenCalled();
     expect(m.of("TargetBound")[0].data).toMatchObject({ by: "words" });
@@ -729,6 +778,7 @@ describe("rung 3: the announced foreground hand-off (design §2.8)", () => {
       };
     });
     c.execute.mockImplementation(async (action: Action, frame: Frame) => {
+      expect(runner.conversationCanOverlap).toBe(false);
       order.push(`execute:screen:${frame.id}:${action.frame_id}`);
       return undefined;
     });

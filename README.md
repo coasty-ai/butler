@@ -46,7 +46,7 @@ The chat is the everyday interface. Try “Connect my apps”, “Read replies a
 
 Connections, credentials, preferences and briefing settings use one encrypted profile across restarts, project folders and terminal sessions. Starting Butler again restores them; you do not need to connect each time. A different project still needs its own coding workspace approval. Only one engine controls the Mac at a time.
 
-While a task runs, tell Butler to correct it or do something next. Corrections update the current task; up to three tasks can wait for it to finish. A failed or stopped task cancels that queue. Questions report current progress, and a voice interruption resumes work after answering unless you asked it to pause.
+While a task runs, keep chatting or ask for an inbox, calendar or reminder check. Trusted read tools can answer alongside the task. With background work enabled, listening leaves API work and a separately bound app window running; foreground computer use pauses for speech and resumes afterward unless you asked it to pause. Corrections update the current task. Independent computer tasks wait their turn, with up to three queued; a failed or stopped task cancels that queue. Say “Forget that, instead…” to replace the current task.
 
 Pure greetings such as “Hello” and “How are you?” receive a local reply without a model request or computer task. Requests attached to a greeting still use the normal task and conversation paths.
 

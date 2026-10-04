@@ -423,10 +423,33 @@ describe("tools before desktop control", () => {
       toolsFirst: true,
     });
     await until(() => h.runner.snapshot.run?.status === "takeover");
+    expect(h.runner.conversationCanOverlap).toBe(false);
     expect(h.c.capture).not.toHaveBeenCalled();
     expect(h.c.execute).not.toHaveBeenCalled();
     h.runner.stop();
     await pending;
+  });
+
+  it("can converse during a pending API call but preserves explicit pauses and stop", async () => {
+    const tools = fakeTools();
+    const h = harness({ tools, replies: [call(CALENDAR_LIST.id, LIST_ARGS)] });
+    let finish!: () => void;
+    tools.script(CALENDAR_LIST.id, async () => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return ok(CALENDAR_LIST, "Synthetic appointment");
+    });
+    const pending = h.runner.start("check my calendar", backgroundTools);
+    await until(() => !!finish);
+    expect(h.runner.conversationCanOverlap).toBe(true);
+    h.runner.pause();
+    expect(h.runner.conversationCanOverlap).toBe(false);
+    h.runner.stop();
+    finish();
+    await pending;
+    expect(h.runner.conversationCanOverlap).toBe(false);
+    expect(h.c.capture).not.toHaveBeenCalled();
   });
 
   it("keeps explicit screen requests on the desktop path", async () => {

@@ -533,6 +533,41 @@ test("Slack API errors cannot leak server bodies, and bot thread restrictions ar
   await expect(read("chat.postMessage", {})).rejects.toThrow("Unexpected");
   expect(request).toHaveBeenCalledTimes(1);
 });
+test("Slack explains only the missing read scope and never echoes arbitrary scope data", async () => {
+  const request = vi.fn(async () =>
+    Response.json({
+      ok: false,
+      error: "missing_scope",
+      needed: "channels:read",
+      detail: "SYNTHETIC-private-body",
+    }),
+  );
+  const read = createSlackReader({ SLACK_BOT_TOKEN: "xoxb-fixture" }, request);
+  await expect(read("slack_activity", {})).rejects.toThrow(
+    "Slack needs permission to list public channels. Enable channels:read in the app's Bot Token Scopes, then reinstall it to the workspace.",
+  );
+  request.mockImplementation(async () =>
+    Response.json({
+      ok: false,
+      error: "missing_scope",
+      needed:
+        "channels:history, channels:history, im:history, SYNTHETIC-private-scope",
+    }),
+  );
+  await expect(read("slack_channels", {})).rejects.toThrow(
+    "Slack needs permission to read public channel messages, read direct messages. Enable channels:history, im:history in the app's Bot Token Scopes, then reinstall it to the workspace.",
+  );
+  request.mockImplementation(async () =>
+    Response.json({
+      ok: false,
+      error: "missing_scope",
+      needed: "SYNTHETIC-private-scope",
+    }),
+  );
+  await expect(read("slack_channels", {})).rejects.toThrow(
+    "Slack needs an additional read permission. Check the app's Bot Token Scopes, then reinstall it to the workspace.",
+  );
+});
 test("generic setup does not execute a server before exact command consent", async () => {
   const store = new TerminalStore(temp(), randomBytes(32));
   store.profile.settings.privacy = "PRIVATE_BYOM";

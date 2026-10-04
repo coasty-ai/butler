@@ -1,5 +1,59 @@
 # Validation record
 
+## Live diagnosis and concurrent CLI conversation (October 3, 2026)
+
+Owner run `c72f7c05-3d1e-46ee-a82e-42347e449f2f` made one Slack tool call,
+received an error, then switched to a desktop handoff before capturing a
+frame. A read-only account check confirmed a valid saved bot token and a
+`missing_scope` response requiring `channels:read` when listing conversations.
+Butler now explains the specific missing read permission rather than suggesting
+every Slack scope. The account grant still needs the owner to enable that scope
+and reinstall the Slack app. No grants or messages were changed.
+
+The task's app target used the preposition “on”, which the existing window
+binding parser did not recognize. A bounded list of app names now accepts that
+form. A mock regression binds Slack while the foreground surface is a protected
+terminal; it never captures or drives that terminal. This is not a live Slack
+desktop completion test.
+
+The CLI also blocked its direct inbox/calendar/reminder reads during tasks,
+paused every task when listening began, and could replace an unrelated task
+instead of preserving it. Trusted reads now run alongside the primary task.
+Background API work and separately bound windows continue during conversation;
+foreground detours, manual pauses, approvals and takeovers retain their holds.
+Independent computer tasks use the existing three-task queue, corrections
+still revise the task, and explicit abandonment can replace it. Queued
+desktop-only requests preserve their selected route and task provenance.
+
+Evaluation `02373386-79e1-40a6-8547-3e04d619471b` exercised the actual CLI in a
+pseudo-terminal with an isolated encrypted profile, local synthetic model
+service and read-only MCP fixture. During an eight-second tool operation, an
+inbox reply and conversation arrived before the primary task finished. A queued
+file task then completed; exact file state and an untouched sentinel were
+independently checked. Both runs completed with one action and zero frames.
+The native-controller trap was never called, the owner's engine lock stayed
+unchanged, and the disposable profile and files were removed. The fixture inbox
+reply took 61 ms; that timing does not measure a real account or model service.
+The rebuilt bundle repeated every check in evaluation
+`668dd616-e1d6-42db-a61b-e288d7ab1fa1`, with a 75 ms fixture inbox reply.
+
+Live dialogue requests received HTTP 200. Recovered voice hypotheses carried
+the existing fixed confidence of 0.7, which does not establish recognition
+accuracy or authorize approval. CLI dialogue logs now retain the selected plan
+and fixed arbitration code so a model suggestion can be distinguished from
+what Butler actually chose. Arbitrary codes, plans and speech remain excluded.
+Voice confidence and approval thresholds were not changed. The active process
+keeps its loaded version until the next start; it was not restarted by this work.
+
+Type checking and touched-file formatting passed. Across the offline suites,
+4,871 tests passed with two legacy speech-data skips; the harness-cycle suite
+was excluded in the isolated worktree. The first broad run exposed an absent
+Electron executable in that development checkout and rejected the deliberately
+trapped native helper. The four affected speech suites passed with the unit
+test's Electron path override, and the six native-presence tests passed using
+the existing compiled helper for read-only presence/index requests. No native
+source, installed helper, runtime dependency or owner setting was changed.
+
 ## CLI desktop-test preparation (October 3, 2026)
 
 Preparing a desktop task trial reproduced two everyday CLI defects. Saved

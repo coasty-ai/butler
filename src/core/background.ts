@@ -29,6 +29,9 @@ const IN_FORM = new RegExp(
   String.raw`\b(?:in|inside|within)\s+${NAME}(?=\s*(?:[,.;:!?]|$)|\s+(?:and|then)\b)`,
   "giu",
 );
+/** Common app names after "on"; dates, devices and account names are not apps. */
+const ON_FORM =
+  /\bon\s+(Google Chrome|Microsoft Teams|Slack|Spotify|Safari|Chrome|Discord|Notion|Zoom|Calendar|Reminders|Notes|Mail|Messages|TextEdit|Finder|Calculator)(?![\p{L}\p{N}.'’+-])/giu;
 /**
  * First words that never start an application's name in these phrases:
  * "in the morning", "in ten minutes", "check in with Dana", "log in to".
@@ -71,6 +74,7 @@ export function spokenTargets(task: string): TargetSpec[] {
     const first = name.split(" ")[0];
     if (first !== name) add(first);
   }
+  for (const match of text.matchAll(ON_FORM)) add(match[1]);
   return specs;
 }
 

@@ -69,6 +69,25 @@ describe("the windows the words name (design §2.2)", () => {
       spokenTargets("in Notes, in Mail, in Safari, in Slack, in Music."),
     ).toHaveLength(MAX_SPOKEN_TARGETS);
   });
+  it("binds explicitly named apps after on without treating dates or websites as apps", () => {
+    expect(spokenTargets("Check SYNTHETIC activity on Slack")).toEqual([
+      { app: "Slack" },
+    ]);
+    expect(spokenTargets("Read the agenda on Calendar for Monday")).toEqual([
+      { app: "Calendar" },
+    ]);
+    expect(spokenTargets("Find the page on Google Chrome")).toEqual([
+      { app: "Google Chrome" },
+    ]);
+    for (const task of [
+      "Remind me on Monday",
+      "check mail on my laptop",
+      "read reviews on Slack.com",
+      "look up an account on Slackbox",
+      "check my inbox on Gmail",
+    ])
+      expect(spokenTargets(task)).toEqual([]);
+  });
 });
 
 describe("the actuation ladder (design §2.5)", () => {

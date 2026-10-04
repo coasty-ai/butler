@@ -39,9 +39,16 @@ test("dialogue traces keep context counts and fixed decisions without words or a
     task: "Private fixture task",
   });
   trace("DialogTurn", {
+    phase: "decided",
+    act: "replace",
+    plan: "clarify",
+    code: "replace_held",
+  });
+  trace("DialogTurn", {
     phase: "Private fixture phase",
     code: "PRIVATE_BODY_FIXTURE",
     turns: "Private fixture turns",
+    plan: "Private fixture plan",
   });
   trace("TextFailed", { code: "parse", error: "Private fixture error" });
   const records = readFileSync(join(root, "current.jsonl"), "utf8");
@@ -53,8 +60,14 @@ test("dialogue traces keep context counts and fixed decisions without words or a
     .map((s) => JSON.parse(s).data);
   expect(rows[0]).toEqual({ phase: "turn", channel: "voice", turns: 12 });
   expect(rows[1]).toEqual({ phase: "decided", code: "timeout", actMs: 100 });
-  expect(rows[2]).toEqual({});
-  expect(rows[3]).toEqual({ code: "parse" });
+  expect(rows[2]).toEqual({
+    phase: "decided",
+    act: "replace",
+    plan: "clarify",
+    code: "replace_held",
+  });
+  expect(rows[3]).toEqual({});
+  expect(rows[4]).toEqual({ code: "parse" });
 });
 test("voice diagnostics retain finite measurements and fixed phases, never speech", () => {
   const root = mkdtempSync(join(tmpdir(), "butler-voice-trace-"));

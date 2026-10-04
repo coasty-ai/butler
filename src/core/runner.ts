@@ -2689,6 +2689,16 @@ export class Runner {
       ? this.target
       : undefined;
   }
+  /** API work and a separate bound window can continue during conversation. */
+  get conversationCanOverlap(): boolean {
+    return (
+      this.settings.workInBackground &&
+      this.active() &&
+      !this.held &&
+      !this.snapshot.pending &&
+      (this.toolsOnly || (!!this.boundTarget() && !this.inFront))
+    );
+  }
   /** Steps go to the screen from here on; the binding stays for the pill and release. */
   private leaveBackground(reason: string, code?: TargetCode) {
     const run = this.snapshot.run;

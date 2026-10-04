@@ -31,6 +31,7 @@ export class TaskQueue {
     origin: RunOrigin,
     now: number,
     taskSource?: TaskSource,
+    options?: { toolsFirst?: boolean },
   ): { position: number } | { full: true } | { refused: "credentials" } {
     if (scanText(text).some((f) => f.action === "BLOCK_UPLOAD"))
       return { refused: "credentials" };
@@ -41,6 +42,9 @@ export class TaskQueue {
       text: text.trim(),
       origin,
       ...(taskSource ? { taskSource } : {}),
+      ...(options?.toolsFirst === undefined
+        ? {}
+        : { toolsFirst: options.toolsFirst }),
       at: now,
     });
     return { position: this.tasks.length };

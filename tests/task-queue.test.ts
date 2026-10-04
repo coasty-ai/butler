@@ -108,4 +108,13 @@ describe("task queue", () => {
     listed.length = 0;
     expect(q.list(now).map((t) => t.text)).toEqual(["one"]);
   });
+  it("retains an explicit desktop-only request without changing task provenance", () => {
+    const q = new TaskQueue();
+    q.add("Open Calendar", "typed", now, "user_words", { toolsFirst: false });
+    expect(q.next(now)).toMatchObject({
+      text: "Open Calendar",
+      taskSource: "user_words",
+      toolsFirst: false,
+    });
+  });
 });

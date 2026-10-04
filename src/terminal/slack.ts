@@ -63,6 +63,28 @@ const integer = (v: unknown, fallback: number, max: number) => {
     throw new Error("Invalid Slack limit.");
   return Number(v);
 };
+const readScopes: Record<string, string> = {
+  "channels:read": "list public channels",
+  "channels:history": "read public channel messages",
+  "groups:read": "list private channels",
+  "groups:history": "read private channel messages",
+  "im:read": "list direct conversations",
+  "im:history": "read direct messages",
+  "mpim:read": "list group conversations",
+  "mpim:history": "read group messages",
+};
+function missingReadScope(needed: unknown): string {
+  const scopes = [
+    ...new Set(
+      (typeof needed === "string" ? needed.slice(0, 200).split(",") : [])
+        .map((scope) => scope.trim())
+        .filter((scope) => Object.hasOwn(readScopes, scope)),
+    ),
+  ];
+  if (!scopes.length)
+    return "Slack needs an additional read permission. Check the app's Bot Token Scopes, then reinstall it to the workspace.";
+  return `Slack needs permission to ${scopes.map((scope) => readScopes[scope]).join(", ")}. Enable ${scopes.join(", ")} in the app's Bot Token Scopes, then reinstall it to the workspace.`;
+}
 export function createSlackReader(
   env: NodeJS.ProcessEnv = process.env,
   request: typeof fetch = fetch,
@@ -93,8 +115,7 @@ export function createSlackReader(
     const value = await response.json();
     if (!value.ok) {
       const messages: Record<string, string> = {
-        missing_scope:
-          "Slack needs additional read scopes. Add channels:read, channels:history, groups:read, groups:history, im:read, im:history, mpim:read and mpim:history as needed, then reinstall your Slack app.",
+        missing_scope: missingReadScope(value.needed),
         not_in_channel:
           "Invite the Butler bot to this Slack conversation before reading it.",
         channel_not_found: "This Slack conversation is unavailable to the bot.",

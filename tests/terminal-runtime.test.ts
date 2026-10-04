@@ -25,6 +25,7 @@ const f = vi.hoisted(() => ({
   decide: vi.fn(),
   assistantOptions: undefined as any,
   holdTask: false,
+  conversationCanOverlap: false,
   runners: [] as any[],
   revisions: [] as string[],
   resumes: 0,
@@ -163,6 +164,9 @@ vi.mock("../src/core/runner", async (load) => {
     ...original,
     Runner: class {
       settled = false;
+      get conversationCanOverlap() {
+        return f.conversationCanOverlap;
+      }
       private notify: any;
       private release?: () => void;
       private latest: any;
@@ -266,6 +270,7 @@ beforeEach(() => {
   f.store = { root, key: randomBytes(32) };
   f.tasks = [];
   f.holdTask = false;
+  f.conversationCanOverlap = false;
   f.runners = [];
   f.revisions = [];
   f.resumes = 0;
@@ -588,6 +593,121 @@ test("an ordinary spoken question resumes only the hold created by listening", a
     segments: 4,
   });
   await vi.waitFor(() => expect(f.resumes).toBe(1));
+});
+test("conversation and a direct read leave independent background work running", async () => {
+  f.holdTask = true;
+  f.conversationCanOverlap = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.voice.activity("listening");
+  f.decide.mockResolvedValueOnce({
+    acting: false,
+    plan: { kind: "reply" },
+    sentences: (async function* () {
+      yield "It is still running.";
+    })(),
+  });
+  f.voice.receive({
+    text: "How is it going?",
+    source: "wake",
+    confidence: 0.95,
+    segments: 1,
+  });
+  await vi.waitFor(() =>
+    expect(f.speak).toHaveBeenCalledWith("It is still running.", false, true),
+  );
+  expect(f.resumes).toBe(0);
+  expect(f.assistantOptions.view().status).toBe("working");
+  f.toolAnswer.mockResolvedValueOnce({
+    said: "Nothing is due today.",
+    outcome: {},
+  });
+  f.ui.submit("check my reminders");
+  await vi.waitFor(() => expect(f.toolAnswer).toHaveBeenCalledOnce());
+  await vi.waitFor(() =>
+    expect(f.noteAssistant).toHaveBeenCalledWith(
+      "Nothing is due today.",
+      "app",
+      { untrusted: true },
+    ),
+  );
+  expect(f.tasks).toHaveLength(1);
+  expect(f.stops).toBe(0);
+  expect(f.revisions).toEqual([]);
+  expect(f.decide).toHaveBeenCalledOnce();
+});
+test("a failed parallel read does not revise, queue or replace the existing task", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.ui.submit("check my reminders");
+  await vi.waitFor(() =>
+    expect(f.speak).toHaveBeenCalledWith(
+      expect.stringContaining("couldn't check"),
+      false,
+      true,
+    ),
+  );
+  expect(f.decide).not.toHaveBeenCalled();
+  expect(f.revisions).toEqual([]);
+  expect(f.stops).toBe(0);
+  expect(f.assistantOptions.view().queued).toEqual([]);
+});
+test("a new unrelated task waits instead of silently replacing background work", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.decide.mockResolvedValueOnce({
+    acting: true,
+    plan: { kind: "replace", text: "Open Calendar" },
+    taskSource: "user_words",
+  });
+  f.ui.submit("Open Calendar");
+  await vi.waitFor(() =>
+    expect(f.assistantOptions.view().queued).toEqual(["Open Calendar"]),
+  );
+  expect(f.stops).toBe(0);
+  expect(f.tasks).toHaveLength(1);
+  f.holdTask = false;
+  f.runners[0].finish();
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(2));
+  expect(f.tasks[1].task).toBe("Open Calendar");
+});
+test("an explicit replacement still stops the old task and keeps its requested scope", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.decide.mockResolvedValueOnce({
+    acting: true,
+    plan: { kind: "replace", text: "Open Calendar" },
+    taskSource: "user_words",
+  });
+  f.ui.submit("Forget that, open Calendar instead");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(2));
+  expect(f.stops).toBe(1);
+  expect(f.assistantOptions.view().queued).toEqual([]);
+});
+test("explicit desktop tasks retain desktop-only routing when queued", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run create the fixture note");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.ui.submit("/cua Open Calendar");
+  await vi.waitFor(() =>
+    expect(f.assistantOptions.view().queued).toEqual(["Open Calendar"]),
+  );
+  f.holdTask = false;
+  f.runners[0].finish();
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(2));
+  expect(f.tasks[1].options).toMatchObject({
+    toolsFirst: false,
+    background: true,
+    taskSource: "user_words",
+  });
 });
 test("cancelled or unheard speech releases its temporary task hold", async () => {
   f.holdTask = true;
