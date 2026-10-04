@@ -24,6 +24,12 @@ import {
 import type { ServerRecipe } from "../core/tools";
 import { authorize, type OAuthClient } from "./oauth";
 import type { TerminalStore } from "./store";
+import {
+  browserSetupTask,
+  findGoogleClient,
+  googleClientFile,
+  type SetupApp,
+} from "./concierge";
 
 export const CONNECTIONS = [
   "github",
@@ -37,6 +43,11 @@ export const CONNECTIONS = [
 ] as const;
 export type ConnectionId = (typeof CONNECTIONS)[number];
 export type Ask = (label: string, secret?: boolean) => Promise<string>;
+export interface ConnectionSetup {
+  connected: string[];
+  pending: string[];
+  browserTask?: string;
+}
 /** Scope a direct Apple read or a passive check without editing saved consent. */
 export function connectionSettings(
   settings: Settings,
@@ -71,6 +82,7 @@ export class TerminalConnections {
   private briefingsOnly = false;
   private firstPartyOnly = false;
   private onlyServers?: readonly string[];
+  private browserAttempted = new Set<SetupApp>();
   private scopedSettings() {
     return connectionSettings(
       this.store.profile.settings,
@@ -83,6 +95,7 @@ export class TerminalConnections {
     private store: TerminalStore,
     readonly project: string,
     readonly root: string,
+    private openPage?: (url: string) => Promise<boolean>,
   ) {
     this.recipes = [
       ...RECIPES,
@@ -305,6 +318,196 @@ export class TerminalConnections {
       addedAt: Date.now(),
     });
   }
+  /** An explicit chat request reuses local grants and leaves account decisions to the owner. */
+  async setup(
+    apps: SetupApp[],
+    browser: string,
+    show: (text: string) => void,
+    signal: AbortSignal,
+    clientFolders = [join(homedir(), "Downloads"), this.project],
+    ask?: Ask,
+  ): Promise<ConnectionSetup> {
+    const result: ConnectionSetup = { connected: [], pending: [] };
+    const secrets = this.store.profile.secrets;
+    const missing = () => {
+      throw new Error("SETUP_INPUT_REQUIRED");
+    };
+    for (const app of [...new Set(apps)]) {
+      signal.throwIfAborted();
+      if (["calendar", "reminders", "notes", "mail"].includes(app)) {
+        const consent = app as AppleConsent;
+        this.store.profile.settings.tools.apple[consent] = true;
+        this.store.save();
+        try {
+          let access = await this.registry.appleAccess();
+          if (access[consent] === "notDetermined") {
+            show(`Please approve macOS access to ${app} when it asks.`);
+            access = await this.registry.requestApple(consent);
+          }
+          (access[consent] === "granted"
+            ? result.connected
+            : result.pending
+          ).push(app);
+        } catch {
+          signal.throwIfAborted();
+          result.pending.push(app);
+        }
+        continue;
+      }
+      if (this.store.profile.settings.privacy === "PRIVATE_LOCAL") {
+        result.pending.push(app);
+        continue;
+      }
+      if (
+        (this.browserAttempted.has(app) ||
+          this.store.profile.settings.tools.servers.some(
+            (row) =>
+              !row.enabled &&
+              (row.id === app || (app === "slack" && row.id === "slack-bot")),
+          )) &&
+        ask &&
+        (app === "github" || app === "slack") &&
+        !(app === "github"
+          ? secrets["github:token"]
+          : secrets["slack:botToken"] ||
+            secrets["slack:accessToken"] ||
+            secrets["slack:clientId"])
+      ) {
+        const token = await ask(
+          app === "github"
+            ? "Paste the GitHub token from the access you approved (hidden), or leave blank to continue browser setup"
+            : "Paste your approved Slack bot token (hidden), or leave blank to continue browser setup",
+          true,
+        );
+        signal.throwIfAborted();
+        if (token) {
+          if (app === "slack" && !/^xoxb-[A-Za-z0-9-]{10,}$/.test(token))
+            throw new Error(
+              "That isn't a Slack bot token. It should start with xoxb-.",
+            );
+          secrets[app === "github" ? "github:token" : "slack:botToken"] = token;
+          this.store.save();
+        }
+      }
+      const id =
+        app === "slack" &&
+        secrets["slack:botToken"] &&
+        !secrets["slack:accessToken"]
+          ? "slack-bot"
+          : (app as ConnectionId);
+      const row = this.store.profile.settings.tools.servers.find(
+        (row) => row.id === id,
+      );
+      const live = this.registry
+        .status()
+        .servers.find((server) => server.id === id);
+      if (
+        row?.enabled &&
+        row.consented &&
+        row.approvedCommand === this.registry.approval(row) &&
+        live?.state === "on" &&
+        (app !== "gmail" ||
+          (secrets["gmail:clientId"] &&
+            secrets["gmail:clientSecret"] &&
+            secrets["gmail:refreshToken"])) &&
+        (!(id === "codex" || id === "claude-code") || row.cwd === this.project)
+      ) {
+        result.connected.push(app);
+        continue;
+      }
+      if (
+        app === "gmail" &&
+        !(secrets["gmail:clientId"] && secrets["gmail:clientSecret"])
+      ) {
+        let client = findGoogleClient(clientFolders);
+        if (!client && ask && (this.browserAttempted.has(app) || row)) {
+          const path = await ask(
+            "Choose your downloaded Google Desktop client JSON (file path), or leave blank for browser setup",
+            true,
+          );
+          signal.throwIfAborted();
+          if (path)
+            client = googleClientFile(
+              resolve(path.replace(/^~(?=\/)/, homedir())),
+            );
+        }
+        if (client) {
+          if (secrets["gmail:clientId"] !== client.clientId) {
+            // A refresh grant belongs to its client, never another project.
+            delete secrets["gmail:refreshToken"];
+            delete secrets["gmail:accessToken"];
+            delete secrets["gmail:expiresAt"];
+          }
+          secrets["gmail:clientId"] = client.clientId;
+          secrets["gmail:clientSecret"] = client.clientSecret!;
+          this.store.save();
+        }
+      }
+      if (app === "github") this.readGithubToken();
+      const needsBrowser =
+        app === "gmail"
+          ? !(secrets["gmail:clientId"] && secrets["gmail:clientSecret"])
+          : app === "slack"
+            ? id === "slack" &&
+              !secrets["slack:accessToken"] &&
+              !secrets["slack:clientId"]
+            : app === "github" && !this.githubToken;
+      if (needsBrowser && ["gmail", "slack", "github"].includes(app)) {
+        // A disabled built-in row records unfinished setup across restarts. It
+        // carries no access grant, selected tools or command approval.
+        if (
+          !row &&
+          this.store.profile.settings.tools.servers.length < TOOL_LIMITS.servers
+        ) {
+          this.store.profile.settings.tools.servers.push(this.makeRow(id));
+          this.store.save();
+        }
+        result.pending.push(app);
+        if (!result.browserTask) {
+          result.browserTask = browserSetupTask(
+            app as "gmail" | "slack" | "github",
+            browser,
+          );
+          this.browserAttempted.add(app);
+        }
+        continue;
+      }
+      try {
+        // A saved bot token needs no repeated token question; all other missing
+        // input stops this connection instead of opening another terminal wizard.
+        await this.connect(
+          id,
+          (label) =>
+            id === "slack-bot" && label.includes("reuse")
+              ? Promise.resolve("")
+              : missing(),
+          (message) => {
+            if (
+              message.startsWith("Finish signing in") ||
+              message.startsWith("Open this sign-in")
+            )
+              show(message);
+          },
+          signal,
+        );
+        result.connected.push(app);
+      } catch {
+        signal.throwIfAborted();
+        result.pending.push(app);
+      }
+    }
+    signal.throwIfAborted();
+    await this.registry.configure();
+    signal.throwIfAborted();
+    show(
+      result.connected.length
+        ? `Ready: ${result.connected.join(", ")}.`
+        : "No new connections are ready yet.",
+    );
+    if (result.pending.length)
+      show(`Still needs attention: ${result.pending.join(", ")}.`);
+    return result;
+  }
   async connect(
     id: ConnectionId,
     ask: Ask,
@@ -395,7 +598,14 @@ export class TerminalConnections {
       }
       if (!ready) {
         const client = await this.client(id, ask, show);
-        const tokens = await authorize(id, client, show, signal);
+        const tokens = await authorize(
+          id,
+          client,
+          show,
+          signal,
+          fetch,
+          this.openPage,
+        );
         if (id === "gmail" && !tokens.refresh_token)
           throw new Error(
             "Google did not provide offline access. Revoke the old Butler grant and run /connect gmail again.",
@@ -500,7 +710,7 @@ export class TerminalConnections {
     );
   }
   catalog() {
-    return "Connections: github, slack (bot or OAuth), claude-code, codex, gmail, filesystem, playwright, apple, calendar, reminders, notes, mail.\n/connect mcp adds any local stdio or remote Streamable HTTP MCP server with OAuth, bearer tokens, custom headers or no authentication.\n/connect oauth <server> signs in to an existing remote MCP.\n/connect import <path> imports Claude/Cursor/VS Code MCP JSON.\n/connect all walks through built-in connections; skip ones you don't use.\n/tools lists available tools; /tool <server__tool> on|off selects one.\nApps without an API or MCP can use /cua <task in App>. Accounts and permissions are still required.";
+    return "Say ‘Connect my apps’ to reuse existing account access and prepare missing browser setup. ‘Set up Gmail and Slack’ connects just those apps.\nConnections: github, slack (bot or OAuth), claude-code, codex, gmail, filesystem, playwright, apple, calendar, reminders, notes, mail.\n/connect auto performs the same automatic setup; /connect all keeps the detailed wizard.\n/connect mcp adds any local stdio or remote Streamable HTTP MCP server with OAuth, bearer tokens, custom headers or no authentication.\n/connect oauth <server> signs in to an existing remote MCP.\n/connect import <path> imports Claude/Cursor/VS Code MCP JSON.\n/tools lists available tools; /tool <server__tool> on|off selects one.\nApps without an API or MCP can use /cua <task in App>. Accounts and permissions are still required.";
   }
   async connectCommand(
     input: string,

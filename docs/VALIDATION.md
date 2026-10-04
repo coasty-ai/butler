@@ -1,5 +1,52 @@
 # Validation record
 
+## Conversational setup and saved sessions (October 3, 2026)
+
+The owner's encrypted profile already contained GitHub, Gmail and Slack bot
+credentials and seven enabled, consented servers. The UI nevertheless always
+greeted a new session with setup instructions, exposed command lists as its
+default help and repeated credential questions when reconnecting. This check
+read only presence flags and counts; it did not copy account data or secrets.
+
+Plain requests now reuse the existing handlers for voice, listening, briefings,
+task controls and model/key setup without a planning call. Typed Yes/No applies
+only to a pending task confirmation; voice cannot approve it. Default help and
+memory output use ordinary words. Startup loads the same encrypted profile
+across sessions and folders and acknowledges saved access. Preferences, task
+history and the bounded recent thread retain their existing persistence and
+limits; this is not unlimited recall or full app surveillance.
+
+“Connect my apps” selects the nine built-in app/agent integrations, skips healthy
+command-pinned connections, reuses saved bot tokens and checks bounded Google
+Desktop client downloads. Missing service credentials produce a normal CUA
+setup task that stops at account decisions, sign-in, grants and credential
+creation. Unfinished setup persists as an inactive, unconsented built-in row,
+without selected tools or command approval. Its own paused browser handoff can
+be settled for a new verification attempt; unrelated active tasks cannot be
+replaced. Google refresh grants cannot migrate to a different client. New
+account OAuth binds its callback before opening the browser, retains state/PKCE
+checks, and displays a link if launching fails. Hidden prompts keep credential
+values out of chat and model context.
+
+Built CLI evaluation `9bbe3768-53cf-49e4-b951-6cfeb2970fde` passed six requests in
+six fresh processes with an isolated encrypted profile and marked MCP fixture.
+Saved connection reuse passed from the original and a different project folder
+in 472 and 315 ms. Briefing scheduling, preference save/recall and disabling
+briefings took 182, 207, 188 and 196 ms. The saved preference and recent thread
+survived, the profile did not contain the fixture secret in plaintext, and zero
+computer task runs were created. This tests the CLI and MCP connection reuse;
+it does not authenticate a new real Google or Slack account. The isolated
+profile and temporary project were removed; only content-free metrics remain.
+
+Offline tests exercise callback rejection/exchange, safe page opening, client
+ambiguity, credential encryption, restart reuse, pending setup handoffs,
+uncertain voice, private-local mode and task approval boundaries. Live Google,
+Slack and GitHub console preparation was not exercised on the owner's browser.
+The workflow still depends on available desktop permissions and each service's
+app registration and access requirements. No dependency or native-helper change
+was added. The full local suite passed 5,046 tests with two legacy speech-data
+skips across 151 files; type checking and touched-file formatting passed.
+
 ## CLI summaries, conversation and task control (October 3, 2026)
 
 Inspection of owner runs `854d4494-3f6d-4bd4-8254-f860ec7e0e21`,

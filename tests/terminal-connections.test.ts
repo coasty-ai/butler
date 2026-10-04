@@ -1,5 +1,11 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -48,6 +54,274 @@ test("startup waits for the Apple bridge even when no external servers are enabl
   await vi.advanceTimersByTimeAsync(100);
   await startup;
   expect(settled).toBe(true);
+});
+test("fresh instances reuse encrypted Gmail credentials without repeating prompts", async () => {
+  const root = temp(),
+    key = randomBytes(32);
+  const first = new TerminalStore(root, key);
+  first.profile.settings.privacy = "PRIVATE_BYOM";
+  Object.assign(first.profile.secrets, {
+    "gmail:clientId": "fixture.apps.googleusercontent.com",
+    "gmail:clientSecret": "fixture-secret",
+    "gmail:refreshToken": "fixture-refresh",
+  });
+  first.save();
+  for (let i = 0; i < 2; i++) {
+    const restored = new TerminalStore(root, key);
+    const c = new TerminalConnections(restored, "/fixture", "/fixture");
+    vi.spyOn(c.registry, "configure").mockResolvedValue();
+    const connect = vi.spyOn(c, "connect").mockImplementation(async (id) => {
+      expect(id).toBe("gmail");
+      expect(restored.profile.secrets["gmail:refreshToken"]).toBe(
+        "fixture-refresh",
+      );
+    });
+    const ask = vi.fn(async () => {
+      throw new Error("unexpected prompt");
+    });
+    const result = await c.setup(
+      ["gmail"],
+      "Safari",
+      vi.fn(),
+      new AbortController().signal,
+      [],
+      ask,
+    );
+    expect(result).toEqual({ connected: ["gmail"], pending: [] });
+    expect(connect).toHaveBeenCalledOnce();
+    expect(ask).not.toHaveBeenCalled();
+  }
+});
+test("ready pinned connections skip setup while missing or incomplete Gmail credentials require owner setup", async () => {
+  const store = new TerminalStore(temp(), randomBytes(32));
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  const row = toolServerSchema.parse({
+    id: "codex",
+    name: "fixture",
+    transport: "stdio",
+    command: process.execPath,
+    cwd: "/fixture",
+    addedAt: 0,
+    enabled: true,
+    consented: true,
+  });
+  row.approvedCommand = c.registry.approval(row);
+  store.profile.settings.tools.servers.push(row);
+  vi.spyOn(c.registry, "status").mockReturnValue({
+    ...c.registry.status(),
+    servers: [{ id: "codex", state: "on", tools: [] }],
+  } as any);
+  const connect = vi.spyOn(c, "connect").mockResolvedValue();
+  store.profile.secrets["gmail:refreshToken"] = "fixture-incomplete";
+  const result = await c.setup(
+    ["codex", "gmail", "slack"],
+    "Safari",
+    vi.fn(),
+    new AbortController().signal,
+    [],
+  );
+  expect(result.connected).toEqual(["codex"]);
+  expect(result.pending).toEqual(["gmail", "slack"]);
+  expect(result.browserTask).toContain("console.cloud.google.com");
+  expect(connect).not.toHaveBeenCalled();
+});
+test("chat setup imports one downloaded Gmail client locally and encrypts it without exposing it in chat", async () => {
+  const root = temp(),
+    downloads = temp(),
+    key = randomBytes(32);
+  writeFileSync(
+    join(downloads, "client_secret_fixture.json"),
+    JSON.stringify({
+      installed: {
+        client_id: "fixture.apps.googleusercontent.com",
+        client_secret: "fixture-client-secret",
+      },
+    }),
+  );
+  const store = new TerminalStore(root, key);
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  vi.spyOn(c, "connect").mockImplementation(async (id) => {
+    expect(id).toBe("gmail");
+    expect(store.profile.secrets["gmail:clientSecret"]).toBe(
+      "fixture-client-secret",
+    );
+  });
+  const show = vi.fn();
+  const result = await c.setup(
+    ["gmail"],
+    "Safari",
+    show,
+    new AbortController().signal,
+    [downloads],
+  );
+  expect(result).toEqual({ connected: ["gmail"], pending: [] });
+  expect(
+    new TerminalStore(root, key).profile.secrets["gmail:clientSecret"],
+  ).toBe("fixture-client-secret");
+  expect(
+    readFileSync(join(root, "profile.enc")).includes(
+      Buffer.from("fixture-client-secret"),
+    ),
+  ).toBe(false);
+  expect(JSON.stringify(show.mock.calls)).not.toContain(
+    "fixture-client-secret",
+  );
+});
+test("choosing a different Google client never carries the old refresh grant into that client", async () => {
+  const store = new TerminalStore(temp(), randomBytes(32)),
+    downloads = temp();
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  store.profile.secrets["gmail:clientId"] = "old.apps.googleusercontent.com";
+  store.profile.secrets["gmail:refreshToken"] = "old-synthetic-refresh";
+  writeFileSync(
+    join(downloads, "client_secret_fixture.json"),
+    JSON.stringify({
+      installed: {
+        client_id: "new.apps.googleusercontent.com",
+        client_secret: "new-synthetic-secret",
+      },
+    }),
+  );
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  vi.spyOn(c, "connect").mockImplementation(async () => {
+    expect(store.profile.secrets["gmail:clientId"]).toBe(
+      "new.apps.googleusercontent.com",
+    );
+    expect(store.profile.secrets["gmail:refreshToken"]).toBeUndefined();
+    throw new Error("owner sign-in still needed");
+  });
+  expect(
+    (
+      await c.setup(
+        ["gmail"],
+        "Safari",
+        vi.fn(),
+        new AbortController().signal,
+        [downloads],
+      )
+    ).pending,
+  ).toEqual(["gmail"]);
+});
+test("an existing Slack bot token is reused and connection failures are never reported ready", async () => {
+  const store = new TerminalStore(temp(), randomBytes(32));
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  store.profile.secrets["slack:botToken"] = "xoxb-synthetic-token";
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  vi.spyOn(c, "connect").mockImplementation(async (id, ask) => {
+    expect(id).toBe("slack-bot");
+    expect(await ask("leave empty to reuse the saved token", true)).toBe("");
+    throw new Error("fixture access declined");
+  });
+  expect(
+    await c.setup(
+      ["slack"],
+      "Safari",
+      vi.fn(),
+      new AbortController().signal,
+      [],
+    ),
+  ).toEqual({ connected: [], pending: ["slack"] });
+});
+test("unfinished setup survives restart without repeating browser preparation when an approved token is supplied", async () => {
+  const root = temp(),
+    key = randomBytes(32);
+  const first = new TerminalStore(root, key);
+  first.profile.settings.privacy = "PRIVATE_BYOM";
+  const a = new TerminalConnections(first, "/fixture", "/fixture");
+  vi.spyOn(a.registry, "configure").mockResolvedValue();
+  expect(
+    (
+      await a.setup(
+        ["slack"],
+        "Safari",
+        vi.fn(),
+        new AbortController().signal,
+        [],
+      )
+    ).browserTask,
+  ).toBeDefined();
+  const next = new TerminalStore(root, key);
+  expect(next.profile.settings.tools.servers[0]).toMatchObject({
+    enabled: false,
+    consented: false,
+    approvedCommand: "",
+  });
+  const b = new TerminalConnections(next, "/fixture", "/fixture");
+  vi.spyOn(b.registry, "configure").mockResolvedValue();
+  vi.spyOn(b, "connect").mockImplementation(async (id) =>
+    expect(id).toBe("slack-bot"),
+  );
+  const ask = vi.fn(async (_label: string, hidden?: boolean) => {
+    expect(hidden).toBe(true);
+    return "xoxb-synthetic-fixture-token";
+  });
+  expect(
+    await b.setup(
+      ["slack"],
+      "Safari",
+      vi.fn(),
+      new AbortController().signal,
+      [],
+      ask,
+    ),
+  ).toEqual({ connected: ["slack"], pending: [] });
+  expect(ask).toHaveBeenCalledOnce();
+  expect(new TerminalStore(root, key).profile.secrets["slack:botToken"]).toBe(
+    "xoxb-synthetic-fixture-token",
+  );
+});
+test("private-local setup does not collect credentials or launch a browser, even after an earlier setup attempt", async () => {
+  const store = new TerminalStore(temp(), randomBytes(32));
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  await c.setup(["slack"], "Safari", vi.fn(), new AbortController().signal, []);
+  store.profile.settings.privacy = "PRIVATE_LOCAL";
+  const ask = vi.fn(async () => "");
+  const connect = vi.spyOn(c, "connect").mockResolvedValue();
+  const result = await c.setup(
+    ["slack"],
+    "Safari",
+    vi.fn(),
+    new AbortController().signal,
+    [],
+    ask,
+  );
+  expect(result).toEqual({ connected: [], pending: ["slack"] });
+  expect(ask).not.toHaveBeenCalled();
+  expect(connect).not.toHaveBeenCalled();
+});
+test("denied Apple access remains pending; setup requests undetermined access once", async () => {
+  const store = new TerminalStore(temp(), randomBytes(32));
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  vi.spyOn(c.registry, "appleAccess").mockResolvedValue({
+    calendar: "denied",
+    reminders: "notDetermined",
+    notes: "granted",
+    mail: "granted",
+  } as any);
+  const request = vi
+    .spyOn(c.registry, "requestApple")
+    .mockResolvedValue({ reminders: "granted" } as any);
+  const result = await c.setup(
+    ["calendar", "reminders", "notes"],
+    "Safari",
+    vi.fn(),
+    new AbortController().signal,
+    [],
+  );
+  expect(result).toEqual({
+    connected: ["reminders", "notes"],
+    pending: ["calendar"],
+  });
+  expect(request).toHaveBeenCalledExactlyOnceWith("reminders");
 });
 test("passive briefings leave unused agent servers dormant without changing saved connections or consent", () => {
   const settings = settingsSchema.parse({
@@ -404,6 +678,80 @@ test("a dormant Playwright connection keeps its approved read available and reco
     });
   } finally {
     await c.registry.closeAll();
+  }
+});
+test("saved Gmail access and command pins work across fresh instances without reopening setup", async () => {
+  const root = temp(),
+    key = randomBytes(32);
+  const first = new TerminalStore(root, key);
+  first.profile.settings.privacy = "PRIVATE_BYOM";
+  first.profile.settings.tools.apple = {
+    calendar: false,
+    reminders: false,
+    notes: false,
+    mail: false,
+  };
+  Object.assign(first.profile.secrets, {
+    "gmail:clientId": "synthetic.apps.googleusercontent.com",
+    "gmail:clientSecret": "synthetic-client-secret",
+    "gmail:refreshToken": "synthetic-refresh",
+  });
+  const row = toolServerSchema.parse({
+    id: "gmail",
+    name: "Synthetic Gmail bridge",
+    transport: "stdio",
+    command: process.execPath,
+    args: [join(process.cwd(), "tests/fixtures/mcp-fixture-server.mjs")],
+    cwd: process.cwd(),
+    network: "none",
+    addedAt: 0,
+    enabled: true,
+    consented: true,
+    trust: "reads_unattended",
+  });
+  first.profile.settings.tools.servers = [row];
+  row.approvedCommand = new TerminalConnections(
+    first,
+    "/fixture",
+    process.cwd(),
+  ).registry.approval(row);
+  first.save();
+  for (let instance = 0; instance < 2; instance++) {
+    const restored = new TerminalStore(root, key),
+      c = new TerminalConnections(restored, "/fixture", process.cwd());
+    const connect = vi.spyOn(c, "connect");
+    const ask = vi.fn(async () => "");
+    try {
+      await c.start();
+      const result = await c.setup(
+        ["gmail"],
+        "Safari",
+        vi.fn(),
+        AbortSignal.timeout(3000),
+        [],
+        ask,
+      );
+      expect(result).toEqual({ connected: ["gmail"], pending: [] });
+      expect(connect).not.toHaveBeenCalled();
+      expect(ask).not.toHaveBeenCalled();
+      const access = c.registry.access({ synthetic: false })!;
+      const signal = AbortSignal.timeout(3000);
+      const read = (
+        await access.list("Read the synthetic note", signal)
+      ).tools.find((t) => t.name === "read_note")!;
+      row.tools = c.registry.tick(row.id, "read_note", true);
+      restored.profile.settings.tools.servers[0].tools = row.tools;
+      restored.save();
+      await c.registry.configure();
+      const trusted = (
+        await access.list("Read the synthetic note", signal)
+      ).tools.find((t) => t.name === "read_note")!;
+      expect(
+        (await access.call(trusted, { name: "synthetic" }, signal)).code,
+      ).toBe("ok");
+    } finally {
+      await c.registry.closeAll();
+    }
   }
 });
 test("a new CLI connection restores encrypted discovery but still performs the read through a fresh server", async () => {

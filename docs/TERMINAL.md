@@ -1,6 +1,12 @@
 # Terminal connections
 
-Start `butler`, then use `/connect <name>`. `butler connect github` also works when no credential prompt is needed. Connections are separate from ChatGPT/Codex desktop plugins; their authentication does not transfer into Butler.
+Start `butler`, then say “Connect my apps” or “Set up Gmail and Slack”. Saved connections and credentials live in the same encrypted profile across sessions and projects, so restarting does not repeat setup. Account access can expire or be revoked; a changed coding workspace needs its own approval. Connections are separate from ChatGPT/Codex desktop plugins; their authentication does not transfer into Butler.
+
+The chat setup reuses healthy pinned connections, saved Slack bot/user tokens, installed coding CLIs and GitHub CLI sign-in. For Gmail, it checks at most 20 matching Desktop client JSON downloads per folder in Downloads and the current project, excluding symlinks and oversized files. It does not silently choose between different Google projects. A saved client opens the account approval page automatically; a failed browser launch shows the link.
+
+When service credentials are missing, the normal desktop runner prepares the relevant Google, Slack or GitHub page and stops for sign-in, account selection, access grants or credential creation. Perform those decisions yourself, then say “Set up Gmail” or “Set up Slack” again. The recheck settles only its own paused setup run; unrelated work and pending action confirmations remain protected. Approved GitHub or Slack bot tokens use a hidden local prompt. This browser preparation has offline routing tests, not a claim that every provider console has been exercised successfully.
+
+Gmail still requires a registered Desktop client with its API enabled ([Google's prerequisites](https://developers.google.com/workspace/gmail/api/quickstart/nodejs)). Slack's official MCP requires a registered app or supported partner integration ([Slack's MCP guide](https://docs.slack.dev/ai/slack-mcp-server/)). Butler can prepare these pages; it cannot remove those service requirements. The detailed commands below remain available under `/help advanced`; `/connect all` keeps the explicit wizard and `/connect auto` selects conversational setup.
 
 ## GitHub
 

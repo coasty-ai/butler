@@ -23,6 +23,13 @@ import {
   rememberRequest,
 } from "./memory";
 import { TerminalConnections } from "./connections";
+import {
+  setupRequest,
+  naturalControl,
+  openSetupPage,
+  SETUP_APPS,
+  type SetupApp,
+} from "./concierge";
 import { UrlOpener } from "../../electron/open-url";
 import { NativeController } from "../../electron/controller";
 import { AssistantSession } from "../../electron/assistant";
@@ -91,6 +98,16 @@ const HELP = `Just type to converse. Butler uses connected tools before desktop 
 /new           start a fresh conversation
 Ctrl-C interrupts work. Ctrl-D quits. Coding tools use this project folder.
 Run 'butler daemon start' to keep briefings running after closing your terminal.`;
+const CHAT_HELP = `Tell me what you'd like done, or try:
+“Connect my apps” or “Set up Gmail and Slack”
+“Read replies aloud” or “Listen for me”
+“Brief me every 30 minutes” or “Catch me up”
+“Create a note for tomorrow's meeting”
+“Do that next”, “Pause”, “Continue” or “Stop”
+“Show my connections” or “What do you remember about me?”
+Type “Start a fresh conversation” to clear this thread.
+Account sign-ins and access approvals stay with you.
+Technical commands are optional; /help advanced lists them.`;
 
 /** Exact generic requests use the existing batched read-only briefing path. */
 export function briefingRequest(text: string): boolean {
@@ -101,7 +118,7 @@ export function briefingRequest(text: string): boolean {
 export async function main(args = process.argv.slice(2)) {
   if (args.includes("--help") || args[0] === "help") {
     console.log(
-      `Butler — a macOS terminal assistant\n\nUsage: butler [--cwd folder] [--ask text] [--listen] [--demo]\n       butler status | connect <name> | briefing | daemon start|stop|status\n\n${HELP}`,
+      `Butler — a macOS terminal assistant\n\nStart: butler\n\n${args.includes("--advanced") ? HELP : CHAT_HELP}`,
     );
     return;
   }
@@ -171,7 +188,9 @@ export async function main(args = process.argv.slice(2)) {
     join(store.root, "diagnostics"),
     () => [store.keyForProvider(), ...Object.values(store.profile.secrets)],
   );
-  const connections = new TerminalConnections(store, project, ROOT);
+  const connections = new TerminalConnections(store, project, ROOT, (url) =>
+    openSetupPage(url, store.profile.settings.protectedDomains),
+  );
   const askText = args.includes("--ask")
     ? args[args.indexOf("--ask") + 1] || ""
     : "";
@@ -527,7 +546,7 @@ export async function main(args = process.argv.slice(2)) {
           lastStatus = state.message;
           if (state.run?.status === "confirming")
             announce(
-              `${state.message}\nType /yes to approve or /no to decline.`,
+              `${state.message}\nType Yes to approve or No to decline.`,
               `${state.message} Please approve or decline in the terminal.`,
             );
           else if (
@@ -581,7 +600,103 @@ export async function main(args = process.argv.slice(2)) {
       show(line);
     }
   };
+  let setupGoal: string | undefined;
+  const setupApps = async (
+    apps: SetupApp[],
+    signal: AbortSignal,
+    spoken = false,
+  ) => {
+    // Recheck after the owner completes a paused browser setup handoff.
+    if (
+      setupGoal &&
+      snapshot.run?.task === setupGoal &&
+      ["paused", "takeover"].includes(snapshot.run.status)
+    ) {
+      runner?.stop();
+      await runningWork;
+      setupGoal = undefined;
+    }
+    if (isRunning()) {
+      announce(
+        "Let the current task finish, then I can set up your connections.",
+      );
+      return;
+    }
+    ownEngine();
+    await readyConnections();
+    const browser = installedApps().some((app) => app.name === "Google Chrome")
+      ? "Google Chrome"
+      : "Safari";
+    const result = await connections.setup(
+      apps,
+      browser,
+      show,
+      signal,
+      undefined,
+      screen.ask.bind(screen),
+    );
+    briefings.apply();
+    screen.state.connections = connections.labels();
+    dialog.noteAssistant(
+      `Connection check: ready ${result.connected.join(", ") || "none"}; still needs attention ${result.pending.join(", ") || "none"}.`,
+      spoken ? "voice" : "app",
+      { untrusted: true },
+    );
+    if (result.browserTask) {
+      setupGoal = result.browserTask;
+      announce(
+        "I'll prepare the browser setup. I'll stop when it's your turn to sign in or approve access.",
+      );
+      const work = task(result.browserTask, "user_words", spoken, false);
+      if (interactive) void work.catch(reportError);
+      else await work;
+    } else if (result.pending.length)
+      announce(
+        "Some accounts still need attention. Tell me which one you'd like to sort out next.",
+      );
+    else announce("Your requested connections are ready.");
+  };
+  const setRegularBriefings = (rest: string) => {
+    const minutes = Number(rest);
+    if (
+      rest !== "off" &&
+      (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440)
+    )
+      throw new Error("Briefings can run every 5 minutes to once a day.");
+    store.profile.settings = settingsSchema.parse({
+      ...settings(),
+      briefings: {
+        ...settings().briefings,
+        on: rest !== "off",
+        intervalMinutes:
+          rest === "off" ? settings().briefings.intervalMinutes : minutes,
+        delivery: "speech",
+      },
+    });
+    store.save();
+    briefings.apply();
+    announce(
+      rest === "off"
+        ? "Regular briefings are off."
+        : `I'll brief you every ${minutes} minutes, with a readable copy.`,
+    );
+  };
   async function dispatch(text: string, spoken?: SpokenInput) {
+    if (!spoken && snapshot.run?.status === "confirming") {
+      const answer = text
+        .trim()
+        .toLowerCase()
+        .replace(/[.!]+$/, "");
+      if (["yes", "approve", "no", "decline"].includes(answer)) {
+        show(text, "You");
+        return dispatch(["yes", "approve"].includes(answer) ? "/yes" : "/no");
+      }
+    }
+    const control = !spoken ? naturalControl(text) : undefined;
+    if (control) {
+      show(text, "You");
+      return dispatch(control);
+    }
     // Voice never enters the slash-command or credential/approval lane.
     if (spoken) {
       if (text.startsWith("/")) return;
@@ -597,7 +712,7 @@ export async function main(args = process.argv.slice(2)) {
       }
       if (snapshot.run?.status === "confirming") {
         announce(
-          "This action is waiting for typed approval. Use /yes or /no.",
+          "This action is waiting for typed approval. Type Yes or No.",
           "Please approve or decline this action in the terminal.",
         );
         return;
@@ -667,7 +782,7 @@ export async function main(args = process.argv.slice(2)) {
         announce("Please repeat that preference so I can save it accurately.");
         return;
       }
-      if (word === "/help") show(HELP);
+      if (word === "/help") show(rest === "advanced" ? HELP : CHAT_HELP);
       else if (word === "/remember" || preference) {
         rememberPreference(store, preference || rest);
         announce("I'll remember that preference.");
@@ -677,21 +792,25 @@ export async function main(args = process.argv.slice(2)) {
           store.save();
           resetConversation();
           show(`Memory ${rest}.`);
-        } else if (rest)
+        } else if (rest && rest !== "advanced")
           throw new Error("Use /memory, /memory on, or /memory off.");
-        else
+        else {
+          const preferences = store.memory
+            .data()
+            .preferences.filter((p) => !p.status || p.status === "approved");
           show(
             [
-              JSON.stringify({
-                enabled: settings().memory,
-                ...store.memory.summary(),
-              }),
-              ...store.memory
-                .data()
-                .preferences.filter((p) => !p.status || p.status === "approved")
-                .map((p) => `${p.id}: ${redactSecrets(p.text)}`),
+              settings().memory
+                ? `Memory is on. I have ${preferences.length} saved preferences and ${store.memory.data().episodes.length} task records. I also keep our recent conversation across restarts.`
+                : "Memory is off. Your saved preferences remain here until you ask me to forget them.",
+              ...preferences.map((p) =>
+                rest === "advanced"
+                  ? `${p.id}: ${redactSecrets(p.text)}`
+                  : `• ${redactSecrets(p.text)}`,
+              ),
             ].join("\n"),
           );
+        }
       } else if (word === "/forget") {
         if (rest === "all") store.memory.clear();
         else {
@@ -713,11 +832,8 @@ export async function main(args = process.argv.slice(2)) {
       } else if (word === "/apps")
         show(
           installedApps()
-            .map(
-              (app) =>
-                `${app.name}: ${app.connection}; desktop: ${app.desktop}`,
-            )
-            .join("\n") ||
+            .map((app) => app.name)
+            .join(", ") ||
             "No app bundles found in the standard Applications folders.",
         );
       else if (word === "/doctor") {
@@ -741,9 +857,13 @@ export async function main(args = process.argv.slice(2)) {
         screen.state.connections = connections.labels();
         show(
           connections.labels().join("\n") ||
-            "No servers connected. Use /connect github, then the other services you use.",
+            "No apps connected yet. Tell me ‘Connect my apps’ to get started.",
         );
       } else if (word === "/connect") {
+        if (rest === "auto") {
+          await setupApps([...SETUP_APPS], activeTurn.signal);
+          return;
+        }
         await readyConnections();
         await connections.connectCommand(
           rest,
@@ -888,29 +1008,7 @@ export async function main(args = process.argv.slice(2)) {
         if (report.error) show(report.error);
       } else if (word === "/latest") show(store.latestBriefing(), "Briefing");
       else if (word === "/briefings") {
-        const minutes = Number(rest);
-        if (
-          rest !== "off" &&
-          (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440)
-        )
-          throw new Error("Choose 5–1440 minutes, or /briefings off.");
-        store.profile.settings = settingsSchema.parse({
-          ...settings(),
-          briefings: {
-            ...settings().briefings,
-            on: rest !== "off",
-            intervalMinutes:
-              rest === "off" ? settings().briefings.intervalMinutes : minutes,
-            delivery: "speech",
-          },
-        });
-        store.save();
-        briefings.apply();
-        show(
-          rest === "off"
-            ? "Regular briefings are off."
-            : `Every ${minutes} minutes: a spoken briefing and a readable copy. Checks wait while you're busy or the Mac is locked.`,
-        );
+        setRegularBriefings(rest);
       } else if (word === "/notifications") {
         if (rest !== "on" && rest !== "off")
           throw new Error("Use /notifications on or off.");
@@ -1031,10 +1129,57 @@ export async function main(args = process.argv.slice(2)) {
         );
       } else if (word.startsWith("/"))
         throw new Error(
-          "I don't recognise that command. /help lists the available ones.",
+          "I don't recognise that command. Tell me what you'd like to do, or type help.",
         );
       else {
         show(text, "You");
+        const preference = spoken ? naturalControl(text) : undefined;
+        if (
+          spoken &&
+          preference &&
+          ["/voice on", "/voice off", "/listen off", "/briefings"].some(
+            (prefix) =>
+              preference === prefix || preference.startsWith(prefix + " "),
+          )
+        ) {
+          if (spoken.recovered || spoken.confidence < APPROVAL_MIN_CONFIDENCE) {
+            announce("Please repeat that setting change clearly, or type it.");
+            return;
+          }
+          dialog.noteUser(text, "voice");
+          if (preference.startsWith("/voice ")) {
+            settings().voiceReplies = preference.endsWith(" on")
+              ? "always"
+              : "off";
+            store.save();
+            announce(
+              preference.endsWith(" on")
+                ? "I'll read my replies aloud."
+                : "I'll keep my replies on screen.",
+            );
+          } else if (preference === "/listen off") {
+            await voice.setListening(false);
+            settings().handsFree = false;
+            store.save();
+            announce("Voice input is off.");
+          } else setRegularBriefings(preference.slice("/briefings ".length));
+          return;
+        }
+        const setup = setupRequest(text);
+        if (setup) {
+          if (
+            spoken &&
+            (spoken.recovered || spoken.confidence < APPROVAL_MIN_CONFIDENCE)
+          ) {
+            announce(
+              "Please type that setup request so I can confirm which accounts you want connected.",
+            );
+            return;
+          }
+          dialog.noteUser(text, spoken ? "voice" : "app");
+          await setupApps(setup, activeTurn.signal, !!spoken);
+          return;
+        }
         const inbox = inboxRequest(text);
         if (
           !isRunning() &&
@@ -1377,7 +1522,10 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   show(
-    "At your service. /connect adds your apps; /briefings 30 enables spoken and readable updates. /help shows the controls.",
+    settings().tools.servers.some((row) => row.enabled && row.consented) ||
+      Object.values(settings().tools.apple).some(Boolean)
+      ? "At your service. Your saved connections and settings are loaded. Tell me what you'd like done, or say ‘Help’ for examples."
+      : "At your service. Tell me what you'd like done. Say ‘Connect my apps’ to get started, or ‘Help’ for examples.",
   );
   await speak("At your service. What shall we attend to?", false, false).catch(
     reportError,

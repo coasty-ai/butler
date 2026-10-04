@@ -2,7 +2,7 @@
 
 A macOS personal assistant with a Codex-style chat transcript, animated character graphics, a British butler’s manner, and MCP-first tools with desktop control as a fallback. Chat naturally, ask it to work, or receive regular spoken briefings with an encrypted readable copy.
 
-Butler runs in Node.js. Its terminal interface does not launch Electron or a browser. Desktop control uses the existing native macOS helper when a connected tool cannot handle the task.
+Butler runs in Node.js and renders chat directly in the terminal. Desktop control uses the existing native macOS helper when a connected tool cannot handle the task.
 
 ## Install
 
@@ -34,13 +34,17 @@ butler --demo
 Choose a model in Butler and enter its API key at the masked prompt:
 
 ```text
-/model openai gpt-6.1-sol fast
-/key
+Use OpenAI
+Set your API key
 ```
 
 New OpenAI profiles default to GPT-6.1 Sol in Fast mode with low reasoning effort. Existing profiles keep their saved model until you run `/model`. [Fast mode](https://developers.openai.com/api/docs/guides/fast-mode) costs twice the standard token rates; `/fast off` switches back. Anthropic, Google and Ollama also work. A repository `.env` containing an existing provider key is loaded locally. Keys and account tokens are encrypted with a master key stored in macOS Keychain.
 
 Replies stream into the conversation. Page Up/Down scrolls the transcript, Up/Down recalls typed inputs, and `/new` starts a fresh conversation. Natural requests can start tasks; `/run <task>` makes that explicit.
+
+The chat is the everyday interface. Try “Connect my apps”, “Read replies aloud”, “Listen for me”, “Brief me every 30 minutes”, “Pause” or “Stop”. “Help” shows examples; technical commands are optional under `/help advanced`. Type “Yes” or “No” when a task asks for approval. Spoken replies cannot approve actions.
+
+Connections, credentials, preferences and briefing settings use one encrypted profile across restarts, project folders and terminal sessions. Starting Butler again restores them; you do not need to connect each time. A different project still needs its own coding workspace approval. Only one engine controls the Mac at a time.
 
 While a task runs, tell Butler to correct it or do something next. Corrections update the current task; up to three tasks can wait for it to finish. A failed or stopped task cancels that queue. Questions report current progress, and a voice interruption resumes work after answering unless you asked it to pause.
 
@@ -59,35 +63,26 @@ After discovery, unused Claude Code, Codex and Playwright connections retain the
 For spoken replies and voice input:
 
 ```text
-/voice on
-/voice test
-/listen on
+Read replies aloud
+Test your voice
+Listen for me
 ```
 
 Approve Microphone and Speech Recognition for Butler's standalone voice helper when macOS asks. Say **Hey Butler**, then your request; follow-up listening continues the conversation after a reply. Option-Space offers push-to-talk when the helper has Accessibility access. Start with `butler --listen` to enable voice setup immediately. `/listen off` disables input, `/voice off` disables replies, and `/doctor` checks the model, voice and desktop permissions. Output uses an installed British voice, preferring Daniel; `/voice list` and `/voice <name>` select another.
 
 ## Connect your apps
 
-In Butler:
+Tell Butler:
 
 ```text
-/connect
-/connect all
-/connect github
-/connect claude-code
-/connect codex
-/connect slack bot
-/connect gmail
-/connect apple
-/connect filesystem
-/connect playwright
-/connect mcp
-/connect import /path/to/mcp-config.json
-/connections
-/apps
+Connect my apps
+Set up Gmail and Slack
+Show my connections
 ```
 
-GitHub reuses `gh auth login` when available and connects in read-only mode. Claude Code uses `claude mcp serve`. Codex uses Butler’s local MCP bridge to the installed, signed-in Codex CLI. Coding tasks ask for approval and run in the project folder chosen when connecting; use `butler --cwd /path/to/project` for a different project.
+Butler checks GitHub, Gmail, Slack, Claude Code, Codex and the four Apple app bridges. It reuses saved grants, GitHub CLI sign-in and installed coding CLIs. Gmail setup can reuse a single unambiguous Desktop client download in Downloads or the project folder. Account sign-in opens in your browser. When credentials are missing, Butler uses desktop control to prepare Gmail, Slack or GitHub setup, then stops for your account choices, credential creation and access approvals. After your part, say “Set up Gmail” or “Set up Slack” again to verify and finish. Approved tokens use a hidden prompt and never enter the chat model. Console preparation depends on the page and available desktop permissions; it cannot bypass a service's registration or workspace approval.
+
+GitHub connects in read-only mode. Claude Code uses `claude mcp serve`. Codex uses Butler’s local MCP bridge to the installed, signed-in Codex CLI. Coding tasks ask for approval and run in the project folder chosen when connecting; use `butler --cwd /path/to/project` for a different project.
 
 Slack can use a **bot token (`xoxb-…`)** for reads from conversations the bot has joined. An app token (`xapp-…`) is unnecessary for scheduled reads. `/connect slack oauth` instead uses Slack's official MCP user authorization. Gmail needs a Google Desktop OAuth client JSON with Gmail API enabled, then your account approval. Their wizards explain setup; the built-in Gmail and Slack bot bridges provide reads.
 
@@ -97,13 +92,13 @@ Connect Calendar, Reminders, Notes and Mail through `/connect apple` or their in
 
 ## Regular briefings
 
-Inside Butler, choose the interval in minutes:
+Inside Butler:
 
 ```text
-/briefings 30
-/notifications on
-/briefing
-/latest
+Brief me every 30 minutes
+Watch my notifications
+Catch me up
+Show the last briefing
 ```
 
 Each check uses available app/window context, observed notification banners and configured, trusted MCP reads. Butler suggests priorities, speaks the result with macOS’s British voice, and saves an encrypted readable copy. It reports missing coverage. It cannot inspect every app’s entire history or the complete Notification Center database.
@@ -129,7 +124,7 @@ The daily briefing token allowance persists encrypted across restarts. Butler re
 
 ## Memory
 
-Tell Butler `Remember that I prefer concise briefings`, or use `/remember <preference>`. Preferences and completed task history persist encrypted locally and are recalled when relevant. `/memory` lists preferences and their IDs; `/memory off` stops recall and learning; `/memory on` restores them. `/forget <ID>` removes a preference and `/forget all` clears saved memory. Keep credentials in `/key` or `/connect`.
+Tell Butler “Remember that I prefer concise briefings”. Preferences and completed task history persist encrypted locally and are recalled when relevant. “What do you remember about me?” shows a readable account. “Turn memory off” stops recall and learning; “Remember our conversations” restores them. `/memory advanced` lists preference IDs; `/forget <ID>` removes a preference and `/forget all` clears saved memory. Keep credentials in the hidden connection/key prompts.
 
 With memory enabled, the last 24 conversation entries also persist encrypted for up to 24 hours, including completed task results. Follow-ups such as “append to that file” can use this context after restarting. Model requests still have a fixed context budget, so this is bounded memory. `/new` clears the thread; switching models or privacy modes starts a new scope. Task results supply facts, never permission to repeat an action. Queued tasks do not survive quitting.
 

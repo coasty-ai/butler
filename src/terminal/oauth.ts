@@ -86,13 +86,14 @@ export async function exchangeCode(
     expires_in: token.expires_in,
   };
 }
-/** Only the owner opens/approves this URL; no browser automation or credential logging. */
+/** Butler can open the page; only the owner signs in and approves account access. */
 export async function authorize(
   provider: "gmail" | "slack",
   client: OAuthClient,
   show: (text: string) => void,
   signal: AbortSignal,
   request: typeof fetch = fetch,
+  openPage?: (url: string) => Promise<boolean>,
 ): Promise<OAuthToken> {
   const state = randomBytes(32).toString("hex");
   const verifier = randomBytes(32).toString("base64url");
@@ -153,11 +154,34 @@ export async function authorize(
       server.once("error", () =>
         fail(new Error(`The sign-in callback port ${port} is unavailable.`)),
       );
-      server.listen(port, "127.0.0.1", () =>
-        show(
-          `Open this URL and approve the account you want Butler to use:\n${authorizationUrl(provider, client, redirect, state, challenge)}`,
-        ),
-      );
+      server.listen(port, "127.0.0.1", () => {
+        const url = authorizationUrl(
+          provider,
+          client,
+          redirect,
+          state,
+          challenge,
+        );
+        if (!openPage)
+          show(
+            `Open this URL and approve the account you want Butler to use:\n${url}`,
+          );
+        else
+          void openPage(url).then(
+            (opened) => {
+              if (signal.aborted) return;
+              show(
+                opened
+                  ? `Finish signing in to ${provider === "gmail" ? "Gmail" : "Slack"} in your browser and approve the access you want.`
+                  : `Open this sign-in link in your browser:\n${url}`,
+              );
+            },
+            () => {
+              if (!signal.aborted)
+                show(`Open this sign-in link in your browser:\n${url}`);
+            },
+          );
+      });
     });
     return await exchangeCode(
       provider,

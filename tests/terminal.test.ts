@@ -389,6 +389,58 @@ test("OAuth rejects an unrelated callback and exchanges the matching Google code
     await pending.catch(() => {});
   }
 });
+test.each([true, false])(
+  "OAuth opens the sign-in page after binding its callback, with fallback when launch is %s",
+  async (opened) => {
+    const controller = new AbortController();
+    const shown: string[] = [];
+    let authUrl: string | undefined;
+    const openPage = vi.fn(async (url: string) => {
+      authUrl = url;
+      return opened;
+    });
+    const request = vi.fn(async () =>
+      Response.json({
+        access_token: "synthetic-access",
+        refresh_token: "synthetic-refresh",
+      }),
+    );
+    const pending = authorize(
+      "gmail",
+      { clientId: "synthetic-id", clientSecret: "synthetic-secret" },
+      (text) => shown.push(text),
+      controller.signal,
+      request as any,
+      openPage,
+    );
+    try {
+      await vi.waitFor(() => expect(authUrl).toBeDefined());
+      const auth = new URL(authUrl!);
+      const bad = await fetch(
+        auth.searchParams.get("redirect_uri")! +
+          "?state=wrong&code=synthetic-code",
+      );
+      expect(bad.status).toBe(400);
+      expect(request).not.toHaveBeenCalled();
+      const response = await fetch(
+        auth.searchParams.get("redirect_uri")! +
+          `?state=${auth.searchParams.get("state")}&code=synthetic-code`,
+      );
+      expect(response.status).toBe(200);
+      await expect(pending).resolves.toMatchObject({
+        refresh_token: "synthetic-refresh",
+      });
+      expect(openPage).toHaveBeenCalledOnce();
+      expect(shown.join(" ")).not.toContain("synthetic-secret");
+      expect(shown.join(" ")).not.toContain("synthetic-refresh");
+      if (opened) expect(shown.join(" ")).not.toContain("https://");
+      else expect(shown.join(" ")).toContain("Open this sign-in link");
+    } finally {
+      controller.abort();
+      await pending.catch(() => {});
+    }
+  },
+);
 test("interrupting a coding task terminates its owned process", async () => {
   const binary = join(temp(), "fake-codex.cjs");
   writeFileSync(binary, `#!${process.execPath}\nsetInterval(()=>{},1000);\n`, {

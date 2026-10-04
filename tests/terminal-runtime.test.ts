@@ -30,6 +30,11 @@ const f = vi.hoisted(() => ({
   resumes: 0,
   memory: undefined as any,
   connectionsStart: vi.fn(async () => {}),
+  setupConnections: vi.fn(async (..._args: any[]) => ({
+    connected: ["gmail"],
+    pending: [] as string[],
+    browserTask: undefined as string | undefined,
+  })),
   briefingCheck: vi.fn(async () => ({ on: true, state: "waiting" })),
   briefingOptions: undefined as any,
 }));
@@ -69,6 +74,7 @@ vi.mock("../src/terminal/connections", () => ({
       closeAll: async () => {},
     };
     start = f.connectionsStart;
+    setup = f.setupConnections;
     labels = () => [];
     connectionWarnings = () => [];
   },
@@ -104,6 +110,7 @@ vi.mock("../src/terminal/screen", () => ({
       status: "",
     };
     prompting = false;
+    ask = vi.fn(async () => "");
     clearMessages = () => {
       this.state.messages = [];
     };
@@ -271,6 +278,11 @@ beforeEach(() => {
   f.noteAssistant.mockClear();
   f.memory = undefined;
   f.connectionsStart.mockClear();
+  f.setupConnections.mockReset().mockResolvedValue({
+    connected: ["gmail"],
+    pending: [],
+    browserTask: undefined,
+  });
   f.briefingCheck.mockClear();
   f.briefingOptions = undefined;
   f.speak.mockClear();
@@ -301,6 +313,122 @@ afterEach(async () => {
       if (!old.has(listener)) process.removeListener(event, listener as any);
   rmSync(root, { recursive: true, force: true });
   process.exitCode = exitCode;
+});
+test("startup with saved access loads it without asking to connect again", async () => {
+  const store = new TerminalStore();
+  store.profile.settings.tools.apple.notes = true;
+  store.save();
+  await main([]);
+  expect(f.ui.screen.message).toHaveBeenCalledWith(
+    "Butler",
+    expect.stringContaining("saved connections and settings are loaded"),
+  );
+  expect(f.ui.screen.ask).not.toHaveBeenCalled();
+  expect(f.setupConnections).not.toHaveBeenCalled();
+});
+test("plain setup uses saved connections without a planner or native task and remembers its verified result", async () => {
+  await main([]);
+  f.ui.submit("Connect Gmail and Slack");
+  await vi.waitFor(() => expect(f.setupConnections).toHaveBeenCalledOnce());
+  expect(f.setupConnections.mock.calls[0][0]).toEqual(["gmail", "slack"]);
+  expect(f.decide).not.toHaveBeenCalled();
+  expect(f.tasks).toHaveLength(0);
+  expect(f.ui.screen.ask).not.toHaveBeenCalled();
+  expect(f.noteAssistant).toHaveBeenCalledWith(
+    expect.stringContaining("ready gmail"),
+    "app",
+    { untrusted: true },
+  );
+});
+test("missing setup enters normal CUA and a paused setup can be rechecked after owner handoff", async () => {
+  f.handoff = "paused";
+  f.setupConnections.mockResolvedValueOnce({
+    connected: [],
+    pending: ["gmail"],
+    browserTask:
+      "In Safari, prepare synthetic setup and stop for access approval.",
+  });
+  await main([]);
+  f.ui.submit("Set up Gmail");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  expect(f.tasks[0].options).toMatchObject({
+    toolsFirst: false,
+    taskSource: "user_words",
+  });
+  f.ui.submit("Set up Gmail");
+  await vi.waitFor(() => expect(f.setupConnections).toHaveBeenCalledTimes(2));
+  expect(f.stops).toBe(1);
+  expect(f.tasks).toHaveLength(1);
+  expect(f.decide).not.toHaveBeenCalled();
+});
+test("setup cannot replace an unrelated active task", async () => {
+  f.holdTask = true;
+  await main([]);
+  f.ui.submit("/run synthetic task");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.ui.submit("Connect my apps");
+  await vi.waitFor(() =>
+    expect(f.ui.screen.message).toHaveBeenCalledWith(
+      "Butler",
+      expect.stringContaining("current task finish"),
+    ),
+  );
+  expect(f.setupConnections).not.toHaveBeenCalled();
+  expect(f.stops).toBe(0);
+});
+test("everyday controls persist without a model request and help uses plain examples", async () => {
+  await main([]);
+  f.ui.submit("Read replies aloud");
+  await vi.waitFor(() =>
+    expect(f.store.instance.profile.settings.voiceReplies).toBe("always"),
+  );
+  f.ui.submit("Brief me every 2 hours");
+  await vi.waitFor(() =>
+    expect(f.store.instance.profile.settings.briefings.intervalMinutes).toBe(
+      120,
+    ),
+  );
+  const saved = new TerminalStore();
+  expect(saved.profile.settings.voiceReplies).toBe("always");
+  expect(saved.profile.settings.briefings.on).toBe(true);
+  f.ui.submit("Help");
+  await vi.waitFor(() =>
+    expect(f.ui.screen.message).toHaveBeenCalledWith(
+      "Butler",
+      expect.stringContaining("Connect my apps"),
+    ),
+  );
+  expect(f.decide).not.toHaveBeenCalled();
+  expect(f.tasks).toHaveLength(0);
+});
+test.each(["Connect Gmail", "Read replies aloud", "Brief me every 30 minutes"])(
+  "uncertain voice cannot change setup or preferences: %s",
+  async (text) => {
+    await main([]);
+    const before = JSON.stringify(f.store.instance.profile);
+    f.voice.receive({
+      text,
+      confidence: 0.3,
+      recovered: true,
+      source: "wake",
+      segments: 1,
+    });
+    await vi.waitFor(() =>
+      expect(f.ui.screen.message).toHaveBeenCalledWith("You", text),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.stringify(f.store.instance.profile)).toBe(before);
+    expect(f.setupConnections).not.toHaveBeenCalled();
+    expect(f.decide).not.toHaveBeenCalled();
+  },
+);
+test("plain Yes approves only an existing typed task confirmation", async () => {
+  f.approval = true;
+  await main([]);
+  f.ui.submit("/run synthetic task");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  f.ui.submit("Yes");
+  await vi.waitFor(() => expect(f.confirmations).toEqual([true]));
 });
 test("completed task facts and live progress are supplied to subsequent conversation", async () => {
   await main([]);
