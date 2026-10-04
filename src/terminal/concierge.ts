@@ -43,7 +43,7 @@ const normalize = (text: string) =>
     .trim()
     .toLowerCase()
     .replace(
-      /^(?:please|can you|could you|help me|i want you to|i would like you to|i'd like you to)\s+/,
+      /^(?:(?:please|can you|could you|help me|i want you to|i would like you to|i'd like you to)\s+)+/,
       "",
     )
     .replace(/[.!?]+$/, "")

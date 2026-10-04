@@ -22,6 +22,7 @@ test("explicit setup requests select apps without granting compound or quoted re
     "gmail",
     "slack",
   ]);
+  expect(setupRequest("Can you please connect Gmail?")).toEqual(["gmail"]);
   expect(setupRequest("Connect GitHub, codex + GitHub")).toEqual([
     "github",
     "codex",
@@ -38,6 +39,9 @@ test("explicit setup requests select apps without granting compound or quoted re
 test("local controls have bounded intervals and never infer an access approval", () => {
   expect(naturalControl("Brief me every 2 hours")).toBe("/briefings 120");
   expect(naturalControl("Read replies aloud")).toBe("/voice on");
+  expect(naturalControl("Could you please brief me every 30 minutes?")).toBe(
+    "/briefings 30",
+  );
   expect(naturalControl("Pause")).toBe("/pause");
   for (const text of [
     "Brief me every 1 minute",

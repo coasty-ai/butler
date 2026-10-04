@@ -76,6 +76,21 @@ test("narrow layouts keep input visible and mask secrets", () => {
   expect(lines.join("\n")).not.toContain("secret-value");
   expect(lines.join("\n")).toContain("key>");
 });
+test("saved on-demand connections count as connected without exposing command lists in everyday chrome", () => {
+  const state: ScreenState = {
+    phase: "idle",
+    model: "synthetic",
+    nextBriefing: "off",
+    status: "Ready",
+    connections: ["Gmail: ready on demand", "GitHub: on", "Codex: off"],
+    messages: [],
+  };
+  const view = screenLines(state, 100, 30, 0, "").join("\n");
+  expect(view).toContain("2 connected");
+  expect(view).toContain("Connect my apps");
+  expect(view).not.toContain("/connect");
+  expect(view).not.toContain("/cua");
+});
 test("history paging preserves the input and returns to new conversation messages", () => {
   const source = Object.assign(new EventEmitter(), {
     isTTY: true,

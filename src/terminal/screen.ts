@@ -68,7 +68,10 @@ export function screenLines(
   const rule = "-".repeat(width);
   const orb = orbitalFrame(tick, s.phase !== "idle");
   const connected = s.connections.filter(
-    (c) => c.includes(": on") || c.includes("[demo]"),
+    (c) =>
+      c.includes(": on") ||
+      c.includes(": ready on demand") ||
+      c.includes("[demo]"),
   );
   const spinner = s.phase === "idle" ? "o" : ["|", "/", "-", "\\"][tick % 4];
   const fixed = [
@@ -82,7 +85,7 @@ export function screenLines(
               `  ${line}  ${
                 [
                   `${spinner} ${s.phase.toUpperCase()}  ${s.status}`,
-                  `${connected.length} connected  /connect to add apps`,
+                  `${connected.length} connected  ·  Say “Connect my apps”`,
                   `Briefings: ${s.nextBriefing}`,
                 ][i]
               }`,
@@ -116,7 +119,7 @@ export function screenLines(
     ...Array(Math.max(0, available - tail.length)).fill(""),
     rule,
     inputLine,
-    "  /help  /connect  /listen  /cua   PgUp/PgDn history   Ctrl-C stop",
+    "  Help for examples   PgUp/PgDn history   Ctrl-C stop   Ctrl-D quit",
   ]
     .slice(0, Math.max(1, height))
     .map((line) => Array.from(terminalText(line)).slice(0, width).join(""));

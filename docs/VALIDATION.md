@@ -1,5 +1,31 @@
 # Validation record
 
+## CLI desktop-test preparation (October 3, 2026)
+
+Preparing a desktop task trial reproduced two everyday CLI defects. Saved
+connections marked ready on demand were omitted from the connected count, and
+stacked polite prefixes such as “Can you please” bypassed local setup and
+control routing. The count now includes dormant ready connections, the footer
+offers conversational help, and local request normalization accepts repeated
+polite prefixes. Compound requests and account approval boundaries retain
+their existing checks.
+
+Evaluation `ea23989b-8800-4b3c-981b-b8799095bafe` passed five checks through
+three actual CLI processes, including an interactive pseudo-terminal, an
+isolated encrypted profile and synthetic MCP servers. Polite Gmail setup
+reused the saved fixture connection in 299 ms, and a polite briefing request
+saved a two-hour interval in 157 ms. A fresh interactive process displayed
+both saved connections and the new conversational footer; “Help” returned
+ordinary examples. Settings and encrypted connection access survived restart.
+No task runs or GUI actions were created, and no owner account was used.
+The isolated profile and project were removed, leaving content-free metrics.
+
+Type checking, touched-file formatting and 84 focused tests passed. These
+checks validate CLI behavior, not desktop task completion. The session's
+Computer Use controller was unavailable; using Butler's native controller for
+the prepared disposable Mac form requires the pending method choice. That
+form has not been launched or driven in this trial.
+
 ## Conversational setup and saved sessions (October 3, 2026)
 
 The owner's encrypted profile already contained GitHub, Gmail and Slack bot
