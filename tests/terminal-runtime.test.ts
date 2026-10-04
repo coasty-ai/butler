@@ -450,6 +450,36 @@ test("missing desktop permissions save progress before any model-driven computer
   expect(f.store.instance.profile.onboarding.phase).toBe("ready");
   expect(f.ask).toHaveBeenCalledOnce();
 });
+test.each(["Connect Slack", "/connect auto"])(
+  "conversational setup uses the first-launch desktop flow and permission checks: %s",
+  async (request) => {
+    const store = new TerminalStore();
+    store.profile.settings = initialSettings({
+      OPENAI_API_KEY: "SYNTHETIC-key",
+    });
+    store.save();
+    await main([]);
+    f.setupConnections.mockResolvedValueOnce({
+      connected: [],
+      pending: ["slack"],
+      browserApp: "slack",
+      browserTask: "In Slack, prepare SYNTHETIC signed-in desktop access.",
+    });
+    f.nativeRequest.mockResolvedValue({ screen: false, accessibility: false });
+    f.ui.submit(request);
+    await vi.waitFor(() => expect(f.nativeRequest).toHaveBeenCalledTimes(3));
+    expect(f.setupConnections.mock.calls[0][6]).toMatchObject({
+      desktopFirst: true,
+    });
+    expect(f.store.instance.profile.onboarding).toMatchObject({
+      phase: "waiting",
+      activeApp: "slack",
+      desktopFirst: true,
+    });
+    expect(f.ask).not.toHaveBeenCalled();
+    expect(f.tasks).toEqual([]);
+  },
+);
 test.each(["", "SYNTHETIC-provider-key"])(
   "model setup stays hidden, allows deferral and preserves other preferences (key=%s)",
   async (key) => {
@@ -645,10 +675,14 @@ test("plain setup uses saved connections without a planner or native task and re
   );
 });
 test("missing setup enters normal CUA and a paused setup can be rechecked after owner handoff", async () => {
+  const store = new TerminalStore();
+  store.profile.settings = initialSettings({ OPENAI_API_KEY: "SYNTHETIC-key" });
+  store.save();
   f.handoff = "paused";
   f.setupConnections.mockResolvedValueOnce({
     connected: [],
     pending: ["gmail"],
+    browserApp: "gmail",
     browserTask:
       "In Safari, prepare synthetic setup and stop for access approval.",
   });
@@ -665,6 +699,29 @@ test("missing setup enters normal CUA and a paused setup can be rechecked after 
   expect(f.tasks).toHaveLength(1);
   expect(f.decide).not.toHaveBeenCalled();
 });
+test.each(["Update Slack token", "Connect Slack with OAuth"])(
+  "voice keeps credential setup in the typed local lane: %s",
+  async (text) => {
+    await main([]);
+    f.voice.receive({
+      text,
+      confidence: 0.98,
+      recovered: false,
+      source: "wake",
+      segments: 1,
+    });
+    await vi.waitFor(() =>
+      expect(f.ui.screen.message).toHaveBeenCalledWith(
+        "Butler",
+        expect.stringContaining("Please type that connection request"),
+      ),
+    );
+    expect(f.tasks).toEqual([]);
+    expect(f.setupConnections).not.toHaveBeenCalled();
+    expect(f.decide).not.toHaveBeenCalled();
+    expect(f.ask).not.toHaveBeenCalled();
+  },
+);
 test("setup cannot replace an unrelated active task", async () => {
   f.holdTask = true;
   await main([]);

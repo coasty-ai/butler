@@ -12,7 +12,7 @@ import {
   importConnections,
   type ImportedConnection,
 } from "./connection-config";
-import { createSlackReader } from "./slack";
+import { createSlackReader, SlackConnectionError } from "./slack";
 import { McpOAuth } from "./mcp-oauth";
 import type { AppleConsent } from "../core/tools";
 import { TOOL_LIMITS } from "../core/tools";
@@ -85,6 +85,32 @@ export class TerminalConnections {
   private firstPartyOnly = false;
   private onlyServers?: readonly string[];
   private browserAttempted = new Set<SetupApp>();
+  private slackIssue?: SlackConnectionError;
+  private async verifySlackBot(
+    token: string,
+    signal: AbortSignal,
+    authenticated?: () => void | Promise<void>,
+  ) {
+    try {
+      const read = createSlackReader({ SLACK_BOT_TOKEN: token });
+      await read("auth_test", {}, signal);
+      signal.throwIfAborted();
+      await authenticated?.();
+      await read("readiness_test", {}, signal);
+      signal.throwIfAborted();
+      this.slackIssue = undefined;
+    } catch (error) {
+      signal.throwIfAborted();
+      this.slackIssue =
+        error instanceof SlackConnectionError
+          ? error
+          : new SlackConnectionError(
+              "VERIFY_FAILED",
+              "Slack could not be verified right now. Your saved setup is kept; say ‘Connect Slack’ to retry.",
+            );
+      throw this.slackIssue;
+    }
+  }
   private scopedSettings() {
     return connectionSettings(
       this.store.profile.settings,
@@ -279,6 +305,8 @@ export class TerminalConnections {
     ];
     const labels = ids.map((id) => {
       const s = servers.find((r) => r.id === id);
+      if (id === "slack-bot" && this.slackIssue)
+        return "Slack bot: needs attention";
       if (s?.code === "ON_DEMAND") return `${s.name}: ready on demand`;
       return s
         ? `${s.name}: ${s.state}${s.code ? ` (${s.code})` : ""}`
@@ -294,6 +322,7 @@ export class TerminalConnections {
         !servers.some(
           (server) =>
             (server.id === app || server.id === id) &&
+            !(server.id === "slack-bot" && this.slackIssue) &&
             (server.state === "on" || server.code === "ON_DEMAND"),
         )
       )
@@ -347,6 +376,25 @@ export class TerminalConnections {
   ): Promise<ConnectionSetup> {
     const result: ConnectionSetup = { connected: [], pending: [] };
     const secrets = this.store.profile.secrets;
+    const slackPending = (error: SlackConnectionError) => {
+      show(error.message);
+      result.pending.push("slack");
+      if (
+        options.desktopFirst &&
+        !result.browserTask &&
+        !options.desktopReady?.includes("slack")
+      ) {
+        result.browserTask = desktopSetupTask(
+          "slack",
+          browser,
+          !!options.slackInstalled,
+        );
+        result.browserApp = "slack";
+        show(
+          "I'll get your signed-in Slack app ready for computer use while its bot connection needs repair.",
+        );
+      }
+    };
     const missing = () => {
       throw new Error("SETUP_INPUT_REQUIRED");
     };
@@ -444,7 +492,15 @@ export class TerminalConnections {
             secrets["gmail:refreshToken"])) &&
         (!(id === "codex" || id === "claude-code") || row.cwd === this.project)
       ) {
-        result.connected.push(app);
+        if (id === "slack-bot") {
+          try {
+            await this.verifySlackBot(secrets["slack:botToken"], signal);
+            result.connected.push(app);
+          } catch (error) {
+            signal.throwIfAborted();
+            slackPending(error as SlackConnectionError);
+          }
+        } else result.connected.push(app);
         continue;
       }
       if (
@@ -529,9 +585,11 @@ export class TerminalConnections {
           signal,
         );
         result.connected.push(app);
-      } catch {
+      } catch (error) {
         signal.throwIfAborted();
-        result.pending.push(app);
+        if (app === "slack" && error instanceof SlackConnectionError) {
+          slackPending(error);
+        } else result.pending.push(app);
       }
     }
     signal.throwIfAborted();
@@ -609,13 +667,14 @@ export class TerminalConnections {
         "";
       if (!/^xoxb-[A-Za-z0-9-]{10,}$/.test(token))
         throw new Error("Enter a Slack bot token beginning xoxb-.");
-      await createSlackReader({ SLACK_BOT_TOKEN: token })(
-        "auth_test",
-        {},
-        signal,
-      );
-      secrets["slack:botToken"] = token;
-      this.store.save();
+      await this.verifySlackBot(token, signal, async () => {
+        // Keep an authenticated token even if scopes or membership need repair.
+        const changed = secrets["slack:botToken"] !== token;
+        secrets["slack:botToken"] = token;
+        this.store.save();
+        // Rotate an existing bridge too; it must not keep the previous account.
+        if (changed) await this.registry.configure();
+      });
     }
     if (id === "gmail" || id === "slack") {
       const secrets = this.store.profile.secrets;
@@ -744,7 +803,9 @@ export class TerminalConnections {
       });
     this.store.save();
     show(
-      `${row.name} connected. ${probe.toolCount} tools listed. Coding tools are scoped to ${this.project}.`,
+      id === "slack-bot"
+        ? "Slack is connected. I can read conversations the bot has joined."
+        : `${row.name} connected. ${probe.toolCount} tools listed.${id === "codex" || id === "claude-code" ? ` Coding tools are scoped to ${this.project}.` : ""}`,
     );
   }
   catalog() {

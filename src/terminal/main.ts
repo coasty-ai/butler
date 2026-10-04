@@ -1132,7 +1132,7 @@ export async function main(args = process.argv.slice(2)) {
         );
       } else if (word === "/connect") {
         if (rest === "auto") {
-          await setupApps([...SETUP_APPS], activeTurn.signal);
+          await setupApps([...SETUP_APPS], activeTurn.signal, false, true);
           return;
         }
         await readyConnections();
@@ -1440,6 +1440,12 @@ export async function main(args = process.argv.slice(2)) {
           return;
         }
         const preference = spoken ? naturalControl(text) : undefined;
+        if (spoken && preference?.startsWith("/connect ")) {
+          announce(
+            "Please type that connection request. Credentials belong in the hidden local prompt.",
+          );
+          return;
+        }
         if (
           spoken &&
           preference &&
@@ -1489,7 +1495,7 @@ export async function main(args = process.argv.slice(2)) {
             return;
           }
           dialog.noteUser(text, spoken ? "voice" : "app");
-          await setupApps(setup, activeTurn.signal, !!spoken);
+          await setupApps(setup, activeTurn.signal, !!spoken, true);
           return;
         }
         const inbox = inboxRequest(text);

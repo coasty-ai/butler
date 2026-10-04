@@ -73,6 +73,22 @@ const readScopes: Record<string, string> = {
   "mpim:read": "list group conversations",
   "mpim:history": "read group messages",
 };
+const conversationTypes = [
+  ["public_channel", "channels"],
+  ["private_channel", "groups"],
+  ["im", "im"],
+  ["mpim", "mpim"],
+] as const;
+/** Only fixed, local messages may cross from Slack into setup UI. */
+export class SlackConnectionError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SlackConnectionError";
+  }
+}
 function missingReadScope(needed: unknown): string {
   const scopes = [
     ...new Set(
@@ -89,6 +105,8 @@ export function createSlackReader(
   env: NodeJS.ProcessEnv = process.env,
   request: typeof fetch = fetch,
 ) {
+  let scopes: Set<string> | undefined;
+  let scopeProbed = false;
   const get = async (
     method: string,
     params: Record<string, string>,
@@ -112,6 +130,15 @@ export function createSlackReader(
       );
     if (!response.ok)
       throw new Error(`Slack read failed (HTTP ${response.status}).`);
+    const granted = response.headers.get("x-oauth-scopes");
+    if (granted !== null)
+      scopes = new Set(
+        granted
+          .slice(0, 4096)
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => Object.hasOwn(readScopes, s)),
+      );
     const value = await response.json();
     if (!value.ok) {
       const messages: Record<string, string> = {
@@ -120,18 +147,68 @@ export function createSlackReader(
           "Invite the Butler bot to this Slack conversation before reading it.",
         channel_not_found: "This Slack conversation is unavailable to the bot.",
         invalid_auth:
-          "Slack rejected the bot token. Reconnect with /connect slack bot.",
+          "Slack rejected the bot token. Say ‘Update Slack token’ to enter its current token privately.",
         not_allowed_token_type:
-          "Slack requires a user token for this read. Connect using /connect slack oauth.",
+          "Slack requires a user token for this read. Say ‘Connect Slack with OAuth’ to sign in as yourself.",
         token_revoked:
-          "The Slack token was revoked. Reconnect with /connect slack bot.",
+          "The Slack token was revoked. Say ‘Update Slack token’ to enter its current token privately.",
+        account_inactive:
+          "Slack says the saved bot account or workspace is inactive. Check the workspace and install or reinstall Butler at https://api.slack.com/apps. Then say ‘Update Slack token’ to enter its current token privately.",
+        token_expired:
+          "The Slack bot token has expired. Enter its current token in Butler's hidden Slack prompt.",
+        not_authed:
+          "Slack did not accept the bot's sign-in. Enter its current token in Butler's hidden Slack prompt.",
       };
-      throw new Error(
-        messages[value.error] ||
+      throw new SlackConnectionError(
+        Object.hasOwn(messages, value.error) ? value.error : "READ_FAILED",
+        (Object.hasOwn(messages, value.error) && messages[value.error]) ||
           "Slack could not complete this read. Check the bot's membership and scopes.",
       );
     }
     return value;
+  };
+  const list = async (
+    count: number,
+    cursor: string | undefined,
+    signal?: AbortSignal,
+    requireHistory = false,
+  ) => {
+    if (!scopeProbed) {
+      await get("auth.test", {}, signal);
+      scopeProbed = true;
+    }
+    const types = scopes
+      ? conversationTypes.filter(
+          ([, prefix]) =>
+            scopes!.has(`${prefix}:read`) &&
+            (!requireHistory || scopes!.has(`${prefix}:history`)),
+        )
+      : [conversationTypes[0]];
+    if (!types.length) {
+      const listed = conversationTypes.find(([, prefix]) =>
+        scopes?.has(`${prefix}:read`),
+      );
+      throw new SlackConnectionError(
+        "missing_scope",
+        missingReadScope(
+          listed && requireHistory
+            ? `${listed[1]}:history`
+            : requireHistory
+              ? "channels:read,channels:history"
+              : "channels:read",
+        ),
+      );
+    }
+    return get(
+      "users.conversations",
+      {
+        limit: String(count),
+        exclude_archived: "true",
+        types: types.map(([type]) => type).join(","),
+        ...(cursor ? { cursor } : {}),
+      },
+      signal,
+    );
   };
   const messages = (value: any, textLimit = 300, cap = 30) => ({
     messages: (Array.isArray(value.messages) ? value.messages : [])
@@ -154,7 +231,26 @@ export function createSlackReader(
       const result = await get("auth.test", {}, signal);
       if (!result.bot_id)
         throw new Error("Use a Slack bot token beginning xoxb-.");
+      scopeProbed = true;
       return "Slack bot token verified.";
+    }
+    if (name === "readiness_test") {
+      const listed = await list(20, undefined, signal, true);
+      const joined = (Array.isArray(listed.channels) ? listed.channels : [])
+        .slice(0, 20)
+        .find((c: any) => validChannel(c.id));
+      if (!joined)
+        throw new SlackConnectionError(
+          "NO_VERIFIED_CONVERSATION",
+          "The bot is signed in, but no readable Slack conversation was verified. Add Butler through the channel's Integrations tab, then say ‘Connect Slack’ again. A bot can only read conversations it has joined.",
+        );
+      // Verify the read, but never return message content to setup or the model.
+      await get(
+        "conversations.history",
+        { channel: joined.id, limit: "1" },
+        signal,
+      );
+      return "Slack can read conversations the bot has joined.";
     }
     if (
       !spec ||
@@ -169,13 +265,9 @@ export function createSlackReader(
         (typeof args.cursor !== "string" || args.cursor.length > 500)
       )
         throw new Error("Invalid Slack cursor.");
-      const listed = await get(
-        "users.conversations",
-        {
-          limit: "50",
-          exclude_archived: "true",
-          ...(args.cursor ? { cursor: String(args.cursor) } : {}),
-        },
+      const listed = await list(
+        50,
+        args.cursor ? String(args.cursor) : undefined,
         signal,
       );
       const conversations = (

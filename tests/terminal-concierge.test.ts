@@ -43,6 +43,10 @@ test("local controls have bounded intervals and never infer an access approval",
     "/briefings 30",
   );
   expect(naturalControl("Pause")).toBe("/pause");
+  expect(naturalControl("Update Slack token")).toBe("/connect slack bot");
+  expect(naturalControl("Connect Slack with OAuth")).toBe(
+    "/connect slack oauth",
+  );
   for (const text of [
     "Brief me every 1 minute",
     "Brief me every 25 hours",

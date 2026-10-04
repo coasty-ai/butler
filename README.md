@@ -93,20 +93,21 @@ Set up Gmail and Slack
 Show my connections
 ```
 
-The first-launch flow and “Get me ready” use ordinary app access when a connected
-tool is unavailable. “Connect my apps” or “Set up Gmail and Slack” explicitly
-configure API/MCP connections instead. Butler checks GitHub, Gmail, Slack,
+The first-launch flow, “Get me ready”, “Connect my apps” and “Set up Gmail and
+Slack” reuse API/MCP connections and prepare signed-in apps through computer
+use when a connected tool is unavailable. Butler checks GitHub, Gmail, Slack,
 Claude Code, Codex and the four Apple app bridges. It reuses saved grants,
 GitHub CLI sign-in and installed coding CLIs. Gmail API setup can reuse a single
 unambiguous Desktop client download in Downloads or the project folder. Missing
-developer credentials use a guided browser handoff; after your part, say
+account access uses a guided computer-use handoff; after your part, say
 “Continue setup” to verify the same accounts. Approved tokens use a hidden
 prompt and never enter the chat model. Service registration, account choices
-and access approvals stay with you.
+and access approvals stay with you. Advanced connection setup can prepare
+developer consoles; tokens issued manually use the hidden local prompt.
 
 GitHub connects in read-only mode. Claude Code uses `claude mcp serve`. Codex uses Butler’s local MCP bridge to the installed, signed-in Codex CLI. Coding tasks ask for approval and run in the project folder chosen when connecting; use `butler --cwd /path/to/project` for a different project.
 
-Slack can use a **bot token (`xoxb-…`)** for reads from conversations the bot has joined. An app token (`xapp-…`) is unnecessary for scheduled reads. `/connect slack oauth` instead uses Slack's official MCP user authorization. Gmail needs a Google Desktop OAuth client JSON with Gmail API enabled, then your account approval. Their wizards explain setup; the built-in Gmail and Slack bot bridges provide reads.
+Slack can use a **bot token (`xoxb-…`)** for reads from conversations the bot has joined. An app token (`xapp-…`) is unnecessary for scheduled reads. Butler verifies both sign-in and a joined-conversation read before calling it connected. Missing permissions, inactive accounts and missing bot membership are explained. Say “Update Slack token” to enter a replacement at a hidden local prompt. `/connect slack oauth` instead uses Slack's official MCP user authorization. Gmail needs a Google Desktop OAuth client JSON with Gmail API enabled, then your account approval. Their wizards explain setup; the built-in Gmail and Slack bot bridges provide reads.
 
 Connect Calendar, Reminders, Notes and Mail through `/connect apple` or their individual names. The custom wizard supports local stdio or remote Streamable HTTP MCP servers, OAuth, bearer tokens, custom headers, environment variables and no authentication. Import Claude/Cursor/VS Code MCP JSON to reuse configurations. `/tools`, `/tool server__tool on|off`, `/trust server reads|ask` and `/disconnect server` manage access. Credentials are entered at masked prompts and stored encrypted. See the [connection guide](docs/TERMINAL.md).
 

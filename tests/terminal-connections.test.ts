@@ -61,6 +61,7 @@ afterEach(() => {
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true }));
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 test("startup waits for the Apple bridge even when no external servers are enabled", async () => {
@@ -253,6 +254,116 @@ test("an existing Slack bot token is reused and connection failures are never re
       [],
     ),
   ).toEqual({ connected: [], pending: ["slack"] });
+});
+test("saved live Slack transports are checked for account access before reporting ready, with desktop fallback and no token prompt", async () => {
+  const root = temp(),
+    key = randomBytes(32);
+  const store = new TerminalStore(root, key);
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  store.profile.secrets["slack:botToken"] = "xoxb-synthetic-saved-token";
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  const row = (c as any).makeRow("slack-bot");
+  row.enabled = row.consented = true;
+  row.approvedCommand = c.registry.approval(row);
+  store.profile.settings.tools.servers.push(row);
+  store.save();
+  vi.spyOn(c.registry, "configure").mockResolvedValue();
+  vi.spyOn(c.registry, "status").mockReturnValue({
+    ...c.registry.status(),
+    servers: [{ id: "slack-bot", name: "Slack bot", state: "on", tools: [] }],
+  } as any);
+  const request = vi.fn(async () =>
+    Response.json({
+      ok: false,
+      error: "account_inactive",
+      detail: "SYNTHETIC-private-body",
+    }),
+  );
+  vi.stubGlobal("fetch", request);
+  const show = vi.fn(),
+    ask = vi.fn();
+  const result = await c.setup(
+    ["slack"],
+    "Safari",
+    show,
+    new AbortController().signal,
+    [],
+    ask,
+    { desktopFirst: true, slackInstalled: true },
+  );
+  expect(result.connected).toEqual([]);
+  expect(result.pending).toEqual(["slack"]);
+  expect(result.browserApp).toBe("slack");
+  expect(result.browserTask).toContain("In Slack,");
+  expect(show.mock.calls.flat().join(" ")).toContain("inactive");
+  expect(show.mock.calls.flat().join(" ")).not.toContain(
+    "SYNTHETIC-private-body",
+  );
+  expect(c.labels()).toContain("Slack bot: needs attention");
+  expect(ask).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(new TerminalStore(root, key).profile.secrets["slack:botToken"]).toBe(
+    "xoxb-synthetic-saved-token",
+  );
+  request.mockImplementation(async () =>
+    Response.json(
+      {
+        ok: true,
+        bot_id: "B000000001",
+        channels: [{ id: "C000000001" }],
+        messages: [],
+      },
+      { headers: { "x-oauth-scopes": "channels:read,channels:history" } },
+    ),
+  );
+  expect(
+    (
+      await c.setup(
+        ["slack"],
+        "Safari",
+        show,
+        new AbortController().signal,
+        [],
+        ask,
+        { desktopFirst: true },
+      )
+    ).connected,
+  ).toEqual(["slack"]);
+  expect(c.labels()).not.toContain("Slack bot: needs attention");
+});
+test("a newly authenticated Slack token is kept encrypted when read permissions still need approval", async () => {
+  const root = temp(),
+    key = randomBytes(32);
+  const store = new TerminalStore(root, key);
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  const c = new TerminalConnections(store, "/fixture", "/fixture");
+  const request = vi.fn(async () =>
+    Response.json(
+      { ok: true, bot_id: "B000000001" },
+      { headers: { "x-oauth-scopes": "channels:read" } },
+    ),
+  );
+  vi.stubGlobal("fetch", request);
+  const configure = vi.spyOn(c.registry, "configure").mockResolvedValue();
+  const probe = vi.spyOn(c.registry, "test");
+  await expect(
+    c.connect(
+      "slack-bot",
+      async () => "xoxb-synthetic-new-token",
+      vi.fn(),
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("channels:history");
+  expect(probe).not.toHaveBeenCalled();
+  expect(configure).toHaveBeenCalledOnce();
+  const restored = new TerminalStore(root, key);
+  expect(restored.profile.secrets["slack:botToken"]).toBe(
+    "xoxb-synthetic-new-token",
+  );
+  expect(restored.profile.settings.tools.servers[0].enabled).toBe(false);
+  expect(readFileSync(join(root, "profile.enc"), "utf8")).not.toContain(
+    "xoxb-synthetic-new-token",
+  );
 });
 test("unfinished setup survives restart without repeating browser preparation when an approved token is supplied", async () => {
   const root = temp(),
@@ -505,6 +616,8 @@ test("Slack bot bridge uses read methods, limits output, and reports incomplete 
     expect(init.redirect).toBe("error");
     expect(init.headers).toEqual({ Authorization: "Bearer " + token });
     const url = new URL(address);
+    if (url.pathname.endsWith("auth.test"))
+      return Response.json({ ok: true, bot_id: "B000000001" });
     if (url.pathname.endsWith("users.conversations"))
       return Response.json({
         ok: true,
@@ -558,6 +671,84 @@ test("Slack API errors cannot leak server bodies, and bot thread restrictions ar
   ).rejects.toThrow("valid Slack");
   await expect(read("chat.postMessage", {})).rejects.toThrow("Unexpected");
   expect(request).toHaveBeenCalledTimes(1);
+});
+test("Slack readiness checks a real joined-conversation read without returning its messages", async () => {
+  const scopes = "groups:read,groups:history,im:read,im:history";
+  const request = vi.fn(async (address: string) => {
+    const url = new URL(address);
+    if (url.pathname.endsWith("users.conversations")) {
+      expect(url.searchParams.get("types")).toBe("private_channel,im");
+      return Response.json({ ok: true, channels: [{ id: "G000000001" }] });
+    }
+    if (url.pathname.endsWith("conversations.history")) {
+      expect(url.searchParams.get("limit")).toBe("1");
+      return Response.json({
+        ok: true,
+        messages: [{ text: "SYNTHETIC-private-message" }],
+      });
+    }
+    return Response.json(
+      { ok: true, bot_id: "B000000001" },
+      { headers: { "x-oauth-scopes": scopes } },
+    );
+  });
+  const read = createSlackReader(
+    { SLACK_BOT_TOKEN: "xoxb-synthetic-token" },
+    request as any,
+  );
+  await read("auth_test", {});
+  const result = await read("readiness_test", {});
+  expect(result).toBe("Slack can read conversations the bot has joined.");
+  expect(result).not.toContain("SYNTHETIC-private-message");
+  expect(request).toHaveBeenCalledTimes(3);
+  await read("slack_channels", {});
+  expect(request).toHaveBeenCalledTimes(4);
+});
+test("Slack readiness refuses empty membership and denied message access after successful authentication", async () => {
+  let joined = false;
+  const request = vi.fn(async (address: string) => {
+    if (address.includes("auth.test"))
+      return Response.json({ ok: true, bot_id: "B000000001" });
+    if (address.includes("users.conversations"))
+      return Response.json({
+        ok: true,
+        channels: joined ? [{ id: "C000000001" }] : [],
+      });
+    return Response.json({
+      ok: false,
+      error: "missing_scope",
+      needed: "channels:history",
+    });
+  });
+  const read = createSlackReader(
+    { SLACK_BOT_TOKEN: "xoxb-synthetic-token" },
+    request as any,
+  );
+  await expect(read("readiness_test", {})).rejects.toThrow(
+    "no readable Slack conversation was verified",
+  );
+  joined = true;
+  await expect(read("readiness_test", {})).rejects.toThrow("channels:history");
+});
+test("inactive Slack accounts have actionable fixed errors without echoing server details", async () => {
+  const read = createSlackReader(
+    { SLACK_BOT_TOKEN: "xoxb-synthetic-token" },
+    async () =>
+      Response.json({
+        ok: false,
+        error: "account_inactive",
+        detail: "SYNTHETIC-private-body",
+      }),
+  );
+  await expect(read("auth_test", {})).rejects.toThrow(
+    "account or workspace is inactive",
+  );
+  await expect(
+    read("slack_history", { channel: "C000000001" }),
+  ).rejects.toThrow("install or reinstall");
+  await expect(read("auth_test", {})).rejects.not.toThrow(
+    "SYNTHETIC-private-body",
+  );
 });
 test("guided app setup prepares normal browser access without demanding developer credentials", async () => {
   const store = new TerminalStore(temp(), randomBytes(32));
