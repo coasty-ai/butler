@@ -115,6 +115,22 @@ test("British output resolves installed names and identifiers and falls back fro
   expect(installedVoice(voices, "gb")).toEqual(voices[1]);
   expect(installedVoice([], "Arthur")).toBeUndefined();
 });
+test("idle microphone failures do not claim a typed task was unheard or flood the conversation", async () => {
+  const f = fixture();
+  await f.voice.setListening(true);
+  f.emit({ event: "voice_error", message: "SYNTHETIC native detail" });
+  f.emit({ event: "voice_error", message: "SYNTHETIC native detail" });
+  f.emit({ event: "transcript_unconfirmed" });
+  expect(f.notice).toHaveBeenCalledOnce();
+  expect(f.notice.mock.calls[0][0]).toContain("Voice input had a problem");
+  expect(f.notice.mock.calls[0][0]).not.toMatch(/didn't catch|native detail/);
+  f.emit({ event: "wake_detected" });
+  f.emit({ event: "transcript_unconfirmed" });
+  expect(f.notice).toHaveBeenLastCalledWith(
+    "I didn't catch that clearly. Please try again.",
+  );
+  expect(f.receive).not.toHaveBeenCalled();
+});
 test("output chunks stay within the native limit and exclude credential and wake-phrase content", () => {
   const chunks = spokenChunks(
     "Your summary is ready. ".repeat(80) +

@@ -1144,6 +1144,7 @@ test("direct desktop tasks bypass MCP selection, preserve typed provenance, and 
     origin: "typed",
     taskSource: "user_words",
     initialApp: "Slack",
+    multiWindow: true,
   });
   expect(f.memory).toMatchObject({
     recall: expect.any(Function),
@@ -1154,6 +1155,16 @@ test("direct desktop tasks bypass MCP selection, preserve typed provenance, and 
     false,
     true,
   );
+});
+test("an explicit browser carries the same initial window and URL routing into a CLI task", async () => {
+  await main([]);
+  f.ui.submit("/cua In Google Chrome, open the SYNTHETIC website");
+  await vi.waitFor(() => expect(f.tasks).toHaveLength(1));
+  expect(f.tasks[0].options).toMatchObject({
+    multiWindow: true,
+    initialApp: "Google Chrome",
+    browser: { name: "Google Chrome", bundleId: "com.google.Chrome" },
+  });
 });
 test("an explicit personal preference is saved locally without a model or desktop task", async () => {
   await main([]);

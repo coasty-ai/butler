@@ -88,6 +88,7 @@ const contextSchema = z
         covered: z.boolean(),
         staleRisk: z.boolean(),
         minimized: z.boolean(),
+        canNavigate: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -189,6 +190,9 @@ export function cleanScreenContext(value: unknown): ScreenContext | undefined {
         covered: c.background.covered,
         staleRisk: c.background.staleRisk,
         minimized: c.background.minimized,
+        ...(c.background.canNavigate !== undefined && {
+          canNavigate: c.background.canNavigate,
+        }),
       },
     }),
   };

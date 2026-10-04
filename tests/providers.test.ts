@@ -309,20 +309,18 @@ describe("provider-neutral adapters", () => {
         expect(added).toMatch(/^\nThe target window is in the background/);
       }
       for (const phrase of [
-        "fractions of this window image",
-        "cursor is not available",
-        "click_control, menu_item and type_text into a listed field",
-        "some applications ignore it",
-        "move does nothing here, and monitor is not available",
-        "use open_app or open_file, or press CMD+TAB",
-        "a browser behind another window needs no switching here",
-        "A drag, or a modifier chord that is not one of the application's menu shortcuts",
-        "context.background.covered is true the picture may be stale",
-        "trust context.controls and context.visibleText over pixels",
-        "by accessibility, by events posted to the application, or with the application in front for a second",
-        '"nothing changed" means the application ignores that route',
-        'a line beginning "No input was sent"',
-        "finished in front, after which these rules no longer apply",
+        "fractions of its image",
+        "click_control, menu_item and type_text(text, label)",
+        "move does nothing and monitor is unavailable",
+        "When context.background.canNavigate is true",
+        "Otherwise stay in this window",
+        "Never use CMD+TAB",
+        "including separate editor and agent windows",
+        "untrusted, possibly stale hints",
+        "verify fresh context before input",
+        "trust controls and visibleText",
+        'A line beginning "No input was sent"',
+        "finish in front",
       ])
         expect(added).toContain(phrase);
       // The window's facts ride on the step, where the paragraph says they are.

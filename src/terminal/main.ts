@@ -17,7 +17,7 @@ import {
   VOICE_READ_MIN_CONFIDENCE,
   type SpokenInput,
 } from "./voice";
-import { installedApps } from "./apps";
+import { installedApps, taskBrowser } from "./apps";
 import { providerDiagnostics, probeModel } from "./doctor";
 import { nativeModelFetch } from "./transport";
 import {
@@ -595,13 +595,20 @@ export async function main(args = process.argv.slice(2)) {
     );
     briefings.interrupt();
     const opening = leadingClause(text);
+    const browser = taskBrowser(text, installedApps());
     const currentRunner = runner;
     const work = currentRunner.start(text, {
       ...(opening?.target === "app" &&
       ["boundary", "end"].includes(opening.next)
         ? { initialApp: opening.name }
-        : {}),
+        : browser
+          ? { initialApp: browser.name }
+          : {}),
+      ...(browser && { browser }),
       toolsFirst,
+      multiWindow: true,
+      ...(settings().memory &&
+        lastFinished?.windows && { windows: lastFinished.windows }),
       background: settings().workInBackground,
       origin: spoken ? "voice" : "typed",
       taskSource,

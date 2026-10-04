@@ -90,6 +90,7 @@ export class TerminalVoice {
   private generation = 0;
   private input = false;
   private wakeUnavailable = false;
+  private inputErrorReported = false;
   private capturing = false;
   private inputLevel = 0;
   private source: VoiceSource = "wake";
@@ -385,6 +386,7 @@ export class TerminalVoice {
           : event.event === "followup_detected"
             ? "followup"
             : "wake";
+      this.inputErrorReported = false;
       this.capturing = true;
       this.inputLevel = 0;
       this.options.activity("listening");
@@ -444,12 +446,16 @@ export class TerminalVoice {
         phase: event.event,
         micLevel: this.capturing ? this.inputLevel : 0,
       });
+      const wasCapturing = this.capturing;
       this.capturing = false;
-      this.options.activity("idle");
-      if (event.event !== "voice_cancelled")
+      if (!this.speaking) this.options.activity("idle");
+      if (event.event === "voice_error" && !this.inputErrorReported) {
+        this.inputErrorReported = true;
         this.options.notice(
-          "I didn't catch that clearly. Please try again, or use /listen status.",
+          "Voice input had a problem. You can keep typing; say or type ‘Listen for me’ to retry setup.",
         );
+      } else if (event.event === "transcript_unconfirmed" && wasCapturing)
+        this.options.notice("I didn't catch that clearly. Please try again.");
     }
   }
   close() {

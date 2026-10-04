@@ -1,3 +1,4 @@
+import { rememberWindow, windowContexts, windowNavigation } from "./windows";
 import type {
   Action,
   Controller,
@@ -1613,6 +1614,9 @@ const taskWords = (text: string) =>
 export interface StartOptions {
   /** An opening app clause parsed by the CLI; binds an existing window only. */
   initialApp?: string;
+  /** Interactive user tasks may navigate and retain bounded window context. */
+  multiWindow?: boolean;
+  windows?: Run["windows"];
   /** Try connected tools without reading the desktop; capture hands off to the normal screen loop. */
   toolsFirst?: boolean;
   origin?: RunOrigin;
@@ -1930,6 +1934,7 @@ export class Runner {
    * still go to it in the background.
    */
   private target?: RunTarget;
+  private multiWindow = false;
   /** Misses per kind of step and rung this run (missKey): two, and that rung is skipped for the rest of it. */
   private rungMisses = new Map<string, number>();
   /** Points refused in a row because the covered window's picture may be stale: the second goes in front. */
@@ -3226,6 +3231,7 @@ export class Runner {
     this.toolNow = undefined;
     this.toolFallback = undefined;
     this.target = undefined;
+    this.multiWindow = false;
     this.rungMisses.clear();
     this.coveredStaleRefusals = 0;
     this.backgroundObservations = [];
@@ -4048,6 +4054,7 @@ export class Runner {
             staleRisk: false,
             minimized: false,
             ...frame.context.background,
+            ...(this.multiWindow && { canNavigate: true }),
           },
         }),
       },
@@ -4099,6 +4106,7 @@ export class Runner {
         }
         this.target = target;
         run.target = { ...target, background: true };
+        if (this.multiWindow) run.windows = rememberWindow(run.windows, target);
         this.event("TargetBound", {
           appId: target.appId,
           windowId: target.windowId,
@@ -4113,6 +4121,172 @@ export class Runner {
       }
     }
     if (message) this.status("capturing", message);
+  }
+  /** Bind only the verified application reported by native navigation. */
+  private async bindDestination(
+    action: Action,
+    surface: Surface,
+    outcome: void | ExecutionResult,
+    epoch: number,
+    source?: RunTarget,
+  ): Promise<boolean> {
+    const run = this.snapshot.run!;
+    const current = () => this.active() && !this.held && epoch === this.epoch;
+    const arrived = await this.controller.surface();
+    if (!current()) return false;
+    const arrivedFloor = surfacePolicy(arrived, this.settings);
+    if (arrivedFloor.kind !== "ALLOW") {
+      this.leaveBackground("navigation_blocked");
+      this.takeover(arrivedFloor.reason, "surface");
+      return false;
+    }
+    const expected =
+      action.type === "open_app"
+        ? (outcome?.launched?.appId ?? surface.launcherAppId)
+        : action.type === "open_file"
+          ? outcome?.opened?.appId
+          : action.type === "open_url"
+            ? (outcome?.navigated?.appId ?? run.browser?.bundleId)
+            : source?.appId;
+    // A browser-script route names the verified browser explicitly without
+    // activating it. Every other route must match the actual foreground app.
+    const scripted =
+      action.type === "open_url" &&
+      outcome?.navigated?.via === "script" &&
+      outcome.navigated.appId === expected;
+    // An unreported destination is not permission to follow arbitrary focus.
+    if (
+      !expected ||
+      (!scripted && arrived.appId.toLowerCase() !== expected.toLowerCase()) ||
+      (!["open_app", "open_file", "open_url"].includes(action.type) &&
+        arrived.pid !== source?.pid)
+    ) {
+      this.leaveBackground("navigation_unverified");
+      this.takeover(
+        "I couldn't verify the destination window. Please open the intended window, then continue.",
+        "handoff",
+      );
+      return false;
+    }
+    const next = await this.controller.bindTarget!(
+      scripted ? { app: expected } : { pid: arrived.pid },
+    );
+    if (!current()) {
+      await this.controller.unbindTarget?.(next.token);
+      return false;
+    }
+    if (
+      (!scripted && next.pid !== arrived.pid) ||
+      next.appId.toLowerCase() !== expected.toLowerCase()
+    ) {
+      await this.controller.unbindTarget?.(next.token);
+      this.leaveBackground("navigation_unverified");
+      this.takeover(
+        "The destination window changed. Please open the intended window, then continue.",
+        "handoff",
+      );
+      return false;
+    }
+    this.target = next;
+    run.target = { ...next, background: true };
+    run.windows = rememberWindow(run.windows, next);
+    this.rungMisses.clear();
+    this.coveredStaleRefusals = 0;
+    this.routesNoted.clear();
+    this.event("TargetBound", {
+      appId: next.appId,
+      windowId: next.windowId,
+      by: "navigation",
+    });
+    this.recorder.save(run);
+    return true;
+  }
+  /** Navigation is a checked foreground transaction, followed by a new native binding. */
+  private async navigateWindow(
+    target: RunTarget,
+    action: Action,
+    approved: Decision,
+    epoch: number,
+  ): Promise<{ outcome: ExecutionResult } | undefined> {
+    const run = this.snapshot.run!;
+    const current = () => this.active() && !this.held && epoch === this.epoch;
+    this.inFront = true;
+    this.event("ForegroundRequested", {
+      reason: "navigation",
+      actionType: action.type,
+    });
+    try {
+      const raised = await this.controller.foregroundTarget!(target.token);
+      if (!current()) return undefined;
+      if (!raised.frontmost) {
+        this.takeover(foregroundHandoff(target.appName), "handoff");
+        return undefined;
+      }
+      const surface = await this.controller.surface(action);
+      if (!current()) return undefined;
+      const floor = surfacePolicy(surface, this.settings);
+      if (floor.kind !== "ALLOW") {
+        this.takeover(floor.reason, "surface");
+        return undefined;
+      }
+      if (
+        surface.pid !== target.pid ||
+        surface.appId.toLowerCase() !== target.appId.toLowerCase()
+      ) {
+        this.takeover(foregroundHandoff(target.appName), "handoff");
+        return undefined;
+      }
+      const screen = this.recordFrame(await this.controller.capture());
+      if (!screen || !current()) return undefined;
+      if ((screen.appId ?? "").toLowerCase() !== target.appId.toLowerCase()) {
+        this.takeover(foregroundHandoff(target.appName), "handoff");
+        return undefined;
+      }
+      const native = { ...action, frame_id: screen.id };
+      // No background exception here. Re-evaluate the fresh foreground surface,
+      // including protected apps/sites, secure input, browser pins and IDE approvals.
+      const checked = evaluate(native, surface, this.settings, run.synthetic, {
+        ...(this.userWords(run) && { userWords: this.userWords(run) }),
+        ...(run.browser && { browser: run.browser }),
+      });
+      if (
+        checked.kind !== "ALLOW" &&
+        !(
+          checked.kind === "CONFIRM" &&
+          approved.kind === "CONFIRM" &&
+          checked.reason === approved.reason
+        )
+      ) {
+        this.takeover(checked.reason, "surface");
+        return undefined;
+      }
+      const browser =
+        run.browser ??
+        (action.type === "open_url" && browsers.includes(target.appId)
+          ? { name: target.appName, bundleId: target.appId }
+          : undefined);
+      const outcome = await this.controller.execute(
+        nativeAction(native, checked, surface),
+        screen,
+        this.abort.signal,
+        ...(browser ? [{ browser }] : []),
+      );
+      if (!current()) return undefined;
+      if (
+        !(await this.bindDestination(action, surface, outcome, epoch, target))
+      )
+        return undefined;
+      return {
+        outcome: {
+          ...(outcome ?? {}),
+          rung: "foreground",
+          effect: outcome?.effect ?? "unverifiable",
+        },
+      };
+    } finally {
+      await this.endHandoff(target, false);
+      this.inFront = false;
+    }
   }
   /**
    * One step to the bound window (design §2.5-§2.8): the rungs the ladder
@@ -4375,6 +4549,14 @@ export class Runner {
     if (frame.context) frame.context.recentTasks = this.recentTasks;
     if (frame.appId && this.appsSeen.size < 50) this.appsSeen.add(frame.appId);
     this.snapshot.frame = frame;
+    if (this.multiWindow && this.target && this.boundTarget()) {
+      const run = this.snapshot.run!;
+      run.windows = rememberWindow(
+        run.windows,
+        this.target,
+        frame.context?.windowTitle,
+      );
+    }
     this.snapshot.run!.frames++;
     // The PNG is the frame of record; the model's reduced rendition is not kept.
     const { preview: _preview, ...stored } = frame;
@@ -4519,6 +4701,18 @@ export class Runner {
   ) {
     const run = this.snapshot.run!;
     const { frame_id: _frameId, ...executedAction } = action;
+    if (
+      this.multiWindow &&
+      this.target &&
+      action.note &&
+      !windowNavigation(action)
+    )
+      run.windows = rememberWindow(
+        run.windows,
+        this.target,
+        frame.context?.windowTitle,
+        action.note,
+      );
     this.resetCounters();
     run.actions++;
     this.executed = [...this.executed, action].slice(-HANDOFF_STEPS);
@@ -5058,6 +5252,8 @@ export class Runner {
         screenshot,
         task,
         frame: this.modelFrame(frame),
+        ...(this.multiWindow &&
+          run.windows?.length && { windows: windowContexts(run.windows) }),
         history: modelHistory(this.history),
         ...(this.memoryContext ? { memory: this.memoryContext } : {}),
         ...(tools &&
@@ -5160,6 +5356,16 @@ export class Runner {
     // The run's clock starts now, not when its step was prepared.
     else this.started = Date.now();
     const run = this.newRun(task, options);
+    this.multiWindow =
+      options.multiWindow === true &&
+      options.background === true &&
+      this.settings.workInBackground &&
+      !!this.controller.bindTarget &&
+      !run.synthetic &&
+      !options.watch &&
+      ["typed", "voice"].includes(run.origin ?? "");
+    if (this.multiWindow && this.settings.memory)
+      run.windows = windowContexts(options.windows);
     // The window the preparation bound, if any, is this run's.
     if (adopting?.run.target) run.target = adopting.run.target;
     this.snapshot = {
@@ -5532,6 +5738,10 @@ export class Runner {
                     // Only the model's copy carries them: the panel text never
                     // enters a Snapshot, a trace or a saved frame.
                     frame: this.modelFrame(frame),
+                    ...(this.multiWindow &&
+                      run.windows?.length && {
+                        windows: windowContexts(run.windows),
+                      }),
                     history: modelHistory(history),
                     ...(this.memoryContext
                       ? { memory: this.memoryContext }
@@ -5785,6 +5995,7 @@ export class Runner {
                       pid: boundWindow.pid,
                       appName: boundWindow.appName,
                     },
+                    ...(this.multiWindow && { navigate: true }),
                   }
                 : {}),
             });
@@ -6313,14 +6524,17 @@ export class Runner {
         try {
           const toWindow = this.boundTarget();
           if (toWindow) {
-            const delivered = await this.executeBound(
-              toWindow,
-              action,
-              native,
-              actionSurface,
-              executionFrame,
-              epoch,
-            );
+            const delivered =
+              this.multiWindow && windowNavigation(action)
+                ? await this.navigateWindow(toWindow, action, decision, epoch)
+                : await this.executeBound(
+                    toWindow,
+                    action,
+                    native,
+                    actionSurface,
+                    executionFrame,
+                    epoch,
+                  );
             // Nothing executed, and the run already heard why.
             if (!delivered) {
               planFail("background");
@@ -6330,15 +6544,31 @@ export class Runner {
           } else {
             // A pinned run tells the controller its browser, so open_url goes
             // there; every other run's execute is the three-argument call.
-            const pinned: [] | [ExecuteOptions] = run.browser
-              ? [{ browser: run.browser }]
-              : [];
+            const browser =
+              run.browser ??
+              (action.type === "open_url" &&
+              browsers.includes(executionFrame.appId ?? "")
+                ? {
+                    name: executionFrame.context?.appName ?? "Browser",
+                    bundleId: executionFrame.appId!,
+                  }
+                : undefined);
+            const pinned: [] | [ExecuteOptions] = browser ? [{ browser }] : [];
             outcome = await this.controller.execute(
               native,
               executionFrame,
               this.abort.signal,
               ...pinned,
             );
+            if (
+              this.multiWindow &&
+              windowNavigation(action) &&
+              this.active() &&
+              !this.held &&
+              epoch === this.epoch &&
+              !!this.controller.bindTarget
+            )
+              await this.bindDestination(action, actionSurface, outcome, epoch);
           }
         } catch (e) {
           if (!this.active()) break;

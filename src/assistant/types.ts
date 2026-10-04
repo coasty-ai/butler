@@ -65,6 +65,12 @@ export interface RunView {
   minutes?: number;
   steps?: number;
   app?: string;
+  windows?: {
+    app: string;
+    title: string;
+    facts: string[];
+    lastSeenAt: string;
+  }[];
   /** The last few stepLine() values, oldest first. */
   recent: string[];
   /** The run's own question while it waits for the user. */

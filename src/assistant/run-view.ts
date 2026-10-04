@@ -6,6 +6,7 @@
  * reported as waiting, never with its action or reason; steps come from
  * stepLine(), which never carries typed text.
  */
+import { windowContexts } from "../core/windows";
 import type { Action, Run, Snapshot } from "../core/schema";
 import { redactSecrets } from "../core/sanitize";
 import { speakableQuestion, speakableSummary } from "../voice/speakable";
@@ -77,6 +78,12 @@ export function runView(
         minutesAgo: minutesBetween(finishedAt(finished, s) ?? o.now, o.now),
       }
     : undefined;
+  const windows = windowContexts((run ?? finished)?.windows).map((w) => ({
+    app: w.appName,
+    title: w.title,
+    facts: w.facts,
+    lastSeenAt: w.lastSeenAt,
+  }));
   if (!run || TERMINAL.has(run.status))
     return {
       running: false,
@@ -84,6 +91,7 @@ export function runView(
       recent: [],
       queued,
       watches: o.watches,
+      ...(windows.length && { windows }),
       ...(lastFinished ? { lastFinished } : {}),
     };
   const status =
@@ -115,6 +123,7 @@ export function runView(
     ...(question ? { question } : {}),
     queued,
     watches: o.watches,
+    ...(windows.length && { windows }),
     ...(lastFinished ? { lastFinished } : {}),
   };
 }

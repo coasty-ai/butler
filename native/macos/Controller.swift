@@ -18,6 +18,13 @@ var forwardedSpotlightDeadline: TimeInterval = 0
 var tap: CFMachPort?
 var currentFrame: [String: Any]?
 var rememberedPID:pid_t?
+// An ephemeral return address for a foreground handoff. Never reused for task input.
+struct HandoffReturnWindow {
+    let identity: TargetIdentity
+    let windowID: CGWindowID
+    let element: AXUIElement
+}
+var handoffReturnWindow: HandoffReturnWindow?
 let inputMarker:Int64 = 0x4f50454e41535354
 var recentWindows = [[String:String]]()
 var recentFiles = [String]()
@@ -2961,7 +2968,8 @@ func focusWatch(token: String) async throws -> [String:Any] {
 }
 // MARK: target
 /**
- A background run is bound to one window for its whole life (design §2.2). The
+ A background run is bound to one verified window at a time. Navigation may
+ replace the binding after checking the destination. The
  token is the only name TypeScript has for it, minted here like a watch's;
  every posted event, tree read and menu press of the run addresses this
  process and this window, and nothing else. One target at a time, guarded by
@@ -4102,8 +4110,20 @@ func foregroundTarget(token: String) async throws -> [String:Any] {
     let bound = try liveTarget(token)
     try guardTarget(bound, typing: false)
     guard let app = NSRunningApplication(processIdentifier: bound.pid) else { throw targetGone(bound) }
-    if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != bound.pid, !butlerOwn(front) {
+    if let front = NSWorkspace.shared.frontmostApplication, !butlerOwn(front) {
         rememberedPID = front.processIdentifier
+        let element = AXUIElementCreateApplication(front.processIdentifier)
+        _ = AXUIElementSetMessagingTimeout(element, 0.3)
+        let window = attribute(element, kAXFocusedWindowAttribute) as! AXUIElement?
+        let restore = window.flatMap { window -> HandoffReturnWindow? in
+            guard let id = windowID(of: window, pid: front.processIdentifier) else { return nil }
+            return HandoffReturnWindow(identity: TargetIdentity(pid: front.processIdentifier,
+                bundleId: front.bundleIdentifier ?? "", launchedAt: front.launchDate?.timeIntervalSince1970),
+                windowID: id, element: window)
+        }
+        withState { handoffReturnWindow = restore }
+    } else {
+        withState { handoffReturnWindow = nil }
     }
     withState { targetHandoff = true; lastInputTime = ProcessInfo.processInfo.systemUptime }
     startHandoffWatch()
@@ -4117,6 +4137,19 @@ func foregroundTarget(token: String) async throws -> [String:Any] {
     }
     withState { lastInputTime = ProcessInfo.processInfo.systemUptime }
     return ["frontmost": NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.pid]
+}
+// Restore only the same live window and process, including two windows of Code.
+// A closed window or a reused pid/window number is dropped, never found by title.
+func raiseHandoffReturnWindow() {
+    let saved = withState { () -> HandoffReturnWindow? in
+        let saved = handoffReturnWindow; handoffReturnWindow = nil; return saved
+    }
+    guard let saved,
+          let app = NSRunningApplication(processIdentifier: saved.identity.pid), !app.isTerminated,
+          targetLive(bound: saved.identity, running: runningIdentity(app), windowOwner: windowInfo(saved.windowID)?.owner),
+          attribute(saved.element, kAXRoleAttribute) as? String == kAXWindowRole else { return }
+    _ = AXUIElementSetMessagingTimeout(saved.element, 0.3)
+    _ = AXUIElementPerformAction(saved.element, kAXRaiseAction as CFString)
 }
 // A handoff the runner never closed (it died mid-step, or its restore never
 // arrived) would leave the target in front and the tap treating every input as
@@ -4132,6 +4165,7 @@ func startHandoffWatch() {
         guard expired else { return }
         endTargetHandoff()
         if let app = rememberedApplication(), NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier { app.activate(options: []) }
+        raiseHandoffReturnWindow()
     }
     let previous = withState { () -> DispatchSourceTimer? in let held = handoffWatch; handoffWatch = watch; return held }
     previous?.cancel()
@@ -4713,7 +4747,9 @@ func handle(_ command:[String:Any]) async throws -> [String:Any] {
         if let app=NSWorkspace.shared.frontmostApplication,app.processIdentifier != getppid(),app.bundleIdentifier != "ai.coarena.openassist" {rememberedPID=app.processIdentifier};return ["remembered":true]
     case "restoreRemembered":
         endTargetHandoff()
-        if let pid=rememberedPID,NSWorkspace.shared.frontmostApplication?.processIdentifier != pid,let app=NSRunningApplication(processIdentifier:pid){app.activate(options:[]);try await Task.sleep(nanoseconds:300_000_000)};return ["restored":true]
+        if let pid=rememberedPID,NSWorkspace.shared.frontmostApplication?.processIdentifier != pid,let app=NSRunningApplication(processIdentifier:pid){app.activate(options:[]);try await Task.sleep(nanoseconds:300_000_000)}
+        raiseHandoffReturnWindow()
+        return ["restored":true]
     case "displays":var ids = [CGDirectDisplayID](repeating:0,count:16);var count:UInt32 = 0;CGGetActiveDisplayList(16,&ids,&count);return ["displays":ids.prefix(Int(count)).map{id in let b = CGDisplayBounds(id);return ["id":Int(id),"width":Int(b.width),"height":Int(b.height)]}]
     case "resume":guard AXIsProcessTrusted(),CGPreflightScreenCaptureAccess() else {throw ControlError("Grant Screen Recording and Accessibility permissions before starting.")};guard installTap() else {throw ControlError("Emergency stop could not be registered. Input remains disabled.")};latch(false);return ["resumed":true]
     case "stop":latch(true);return ["stopped":true]

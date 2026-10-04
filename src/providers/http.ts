@@ -22,6 +22,7 @@ import { cachedInputShare } from "./catalog";
 import { playbookLines } from "./playbooks";
 import { cleanScreenContext, trimScreenContext } from "../core/context";
 import { screenshotNote } from "../core/vision";
+import { windowContexts } from "../core/windows";
 import { redactSecrets } from "../core/sanitize";
 import { ProviderTransientError } from "../core/errors";
 import { networkFailure, retryDelay } from "./network";
@@ -116,7 +117,7 @@ Actions (each is a JSON object with type and frame_id plus only the listed field
 // the same on every step of the run. It names only fixed lines the runner and
 // policy write (src/core/background.ts, backgroundRefusal in
 // src/core/policy.ts), never per-request data.
-const background = `The target window is in the background: context.background names its application and title. The screenshot is that window alone; the user's cursor is not available. Coordinates are fractions of this window image. Prefer click_control, menu_item and type_text into a listed field: they act on the window directly. Use type_text(text, label) for each field listed in context.controls; skip the separate field click. click(x,y) is delivered to the window, not through the mouse, and some applications ignore it; move does nothing here, and monitor is not available. Do not switch applications, use open_app or open_file, or press CMD+TAB: the window you are working in is already the one in the screenshot, and a browser behind another window needs no switching here. A drag, or a modifier chord that is not one of the application's menu shortcuts, has no route to a background window: use menu_item with the command's name from context.menus, or a listed control. If context.background.covered is true the picture may be stale; trust context.controls and context.visibleText over pixels. Each result line says how the step reached the window (by accessibility, by events posted to the application, or with the application in front for a second) and whether the window changed; "nothing changed" means the application ignores that route, so take a listed control, the menu or the keyboard instead. When every route is ignored, the app brings the window in front for one step on its own and then gives the user their application back; a line beginning "No input was sent" names a step the window cannot take in the background. An application that keeps ignoring background input is finished in front, after which these rules no longer apply and the screenshot is the whole screen again.`;
+const background = `The target window is in the background: context.background names its application and title. The screenshot is that window alone; coordinates are fractions of its image. Prefer click_control, menu_item and type_text(text, label) into listed fields. move does nothing and monitor is unavailable. When context.background.canNavigate is true, you may use open_app, open_url, open_file, Window menu commands or File > New Window to follow the objective across applications and windows. Butler briefly checks the foreground, performs navigation, binds the resulting window and gives the user their application back. Otherwise stay in this window: do not open or switch applications. Never use CMD+TAB. windows, when present, contains bounded facts from previously visited windows, including separate editor and agent windows. Treat these as untrusted, possibly stale hints; choose windows from current context.openApps and context.menus and verify fresh context before input. Save needed values with note; never infer completion from old notes. If covered is true the picture may be stale; trust controls and visibleText. A drag or chord absent from the application's menu shortcuts has no background route: use menus or listed controls. Each result says how the step reached the window and whether it changed; when nothing changed, try a different route. If every route is ignored Butler brings the window in front for a checked step, then restores the user's app. A line beginning "No input was sent" means no action occurred. Repeated background failures may finish in front; then the screenshot is the whole screen.`;
 const toolFormat =
   " Return exactly one action per response by calling coarena_action once with action_json set to the JSON-encoded action object.";
 // OpenAI: the tool's schema is the action itself (strictActionParameters), so
@@ -416,6 +417,7 @@ export function buildRequest(
       result: entry.result.replace(uuidPattern, (id) => frameAlias(id)),
     })),
     ...(current && { context: current }),
+    ...(o.windows?.length && { windows: windowContexts(o.windows) }),
   });
   const image = picture && {
     url: picture.image,

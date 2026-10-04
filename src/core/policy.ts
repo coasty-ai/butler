@@ -5,6 +5,7 @@ import {
   type Settings,
   type Surface,
 } from "./schema";
+import { windowNavigation } from "./windows";
 import { KNOWN_FOLDERS } from "./places";
 import { scanText } from "./sanitize";
 import type { ToolClock, ToolPrepared, ToolSpec } from "./tools";
@@ -1445,6 +1446,8 @@ export interface PolicyContext {
    * must belong to it.
    */
   target?: { pid: number; appName: string };
+  /** Runner will recheck the foreground surface before a navigation transaction. */
+  navigate?: boolean;
   /**
    * The user is still speaking (.data/design/streaming-execution.md §3.3):
    * the step is a fast action on a committed clause, before the final. Only
@@ -1529,6 +1532,7 @@ function backgroundRefusal(
   if (!context.target && !surface.target) return undefined;
   if (decision.kind === "DENY" || decision.kind === "USER_TAKEOVER")
     return undefined;
+  if (context.navigate && windowNavigation(action)) return undefined;
   const app = quote(context.target?.appName ?? surface.appName ?? "") || "it";
   if (
     action.type === "open_app" ||

@@ -1151,6 +1151,8 @@ export interface ScreenContext {
   budget?: { actionsLeft: number };
 }
 export interface BackgroundContext {
+  /** Interactive CLI runs can navigate through checked foreground handoffs. */
+  canNavigate?: boolean;
   appName: string;
   title: string;
   covered: boolean;
@@ -1158,11 +1160,20 @@ export interface BackgroundContext {
   minimized: boolean;
 }
 /**
- * The window a background run is bound to for its whole life (design §2.2).
+ * The window a background run is currently bound to (design §2.2).
  * The helper minted the token, as it does for watches: nothing in TypeScript
  * can point input at a window the helper did not bind, and it re-checks the
  * pid, bundle and launch date behind the token before every post.
  */
+export interface WindowContext {
+  appId: string;
+  appName: string;
+  pid: number;
+  windowId: number;
+  title: string;
+  lastSeenAt: string;
+  facts: string[];
+}
 export interface RunTarget {
   token: string;
   pid: number;
@@ -1409,6 +1420,8 @@ export interface Observation {
     /** Butler's readback confirmation, never taken from a tool's result text. */
     verified?: true;
   }[];
+  /** Bounded visited-window hints, never input authority. */
+  windows?: WindowContext[];
   /** Task-relevant memory and system index context (bounded; see docs/MEMORY.md). */
   memory?: MemoryContext;
   /** The tools this run may call, on the model's copy only; never persisted. */
@@ -1681,6 +1694,8 @@ export interface Run {
    * took the screen as before.
    */
   target?: RunTarget & { background: boolean };
+  /** Encrypted, bounded context for distinct windows visited by interactive runs. */
+  windows?: WindowContext[];
   /**
    * The browser this run is pinned to (StartOptions.browser): set by the
    * bench for a task that names one. Absent on every other run.
