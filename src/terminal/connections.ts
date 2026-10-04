@@ -22,7 +22,7 @@ import {
   type Settings,
 } from "../core/schema";
 import type { ServerRecipe } from "../core/tools";
-import { authorize, type OAuthClient } from "./oauth";
+import { authorize, SLACK_READ_SCOPES, type OAuthClient } from "./oauth";
 import type { TerminalStore } from "./store";
 import {
   browserSetupTask,
@@ -609,6 +609,7 @@ export class TerminalConnections {
     ask: Ask,
     show: (text: string) => void,
     signal: AbortSignal,
+    options: { slackClientId?: string } = {},
   ) {
     if (!CONNECTIONS.includes(id))
       throw new Error("Choose a connection from /connect list.");
@@ -685,6 +686,18 @@ export class TerminalConnections {
       if (
         id === "slack" &&
         ready &&
+        secrets["slack:readScopeRequest"] !== SLACK_READ_SCOPES.join(",")
+      ) {
+        // Only a connection request upgrades an older grant; startup keeps
+        // existing access. Remember the requested set, not a claim of coverage.
+        show(
+          "Slack needs one account approval to add your DMs, group messages and other read access. Your existing connection is kept if you cancel.",
+        );
+        ready = false;
+      }
+      if (
+        id === "slack" &&
+        ready &&
         Number(secrets["slack:expiresAt"]) <= Date.now() + 120_000
       ) {
         try {
@@ -694,7 +707,10 @@ export class TerminalConnections {
         }
       }
       if (!ready) {
-        const client = await this.client(id, ask, show);
+        const client =
+          id === "slack" && options.slackClientId
+            ? { clientId: options.slackClientId }
+            : await this.client(id, ask, show);
         const tokens = await authorize(
           id,
           client,
@@ -707,6 +723,13 @@ export class TerminalConnections {
           throw new Error(
             "Google did not provide offline access. Revoke the old Butler grant and run /connect gmail again.",
           );
+        if (id === "slack") {
+          // A new grant must not reuse refresh/expiry data from the old token.
+          delete secrets["slack:refreshToken"];
+          delete secrets["slack:expiresAt"];
+          secrets["slack:clientId"] = client.clientId;
+          secrets["slack:readScopeRequest"] = SLACK_READ_SCOPES.join(",");
+        }
         secrets[`${id}:accessToken`] = tokens.access_token;
         if (tokens.refresh_token)
           secrets[`${id}:refreshToken`] = tokens.refresh_token;
@@ -805,7 +828,9 @@ export class TerminalConnections {
     show(
       id === "slack-bot"
         ? "Slack is connected. I can read conversations the bot has joined."
-        : `${row.name} connected. ${probe.toolCount} tools listed.${id === "codex" || id === "claude-code" ? ` Coding tools are scoped to ${this.project}.` : ""}`,
+        : id === "slack"
+          ? "Slack is connected as your account. Available read tools are enabled; access follows your Slack membership and workspace policies."
+          : `${row.name} connected. ${probe.toolCount} tools listed.${id === "codex" || id === "claude-code" ? ` Coding tools are scoped to ${this.project}.` : ""}`,
     );
   }
   catalog() {
@@ -1018,11 +1043,30 @@ export class TerminalConnections {
         (await ask("Slack connection: bot or oauth")).trim().toLowerCase();
       if (!["bot", "oauth"].includes(choice))
         throw new Error("Use /connect slack bot or /connect slack oauth.");
+      const secrets = this.store.profile.secrets;
+      let slackClientId: string | undefined;
+      if (
+        choice === "oauth" &&
+        secrets["slack:clientId"] &&
+        (!secrets["slack:accessToken"] ||
+          secrets["slack:readScopeRequest"] !== SLACK_READ_SCOPES.join(","))
+      ) {
+        show(
+          "Use the Client ID of the Butler app configured with https://github.com/coasty-ai/butler/blob/main/docs/slack-app-manifest.json. Leave it empty if you updated the same app. Your saved grant changes only after account approval.",
+        );
+        slackClientId =
+          (
+            (await ask(
+              "Slack app client ID (leave empty to reuse the saved app)",
+            )) || ""
+          ).trim() || undefined;
+      }
       return this.connect(
         choice === "bot" ? "slack-bot" : "slack",
         ask,
         show,
         signal,
+        { slackClientId },
       );
     }
     if (!CONNECTIONS.includes(id as ConnectionId))
@@ -1202,7 +1246,7 @@ export class TerminalConnections {
       };
     } else {
       show(
-        "Slack needs a dedicated internal app approved for MCP. Enable PKCE in OAuth & Permissions (a one-way public-client setting), then add http://localhost:53682/callback as its redirect URL. Add user scopes search:read.public, search:read.private, channels:history, groups:history. No Client Secret is required for this desktop flow. https://api.slack.com/apps",
+        "Create a dedicated internal Butler app at https://api.slack.com/apps using ‘From an app manifest’. Paste the configuration from https://github.com/coasty-ai/butler/blob/main/docs/slack-app-manifest.json and select your workspace. It sets the read permissions, localhost callback and PKCE (a one-way public-client setting). Install/approve the app, including MCP access if your workspace requires it. Copy Basic Information → App Credentials → Client ID. No Client Secret is required. Access requested: channels you can see, your DMs/group DMs, shared files, profiles, canvases, lists and reactions.",
       );
       client = {
         clientId: await ask("Slack app client ID"),

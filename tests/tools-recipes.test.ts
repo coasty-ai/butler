@@ -158,10 +158,8 @@ describe("server recipes", () => {
     expect(recipe("github").installNote).toContain(
       "OAuth sign-in arrives in a later increment",
     );
-    expect(recipe("slack").installNote).toMatch(
-      /OAuth sign-in.*later increment/,
-    );
-    expect(recipe("slack").installNote).toContain("(verify)");
+    expect(recipe("slack").installNote).toContain("user OAuth");
+    expect(recipe("slack").installNote).toContain("approved for MCP");
   });
 
   it("pins the Node packages the app installs, by version and bin, and keeps npx off every recipe", () => {

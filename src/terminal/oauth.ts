@@ -10,6 +10,30 @@ export interface OAuthToken {
   refresh_token?: string;
   expires_in?: number;
 }
+/** User reads supported by Slack's official MCP; no bot or write grants. */
+export const SLACK_READ_SCOPES = [
+  "search:read.public",
+  "search:read.private",
+  "search:read.im",
+  "search:read.mpim",
+  "search:read.files",
+  "search:read.users",
+  "channels:read",
+  "channels:history",
+  "groups:read",
+  "groups:history",
+  "im:read",
+  "im:history",
+  "mpim:read",
+  "mpim:history",
+  "files:read",
+  "users:read",
+  "users:read.email",
+  "canvases:read",
+  "lists:read",
+  "reactions:read",
+  "emoji:read",
+] as const;
 export function authorizationUrl(
   provider: "gmail" | "slack",
   client: OAuthClient,
@@ -37,11 +61,7 @@ export function authorizationUrl(
     );
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("prompt", "consent");
-  } else
-    url.searchParams.set(
-      "scope",
-      "search:read.public,search:read.private,channels:history,groups:history",
-    );
+  } else url.searchParams.set("scope", SLACK_READ_SCOPES.join(","));
   return url.toString();
 }
 export async function exchangeCode(

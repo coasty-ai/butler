@@ -18,6 +18,7 @@ import {
 } from "../src/terminal/connections";
 import { TerminalStore } from "../src/terminal/store";
 import { McpOAuth } from "../src/terminal/mcp-oauth";
+import { SLACK_READ_SCOPES } from "../src/terminal/oauth";
 import { freshOnboarding } from "../src/terminal/onboarding";
 import {
   settingsSchema,
@@ -63,6 +64,157 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+test.each([false, true])(
+  "Slack account reads approve once and survive restart with legacy grant %s, without enabling writes",
+  async (legacy) => {
+    const root = temp(),
+      key = randomBytes(32);
+    const store = new TerminalStore(root, key);
+    store.profile.settings.privacy = "PRIVATE_BYOM";
+    store.profile.secrets["slack:clientId"] = "synthetic-client";
+    store.profile.secrets["slack:botToken"] = "xoxb-synthetic-bot";
+    if (legacy)
+      Object.assign(store.profile.secrets, {
+        "slack:accessToken": "synthetic-old-access",
+        "slack:refreshToken": "synthetic-old-refresh",
+        "slack:expiresAt": String(Date.now() + 3_600_000),
+      });
+    const actualFetch = globalThis.fetch;
+    const request = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("https://slack.com/api/oauth.v2.user.access");
+      expect((init.body as URLSearchParams).get("code_verifier")).toBeTruthy();
+      expect((init.body as URLSearchParams).has("client_secret")).toBe(false);
+      return Response.json({ ok: true, access_token: "synthetic-full-access" });
+    });
+    vi.stubGlobal("fetch", request);
+    const open = vi.fn(async (value: string) => {
+      const url = new URL(value);
+      expect(url.searchParams.get("client_id")).toBe(
+        "synthetic-replacement-client",
+      );
+      expect(url.searchParams.get("scope")?.split(",")).toEqual(
+        SLACK_READ_SCOPES,
+      );
+      const callback = new URL(url.searchParams.get("redirect_uri")!);
+      callback.searchParams.set("state", url.searchParams.get("state")!);
+      callback.searchParams.set("code", "synthetic-code");
+      expect((await actualFetch(callback)).status).toBe(200);
+      return true;
+    });
+    const configure = (c: TerminalConnections) => {
+      vi.spyOn(c.registry, "test").mockResolvedValue({
+        ok: true,
+        state: "on",
+        toolCount: 3,
+      } as any);
+      vi.spyOn(c.registry, "configure").mockResolvedValue();
+      vi.spyOn(c.registry, "status").mockReturnValue({
+        ...c.registry.status(),
+        servers: [
+          {
+            id: "slack",
+            name: "Slack",
+            state: "on",
+            tools: [
+              { name: "slack_search", tier: "read", denied: false },
+              { name: "slack_send_message", tier: "write", denied: false },
+              { name: "slack_read_file", tier: "read", denied: true },
+            ],
+          },
+        ],
+      } as any);
+      return vi.spyOn(c.registry, "tick").mockReturnValue({
+        slack_search: { on: true, pin: "synthetic-tool-pin" },
+      });
+    };
+    const c = new TerminalConnections(store, "/fixture", "/fixture", open);
+    const tick = configure(c);
+    const ask = vi.fn(async (label: string, hidden?: boolean) => {
+      expect(label).toContain("client ID");
+      expect(hidden).not.toBe(true);
+      return "synthetic-replacement-client";
+    });
+    const shown = vi.fn();
+    const controller = new AbortController();
+    try {
+      await c.connectCommand("slack oauth", ask, shown, controller.signal);
+      expect(open).toHaveBeenCalledOnce();
+      expect(request).toHaveBeenCalledOnce();
+      expect(tick).toHaveBeenCalledExactlyOnceWith(
+        "slack",
+        "slack_search",
+        true,
+      );
+      const restored = new TerminalStore(root, key);
+      expect(restored.profile.secrets).toMatchObject({
+        "slack:clientId": "synthetic-replacement-client",
+        "slack:accessToken": "synthetic-full-access",
+        "slack:readScopeRequest": SLACK_READ_SCOPES.join(","),
+        "slack:botToken": "xoxb-synthetic-bot",
+      });
+      expect(restored.profile.secrets["slack:refreshToken"]).toBeUndefined();
+      expect(restored.profile.secrets["slack:expiresAt"]).toBeUndefined();
+      expect(readFileSync(join(root, "profile.enc"), "utf8")).not.toContain(
+        "synthetic-full-access",
+      );
+      expect(JSON.stringify(shown.mock.calls)).not.toContain(
+        "synthetic-full-access",
+      );
+      const next = new TerminalConnections(
+        restored,
+        "/fixture",
+        "/fixture",
+        open,
+      );
+      configure(next);
+      await next.connectCommand("slack oauth", ask, shown, controller.signal);
+      expect(open).toHaveBeenCalledOnce();
+      expect(request).toHaveBeenCalledOnce();
+      expect(ask).toHaveBeenCalledOnce();
+    } finally {
+      controller.abort();
+    }
+  },
+);
+test("declining a Slack read upgrade preserves the old encrypted grant and closes the callback", async () => {
+  const root = temp(),
+    key = randomBytes(32);
+  const store = new TerminalStore(root, key);
+  store.profile.settings.privacy = "PRIVATE_BYOM";
+  Object.assign(store.profile.secrets, {
+    "slack:clientId": "synthetic-client",
+    "slack:accessToken": "synthetic-old-access",
+    "slack:refreshToken": "synthetic-old-refresh",
+    "slack:expiresAt": String(Date.now() + 3_600_000),
+    "slack:readScopeRequest": "search:read.public,search:read.private",
+  });
+  store.save();
+  const before = { ...store.profile.secrets };
+  const actualFetch = globalThis.fetch;
+  const request = vi.fn();
+  vi.stubGlobal("fetch", request);
+  const open = vi.fn(async (value: string) => {
+    const url = new URL(value);
+    const callback = new URL(url.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", url.searchParams.get("state")!);
+    callback.searchParams.set("error", "access_denied");
+    await actualFetch(callback);
+    return true;
+  });
+  const c = new TerminalConnections(store, "/fixture", "/fixture", open);
+  const probe = vi.spyOn(c.registry, "test");
+  await expect(
+    c.connectCommand(
+      "slack oauth",
+      vi.fn(async () => "synthetic-declined-client"),
+      vi.fn(),
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("declined");
+  expect(new TerminalStore(root, key).profile.secrets).toEqual(before);
+  expect(request).not.toHaveBeenCalled();
+  expect(probe).not.toHaveBeenCalled();
 });
 test("startup waits for the Apple bridge even when no external servers are enabled", async () => {
   vi.useFakeTimers();

@@ -29,6 +29,7 @@ import {
   authorizationUrl,
   exchangeCode,
   authorize,
+  SLACK_READ_SCOPES,
 } from "../src/terminal/oauth";
 import { TerminalConnections } from "../src/terminal/connections";
 
@@ -343,6 +344,41 @@ test("OAuth requests only read access and never includes client secrets in the U
     ),
   );
   expect(slack.searchParams.get("scope")).not.toContain("write");
+  const scopes = slack.searchParams.get("scope")!.split(",");
+  for (const scope of [
+    "search:read.public",
+    "search:read.private",
+    "search:read.im",
+    "search:read.mpim",
+    "channels:read",
+    "groups:read",
+    "im:read",
+    "mpim:read",
+    "channels:history",
+    "groups:history",
+    "im:history",
+    "mpim:history",
+    "search:read.files",
+    "files:read",
+  ])
+    expect(scopes).toContain(scope);
+  expect(scopes.every((scope) => /:read(?:\.|$)|:history$/.test(scope))).toBe(
+    true,
+  );
+  expect(slack.searchParams.has("user_scope")).toBe(false);
+  expect(slack.toString()).not.toContain("secret-fixture");
+  const manifest = JSON.parse(
+    readFileSync(
+      new URL("../docs/slack-app-manifest.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  expect(manifest.oauth_config.scopes.user).toEqual(SLACK_READ_SCOPES);
+  expect(manifest.oauth_config.scopes.bot).toBeUndefined();
+  expect(manifest.oauth_config.redirect_urls).toEqual([
+    "http://localhost:53682/callback",
+  ]);
+  expect(manifest.oauth_config.pkce_enabled).toBe(true);
 });
 test("token exchange uses the Slack MCP user endpoint and hides provider error bodies", async () => {
   const token = await exchangeCode(

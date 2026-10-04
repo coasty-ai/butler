@@ -45,25 +45,19 @@ If Slack reports `account_inactive`, the token's bot account or workspace is ina
 
 Slack’s official MCP server requires an internal or Marketplace Slack app with OAuth configured; it does not offer arbitrary dynamic client registration. Create/configure the app at [Slack’s app dashboard](https://api.slack.com/apps), then follow [Slack’s harness connection guide](https://docs.slack.dev/ai/slack-mcp-server/connect-to-harnesses/).
 
-To create the dedicated Butler integration:
+To give Butler read access as your own account:
 
-1. Open [Your Apps](https://api.slack.com/apps), choose **Create New App → From scratch**, name it **Butler**, and select your workspace. Keep it internal; an unlisted distributed app cannot use Slack MCP.
-2. In **OAuth & Permissions**, enable **PKCE**. This makes the app a public client; Slack says the setting cannot be reversed without support, so use a dedicated Butler app rather than changing an app used by another service. [Slack PKCE guide](https://docs.slack.dev/authentication/using-pkce/).
-3. Add `http://localhost:53682/callback` under **Redirect URLs** and save it.
-4. Under **User Token Scopes**, add these reads:
+1. Open [Your Apps](https://api.slack.com/apps), choose **Create New App → From an app manifest**, and select your workspace.
+2. Choose **JSON** and paste [Butler's ready-made app manifest](slack-app-manifest.json). Review and create **Butler Personal**. It configures the user read scopes, `http://localhost:53682/callback` and PKCE. Keep this dedicated app internal; an unlisted distributed app cannot use Slack MCP. PKCE makes the app a public client and cannot be reversed without Slack support. [Slack PKCE guide](https://docs.slack.dev/authentication/using-pkce/).
+3. Install/approve the app for your workspace. If app approval is restricted, your Slack administrator must approve it and permit MCP access.
+4. Open **Basic Information → App Credentials** and copy its **Client ID**. This is a public identifier; Butler's desktop flow does not ask for a Client Secret or a manually copied user token.
+5. Start `butler`, type **Connect Slack with OAuth**, enter that Client ID when asked, and approve your workspace/account in the browser. `/connect slack oauth` is the equivalent command.
 
-   ```text
-   search:read.public
-   search:read.private
-   channels:history
-   groups:history
-   ```
+The manifest requests user read scopes for public/private channels, your DMs and group DMs, shared files, profiles, canvases, lists, reactions and emoji. It includes conversation discovery as well as search/history permissions. These are **User Token Scopes**, not Bot Token Scopes. No sending, editing or deletion grants are requested. [Slack's MCP scope table](https://docs.slack.dev/ai/slack-mcp-server/#oauth-scopes-needed-on-user-token-for-different-tools).
 
-5. Install/approve the app for your workspace. If app approval is restricted, your Slack administrator must approve it and permit MCP access.
-6. Open **Basic Information → App Credentials** and copy its **Client ID**. Butler's PKCE desktop flow does not ask for a Client Secret.
-7. Start `butler`, run `/connect slack oauth`, enter that Client ID, open the displayed authorization URL, and approve the workspace/account. `/connect slack` lets you choose bot or OAuth setup.
+If you already connected a Butler user OAuth app with the older channel-only grant, add the manifest's scopes under that app's **OAuth & Permissions → User Token Scopes**, install/reinstall if Slack asks, then type **Connect Slack with OAuth** again to approve the expanded request. Butler retains the old token if approval is cancelled and saves the new request across restarts. Existing bot grants cannot become user grants by adding bot scopes.
 
-Butler uses Slack’s MCP user authorization and token endpoints, with a fresh PKCE verifier and random state on each attempt. It requests public/private channel search and history; it does not request sending or direct-message scopes. Access/refresh tokens are stored encrypted. Rotating refresh tokens can expire, so reconnect if Slack requests it.
+Butler uses Slack's MCP user authorization and token endpoints, with a fresh PKCE verifier and random state on each attempt. Access/refresh tokens are stored encrypted. Rotating refresh tokens can expire, so reconnect if Slack requests it. Access still follows your membership, retention and administrator policies: it cannot read other people's DMs or private channels you cannot access. An account grant enables reads; it does not make every periodic briefing an exhaustive history scan. The bot's existing scheduled query remains bounded to five conversations until you change the briefing reads.
 
 ## Gmail
 

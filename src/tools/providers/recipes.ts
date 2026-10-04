@@ -93,7 +93,7 @@ export const RECIPES: readonly ServerRecipe[] = [
     consent:
       "Talks to Slack over the internet with your token; the channel and message text its tools read reaches the model. Runs as you, with the token's permissions.",
     installNote:
-      "Slack's server needs OAuth sign-in, which arrives in a later increment; a user token may work in the meantime (verify). Shown as needs sign-in until a token is stored.",
+      "Needs user OAuth for a registered internal or Marketplace Slack app approved for MCP. In the terminal, say ‘Connect Slack with OAuth’; its saved grant follows your own Slack access.",
   },
   {
     id: "claude-code",
